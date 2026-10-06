@@ -1,0 +1,61 @@
+name: Build and publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      UV_PROJECT_ENVIRONMENT: .venv
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages (ffmpeg for animations)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-liberation
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Python deps
+        run: uv sync
+      - uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: 1.10.19
+      - name: Cache nflverse downloads
+        uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: nflverse-${{ hashFiles('pyproject.toml') }}-v1
+      - name: Per-chapter PDFs
+        run: |
+          source .venv/bin/activate
+          python scripts/build_pdfs.py --jobs 4
+      - name: Render book (HTML)
+        run: |
+          source .venv/bin/activate
+          quarto render --to html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
