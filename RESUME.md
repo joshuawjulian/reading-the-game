@@ -7,8 +7,13 @@
   verified current facts (planning/FACTS-current.md).
 - DONE: pilot chapters 01-04, 03-02, 06-06, 13-02 (19/29/25/42 pp), published. Review logs in planning/reviews/.
   Known: the chapters run long (7.8k-13.8k words vs the 3-7k target); links to unwritten chapters warn until they exist.
-- WAITING: the user's verdict on the pilots (tone, depth/length, diagrams).
-- NEXT: then the full run of the remaining 69 chapters with the same
+- The user approved the pilots ("THIS IS EXCELLENT"): keep the depth, push straight live.
+- IN PROGRESS: full run of the remaining 69 chapters (workflow run wf_e83b4055-dbb, script
+  write-book-*.js). The revise stage writes planning/reviews/<id>.done; an auto-publish loop commits and
+  pushes chapters that have a .done marker every 20 minutes. To RESUME after an interruption, rerun the
+  workflow with resumeFromRunId, or run it fresh with only the chapters that lack a .done marker.
+- AFTER: atlas appendices A-G, whole-book gap audit, link/glossary check.
+- OLD: then the full run of the remaining 69 chapters with the same
   workflow (script saved under the session's workflows/scripts/write-chapters-*.js; it takes
   args {chapters: [{id, path}]}, with paths from planning/chapters.yml), then a final
   whole-book gap audit, the atlas appendices, and the glossary check.
