@@ -1,0 +1,1761 @@
+---
+title: "Defensive Line Play: Techniques, One-Gap and Two-Gap"
+subtitle: "Why one great defensive lineman lives in the backfield and another never moves, and how both of them win"
+description: "The technique numbers from the defense's side of the ball: the nose, the 3-technique, the 4i and 5-technique, the 9 and the wide-9, and the body each spot asks for; one-gap (attack and penetrate) versus two-gap (control, read, shed) play and what each trades away; how a defensive lineman fights a down block, a reach block and a double team; setting the edge and contain; and line movement, the slant and the angle."
+glossary:
+  One-gap: "A style of defensive line play in which each lineman is responsible for a single gap: he lines up in or shaded toward it, attacks it at the snap, and leaves the other gaps to his teammates."
+  Two-gap: "A style of defensive line play in which a lineman lines up head-up on a blocker, controls him with his hands, reads where the ball is going, and then sheds the block to fill the gap on whichever side the ball comes, so one defender covers two gaps."
+  Penetration: "A defender getting across the line of scrimmage and into the offense's backfield fast, through a gap, to disrupt a play before it develops; the aim of one-gap line play."
+  Wide-9: "An alignment for a defensive end far outside the offensive tackle: one to two or more yards outside the tight end, or, with no tight end, just as far beyond where one would stand (roughly three to four yards outside the tackle), usually in a sprinter's stance (a three-point stance with the weight forward and tilted toward the quarterback). A 9 sits on the tight end's outside shoulder; the wide-9 is a clear step or two beyond. It gives the end the widest angle to rush the passer at the cost of a wider running lane inside him."
+  "Set the edge": "The job of the outermost defender at the line on a run toward him: take on the blocker at or near the line of scrimmage with his outside arm free, so the run cannot get outside him and the ball carrier has to turn back inside toward teammates."
+  Contain: "A defender's rule to keep the ball carrier, especially a quarterback on a scramble, bootleg or keeper, from getting outside him; for edge rushers on a pass, not rushing past the quarterback's depth and opening an escape lane."
+  "Slant (line movement)": "A called line movement in which defensive linemen step hard across the face of the blocker in front of them at the snap, into the next gap over, gaining only a little ground, usually all in the same direction, while the linebackers shift the other way to fill the gaps the line left."
+  "Angle (line movement)": "A called movement in which a defensive lineman steps at about 45 degrees into the gap beside him at the snap, moving over one gap while still getting upfield; a shorter, more penetrating move than a slant, often by one or two linemen rather than the whole line."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared helpers for this chapter's diagrams)"
+#| output: false
+import logging
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, Polygon, Rectangle, RegularPolygon
+from gridiron import Play, Player, Field, offense, technique, style
+from gridiron.play import draw_marker
+
+GREEN = "#0f7a55"         # darker step of the aqua highlight, for text on the light field
+PURPLE = style.SERIES[6]  # a ring colour that is neither offense blue nor defense orange
+OL_KEYS = ("LT", "LG", "C", "RG", "RT")
+
+
+def pdf_build():
+    return os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+
+def O(key, pos, d, w, label):
+    return Player(key, pos, "off", d, w, label=label)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line(labels="full"):
+    """The five offensive linemen, labelled LT..RT ("full") or with one letter, T G C G T ("short")."""
+    short = {"LT": "T", "LG": "G", "C": "C", "RG": "G", "RT": "T"}
+    return [p.moved(label=(p.key if labels == "full" else short[p.key])) for p in offense("singleback")
+            if p.key in OL_KEYS]
+
+
+def te(side=1, key=None, label=None):
+    """An in-line tight end: Y on the right, U on the left."""
+    key = key or ("Y" if side > 0 else "U")
+    return O(key, "TE", -0.7, side * 4.8, label or key)
+
+
+def T(t, side=1):
+    """Width of technique t on the offense's right (side=+1) or left (side=-1)."""
+    return technique(t, side)
+
+
+def go_to(p, key, end, kind="block", delay=0.0, speed=None, via=()):
+    """Move `key` through absolute (d, w) points `via` to `end`, as a block, path or run."""
+    start = np.array(p._cur(key))
+    pts = [tuple(np.array(q) - start) for q in (*via, end)]
+    if kind == "block":
+        return p.block(key, pts=pts, delay=delay, speed=speed)
+    if kind == "pull":
+        return p.pull(key, pts, delay=delay, speed=speed)
+    return {"path": p.path, "run": p.run}[kind](key, pts, delay=delay, speed=speed)
+
+
+def _P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.5, ha="center", weight="normal"):
+    """A short on-field label at (d, w)."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=9, fontweight=weight,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=7, shrink=7):
+    """A label with a thin leader line to the player or spot it names."""
+    (xt, yt), (xp, yp) = _P(fld, p, *text_at), _P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha="center", va="center", zorder=9,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=shrink),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def gap_tag(fld, p, d, w, text, color=GREEN, fontsize=8.5):
+    """A gap letter in a small rounded box."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha="center", va="center", zorder=9,
+                fontweight="bold", bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec=color, lw=1.0))
+
+
+def spot(fld, p, d, w, color=style.DEFENSE_DARK, ms=10):
+    """Mark a point (a tackle, a meeting point) with an X."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.plot([x], [y], marker="X", ms=ms, color=color, mec="white", mew=0.8, zorder=12)
+
+
+def lane(fld, p, w0, w1, d0, d1, color=style.OFFENSE, alpha=0.10, ls=(0, (3, 2))):
+    """Shade a rectangular lane (a run lane, a gap) from width w0 to w1 and depth d0 to d1."""
+    (x0, y0), (x1, y1) = _P(fld, p, d0, w0), _P(fld, p, d1, w1)
+    fld.ax.add_patch(Rectangle((min(x0, x1), min(y0, y1)), abs(x1 - x0), abs(y1 - y0), fc=color, alpha=alpha,
+                               ec=color, lw=0.9, ls=ls, zorder=0.8))
+
+
+def dashed(fld, p, pts, color=style.THIRD, lw=1.5, dash=(0, (3, 2.2)), end="arrow"):
+    """A dashed 'what if' or 'intent' path through absolute (d, w) points."""
+    xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    if end == "arrow":   # dashed all the way to a short solid head on the last 25% of the last leg
+        xs, ys = np.asarray(xs, float), np.asarray(ys, float)
+        hx, hy = xs[-2] + 0.75 * (xs[-1] - xs[-2]), ys[-2] + 0.75 * (ys[-1] - ys[-2])
+        xs = np.concatenate([xs[:-1], [hx, xs[-1]]]); ys = np.concatenate([ys[:-1], [hy, ys[-1]]])
+    fld.ax.plot(xs[:-1] if end == "arrow" else xs, ys[:-1] if end == "arrow" else ys, color=color, lw=lw,
+                ls=dash, zorder=6)
+    if end == "arrow":
+        fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>",
+                                         mutation_scale=10, color=color, lw=lw, zorder=6))
+
+
+def bracket(fld, p, d, w0, w1, color=style.DEFENSE_DARK, lw=2.2, stem_to=None):
+    """A bar spanning the gaps a two-gapper owns, with end ticks and an optional stem to the player."""
+    (xa, ya), (xb, yb) = _P(fld, p, d, w0), _P(fld, p, d, w1)
+    fld.ax.plot([xa, xb], [ya, yb], color=color, lw=lw, solid_capstyle="butt", zorder=5)
+    for w in (w0, w1):
+        (x0, y0), (x1, y1) = _P(fld, p, d - 0.35, w), _P(fld, p, d + 0.35, w)
+        fld.ax.plot([x0, x1], [y0, y1], color=color, lw=lw, zorder=5)
+    if stem_to is not None:
+        (x0, y0), (x1, y1) = _P(fld, p, d, (w0 + w1) / 2), _P(fld, p, *stem_to)
+        fld.ax.plot([x0, x1], [y0, y1], color=color, lw=1.0, ls=(0, (2, 1.5)), zorder=4.5)
+
+
+def clean(ax):
+    """Box-zoomed diagrams: drop hash ticks and yard numbers, clip anything outside the window."""
+    for ln in list(ax.lines):
+        xs, ys = ln.get_data()
+        if len(xs) == 2 and ln.get_linewidth() == 0.5 and np.hypot(xs[1] - xs[0], ys[1] - ys[0]) < 1.0:
+            ln.remove()
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() == 0.55:   # yard numbers, not technique labels
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, width_in=5.8, ax=None, **kw):
+    """Play.draw, sized for the page, cleaned for a box-sized window."""
+    fld = p.draw(width_in=width_in, ax=ax, **kw)
+    clean(fld.ax)
+    return fld
+
+
+def front(spec, lbs=(), others=()):
+    """Defensive linemen from (key, technique, side) triples, labelled with their technique number,
+    plus (key, d, w, label) linebackers and any other defenders."""
+    out = [D(k, "DL", 1.0, T(t, s), t) for k, t, s in spec]
+    out += [D(k, "LB", d, w, lab) for k, d, w, lab in lbs]
+    out += [D(k, "S", d, w, lab) for k, d, w, lab in others]
+    return out
+
+
+# --- frame strips (PDF) and video (web) for the simulated plays --------------------------------------
+MARK_R = 0.62
+
+
+def tracking(play):
+    df = play.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    return df
+
+
+def panel(ax, play, df, t, lateral, window, rings=(), enter=(), ring_r=0.85):
+    """One moment of a simulated play on `ax`: markers, trails of on-screen players, rings."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    ylo, yhi = sorted((play.ball_y - lateral[0], play.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=play.los, window=window, numbers=False, hashes=False,
+                lateral=(ylo, yhi), to_go=play.to_go)
+    cur = df[df["frameId"] == fid]
+    snap = df[df["frameId"] == int((tmap - 0.0).abs().idxmin())]
+    first = snap[snap["x"].between(play.los + window[0] + 0.8, play.los + window[1] - 0.8)
+                 & snap["y"].between(ylo + 0.8, yhi - 0.8)]       # players whose marker fits whole at the snap ...
+    ids = set(first["_id"]) | {"football"}
+    inside = cur[cur["x"].between(play.los + window[0], play.los + window[1]) & cur["y"].between(ylo, yhi)]
+    ids |= set(inside["_id"]) & set(enter)                         # players allowed to walk into the picture
+    shown = cur[cur["_id"].isin(ids) | (cur["side"] == "ball")]    # ... stay in every frame (clipped at the edge)
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(ids) & (df["side"] != "ball")]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=0.9, alpha=0.4, zorder=3)
+    ppy = fld.pts_per_yard()
+    for _, r in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(r["x"], r["y"]))
+        if r["side"] == "ball":
+            ax.add_patch(Ellipse((x, y + 0.45), 0.7, 0.42, fc=style.BALL, ec="white", lw=0.5, zorder=9))
+            continue
+        lab = str(r.get("label", "") or "")
+        if r["side"] == "off":
+            ax.add_patch(Circle((x, y), MARK_R, fc=style.OFFENSE, ec="white", lw=0.6, zorder=8))
+            tc = "white"
+        else:
+            ax.add_patch(RegularPolygon((x, y), 4, radius=MARK_R * 1.3, orientation=np.pi / 4,
+                                        fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0, zorder=8))
+            tc = style.INK
+        fs = max(4.0, min(8.0, ppy * (0.85 if len(lab) <= 1 else 0.62)))
+        ax.text(x, y, lab, ha="center", va="center", fontsize=fs, color=tc, fontweight="bold", zorder=10)
+    for key, col in rings:
+        r = cur[cur["displayName"] == key].iloc[0]
+        x, y = fld.xy(r["x"], r["y"])
+        ax.add_patch(Circle((float(x), float(y)), ring_r, fc="none", ec=col, lw=1.6, zorder=7))
+    for patch in ax.patches:
+        patch.set_clip_on(True)
+    return fld
+
+
+def strip(moments, lateral, window, notes=None, rings=(), ncols=2, width_in=5.2, after=None, enter=()):
+    """Numbered frame strip. `moments` is a list of (play, t, tag): several plays may share one strip,
+    which is how a branching play (same start, two endings) is shown in print."""
+    cache = {}
+    nrows = int(np.ceil(len(moments) / ncols))
+    pw = width_in / ncols
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False,
+                             figsize=(width_in, nrows * (pw * span_d / span_w + (0.62 if notes else 0.25))))
+    for ax in axes.flat[len(moments):]:
+        ax.axis("off")
+    for i, (ax, (play, t, tag)) in enumerate(zip(axes.flat, moments)):
+        if id(play) not in cache:
+            cache[id(play)] = tracking(play)
+        fld = panel(ax, play, cache[id(play)], t, lateral, window, rings, enter)
+        if after:
+            after(fld, play, t, i)
+        lab = "snap" if abs(t) < 1e-6 else f"{t:+.2f} s".replace("0 s", " s")
+        ax.set_title(f"{i + 1}.  {lab}" + (f"   {tag}" if tag else ""), fontsize=8.3, color=style.INK_2, loc="left")
+        if notes:
+            ax.text(0.5, -0.03, notes[i], transform=ax.transAxes, ha="center", va="top",
+                    fontsize=7.1, color=style.INK)
+    fig.tight_layout(h_pad=1.3 if notes else 0.6, w_pad=0.6)
+    return fig
+
+
+def video(segments, lateral, window, rings=(), width_in=4.6, after=None, enter=()):
+    """Web version: each (play, tag, [(t, note), ...]) segment played in turn, notes as captions."""
+    import shutil
+    from matplotlib import animation
+    from IPython.display import HTML, display
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w + 0.45))
+    frames = []
+    for play, tag, notes in segments:
+        df = tracking(play)
+        tmap = df.groupby("frameId")["time"].first()
+        frames += [(play, df, float(tmap[f]), tag, notes) for f in sorted(df["frameId"].unique())]
+
+    def update(k):
+        play, df, t, tag, notes = frames[k]
+        ax.clear()
+        fld = panel(ax, play, df, t, lateral, window, rings, enter)
+        if after:
+            after(fld, play, t, -1)
+        txt = ("snap" if abs(t) < 0.05 else f"{t:+.1f} s") + (f"  {tag}" if tag else "")
+        cur = [n for tt, n in notes if tt <= t + 1e-6]
+        ax.set_title(txt + (("\n" + cur[-1].replace("\n", " ")) if cur else ""), fontsize=8.5, color=style.INK,
+                     loc="left")
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=range(len(frames)), interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def animation_or_strip(moments, notes, lateral, window, rings=(), after=None, enter=(), ncols=2, width_in=5.2):
+    """Video on the website; a numbered, captioned frame strip in the PDF."""
+    if pdf_build():
+        strip(moments, lateral, window, notes=notes, rings=rings, ncols=ncols, width_in=width_in,
+              after=after, enter=enter)
+        plt.show()
+        return
+    segs = []
+    for play, t, tag in moments:
+        if not segs or segs[-1][0] is not play:
+            segs.append((play, tag, []))
+    for (play, t, tag), n in zip(moments, notes):
+        for s in segs:
+            if s[0] is play:
+                s[2].append((t, n))
+    if len(segs) > 1:   # later branches share the opening frames: show the first branch's opening notes too
+        opening = [(t, n) for t, n in segs[0][2] if t < 0.5]
+        for s in segs[1:]:
+            s[2][:0] = [x for x in opening if x[0] < min(tt for tt, _ in s[2])]
+    video(segs, lateral, window, rings=rings, after=after, enter=enter)
+```
+
+Second quarter, first-and-10. The running back takes the handoff, starts toward the right side of
+the line, and is hit before he gets to it, by a defensive tackle who is already two yards into the
+backfield. The replay shows the tackle lined up just outside the right guard and gone past him before
+the guard has finished his first step. "He lives in the backfield," says the analyst. Two drives later,
+the same offense runs right up the middle. This time the defender in the center of the line, the
+biggest man on the field, doesn't go anywhere at all. The center hits him, a guard comes over to help,
+and he simply stays where he is, two blockers leaning on him, until the running back arrives and he
+throws one of them aside and makes the tackle. "He ate up two blockers," the analyst says. Two
+defensive linemen, two opposite ways to be great: one wins by *going*, the other by *staying*. This
+chapter is about why both exist, what each costs, and how to tell which one you are watching.
+
+**You'll be able to:**
+
+- Look at a defensive line before the snap and say what each player's alignment asks of him
+  (nose, 3-technique, 4i, 4, 5-technique, 9, wide-9) and what kind of body the spot calls for.
+- Tell one-gap from two-gap play by a lineman's first step, and say what each style buys the defense
+  and what it gives up.
+- Describe how a defensive lineman fights a down block, a reach block and a double team, and why each
+  answer is what it is.
+- Explain what it means to set the edge and to keep contain, and find the players doing it.
+- Spot a slant or an angle at the snap, and say why the defense moved and where it is now vulnerable.
+
+::: {.callout-note title="You'll need"}
+- **[The Language of the Run Game](../03-the-run-game/03-01-run-game-language.qmd)**: gaps (A, B, C,
+  D outward from the center), technique numbers (even numbers head-up on a blocker, odd numbers on his
+  outside shoulder, an "i" on his inside shoulder: a **3-technique** is on a guard's outside shoulder, a
+  **5** on a tackle's), *covered* and *uncovered* linemen, *play side* and *backside*, and the blocks this
+  chapter's defenders have to beat: the down block, reach, cut-off, combo (double team), pull and kick-out.
+- **[A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)**: the
+  **4-3** and **3-4** base defenses (four or three defensive linemen), the box, and edge rushers.
+:::
+
+**How to read the diagrams.** Offense is blue circles, defense orange squares, and plays go up the
+page. *Left* and *right* always mean the offense's left and right (page left and page right), in the
+text as well as the pictures, even when we describe a defender's move. LT, LG, C, RG and RT are the five
+offensive linemen (in the smallest diagrams just T, G and C), Y is a tight end, Q the quarterback and R
+the running back. Defensive linemen are labelled with their **technique number** (a 3 is a
+3-technique); M, W and S are the Mike, Will and Sam linebackers, and E is an *edge* player, an outside
+linebacker standing up at the end of the line. Blue lines ending in a short bar are blocks; orange arrows
+are where the defender goes; green letters are gaps, never players.
+
+## The defensive lineman's three jobs
+
+Watch a defensive lineman on a running play and it looks like a shoving match he either wins or
+loses. It is more specific than that. On every snap he has three jobs, in order:
+
+1. **Defeat the block.** A 300-pound man is coming at him, from the front, the side, or two at once.
+   Before he can do anything else, he has to stop that man from moving him where the offense wants
+   him to go.
+2. **Control his gap.** Every defense gives each run defender a gap (or two) to be responsible for,
+   so that wherever the ball carrier goes, someone is already there. A lineman who beats his blocker
+   but ends up in the wrong place has won the fight and lost the play.
+3. **Find the ball and get to it.** Only after the first two does he get to chase the ball carrier,
+   and by then, on most runs, the ball carrier is already close.
+
+The tension in defensive line play is between the first two jobs. A lineman who is *on* a blocker,
+hands locked on him, can feel where the block is taking him and can hold his ground, but he is not
+going anywhere fast. A lineman who is *in a gap*, shooting through the space beside the blocker,
+can get into the backfield in a heartbeat, but if he guesses wrong about where the ball is going,
+he has run himself out of the play. Every defense chooses, snap by snap and player by player,
+which of those two to ask for. That choice has names, *one-gap* and *two-gap*, and they are the
+spine of this chapter. First, though, look at *where* the linemen stand, because the alignment is
+already half of the choice.
+
+## The technique map, from the defense's side
+
+In [The Language of the Run Game](../03-the-run-game/03-01-run-game-language.qmd) you learned the
+technique numbers as a map the offensive line reads: which blocker has a man on him, which is free.
+Now turn the map around. To a defensive coordinator, each number is a *job description*, and each job
+wants a different kind of body.
+
+```{python}
+#| label: fig-technique-map
+#| fig-cap: "The defensive line's jobs, by alignment, with an NFL archetype for each, drawn from his Scouting Combine height and weight: height to scale, and width exaggerated by weight per inch of height so the difference in build shows. The offensive line is drawn with extra-wide spacing so the numbers have room, and the tackle-area techniques (5, 4, 4i) are drawn on the left tackle only to leave room for the rest on the right: every number exists on both sides. From left: the 4i, 4 and 5 (J.J. Watt, a 5-technique in Houston's 3-4); the nose, at a 0 or a 1 (Vince Wilfork); the 3-technique (Aaron Donald); the 9, on the tight end's outside shoulder, often a stand-up outside linebacker (T.J. Watt); and the wide-9, a step or two wider still (Jason Babin, who played it for Jim Washburn in Tennessee and Philadelphia). The 2i, on the guard's inside shoulder, has no archetype of its own. Same sport, same line of scrimmage: the nose outweighs the edge rusher by about 70 pounds."
+from gridiron.data import nfl
+
+ARCH = [  # (role, player, combine year, fallback height in inches, fallback weight)
+    ("4i / 4 / 5", "J.J. Watt", 2011, 77, 290),
+    ("Nose: 0 / 1", "Vince Wilfork", 2004, 73, 323),
+    ("3-technique", "Aaron Donald", 2014, 73, 285),
+    ("Edge: the 9", "T.J. Watt", 2017, 76, 252),
+    ("Wide-9", "Jason Babin", 2004, 75, 260),
+]
+try:  # measurements from the nflverse combine file (cached in data/cache)
+    comb = nfl().load_combine().to_pandas()
+    def _inches(ht):
+        f, i = str(ht).split("-")
+        return int(f) * 12 + int(i)
+    sizes = {}
+    for role, name, yr, h, wt in ARCH:
+        row = comb[(comb.player_name == name) & (comb.season == yr)].iloc[0]
+        sizes[name] = (_inches(row.ht), float(row.wt))
+except Exception:   # offline: the same numbers, typed in
+    sizes = {name: (h, wt) for role, name, yr, h, wt in ARCH}
+
+
+def silhouette(ax, x, y0, ht_in, wt, k=0.105, fc=style.DEFENSE_TINT, ec=style.DEFENSE, gain=2.4):
+    """A standing figure: height to scale (k units per inch); width grows with pounds per inch of height,
+    exaggerated by the power `gain` so a 70-pound difference is visible at print size."""
+    H = ht_in * k
+    f = ((wt / ht_in) / 3.9) ** gain
+    head_r = 0.062 * H
+    sh, hip = y0 + 0.80 * H, y0 + 0.47 * H
+    tw_s, tw_h = 0.135 * H * f, 0.105 * H * f
+    torso = Polygon([(x - tw_s, sh), (x + tw_s, sh), (x + tw_h, hip), (x - tw_h, hip)], closed=True)
+    parts = [torso]
+    lw_ = 0.07 * H * f
+    for s in (-1, 1):   # legs
+        parts.append(Polygon([(x + s * 0.012 * H, hip), (x + s * (0.012 * H + lw_ + 0.01 * H), hip),
+                              (x + s * (0.012 * H + lw_ * 0.85), y0), (x + s * 0.02 * H, y0)], closed=True))
+        aw = 0.045 * H * f   # arms
+        parts.append(Polygon([(x + s * tw_s, sh), (x + s * (tw_s + aw), sh - 0.02 * H),
+                              (x + s * (tw_h + aw * 1.3), y0 + 0.44 * H), (x + s * (tw_h + aw * 0.2), y0 + 0.45 * H)],
+                             closed=True))
+    parts.append(Rectangle((x - 0.03 * H * f, sh), 0.06 * H * f, 0.04 * H))
+    for pt in parts:
+        pt.set(fc=fc, ec=ec, lw=1.0, zorder=4)
+        ax.add_patch(pt)
+    ax.add_patch(Circle((x, sh + 0.04 * H + head_r), head_r, fc=fc, ec=ec, lw=1.0, zorder=4))
+    return sh + 0.04 * H + 2 * head_r
+
+
+fig, ax = plt.subplots(figsize=(6.6, 5.2))
+SP = 2.4
+xs = {"LT": -2 * SP, "LG": -SP, "C": 0.0, "RG": SP, "RT": 2 * SP, "Y": 3 * SP}
+ax.add_patch(Rectangle((-11.6, -2.15), 23.6, 6.6, fc=style.TURF, ec=style.BASELINE, lw=1, zorder=0))
+ax.plot([-11.6, 12.0], [0.75, 0.75], color=style.OFFENSE_DARK, lw=1.2, alpha=0.6, zorder=1)
+ppy = 6.6 * 72 / 24.0 * 0.85
+for k, x in xs.items():
+    draw_marker(ax, x, 0.0, "off", k, ppy, r=0.62)
+shade_row, head_row = 1.85, 3.35
+TECHS = [("5", -(2 * SP + 0.8), shade_row), ("4i", -(2 * SP - 0.8), shade_row), ("4", -2 * SP, head_row),
+         ("2i", -(SP - 0.8), shade_row), ("0", 0.0, head_row),
+         ("1", 0.8, shade_row), ("3", SP + 0.8, shade_row), ("9", 3 * SP + 0.8, shade_row),
+         ("w9", 3 * SP + 3.4, shade_row)]
+for lab, x, row in TECHS:
+    ax.plot([x, x], [0.75, row - 0.5], color=style.DEFENSE, lw=0.7, ls=(0, (1.5, 1.5)), alpha=0.8, zorder=2)
+    draw_marker(ax, x, row, "def", lab, ppy, r=0.42)
+for x, g in [(-2.5 * SP, "C"), (-1.5 * SP, "B"), (-0.5 * SP, "A"), (0.5 * SP, "A"), (1.5 * SP, "B"),
+             (2.5 * SP, "C"), (3.5 * SP + 0.2, "D")]:
+    ax.text(x, -1.05, g, ha="center", va="center", fontsize=9, color=GREEN, fontweight="bold", zorder=5)
+ax.text(-11.3, -1.75, "gaps in green; w9 = wide-9", ha="left", va="center", fontsize=6.8, color=style.INK_2)
+# the archetypes stand behind the spots they play, joined to them by thin leaders
+COLS = [-9.3, -4.3, 0.7, 5.6, 10.4]
+TARGETS = [[-(2 * SP + 0.8), -2 * SP, -(2 * SP - 0.8)], [0.0, 0.8], [SP + 0.8], [3 * SP + 0.8], [3 * SP + 3.4]]
+ROLE_NOTE = ["long arms; controls the\ntackle (4i: B, 5: C)", "heaviest; anchors\nagainst double teams",
+             "quick, explosive;\nshoots the B gap", "sets the edge;\nrushes the passer", "pure speed; the\nwidest rush angle"]
+base = 10.8          # feet of the silhouettes
+for (role, name, yr, _, _), x, tg, note in zip(ARCH, COLS, TARGETS, ROLE_NOTE):
+    h, wt = sizes[name]
+    silhouette(ax, x, base, h, wt, k=0.08)
+    ft, inch = divmod(int(h), 12)
+    ax.text(x, base - 0.25, f"{int(wt)} lb", ha="center", va="top", fontsize=11, color=style.DEFENSE_DARK,
+            fontweight="bold")
+    ax.text(x, base - 1.45, role, ha="center", va="top", fontsize=8, color=style.INK, fontweight="bold")
+    ax.text(x, base - 2.1, f"{name}\n{yr} combine, {ft}-{inch}", ha="center", va="top", fontsize=6.4,
+            color=style.INK_2, linespacing=1.1)
+    ax.text(x, base - 3.35, note, ha="center", va="top", fontsize=6.3, color=style.DEFENSE_DARK, linespacing=1.1)
+    for tx in tg:
+        ax.plot([x, tx], [base - 4.45, (head_row if tx in (0.0, -2 * SP) else shade_row) + 0.5], color=style.MUTED,
+                lw=0.6, ls=(0, (2, 2)), zorder=1.5)
+ax.set_xlim(-11.8, 12.2); ax.set_ylim(-2.3, 17.6); ax.set_aspect("equal"); ax.axis("off")
+fig.patch.set_facecolor(style.SURFACE)
+plt.show()
+```
+
+Read @fig-technique-map from the middle out.
+
+### The nose: 0 and 1
+
+The man over the center is the **nose**, the [nose tackle](../01-foundations/01-03-the-twenty-two.qmd)
+of The Twenty-Two. He lines up in one of two ways. Head-up on the center he is a **0-technique**, and
+nothing about his alignment tells the offense which side of the center he will play. On one of the
+center's shoulders he is a **1-technique**, a *shade nose*, sitting in that side's A gap.
+
+Either way, he is the player offenses most like to double-team. Look at where he stands: the center
+in front of him and a guard on either side, all within a step. Two of those three can reach him
+with no effort at all, and the combo block you met in
+[03-01](../03-the-run-game/03-01-run-game-language.qmd), center and guard together, is aimed at men in
+exactly his spot. So the nose's first quality is not speed but *mass and pad level*: getting lower than
+the blocker, so that the blocker's push goes up into the nose's chest while the nose's push goes straight
+through the blocker, and being heavy enough that two men leaning on him can't move him. That is why noses
+are the heaviest players on the field. Vince Wilfork, the model for a generation of them, measured
+6-foot-1 and 323 pounds at his Scouting Combine; modern noses such as the Eagles' Jordan Davis (341
+pounds) and Dexter Lawrence (342), a Giant until an April 2026 trade sent him to Cincinnati, are just as
+heavy and much taller.[^combine]
+
+What does the defense get from a man who absorbs two blockers? Arithmetic. In
+[hat math](../03-the-run-game/03-01-run-game-language.qmd) the offense has a fixed number of blockers.
+Every blocker spent on the nose is one who isn't climbing to a linebacker, and an unblocked
+linebacker is a tackle waiting to happen. A great nose's best plays often show up in a linebacker's
+tackle total, not his own.
+
+### The 3-technique: the penetrator
+
+You met the [**3-technique**](../../appendices/glossary.qmd#gl-3-technique) in
+[03-01](../03-the-run-game/03-01-run-game-language.qmd) as the alignment that became a position: a
+defensive tackle on the guard's outside shoulder, in the B gap. What is new from the defense's side is
+*why* the defense puts its best interior athlete there. The spot gives him the best odds of a single
+blocker. The center is two men away and can't easily help. The tackle can, and against the run the
+guard-tackle double team on a 3 is one of the most common blocks in football; but every snap the tackle
+spends on him is a snap he isn't climbing to a linebacker or blocking the end, so the offense has to choose
+which problem to leave alone. On passing downs the choice usually goes the 3's way: the center slides to
+help the other guard, the tackle has the edge rusher, and the 3 gets the guard alone. So the defense puts
+its quickest, most explosive interior player there, built to get off the ball and shoot the gap before the
+guard can get his body in the way: Warren Sapp in the 1990s, Aaron Donald in the 2010s, both about
+6-foot-1 or 6-foot-2 and listed at roughly 280 to 300 pounds, both much lighter than a nose and much
+quicker.[^dtsize] Teams pay for that: in the contracts file in October 2026, the ten richest deals for
+interior defensive linemen averaged about $31 million a year, more than any defensive position except
+edge rushers.[^pay]
+
+Which side does he line up on? That is the defense's choice, and it is usually made by a rule tied to the
+offense's formation: many 4-3 teams put the 3-technique toward the tight end (the *Over* front), others
+away from him (the *Under*), and some toward the wide side of the field or the running back. Spot the
+rule and you can predict where the 3 will be before the offense breaks the huddle. The fronts and their
+rules are in [Even Fronts](05-02-even-fronts.qmd).
+
+The cost is the mirror image. A 3-technique who is moved off his spot by a double team, or who
+shoots upfield and misses, leaves the B gap empty. That's the bargain one-gap football makes, and
+we'll come back to it.
+
+### The tackle's techniques: 4i, 4 and 5, the long men
+
+Three alignments sit on the offensive tackle: the [**4i**](../../appendices/glossary.qmd#gl-4i-technique)
+on his inside shoulder, the 4 head-up on him, and the
+[**5-technique**](../../appendices/glossary.qmd#gl-5-technique) on his outside shoulder. These are the
+classic spots of the defensive ends in a three-man front, and the body they want is *long*: tall
+players with long arms, around 290 to 310 pounds, who can lock out an offensive tackle at arm's length
+and still see past him to the ball. J.J. Watt, 6-foot-5 and 290 at his combine, played the 5 for the
+Houston Texans and turned it into a pass-rushing position: he led the league in sacks twice.[^jjwatt]
+
+Each spot hints at a job, though the call has the final say. The **4**, head-up, is the classic
+*two-gap* end of the old 3-4: he controls the tackle and owns the B and C gaps on either side of him. The
+**5** usually owns the C gap he sits in. The **4i** usually owns the B gap he sits in, as a one-gapper,
+but some defenses ask him to control the tackle and play the C gap too, so watch his first step.
+
+Why the inside shoulder? 03-01 gave the offense's view: same gap as a 3, different blocker occupied. From
+the defense's side the point is the blocking angles. On a zone run toward him, the guard has to reach a
+man who is already outside *him*; on a run away, the tackle has to cut off a man who is already inside
+*him*. And because the 4i can play off either blocker, he muddles which of them should take him and which
+should climb. It is the end's favorite alignment in the *tite* fronts that NFL defenses use to stop
+inside runs (five men on the line: three linemen in a 4i, a 0 and a 4i, plus two edge players standing
+outside them), which you will meet in [Odd and Hybrid Fronts](05-03-odd-and-hybrid-fronts.qmd). The 5,
+outside the tackle in the C gap, is the end's spot in four-man fronts as well, where, with no tight end on
+his side, he is often the last man on the line and has the edge.
+
+### The 9, the wide-9 and the edge
+
+The 9 sits on the tight end's outside shoulder. Whoever lines up there is usually the defense's
+[edge](../01-foundations/01-03-the-twenty-two.qmd) on that side: in a 4-3 a defensive end, in a 3-4 an
+outside linebacker standing up rather than in a three-point stance (T.J. Watt in Pittsburgh is the
+type). He is lighter again, 250 to 270 pounds, because his two jobs both happen in space: rush the
+passer around the tackle, and on runs, keep the ball from getting outside him. That second job is
+called setting the edge, and it has its own section below.
+
+Go wider still and you reach the most extreme alignment on the line, the
+[**wide-9**](../../appendices/glossary.qmd#gl-wide-9): a defensive end lined up well outside the tight
+end, usually one to two or more yards beyond the tight end's outside shoulder (the exact width changes with
+down and distance), or, with no tight end, just as far beyond where one would stand. He is usually in a
+*sprinter's stance*: a three-point stance with his feet staggered and his weight well forward on his hand,
+like a sprinter in the blocks, often tilted in toward the quarterback. The difference from a 9 is not a
+new number but distance and posture: a 9 is close enough to touch the tight end and is ready to take him
+on; a wide-9 is out of reach and ready only to run. The wide-9 exists for one reason: it gives a fast pass
+rusher the best possible angle around the tackle. The tight end can't block him without help (he is too
+far outside), and the tackle has to cover a lot of ground to meet him. The price is just as plain. With
+the end that far out, the space between him and the next defender inside is enormous, and somebody,
+usually a linebacker, has to fill it on runs.
+
+```{python}
+#| label: fig-wide-nine
+#| fig-cap: "The same offense and the same interior line, with two kinds of end on the tight-end side. Left: a 5-technique on the tackle's outside shoulder. His rush (orange arrow) has to go through or around the tackle in front of him, but the lane between him and the 3-technique (shaded) is barely a yard and a half, the width of the tackle himself. Right: a wide-9, about two yards outside the tight end. His rush swings around everybody on a much wider arc, and nobody can block him without moving first; the cost is the shaded *off-tackle* lane (the running room just outside the tackle) between him and the 3, almost five yards across, which a linebacker (the Sam) has to fill on a run."
+def wide_panel(ax, wide):
+    off = line("full") + [te(+1), O("QB", "QB", -5.0, 0, "Q")]
+    dfn = front([("L1", "1", -1), ("R3", "3", 1)],
+                lbs=[("MIKE", 4.6, 0.8, "M"), ("SAM", 4.6, 5.4 if wide else 4.6, "S")])
+    dfn += [D("RE", "DL", 1.0, T("wide9") if wide else T("5"), "w9" if wide else "5")]
+    p = Play(off, dfn, los=35, to_go=None)
+    if wide:
+        go_to(p, "RE", (-5.3, 1.2), "path", via=[(-1.0, 7.6), (-3.2, 6.6), (-4.7, 3.6)])
+    else:
+        go_to(p, "RE", (-5.3, 1.0), "path", via=[(-0.6, 4.0), (-3.0, 3.0)])
+    f = draw(p, ax=ax, lateral=(-4.4, 11.4), window=(-7.2, 7.0), title=False)
+    w_end = p.players["RE"].w
+    lane(f, p, T("3") + 0.45, w_end - 0.45, 0.15, 2.7, color=style.OFFENSE, alpha=0.13)
+    return f, p, w_end
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.9))
+f, p, w_end = wide_panel(axes[0], wide=False)
+say(f, p, 3.25, 2.7, f"lane: {w_end - T('3'):.1f} yd", color=style.OFFENSE_DARK, fontsize=6.8)
+say(f, p, -2.6, 7.4, "the 5 rushes\nthrough or around\nthe tackle", color=style.DEFENSE_DARK, fontsize=6.8)
+axes[0].set_title("A 5-technique end", fontsize=9, loc="left", color=style.INK, fontweight="bold")
+f, p, w_end = wide_panel(axes[1], wide=True)
+say(f, p, 1.45, (T("3") + w_end) / 2, f"lane:\n{w_end - T('3'):.1f} yd;\nSam fills it",
+    color=style.OFFENSE_DARK, fontsize=6.8)
+say(f, p, -2.4, 9.0, "the widest\narc to\nthe QB", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 2.9, 8.8, "about 2 yd\noutside Y", color=style.DEFENSE_DARK, fontsize=6.8)
+axes[1].set_title("A wide-9 end", fontsize=9, loc="left", color=style.INK, fontweight="bold")
+fig.tight_layout(w_pad=0.7)
+plt.show()
+```
+
+The wide-9's modern history runs through one coach. Jim Washburn, the Tennessee Titans' defensive line
+coach from 1999 to 2010 and the Philadelphia Eagles' in 2011 and 2012, built his lines around ends who
+lined up wide and attacked upfield on every snap. He summed up his philosophy in a sentence: "I like fast
+guys that play hard and attack." Gap assignments, he said, were not the point: the job was to "whip the
+blocker and tackle the ballcarrier if he's in that gap or that gap. Just play football."[^washburn] Jim
+Schwartz, the Titans' defensive coordinator for most of those years, carried the wide, attacking front to
+Philadelphia and then Cleveland, where Myles Garrett set the single-season sack record of 23 in 2025,
+though by then no defense lined up that way on every snap.[^schwartz] How the wide-9 fits into a whole
+four-man front, and what it does to the linebackers behind it, is in [Even Fronts](05-02-even-fronts.qmd).
+
+### The numbers this map leaves out
+
+03-01's chart had a few more numbers. They exist, but you will see them less often, because each is a
+compromise between two of the jobs above. The **2i** (the guard's inside shoulder) and the head-up **2**
+put a man on a guard rather than the center: a 2i squeezes the A gap from outside, and some odd and
+under fronts use one, but a lineman there is easy for the center and guard to double, without the 3's
+one-on-one or the nose's mass to make it worth it. The **6** and **7** are head-up and on the inside
+shoulder of a tight end: spots for a strong-side end whose first job is to stop the tight end from
+blocking down on the linemen inside him. You will meet them in the front families of the next two chapters.
+
+::: {.callout-important title="Why it exists"}
+**Every alignment is a trade between the run and the pass, and between size and speed.** Inside, where
+blockers are close together and double teams are easy, the defense wants mass that can't be moved: the
+nose. One step outside, where a defender can get a single blocker, it wants quickness: the 3-technique.
+On the tackle, it wants length: the 4i, 4 and 5. On the edge, it wants speed, and the wider it aligns its
+edge rusher the more pass rush it gets and the more run defense it gives up. When you read a front,
+read it as a list of bets. Which spots did the defense fill with which kind of player, and what is it
+hoping you'll do?
+:::
+
+## One-gap: attack a gap
+
+Now the big choice. In a [**one-gap**](../../appendices/glossary.qmd#gl-one-gap) defense, each
+defensive lineman is responsible for exactly one gap. He lines up in it or shaded toward it (that is
+what an odd number or an "i" usually signals), and at the snap he attacks it. His goal is
+[**penetration**](../../appendices/glossary.qmd#gl-penetration): getting across the line of scrimmage
+and into the offense's backfield before the play can develop, through his gap. If a blocker gets in
+his way, he defeats the blocker *while staying in his gap*; he does not need to read where the ball is
+going first, because the other gaps belong to somebody else.
+
+How does he attack it? Watch three things, the same three a defensive line coach teaches first. His
+*stance*: shaded toward his gap, with the hand and foot on the gap side slightly back, so his first step
+goes straight into the gap instead of at the blocker. His *key*: he does not wait for the quarterback's
+cadence (the defense never knows the snap count), so he watches the ball, or the blocker's hand beside it,
+and moves the instant it moves. And his *hat and hands*: helmet into the gap he owns, hands on the
+blocker's near shoulder or chest, pads lower than the blocker's, so that even if the blocker gets to him he
+is driving through the gap rather than standing in front of the man.
+
+That last point, staying in his gap, is what makes one-gap football work: **the gaps add up.** Seven gaps
+across a line with one tight end, seven defenders in the box, one defender for each. The linemen take the
+gaps they are aligned in; the linebackers behind them take the rest. Everybody has one job and can play it
+fast. (Change the formation and the count changes with it: no tight end means six gaps, two tight ends
+mean eight, and the defense adds or removes a box defender to keep one man per gap. The full accounting is
+[Run Fits and Box Math](05-05-run-fits-and-box-math.qmd).)
+
+```{python}
+#| label: fig-gap-accounting
+#| fig-cap: "Who owns which gap, against the same offense (one tight end, so seven gaps: two A, two B, two C and a D on the tight-end side). The row under the gap letters says who owns each one. Left, a one-gap 4-3 (with the 3 toward the tight end, this is the *Over* front of Even Fronts): each of the seven defenders in the box has one gap. The linemen take the gaps they are shaded into (5, 1, 3, 9) and the three linebackers (arrows) fill the three left over. Right, a two-gap 3-4: the nose (0) and the two ends (4, head-up on the tackles) each own the two gaps on either side of their blocker (the wide bars), and the edge player on the right (E) takes the D gap. Three players cover six gaps, so the left edge player can set the edge and both inside linebackers can read the play and fill wherever the ball goes, as long as the linemen in front of them keep the blockers busy. This is the basic accounting; real defenses add wrinkles to both pictures."
+GAPS = [(-4.0, "C"), (-2.4, "B"), (-0.8, "A"), (0.8, "A"), (2.4, "B"), (4.0, "C"), (5.95, "D")]
+
+
+def owners(f, p, groups):
+    """Under the gap letters: a bar spanning the gap(s) each player owns, with his label beneath it."""
+    for w0, w1, lab in groups:
+        bracket(f, p, -3.0, w0 - 0.35, w1 + 0.35, lw=1.6)
+        say(f, p, -3.75, (w0 + w1) / 2, lab, color=style.DEFENSE_DARK, fontsize=7, weight="bold")
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.9))
+# one-gap 4-3
+dfn = front([("LE", "5", -1), ("L1", "1", -1), ("R3", "3", 1), ("RE", "9", 1)],
+            lbs=[("WILL", 4.5, -2.4, "W"), ("MIKE", 4.5, 0.8, "M"), ("SAM", 4.3, 4.0, "S")])
+p = Play(line("short") + [te(+1)], dfn, los=35, to_go=None)
+for k, w in [("WILL", -2.4), ("MIKE", 0.8), ("SAM", 4.0)]:
+    go_to(p, k, (2.0, w), "path")
+f = draw(p, ax=axes[0], lateral=(-8.0, 8.6), window=(-5.0, 7.2), title=False)
+for w, g in GAPS:
+    gap_tag(f, p, -2.2, w, g)
+owners(f, p, [(w, w, lab) for w, lab in zip([g[0] for g in GAPS], ["5", "W", "1", "M", "3", "S", "9"])])
+axes[0].set_title("One-gap 4-3: seven gaps, seven men", fontsize=8.8, loc="left", color=style.INK, fontweight="bold")
+# two-gap 3-4
+dfn = front([("LE", "4", -1), ("NT", "0", 1), ("RE", "4", 1)],
+            lbs=[("MIKE", 4.6, -1.8, "M"), ("WILL", 4.6, 1.8, "W")],
+            others=[("LOLB", 0.9, -5.6, "E"), ("ROLB", 0.9, 6.5, "E")])
+p = Play(line("short") + [te(+1)], dfn, los=35, to_go=None)
+f = draw(p, ax=axes[1], lateral=(-8.0, 8.6), window=(-5.0, 7.2), title=False)
+for w, g in GAPS:
+    gap_tag(f, p, -2.2, w, g)
+owners(f, p, [(-4.0, -2.4, "4"), (-0.8, 0.8, "0"), (2.4, 4.0, "4"), (5.95, 5.95, "E")])
+say(f, p, 5.75, 0.0, "M and W: read, then fill", color=GREEN, fontsize=6.9, weight="bold")
+say(f, p, 2.4, -5.6, "sets the\nedge", color=style.DEFENSE_DARK, fontsize=6.6)
+axes[1].set_title("Two-gap 3-4: three men, six gaps", fontsize=8.8, loc="left", color=style.INK, fontweight="bold")
+fig.tight_layout(w_pad=0.7)
+plt.show()
+```
+
+Here is a one-gap 3-technique doing his job. The offense runs outside zone to the right, the run from
+[Zone Running](../03-the-run-game/03-02-zone-running.qmd) in which every lineman steps to the play side
+and tries to get his head outside the defender in front of him. For the right guard, that means
+*reaching* the 3-technique: stepping sideways to get from the 3's inside shoulder to his outside shoulder,
+against a man who is already outside him. The 3-technique's answer is to be faster: to be through the gap
+before the reach can land. (If the guard does get there first, the 3 plays the reach the way every
+defender does, the subject of *Fighting the blocks*, below.)
+
+```{python}
+#| label: fig-one-gap-penetration
+#| fig-cap: "A one-gap 3-technique against outside zone to the right (simulated, in Big Data Bowl tracking coordinates; faint lines are each player's path so far). 1: the 3 (ringed) is on the right guard's outside shoulder; his gap is the B gap. 2: the [get-off](../../appendices/glossary.qmd#gl-get-off), the defender's first-step explosion at the snap. The defense never knows the snap count, so he watches the ball and moves the instant it moves; his first step is already into the B gap while the guard is still stepping sideways to reach him and the tackle steps past him to climb to the Mike. 3: he is past the guard's hip before the guard can get his head across: penetration. 4: he meets the running back about four yards behind the line, in the back's path to the outside, before the back can turn upfield (X)."
+def one_gap_play():
+    off = line("full") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -7.0, 0, "R")]
+    dfn = front([("LE", "5", -1), ("L1", "1", -1), ("R3", "3", 1), ("RE", "9", 1)],
+                lbs=[("WILL", 4.6, -2.6, "W"), ("MIKE", 4.6, 1.2, "M")])
+    p = Play(off, dfn, los=35, to_go=None)
+    # the line steps right (outside zone): the guard steps sideways to reach the 3 and is late
+    go_to(p, "RG", (-0.6, 2.25), speed=1.2)
+    go_to(p, "RG", (-1.3, 2.75), speed=1.6)
+    go_to(p, "RT", (-0.1, 4.4), speed=3.4)              # uncovered: steps play side, then climbs
+    go_to(p, "RT", (2.1, 3.9), speed=3.0)
+    go_to(p, "Y", (0.0, 6.0), speed=2.0); go_to(p, "RE", (1.0, 6.6), "path", speed=1.0)
+    go_to(p, "C", (-0.5, 0.85), speed=2.0); go_to(p, "LG", (-0.4, -0.75), speed=2.0)
+    go_to(p, "LT", (-0.5, -2.35), speed=2.0)
+    go_to(p, "L1", (0.95, 0.15), "path", speed=1.0); go_to(p, "LE", (0.6, -3.2), "path", speed=1.2)
+    # the 3-technique: get-off into the B gap, past the guard's hip, into the back's track
+    go_to(p, "R3", (-0.45, 3.05), "path", speed=4.4, via=[(0.4, 2.85)])
+    go_to(p, "R3", (-3.55, 3.45), "path", speed=4.8, via=[(-2.0, 3.4)])
+    go_to(p, "MIKE", (3.0, 3.6), "path", speed=4.0, delay=0.2); go_to(p, "WILL", (3.6, 0.2), "path", speed=4.0, delay=0.25)
+    go_to(p, "QB", (-3.0, 0.7), "path", speed=3.0)
+    go_to(p, "RB", (-5.15, 3.8), "run", speed=6.4, via=[(-6.6, 1.4)])
+    p.handoff("RB", t=0.55)
+    go_to(p, "RB", (-5.05, 3.85), "run", speed=0.8)
+    return p
+
+
+def mark_tfl(fld, play, t, i):
+    if t >= 1.1:
+        spot(fld, play, -4.3, 3.65, ms=9)
+
+
+P_ONE = one_gap_play()
+animation_or_strip([(P_ONE, 0.0, ""), (P_ONE, 0.2, ""), (P_ONE, 0.6, ""), (P_ONE, 1.15, "")],
+                   notes=["the 3 on the RG's outside\nshoulder: he owns the B gap",
+                          "get-off: first step into\nthe B gap, low",
+                          "past the guard's hip before\nthe reach can land",
+                          "in the back's path, 4 yards\ndeep: tackle for loss"],
+                   rings=(("R3", style.DEFENSE),), lateral=(-5.4, 8.6), window=(-8.6, 6.2), after=mark_tfl,
+                   width_in=5.2)
+```
+
+**Why it exists.** One-gap play turns the defense's linemen loose. A lineman who doesn't have to read
+before he moves gets a half-step head start on every snap, and on the line half a step is everything:
+the blocker who is reaching or pulling or setting for a pass is moving *sideways* or *backward* while
+the defender is moving forward. The results are the plays fans remember, tackles for loss, sacks, a
+running back hit as he takes the handoff, and they wreck an offense's plans in a way a two-yard gain
+never does. One-gap play also fits the players the modern game produces. A lineman who wins by
+quickness, the Donald type, is wasted standing still with his hands on a blocker; turn him loose in a
+gap and he is the most disruptive player on the field.
+
+**What it costs.** Three things.
+
+- **A wrong guess is a big hole.** A one-gapper who penetrates *past* the play, or gets moved out of his
+  gap by a double team, leaves his gap empty, and nobody else was assigned to it. A run that gets through
+  a vacated gap is usually not a short gain, because the next defender is a linebacker who was busy with
+  his own gap.
+- **Offenses build plays to punish it.** An aggressive penetrator is exactly what the *trap* in
+  [Gap and Power Runs](../03-the-run-game/03-03-gap-and-power-runs.qmd) is designed for: let him into the
+  backfield unblocked, then hit him from the side with a pulling lineman, and run the ball through the
+  space he left. Draws and screens work on the same idea: invite the rush, then go where it was.
+- **It needs everyone else to be right.** One-gap defense is only as good as its accounting. If one
+  linebacker fills the wrong gap, there are two defenders in one gap and none in another. That is why
+  one-gap teams spend so much practice time on *run fits*, the subject of
+  [Run Fits and Box Math](05-05-run-fits-and-box-math.qmd).
+
+**Where it came from.** For much of football's history, defensive linemen were taught to read and
+react. The great attacking interior linemen changed that by being too quick to keep at home. The best
+known story is Pittsburgh's in 1974: late that season the Steelers began lining Joe Greene up at the
+center, his stance tilted at about 45 degrees toward the A gap, so he could knife through before anyone
+could block him. Accounts differ on whose idea it was: the Hall of Fame credits Greene, other histories
+credit his line coach, George Perles. The Steelers called it the *stunt 4-3* (a period name: today
+"stunt" usually means the looping pass-rush games of [The Pass Rush](../07-pressure/07-01-pass-rush.qmd),
+which this was not). It began as a practice-field experiment, got its
+first heavy use late that regular season, and carried the Steelers through the 1974 playoffs to their
+first Super Bowl win.[^greene] Two decades later the Tampa Bay
+Buccaneers of Tony Dungy and Monte Kiffin built a whole defense around a one-gap 3-technique, Warren
+Sapp, who was the NFL's Defensive Player of the Year in 1999.[^sapp]
+
+## Two-gap: control the man, then pick a side
+
+The other answer is older, heavier and quieter. In a [**two-gap**](../../appendices/glossary.qmd#gl-two-gap)
+defense, a lineman lines up [head-up](../../appendices/glossary.qmd#gl-head-up) on a blocker (a 0, a 2,
+a 4: the even numbers) and is responsible for the gaps on *both* sides of him. At the snap he does not
+attack a gap. He attacks the *man*: strikes him with both hands inside the blocker's chest, straightens
+his arms to keep the blocker off his body (coaches call it *locking out*), and stands him up at the line
+of scrimmage. Then, with the blocker held at arm's length, he looks into the backfield, sees which side
+the ball is going, and throws the blocker the other way to make the tackle.
+
+Coaches have a rule for how a two-gapper knows which way to go: **read the blocker's head.** A blocker
+who wants to wall a defender off from one side has to get his helmet to that side of him. Say the center's
+helmet slides to the right of the nose (the offense's right, as always in this book): the center is trying
+to keep him from going right, which means the ball is going right. So the two-gapper "plays across the
+face": he keeps his arms locked, works to the side the blocker's head went (right), throws the blocker the
+other way (left), and is standing in the right A gap when the ball arrives. The block tells him where the
+ball is going before he ever sees the ball.
+
+Head-up is the natural spot for this, because the defender starts with a gap on each side and the blocker
+in the middle. A *shaded* player can be asked to two-gap too, and some 4-3 teams ask exactly that of a 1 or
+a 4i. He plays it the same way, by striking and controlling the man he is shaded on, but his near gap is
+already his and his far gap is the hard one: to reach it he has to work back across the blocker's face, so
+his alignment is a lean, not a commitment. That is why "odd number or an i" is only a hint about the job.
+
+```{python}
+#| label: fig-two-gap-nose
+#| fig-cap: "A two-gap nose tackle in a 3-4 against an inside zone run, the same start with two endings (simulated, Big Data Bowl coordinates). 1: the nose (ringed) is a 0-technique, head-up on the center, responsible for both A gaps (green). Nobody covers the guards. 2: the strike. Both hands inside the center's chest, arms locked out (the two short bars), the center held a yard off his body and pushed back a step. The right guard comes over to double-team him, as the zone rules tell him to, while the left guard climbs to the Mike. 3: the back aims at the right A gap. The nose gives no ground, so the hole never opens, and the right guard can't leave the double team to block the Will: the Will, unblocked, fills and makes the tackle (X). 4: the same play, but the back cuts back to the left A gap, so the nose throws the center off to the right and makes the tackle in the left A himself. Either way the offense spent two blockers on one man and the run went nowhere."
+def two_gap_play(side=+1):
+    """3-4 with a 0 nose and 4-technique ends against inside zone right. The center and right guard
+    double the nose and the left guard climbs; the back hits the right A (side=+1) or cuts back to
+    the left A (side=-1)."""
+    off = line("full") + [O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -6.6, 0, "R")]
+    dfn = front([("LE", "4", -1), ("NT", "0", 1), ("RE", "4", 1)],
+                lbs=[("MIKE", 4.6, -2.2, "M"), ("WILL", 4.6, 2.2, "W")])
+    p = Play(off, dfn, los=35, to_go=None)
+    # the strike: nose and center meet, the nose locks out and drives him back a step
+    go_to(p, "C", (-1.3, 0.0), speed=1.2, via=[(-0.6, 0.0)])
+    go_to(p, "NT", (0.75, 0.0), "path", speed=1.6)
+    go_to(p, "NT", (0.6, 0.05), "path", speed=0.6)
+    # the right guard doubles the nose (the drive man, from the side); the left guard climbs to the Mike
+    go_to(p, "RG", (-0.35, 1.0), speed=2.2, via=[(-0.55, 1.4)])
+    go_to(p, "LG", (2.75, -2.6), speed=3.6, via=[(0.5, -1.6)])
+    go_to(p, "MIKE", (3.85, -1.75), "path", speed=2.0, delay=0.2)
+    # the ends hold up the tackles
+    go_to(p, "LT", (-0.2, -3.2), speed=1.2); go_to(p, "LE", (1.0, -3.2), "path", speed=0.5)
+    go_to(p, "RT", (-0.3, 3.4), speed=1.2); go_to(p, "RE", (1.0, 3.4), "path", speed=0.5)
+    go_to(p, "QB", (-3.4, 0.4), "path", speed=3.6)          # opens to the play side for the handoff
+    go_to(p, "QB", (-4.7, -1.9), "path", speed=2.4)         # then carries out his fake
+    if side > 0:   # the hole never opens; the free Will fills it
+        go_to(p, "NT", (0.55, 0.3), "path", speed=0.5, delay=0.1)
+        go_to(p, "WILL", (-0.75, 2.45), "path", speed=5.0, delay=0.15)
+        go_to(p, "RB", (-2.55, 1.9), "run", speed=5.6, via=[(-4.0, 0.6), (-3.2, 1.2)])
+    else:          # cutback: the nose throws the center right and takes the left A
+        go_to(p, "NT", (-0.25, -1.05), "path", speed=3.4, delay=0.3)
+        go_to(p, "C", (-1.45, 0.45), speed=1.4, delay=0.3)
+        go_to(p, "WILL", (2.6, 0.8), "path", speed=3.0, delay=0.4)
+        go_to(p, "RB", (-2.25, -1.3), "run", speed=5.6, via=[(-4.0, 0.6), (-3.2, 0.1)])
+    p.handoff("RB", t=0.45)
+    return p
+
+
+def two_gap_marks(fld, play, t, i):
+    """Both A gaps marked while the nose still owns them; the locked-out arms; an X at the tackle."""
+    if t < 0.2:
+        for w in (-0.8, 0.8):
+            gap_tag(fld, play, -3.2, w, "A", fontsize=7)
+    (nd, nw), (cd, cw) = play.position("NT", t), play.position("C", t)
+    if 0.3 <= t and abs(nw - cw) < 0.5 and nd - cd > 1.2:      # arms locked out on the center
+        for off in (-0.38, 0.38):
+            xs, ys = _P(fld, play, np.array([nd - 0.7, cd + 0.5]), np.array([nw + off, cw + off]))
+            fld.ax.plot(xs, ys, color=style.DEFENSE_DARK, lw=3.2, solid_capstyle="round", zorder=11)
+    if t >= 1.1:
+        if play.position("RB", 2.0)[1] > 0:
+            spot(fld, play, -1.65, 2.2, ms=9)
+        else:
+            spot(fld, play, -1.25, -1.2, ms=9)
+
+
+P_TWO_R, P_TWO_L = two_gap_play(+1), two_gap_play(-1)
+animation_or_strip([(P_TWO_R, 0.0, ""), (P_TWO_R, 0.45, ""), (P_TWO_R, 1.25, "ball right"),
+                    (P_TWO_L, 1.25, "ball left")],
+                   notes=["0-technique on the C:\nboth A gaps are his",
+                          "strike and lock out; the RG\ncomes over to double him",
+                          "he gives no ground: the RG is\nstuck, the W is free to tackle",
+                          "same start, back cuts left:\nhe sheds the C and tackles"],
+                   rings=(("NT", style.DEFENSE),), lateral=(-5.8, 5.8), window=(-7.8, 6.4), after=two_gap_marks,
+                   width_in=5.0)
+```
+
+**Why it exists.** Look back at the right half of @fig-gap-accounting. If one lineman can be responsible
+for two gaps, three linemen can hold six of them, and the defense has players left over. In the classic
+two-gap 3-4, the two inside linebackers have no gap of their own to *rush to* at the snap. They read the
+play and fill wherever the ball goes, and the two-gappers' job is to make that possible. Three linemen
+can't occupy five blockers just by standing there: the guards are uncovered, and if nothing stops them
+they climb straight to the linebackers. What stops them is the nose. A nose who can't be moved by the
+center alone forces a guard to stay and help him, as in @fig-two-gap-nose, so at most one blocker gets up
+to the linebackers, and the 4s keep the tackles from climbing at all. That is the two-gapper's real
+product: not tackles, but *clean linebackers*. And because he doesn't commit before the snap, the offense
+can't build its blocking around where he will go.
+
+Two-gapping matters even more in the modern NFL than its reputation suggests. Defenses now keep two deep
+safeties on many snaps to stop the pass, which leaves only six men in the box against an offense that may
+have six or seven blockers ([A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)
+has the numbers). With six defenders and seven gaps, the accounting of one-gap football does not add up.
+The usual fix is to ask a big nose to play both A gaps, so six men can cover seven gaps. That is one of
+the ideas behind the light-box fronts of Vic Fangio and his followers, taken up in
+[Odd and Hybrid Fronts](05-03-odd-and-hybrid-fronts.qmd) and the case study
+[Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd).
+
+**What it costs.**
+
+- **Rare bodies.** Holding a 310-pound center at arm's length while a guard hits you from the side takes
+  size and strength that very few people have: two-gap noses are typically well over 320 pounds, and the pool
+  of such players who can also move is small.[^pffnose]
+- **No head start.** Reading before moving means the two-gapper is always reacting. He rarely makes a
+  tackle behind the line and rarely gets a sack. On a pass his job is mostly to push the center straight
+  back into the quarterback's lap, collapsing the middle of the pocket so the quarterback can't step up,
+  which matters but doesn't show up as a sack. That is why classic two-gap noses often leave the field on
+  third down for a lighter, quicker pass-rush package.
+- **His value hides.** The stat sheet credits the man who makes the tackle, not the man who made the tackle
+  possible. A great two-gapper can have a quiet box score in a game he dominated.
+
+::: {.callout-caution title="Common misconception"}
+"A 3-4 means two-gap, and a 4-3 means one-gap." It is a decent first guess, nothing more. The classic
+3-4s of the 1970s through the 2000s, Bill Parcells's and Bill Belichick's among them, did two-gap with
+big ends and a big nose. But Wade Phillips, son of the Bum Phillips who devised the technique numbers,
+spent decades running an *attacking*, one-gap 3-4: when he took over the Houston Texans' defense in 2011,
+the team's own preview called it "his one-gap scheme," and the line coach explained that it was "not like a
+two-gap type defense where you need that 350-pound nose man to be able to just clog up and take on two
+blocks."[^phillips34] And plenty of 4-3 teams ask a nose to two-gap. The number
+of linemen tells you how many there are; their first step tells you how they play.
+:::
+
+::: {.callout-note title="Madden vs. real life"}
+In Madden, a defensive lineman is mostly someone you steer at the quarterback, and the run defense takes
+care of itself. On a real early down, a lineman's job is mostly the gap: hold it, or attack it, exactly as
+the call says. A nose tackle who abandons both A gaps to chase a sack can give up a 20-yard run even if he
+beats his man, which is why defensive line coaches grade every snap on assignment before they grade it on
+result.
+:::
+
+## Fighting the blocks
+
+Whichever style he plays, a defensive lineman has to beat whatever block the offense throws at him, and
+the offense has a whole vocabulary of them. You learned them from the blocker's side in
+[03-01](../03-the-run-game/03-01-run-game-language.qmd). Here are the defender's answers to the three
+that matter most, the down block, the reach and the double team, and the one principle underneath all of
+them: **fight pressure with pressure.** Whatever direction a block is pushing you, push back into it. A
+blocker pushes you *where the offense wants you*, toward the hole's edge or out of your gap, so leaning
+into the pressure is how you stay where the defense wants you.
+
+```{python}
+#| label: fig-block-reactions
+#| fig-cap: "The defender's answers, play going right in every panel (defenders drawn a little deeper than real so each path shows; blue bars are blocks, the blue path with a bar is a pulling lineman, orange arrows the defender's response). 1, Down block: the tackle blocks down on the 3-technique while the guard pulls. The 3 fights the pressure, pushing back outward so he isn't washed inside; the 5, left without a blocker, squeezes down the line, hip to hip with the tackle, to shrink the hole, with his eyes inside for the puller coming to kick him out. 2, Reach: the guard tries to get his head outside the 3, and the tackle climbs past. The 3 steps with him, keeps his outside arm free and presses him back toward the backfield, so the runner, who wanted to turn up just outside the guard (dashed), has to keep running sideways instead; the 3 does not run around the block. 3, Double team: the center and guard combine on the 1-technique. The guard, hitting him from the side, is the *drive* man; the center, in front, is the *post*. The 1 sinks his hips, leans into the drive man, gives no ground and keeps both blockers on him, so the Mike behind him is free to fill."
+DD = 2.6
+SPAN = 8.6
+
+
+def r_down(p):
+    go_to(p, "RT", (1.45, 2.75), via=[(0.2, 3.05)])
+    go_to(p, "D3", (2.6, 3.4), "path", speed=1.0)
+    go_to(p, "D5", (1.3, 4.0), "path", speed=1.5)
+    go_to(p, "RG", (0.45, 4.35), "pull", via=[(-1.8, 2.0), (-1.85, 3.9)])
+
+
+def r_reach(p):
+    go_to(p, "RG", (1.3, 2.75), via=[(0.2, 2.2)])
+    go_to(p, "RT", (2.5, 5.3), via=[(0.3, 4.2)])
+    go_to(p, "D3", (1.7, 4.0), "path", speed=1.5)
+    go_to(p, "RB", (-1.4, 6.2), "run", via=[(-4.6, 2.4), (-3.4, 4.6)])
+
+
+def r_double(p):
+    go_to(p, "C", (1.45, 0.3))
+    go_to(p, "RG", (1.45, 1.2), via=[(0.2, 1.4)])
+    go_to(p, "M", (4.3, 1.9), "path", speed=2.0)
+
+
+PLATES = [
+    ("1. Down block", "the 3 fights pressure; the 5\nsqueezes and waits for the puller",
+     [D("D3", "DL", DD, T("3"), "3"), D("D5", "DL", DD, T("5") + 0.5, "5")], r_down, -1.2, ("C", "LG", "LT")),
+    ("2. Reach", "step with him, outside arm free,\npress him back: don't get hooked",
+     [D("D3", "DL", DD, T("3"), "3"), O("RB", "RB", -5.2, 0.2, "R")], r_reach, -1.6, ("C", "LT", "LG")),
+    ("3. Double team", "sink, lean into the drive man,\nkeep both blockers: the Mike runs free",
+     [D("D1", "DL", DD, T("1"), "1"), D("M", "LB", 5.5, 1.0, "M")], r_double, -3.4, ("RT",)),
+]
+fig, axes = plt.subplots(1, 3, figsize=(6.6, 3.4))
+for ax, (ttl, note, extra, build, w0, drop) in zip(axes, PLATES):
+    ol = [q for q in line("short") if w0 + 0.8 <= q.w <= w0 + SPAN - 0.8 and q.key not in drop]
+    p = Play(ol + extra, None, los=35, to_go=None)
+    build(p)
+    f = draw(p, ax=ax, lateral=(w0, w0 + SPAN), window=(-6.4, 7.4), title=False)
+    if build is r_down:
+        say(f, p, 4.6, 4.6, "eyes inside:\npuller?", color=style.DEFENSE_DARK, fontsize=6.5)
+        say(f, p, -2.9, 2.9, "puller", color=style.OFFENSE_DARK, fontsize=6.5)
+    if build is r_reach:
+        dashed(f, p, [(-3.9, 1.9), (-1.8, 2.4), (0.3, 2.45)], color=style.OFFENSE_DARK, lw=1.2)
+        say(f, p, -2.6, 0.7, "wanted", color=style.OFFENSE_DARK, fontsize=6.5)
+    if build is r_double:
+        say(f, p, 5.6, -1.3, "free", color=GREEN, fontsize=7, weight="bold")
+        say(f, p, -1.9, -0.4, "post", color=style.OFFENSE_DARK, fontsize=6.5)
+        say(f, p, -1.9, 2.1, "drive", color=style.OFFENSE_DARK, fontsize=6.5)
+    ax.set_title(ttl, fontsize=9, loc="left", color=style.INK, fontweight="bold")
+    ax.text(1.0, 1.035, "play \u2192", transform=ax.transAxes, ha="right", va="bottom", fontsize=7,
+            color=style.OFFENSE_DARK, fontweight="bold")
+    ax.text(0.5, -0.02, note, transform=ax.transAxes, ha="center", va="top", fontsize=6.9, color=style.INK_2)
+fig.subplots_adjust(left=0.01, right=0.99, top=0.9, bottom=0.17, wspace=0.08)
+plt.show()
+```
+
+### Against a down block
+
+A [down block](../../appendices/glossary.qmd#gl-down-block) hits a defender from the side: the blocker
+outside him comes inside, at an angle, to drive him toward the center and seal the inside of the hole.
+Two defenders are involved, and they have opposite jobs.
+
+- **The man being down-blocked** (the 3-technique in panel 1) feels pressure from his outside. If he
+  gives way, he is washed down the line and the hole doubles in size. So he fights pressure: drops his
+  outside shoulder into the blocker and pushes back outward, holding his gap and never slipping behind
+  the block. A few defenses let a dominant player fight *across* the blocker's face and into the hole
+  himself; if he doesn't win that fight, he has given up the inside.
+- **The man left alone** (the 5 in panel 1) has just seen the tackle in front of him leave. A blocker who
+  vanishes is a warning, not a gift. On a gap-scheme run like power, the tackle blocks down *because*
+  someone else is coming for the end: a pulling guard or a fullback, to kick him out. So he **squeezes**:
+  steps down the line, hip to hip with the down-blocker, shrinking the hole, with his eyes inside for
+  the puller. When the puller arrives, the defense's call decides what he does next. He can keep his
+  outside arm free and force the ball back inside (*box* or *squeeze*), or attack the puller's inside
+  shoulder and pile up the hole, pushing the ball outside to a teammate waiting there (*spill*, the
+  "wrong-arm" you met in [03-03](../03-the-run-game/03-03-gap-and-power-runs.qmd)). Which one, and who
+  is waiting, is the heart of [Run Fits and Box Math](05-05-run-fits-and-box-math.qmd).
+
+There is a cousin of this rule that every defensive line coach teaches: **if nobody blocks you, something
+is coming.** A lineman who is let through untouched should close inside at once and *get small*: turn his
+shoulders and drop his pads, so a blocker coming from the side has only a narrow shoulder to hit and can't
+knock him out of the gap. The likeliest explanation is a trap block from the side, the gap play built to
+catch penetrators. But coaches say "trap *or read*," because there is a second explanation. On an option
+play the offense leaves an end unblocked on purpose and lets the quarterback read him
+([Option Football](../03-the-run-game/03-04-option-football.qmd)): if the end closes inside, the
+quarterback keeps the ball and runs where he was. How does a lineman know which it is? Partly from what he
+sees (a quarterback holding the ball in the back's belly with his eyes on him is reading him; a guard
+pulling toward him is trapping him), and mostly from the call. The call tells him in advance whether he
+takes the back or the quarterback, and against option teams defenses often swap those jobs between the
+end and a linebacker, the [scrape exchange](../../appendices/glossary.qmd#gl-scrape-exchange) of 03-04,
+precisely so the read is wrong.
+
+### Against a reach
+
+A [reach block](../../appendices/glossary.qmd#gl-reach-block) is the blocker trying to get his head
+and body *outside* a defender who is already a step to the play side of him, and seal him inside. The
+defender's whole job is not to let that happen, and he has the head start. A one-gapper fast enough to be
+through his gap before the blocker arrives beats the reach before it starts, as in
+@fig-one-gap-penetration. Once the blocker *has* got to him, every defender, one-gap or two-gap, does the
+same thing: he steps with the blocker, keeps his *outside* arm free (so there is always an arm between the
+blocker and the sideline), and presses the blocker back into the backfield. Panel 2 shows the effect: the
+runner, who wanted to turn upfield just outside the guard, has to keep running sideways. Every yard he goes
+sideways is a yard of pursuit for the rest of the defense.
+
+The mistake to avoid is the one that looks most athletic: running *around* the block. A defender who
+loops around the blocker's back to get outside him has left his gap. On outside zone, that is exactly
+the hole the runner is looking for when he cuts back. The rule coaches use is to beat the block
+*through* the blocker, not around him.
+
+### Against a double team
+
+The [double team](../../appendices/glossary.qmd#gl-double-team), or combo block, is the hardest thing a
+defensive lineman faces and the most important to survive. Two blockers want two things from him: to
+move him off the ball, and then, once the linebacker behind him commits, for one of them to come off
+and block that linebacker. The defender's goal is to deny both.
+
+- **Don't get moved.** He widens his base, sinks his hips, and fights the pressure of the blocker coming
+  from the side. Coaches call that blocker the *drive* man (he does the moving) and the one in front of the
+  defender the *post* man (he stops him from going forward). The defender drops the hip nearest the drive
+  man and leans into him, so the pair can't turn his shoulders and walk him out of his gap. Giving up a
+  yard backward is how a double team creates the hole.
+- **Keep both blockers.** The longer he keeps both men busy, the longer the linebacker behind him goes
+  unblocked. The double team's second blocker is supposed to climb to the second level; a defender who
+  stays heavy on him keeps him from leaving.
+- **If he is losing, make a pile.** A lineman being driven back is taught to drop his hips, even to go to
+  a knee in the gap, so that the bodies pile up where the hole was supposed to be. It looks like losing.
+  It is a win if the running back has nowhere to go.
+
+A few great linemen *split* double teams, slipping between the two blockers into the backfield, and it
+is a spectacular play when it works. It is also a gamble. If he doesn't get through, he has turned his
+shoulders and left his gap, and the double team walks him out of it.
+
+### Against blocks going away
+
+When the play goes away from a defender, his blocker uses a [cut-off block](../../appendices/glossary.qmd#gl-cut-off-block)
+(or the whole backside line *scoops*), stepping toward the play to get between him and the ball. Here he
+does chase. He flattens down the line, staying at about the depth of the ball, so that if the runner cuts
+back he is waiting. Backside blockers on zone runs often [cut](../../appendices/glossary.qmd#gl-cut-block)
+him instead, diving at his thighs to put him on the ground; he plays the cut with his hands, pushing the
+blocker's shoulders down and away, and keeps his feet free. But the defender farthest from the play has a
+different rule, and it comes next.
+
+## Setting the edge and keeping contain
+
+The last man on the line on each side has a special job. Inside him, his teammates can count on someone
+being in the gap next to them. Outside him there is nobody, just the sideline. If a run gets outside him,
+it gets outside everybody.
+
+```{python}
+#| label: fig-edge-contain
+#| fig-cap: "The edge defender's two jobs. Left, setting the edge against a run to the right (outside zone or a toss): the tight end tries to reach the edge player outside him (E, ringed, a 9-technique outside linebacker). The E steps with him, keeps his outside arm free, and drives him back into the backfield, so the runner cannot get outside and has to turn up inside the tight end (the solid path), back toward the Mike and Will chasing from inside. The dashed path is what happens if the E is hooked: the ball gets outside everybody. Right, contain against a play-action bootleg: the run fake goes right (the line's short blocks to the right are part of the fake) and the quarterback rolls out left. The backside end (5, ringed) does not chase the fake down the line; he shuffles along behind the line and stays outside the quarterback. If he had crashed down the line after the fake (dashed), the quarterback would be outside him with nobody in front."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.3))
+# set the edge
+off = line("full") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -6.6, 0, "R")]
+dfn = front([("LE", "5", -1), ("L1", "1", -1), ("R3", "3", 1)],
+            lbs=[("WILL", 4.6, -2.6, "W"), ("MIKE", 4.6, 1.2, "M")],
+            others=[("E", 1.0, T("9") + 0.9, "E")])
+p = Play(off, dfn, los=35, to_go=None)
+go_to(p, "Y", (-0.15, 6.0), via=[(-0.45, 5.5)])
+go_to(p, "RT", (0.4, 2.95), via=[(-0.2, 3.0)])
+go_to(p, "E", (0.15, 7.7), "path", speed=1.4)
+go_to(p, "RB", (2.4, 3.7), "run", via=[(-5.0, 2.4), (-3.0, 4.3), (-1.6, 4.0)])
+go_to(p, "MIKE", (3.3, 3.4), "path"); go_to(p, "WILL", (3.2, 1.4), "path")
+p.highlight("E", color=style.DEFENSE)
+f = draw(p, ax=axes[0], lateral=(-4.6, 11.4), window=(-9.6, 6.8), title=False)
+dashed(f, p, [(-3.0, 4.3), (-1.4, 8.6), (3.4, 9.4)], color=style.OFFENSE_DARK, lw=1.3)
+say(f, p, 4.9, 8.6, "hooked: ball\ngets outside", color=style.OFFENSE_DARK, fontsize=6.7)
+say(f, p, -6.6, 6.6, "edge set:\nback turns up\ninside the Y,\ninto pursuit", color=style.DEFENSE_DARK, fontsize=6.7)
+axes[0].set_title("Setting the edge", fontsize=9, loc="left", color=style.INK, fontweight="bold")
+# contain
+off = line("full") + [O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -6.6, 0, "R")]
+dfn = front([("LE", "5", -1), ("L1", "1", -1), ("R3", "3", 1)],
+            lbs=[("WILL", 4.6, -2.6, "W"), ("MIKE", 4.6, 1.2, "M")])
+p = Play(off, dfn, los=35, to_go=None)
+for k in ("LT", "LG", "C", "RG", "RT"):
+    p.block(k, pts=[(0.3, 1.0)])
+go_to(p, "RB", (-3.0, 4.2), "run", via=[(-5.4, 2.0)])
+go_to(p, "QB", (-5.6, -6.6), "path", via=[(-4.4, -0.6), (-6.4, -3.4)])
+go_to(p, "LE", (-4.4, -7.4), "path", via=[(0.2, -4.9), (-2.8, -6.6)])
+go_to(p, "MIKE", (3.0, 2.8), "path"); go_to(p, "WILL", (3.2, 0.4), "path")
+p.highlight("LE", color=style.DEFENSE)
+f = draw(p, ax=axes[1], lateral=(-11.4, 4.6), window=(-9.6, 6.8), title=False)
+dashed(f, p, [(0.45, -3.6), (0.27, -2.4), (0.27, 0.9)], color=style.DEFENSE_DARK, lw=2.0, dash=(0, (2.5, 1.6)))
+say(f, p, 2.5, -2.3, "crashes?", color=style.DEFENSE_DARK, fontsize=7.2, weight="bold")
+say(f, p, -8.1, -2.2, "QB boots away\nfrom the fake", color=style.OFFENSE_DARK, fontsize=6.7)
+say(f, p, -2.0, -9.2, "contain:\nstays outside\nthe QB", color=style.DEFENSE_DARK, fontsize=6.7)
+say(f, p, -3.5, 3.0, "run fake", color=style.OFFENSE_DARK, fontsize=6.7)
+axes[1].set_title("Keeping contain", fontsize=9, loc="left", color=style.INK, fontweight="bold")
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+To [**set the edge**](../../appendices/glossary.qmd#gl-set-the-edge) is to be that last man and win: take
+on the blocker coming at you (a tight end, a tackle, a pulling guard, a fullback) at or near the line of
+scrimmage, with your outside arm free, and don't let him push you back or get his head outside you.
+Then the run has only one place to go, back inside, toward the linebackers and safeties chasing it. A
+defense talks about a *hard* edge (the defender holds his ground at the line and turns the ball in quickly)
+and a *soft* edge (he gets pushed back or upfield, and the runner gets around him). Setting a hard edge is
+one of the least glamorous and most valued skills an edge player has, and it is a big part of why teams
+still want 270-pound defensive ends when a 245-pound linebacker might rush the passer just as well.
+On a given play, the player who turns the ball back inside is also called the *force* defender; who that
+is, and how it changes with the coverage, is in [Run Fits and Box Math](05-05-run-fits-and-box-math.qmd).
+
+The end who did both jobs as well as anyone was **Reggie White**, the "Minister of Defense," who played for
+the Eagles and the Packers and retired with 198 sacks, then the NFL record (Bruce Smith later passed him).
+In Super Bowl XXXI, after the 1996 season, he sacked Drew Bledsoe three times, a Super Bowl record that has
+since been tied but never broken, as Green Bay beat New England 35–21.[^white] If you find his games, watch
+the runs at him rather than the sacks: the blocker in front of him going backward, White's outside arm
+free, and the ball carrier turning back inside. That is a hard edge, from a man who was also one of the
+great pass rushers of his era: proof that an edge player doesn't always have to choose between the two jobs.
+
+[**Contain**](../../appendices/glossary.qmd#gl-contain) is the edge player's other rule, and its spirit is
+the same: *nothing gets outside me*, but with an emphasis on patience. On the backside of a run, the end
+who has contain does not chase the play flat down the line. He trails it at about the depth of the ball,
+because the plays most likely to come back his way are the ones designed to punish a chasing end: the
+bootleg, the reverse, the quarterback keeping the ball on a read
+([Perimeter and Misdirection](../03-the-run-game/03-05-perimeter-and-misdirection.qmd) has those plays
+from the offense's side). Not every call keeps the end outside, though: against teams that run the read
+option, the end is often told to crash on the running back while a linebacker loops outside him to take the
+quarterback, the scrape exchange from the trap-or-read discussion above, a swap built to confuse the read.
+Contain still belongs to *somebody*; the call says who. On a pass rush, contain means the ends rush outside
+the tackles but not past the quarterback's depth. An end who loops too far upfield opens a lane between
+himself and the quarterback, and a mobile quarterback steps up and runs through it. You will hear analysts
+call this *rush-lane discipline*; how pass rushers balance it against getting home is in
+[The Pass Rush](../07-pressure/07-01-pass-rush.qmd).
+
+Both jobs ask a fast, aggressive player to be patient on a down when patience isn't rewarded with a
+statistic. That is exactly why offenses attack them. A defensive end who gets a little too eager for the
+sack or the tackle for loss is the end the bootleg is built for.
+
+## Line movement: slants and angles
+
+So far the linemen have played from where they lined up. But the alignment the offense sees before the
+snap doesn't have to be the one it blocks after the snap. Defenses can *move* their linemen at the snap,
+and the two basic movements are the slant and the angle.
+
+```{python}
+#| label: fig-slant-angle
+#| fig-cap: "Two ways to move the line at the snap, from the same 4-3 front (pre-snap alignments shown, linemen drawn a little deeper than real so the arrows show; orange arrows are the movement). Left, a slant to the weak side (away from the tight end): every lineman steps hard across the face of the man in front of him into the next gap over, gaining very little ground, so the arrows run almost along the line: the 9 into the C gap, the 3 into the A gap, the 1 into the left B gap, and the left end widens to keep contain. The linebackers replace them (dashed arrows): the Sam takes the D gap the 9 left, the Mike the right B gap, the Will the left A gap. Right, an angle: just the 3-technique moves, at about 45 degrees, into the A gap and on into the backfield; the Mike replaces him in the B gap. A slant moves the whole picture sideways; an angle moves one or two men while they keep attacking."
+GAPS = [(-4.0, "C"), (-2.4, "B"), (-0.8, "A"), (0.8, "A"), (2.4, "B"), (4.0, "C"), (5.95, "D")]
+LB_DASH = (0, (1.5, 2.0))
+
+
+def base43():
+    """A 4-3 front, linemen drawn a little deeper than real (2.2 yd) so their movement arrows show."""
+    dl = front([("LE", "5", -1), ("L1", "1", -1), ("R3", "3", 1), ("RE", "9", 1)],
+               lbs=[("WILL", 5.9, -2.6, "W"), ("MIKE", 5.9, 1.0, "M"), ("SAM", 5.7, 4.6, "S")])
+    return [q.moved(d=2.2) if q.d == 1.0 else q for q in dl]
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.7))
+p = Play(line("short") + [te(+1)], base43(), los=35, to_go=None)
+for k, end in [("RE", (1.75, 4.2)), ("R3", (1.75, 0.95)), ("L1", (1.75, -2.25)), ("LE", (1.85, -5.4))]:
+    go_to(p, k, end, "path", speed=3.0)
+f = draw(p, ax=axes[0], lateral=(-7.6, 8.4), window=(-3.8, 8.0), title=False)
+for w, g in GAPS:
+    gap_tag(f, p, -2.4, w, g, fontsize=7.5)
+for k, end in [("SAM", (3.4, 5.95)), ("MIKE", (3.4, 2.4)), ("WILL", (3.4, -0.8))]:
+    q = p.players[k]
+    dashed(f, p, [(q.d - 0.7, q.w + 0.3 * np.sign(end[1] - q.w)), end], color=style.DEFENSE_DARK, lw=1.3,
+           dash=LB_DASH)
+say(f, p, 4.0, -5.9, "flat: across,\nnot upfield", color=style.DEFENSE_DARK, fontsize=6.7)
+axes[0].set_title("Slant (weak): the whole line steps over", fontsize=8.6, loc="left", color=style.INK,
+                  fontweight="bold")
+p = Play(line("short") + [te(+1)], base43(), los=35, to_go=None)
+go_to(p, "R3", (0.15, 0.85), "path", speed=3.0)
+f = draw(p, ax=axes[1], lateral=(-7.6, 8.4), window=(-3.8, 8.0), title=False)
+for w, g in GAPS:
+    gap_tag(f, p, -2.4, w, g, fontsize=7.5)
+dashed(f, p, [(5.2, 1.4), (3.4, 2.4)], color=style.DEFENSE_DARK, lw=1.3, dash=LB_DASH)
+point_to(f, p, (4.0, -1.6), (1.2, 1.55), "45\u00b0: across\nand upfield", color=style.DEFENSE_DARK,
+         fontsize=6.7, shrink=3)
+axes[1].set_title("Angle: one man, into the next gap", fontsize=8.6, loc="left", color=style.INK,
+                  fontweight="bold")
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+A [**slant**](../../appendices/glossary.qmd#gl-slant-line-movement) is a called movement in which the
+linemen step hard across the face of the blocker in front of them at the snap, into the next gap over,
+usually all in the same direction, gaining only a little ground: the slanter's job is to *arrive in the
+next gap*, not to go deep. The linebackers move the opposite way to fill the gaps the line just left, so
+the whole front's gap assignments shift by one. An
+[**angle**](../../appendices/glossary.qmd#gl-angle-line-movement) is a shorter movement, typically by one
+or two linemen: a step at about 45 degrees into the adjacent gap that moves the defender over while he
+keeps going *upfield*. Think of the slant as relocating the line, and the angle as a penetrator changing
+lanes. (The words are not standardized. Some staffs call every movement a slant, some have names for a
+slant toward the tight end and a slant away from him, and inward and outward moves by pairs of linemen
+are often called a *pinch* and an *open*. The footwork varies by staff too: the clinic source cited here
+starts the slant with a roughly 45-degree step that gains a little ground, and nearly every coach warns
+that a lineman who moves purely sideways can be caught by the blocker and pushed along the line. What
+separates the two movements is where the lineman is headed, across the line or through it.)[^movement]
+
+**Why move?** Because the offense's blocking is decided before the snap. Every offensive lineman has
+looked at the front and decided whether he is covered or uncovered, who doubles whom and who climbs to
+which linebacker. Movement changes the answers after it is too late to change the call. A slant can turn
+a covered lineman uncovered and an uncovered one covered in a single step. A double team aimed at a 3-technique
+hits air when the 3 angles into the A gap. A pulling guard runs into a defender who wasn't in his path a
+moment ago. Movement is also how a defense of quick, lighter linemen deals with bigger blockers: they
+can't win a head-on shove, so they don't take one. As one college staff put it in a coaching clinic,
+"we use a lot of slants up front (gap control) to try and keep the offensive linemen occupied, which then
+will allow our linebackers the freedom to roam and get to the ball."[^movementwhy]
+
+**What it costs.** Movement is a bet on where the play is going, and whether the bet pays depends on the
+blocking scheme as much as the direction.
+
+- **Against gap schemes**, slanting toward the run is the jackpot. Power and counter are built on pre-snap
+  assignments and pullers aimed at where the defenders *were*; a front that slants into the play's path
+  arrives at the hole before the blockers do, and the puller finds a defender where his gap was supposed to
+  be. Slant *away* from a gap play and every defender has stepped out of the gap the ball is coming through,
+  with the replacing linebackers a step farther from it.
+- **Against zone**, slanting toward the run gains less than it looks. Zone linemen block whoever arrives in
+  their area, so a slanting defender just runs into the next blocker's arms
+  ([Zone Running](../03-the-run-game/03-02-zone-running.qmd) explains why), and the play side gets crowded
+  without getting stopped. The real danger is *behind* the slant: every lineman has left a gap, and the
+  zone back's cutback is aimed at exactly those gaps. Against zone, a slant lives or dies on the linebackers
+  replacing the gaps the line left.
+- **Either way, the linebackers have to move with the line every time.** If one of them forgets the slant was
+  called, two players fill one gap and the other is empty.
+
+When two linemen go further and *loop* around each other on a pass rush, the movement becomes a stunt,
+which belongs to [The Pass Rush](../07-pressure/07-01-pass-rush.qmd).
+
+**How do the linemen know, and can you see it coming?** The call comes from the sideline to the defense's
+[green-dot](../../appendices/glossary.qmd#gl-green-dot) player, usually a linebacker, who relays it in the
+huddle or, against a fast offense, with a word or a hand signal at the line. It includes the front (where
+each lineman lines up), whether each plays one gap or two, and any movement, and it can be changed at the
+line when the offense shifts. From the stands or the couch you can sometimes see it leak. Look for the
+[tells](../../appendices/glossary.qmd#gl-tell) you learned for offensive linemen in
+[How to Watch a Broadcast](../01-foundations/01-06-how-to-watch-a-broadcast.qmd), applied to the other side
+of the ball: a lineman whose stance is cheated (weight leaning, back foot staggered toward the gap he is
+about to take, his body tilted the way Joe Greene's was), a lineman who widens or tightens his alignment
+just before the snap, or a linebacker creeping toward the gap he will have to replace. Good defenses know
+this and try to give the same look on every snap, so treat any tell as odds, not a promise.
+
+## Putting a front together
+
+Step back and the parts fit together. A defensive coordinator calling a front is choosing, for each
+lineman, three things you can now name:
+
+1. **Where he lines up** (his technique), which tells the offense who is covered and shapes its blocking.
+2. **How he plays it**: one-gap (attack the gap he is in) or two-gap (control the man and read).
+3. **Whether he moves**: straight ahead, or a slant or an angle into another gap at the snap.
+
+Different answers to those questions are what separate the fronts in the rest of this part: the even
+fronts with their 3-techniques and wide ends ([Even Fronts](05-02-even-fronts.qmd)), the odd and tite
+fronts with their 0s and 4is ([Odd and Hybrid Fronts](05-03-odd-and-hybrid-fronts.qmd)), and the
+linebackers whose jobs change with every one of these choices
+([Linebackers and the Second Level](05-04-linebackers-and-second-level.qmd)). A defense can also mix them:
+two-gap the nose, one-gap the 3-technique, angle the end. The modern NFL front is less a system than a
+menu.
+
+## Film room
+
+::: {.callout-note title="Film room: Tampa Bay Buccaneers, Super Bowl XXXVII (2002 season)"}
+**The game:** Super Bowl XXXVII, January 26, 2003: Tampa Bay 48, Oakland 21. The Buccaneers' defense,
+built by Tony Dungy and coordinator Monte Kiffin around a one-gap four-man line and still run by Kiffin
+in Jon Gruden's first season, intercepted the league MVP, Rich Gannon, a Super Bowl-record five times and
+returned three of them for touchdowns.[^sb37] Warren Sapp played the 3-technique, and the design of that whole
+defense, a fast, light front backed by linebackers who ran to the ball, starts with him.
+
+**What to notice:**
+
+- Find Sapp before each snap. He moves to whichever side the front's rule puts the 3-technique; note
+  where the tight end is, see whether you can work out the rule, and notice which guard has a one-on-one
+  problem.
+- His first step. Count how often he is across the line of scrimmage before the guard in front of him
+  has finished his first step. That is one-gap penetration at its purest.
+- What happens behind him. When an offense spends a second blocker on him, look for the linebacker that
+  blocker would have taken, and watch him run free.
+:::
+
+::: {.callout-note title="Film room: New England Patriots, 2004–2010 seasons"}
+**The player:** Vince Wilfork, a first-round pick in 2004 who played nose tackle in Bill Belichick's
+two-gap 3-4 for his first seven seasons: as a rookie he shared the job with the veteran Keith Traylor,
+and from 2005 it was his alone. (In 2010 he spent some weeks at end, and in 2011 the Patriots went to a
+four-man front.)[^wilfork] He was a Pro Bowler five times and won two Super
+Bowls, XXXIX and XLIX.
+
+**What to do:** pick any Patriots early-down base snap from those seasons in which Wilfork lines up over
+the center. Ignore the ball and watch only him and the center.
+
+- The strike: both hands inside, arms locked, the center held off his body.
+- The double team: when a guard comes over, does Wilfork give ground? Usually he doesn't, and the
+  linebacker behind him is unblocked.
+- The shed: watch him throw the blocker to the side the ball isn't going. Then check the box score; his
+  name often isn't in it.
+:::
+
+::: {.callout-note title="Film room: Los Angeles Rams, Super Bowl LVI (2021 season)"}
+**The game:** Super Bowl LVI, February 13, 2022, at SoFi Stadium: Rams 23, Bengals 20. Cincinnati got the
+ball back with 1:25 left needing a field goal to tie. Facing third-and-1 near midfield, the Bengals ran
+Samaje Perine, and Aaron Donald and nose tackle Greg Gaines tackled him for no gain. On fourth-and-1,
+Donald got to Joe Burrow and wrapped him up as he threw; the pass fell incomplete, and the Rams won.[^sb56]
+
+**What to notice:** two snaps, one player, both phases of the game. On third down, a run: watch Donald's
+[get-off](../../appendices/glossary.qmd#gl-get-off), his first step at the instant the ball moves, and where he
+is relative to the line when the back arrives. On fourth down, a pass: the same
+first step, and the same result, a quarterback with no time. It is the best two-play summary of why
+teams pay a one-gap 3-technique more than almost anyone else on the defense.
+:::
+
+::: {.callout-note title="Film room: Philadelphia Eagles 2011"}
+**The season:** Jim Washburn's first year coaching the Eagles' defensive line, and the clearest look at a
+full-time wide-9 front. The Eagles tied for the league lead with 50 sacks, and Jason Babin, whom Washburn had
+also coached in Tennessee, had 18 of them.[^eagles2011]
+
+**What to notice:** the ends' alignment, well outside the tight end on that side (or where one would be),
+in sprinter's stances; how quickly they are upfield; and then, on running plays, the space inside them.
+Watch which linebacker has to fill the lane between the end and the 3-technique, and how often he gets
+there in time. The pass rush and the run lanes come from the same alignment: that is the trade this
+chapter has been describing, on the field for a whole season.
+:::
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it"}
+**Before the snap: find the 3-technique.**
+
+- Look at the guards. Is there a defensive tackle on a guard's *outside* shoulder? That is the
+  3-technique, and his side of the line is where the defense has put its quickness. Is he toward the tight
+  end or away from him? That is the front's rule, and it will usually hold all game. Is there one big man
+  right over the center? That is a 0 nose, likely playing both A gaps.
+- Look at the ends. On the tackle (a 4i, 4 or 5)? Standing up just outside the tight end (a 9)? Way out
+  wide, a couple of yards past the tight end or where one would be, in a sprinter's stance (a wide-9)? Wider
+  ends mean more pass rush and bigger run lanes inside them.
+- Don't try to measure a yard on the live shot. As in 03-01, ask *whose shoulder* the defender is on: the
+  guard's outside shoulder is a 3, the tackle's inside shoulder a 4i, his outside shoulder a 5. The
+  end-zone replay, shot straight down the line, shows it best.
+
+**At the snap: the first step.**
+
+- Does the lineman's first step go *into a gap*, upfield (one-gap), or *into the blocker*, with his hands,
+  standing him up (two-gap)?
+- Does the whole line step sideways together at the snap? That is a slant; look for the linebackers to shift
+  the other way. One man darting into the next gap and on upfield while the rest go straight is an angle.
+
+**After the play: where did the run go?**
+
+- Which way did the run go relative to the 3-technique: at him, or away? Did he get into the backfield, get
+  double-teamed, or get trapped?
+- Did the run get outside the edge? If it did, ask who had the edge on that side and whether he got hooked.
+  On a bootleg or scramble, ask who had contain.
+
+For your prediction log ([How to Watch a Broadcast](../01-foundations/01-06-how-to-watch-a-broadcast.qmd)):
+before each early-down snap, note which side the 3-technique is on. After the play, note whether the run went
+toward him or away from him. A few quarters of that will tell you something about both coordinators.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play"}
+**Drill 1. Read the bodies, not just the numbers.** Two fronts against the same one-tight-end offense, before
+the snap, with the weights of the interior linemen shown. Neither is the one-gap or two-gap front from
+@fig-gap-accounting. For each, say which linemen you expect to attack a gap and which to control a blocker and
+read, and which defenders you expect to be *free* to run to the ball.
+
+```{python}
+#| label: fig-drill-1
+#| fig-cap: "Drill 1: two fronts against the same offense. Front A: five men on the line, an edge player (E) at each end, two 4i-techniques and a 0 nose between them, two inside linebackers. Front B: a four-man front shaded 5, 1, 3, 9, with a 340-pound 1-technique and a 285-pound 3-technique, and three linebackers."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.2))
+fronts = [("Front A", front([("L4", "4i", -1), ("NT", "0", 1), ("R4", "4i", 1)],
+                             lbs=[("MIKE", 4.6, -1.8, "M"), ("WILL", 4.6, 1.8, "W")],
+                             others=[("LOLB", 1.0, -5.0, "E"), ("ROLB", 1.0, 6.6, "E")]),
+           [("NT", "330 lb"), ("L4", "300 lb"), ("R4", "300 lb")]),
+          ("Front B", front([("LE", "5", -1), ("L1", "1", -1), ("R3", "3", 1), ("RE", "9", 1)],
+                             lbs=[("WILL", 4.5, -2.6, "W"), ("MIKE", 4.5, 1.0, "M"), ("SAM", 4.3, 4.4, "S")]),
+           [("L1", "340 lb"), ("R3", "285 lb")])]
+for ax, (ttl, dfn, wts) in zip(axes, fronts):
+    p = Play(line("short") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -6.0, 0, "R")], dfn, los=40,
+             to_go=10)
+    f = draw(p, ax=ax, lateral=(-8.0, 8.8), window=(-7.6, 6.8), title=False)
+    for key, txt in wts:
+        q = p.players[key]
+        say(f, p, 2.35, q.w, txt, color=style.DEFENSE_DARK, fontsize=6.4, weight="bold")
+    ax.set_title(ttl, fontsize=9, loc="left", color=style.INK, fontweight="bold")
+fig.tight_layout(w_pad=0.7)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Front A is a mix: the nose two-gaps, the 4is most likely one-gap.** The 0 is head-up on the center with
+no gap of his own, and he is 330 pounds: everything about him says *control the center and play both A
+gaps*. The 4is are shaded into the B gaps, so the likeliest job is to own those (some defenses ask them to
+play the C gap as well; their first step will tell you). Add it up: the nose holds two gaps, the 4is one each,
+the edge players the outside gaps, and one inside linebacker fills the gap left over inside the tight end. The
+other linebacker is the free one. That is the point of this front, which you will meet as the *tite* front in
+[Odd and Hybrid Fronts](05-03-odd-and-hybrid-fronts.qmd): one big two-gapper lets six men cover
+seven gaps against the run, so the defense can keep two safeties deep.
+
+**Front B is shaded like a one-gap front, but look at the nose.** The 3-technique is a classic penetrator (285
+pounds, in the B gap): expect him to attack. The 1-technique is shaded too, but 340 pounds is an anchor's body,
+not a penetrator's. Whatever the call says about his gaps, his job is to take on the center and the guard and
+not move, which keeps a blocker off the Mike. So: the 3 and the ends attack their gaps, the nose holds his
+ground, and if the nose eats a double team, the Mike is the man who runs free.
+
+**The lesson:** alignment is a strong hint and body type is another. Wade Phillips ran a one-gap defense out of
+3-4 looks for decades, and many 4-3 teams ask a big shaded nose to anchor or play both A gaps. Confirm it with the
+first step after the snap: into the gap, or into the man.
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 2. The slant meets the run.** First-and-10. The offense runs inside zone to the right. At the snap, the
+defense's four linemen all slant to the right, toward the tight end, and the picture below is the first
+half-second; the linebackers have not moved yet. Where is the run most likely to go now, and which defenders
+does the defense need to be right?
+
+```{python}
+#| label: fig-drill-2
+#| fig-cap: "Drill 2: the first half-second. The offense's line steps right for inside zone and the back aims at the right guard's outside hip; the defense's linemen (orange arrows; drawn a little deeper than real) all slant one gap to the right at the snap, the end outside the tight end widening. The linebackers have not moved yet."
+off = line("full") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -7.0, 0, "R")]
+dfn = front([("LE", "5", -1), ("L1", "1", -1), ("R3", "3", 1), ("RE", "9", 1)],
+            lbs=[("WILL", 4.6, -2.6, "W"), ("MIKE", 4.6, 1.0, "M"), ("SAM", 4.4, 4.6, "S")])
+dfn = [q.moved(d=2.1) if q.d == 1.0 else q for q in dfn]    # linemen drawn a little deep so the slant shows
+p = Play(off, dfn, los=40, to_go=10, title="Drill 2: inside zone right meets a slant right")
+for k in ("LT", "LG", "C", "RG", "RT", "Y"):
+    p.block(k, pts=[(0.3, 0.7)])
+for k, end in [("LE", (1.5, -2.45)), ("L1", (1.5, 0.85)), ("R3", (1.5, 4.0)), ("RE", (1.4, 7.0))]:
+    go_to(p, k, end, "path", speed=3.0)
+go_to(p, "RB", (-4.6, 1.6), "run", via=[(-6.2, 0.6)])
+go_to(p, "QB", (-3.2, 0.5), "path", speed=3.0)
+f = draw(p, width_in=5.5, lateral=(-9.0, 10.4), window=(-8.6, 7.8))
+say(f, p, 6.3, 0.0, "linebackers: not yet moved", fontsize=6.9)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Most likely back to the left, on the cutback, and the linebackers decide it.** The slant ran the same way as
+the play. Inside zone's blockers are happy about that at first: each one simply rides the man who slanted into
+his area (the right guard takes the 1 who came into the right A gap, the right tackle the 3 who went to the
+right C). But look at what moved. The 3 left the right B gap, which is exactly the gap the back is aiming at,
+and the 1 left the left A gap. The 5 left the left C gap for the left B.
+
+Replacing those gaps is the linebackers' job, and they have to move the opposite way from the line. **The Sam
+has to get into the right B gap the 3 vacated.** If he doesn't, the back runs through it untouched. If he does,
+the back does what inside zone teaches him: he *bends* the run back toward the gaps the slant emptied. **The Mike
+has the left A** and **the Will the left C** the 5 left. If either flows right with the line instead of filling
+behind it, the cutback lane is empty and the next defender is a safety. That is the bet every slant makes against
+zone: the line wins the first half-second, and the linebackers have to win the rest.
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 3. Who has contain?** Third-and-7. The offense is in the shotgun with an empty backfield (five
+receivers spread wide, not shown) and a quarterback who likes to run. The defense rushes four: a wide-9 on the
+right, a 5 on the left, and two tackles inside. Which rushers have contain, how should they rush, and where is
+the quarterback most likely to escape if somebody gets it wrong?
+
+```{python}
+#| label: fig-drill-3
+#| fig-cap: "Drill 3: third-and-7, shotgun, empty backfield, a mobile quarterback. The defense rushes four (orange arrows show the first steps; linemen drawn a little deeper than real): the wide-9 on the right, the 5 on the left, a 3 and a 1 inside. Everyone else drops into coverage (not shown)."
+off = line("full") + [O("QB", "QB", -5.0, 0, "Q")]
+dfn = front([("LE", "5", -1), ("L1", "1", -1), ("R3", "3", 1)]) + [D("RE", "DL", 1.0, T("wide9") - 1.0, "w9")]
+dfn = [q.moved(d=1.9) for q in dfn]                         # drawn a little deep so the first steps show
+p = Play(off, dfn, los=40, to_go=7, title="Drill 3: four rushers, one mobile quarterback")
+for k, end in [("LE", (-1.2, -5.2)), ("L1", (0.5, -0.85)), ("R3", (0.5, 2.5)), ("RE", (-1.4, 6.6))]:
+    go_to(p, k, end, "path", speed=3.0)
+for k in OL_KEYS:
+    p.block(k, pts=[(-1.0, 0.0)])
+f = draw(p, width_in=5.4, lateral=(-9.6, 10.6), window=(-9.4, 8.4))
+say(f, p, -7.2, 3.8, "a quarterback\nwho likes to run", color=style.OFFENSE_DARK, fontsize=6.8)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The two ends have contain: the 5 on the left and the wide-9 on the right.** Their rule is to rush *outside* the
+tackles but not *past* the quarterback's depth. If either one runs a wide arc around the tackle and keeps going,
+he ends up behind the quarterback, and the space between him and the defensive tackle next to him becomes a
+running lane. A mobile quarterback steps up into the pocket and out through that lane, usually for a first down
+on third-and-7.
+
+**The wide-9 is the likeliest to get it wrong**, because his whole alignment is built for a long, fast arc to the
+quarterback. Against a runner he has to flatten his rush earlier and stay level with the quarterback. The two
+inside rushers have the opposite job: push the middle of the pocket back into the quarterback so he can't step up.
+A four-man rush against a mobile quarterback is a box: two sides that must hold, and a front that must squeeze.
+When one side bursts, look for the quarterback there. Defenses facing a real runner often go further: all four
+rushers stay level with the quarterback and squeeze him instead of racing to him (a
+[mush rush](../../appendices/glossary.qmd#gl-mush-rush)), or one defender is held back to shadow him (a
+[spy](../../appendices/glossary.qmd#gl-spy)). [The Pass Rush](../07-pressure/07-01-pass-rush.qmd) has the
+rest of this, including the stunts that trade one rusher's lane for another's.
+:::
+:::
+
+## Back to the replay
+
+The chapter opened with two great defensive linemen on the same afternoon. Now you can name them.
+
+- *Lined up just outside the right guard and gone past him before the guard finished his first step*: a
+  one-gap **3-technique**. His alignment gave him a single blocker and the B gap; his get-off beat the reach
+  before it landed; he was through the gap and in the back's path before the play could develop. That is
+  penetration, and the analyst's "he lives in the backfield" is its signature.
+- *The biggest man on the field, over the center, a guard comes over to help, and he stays where he is*: a
+  two-gap **nose**. The center and guard double-teamed him, he gave no ground, and when the back arrived he
+  shed one blocker to the side the ball went and made the tackle. "He ate up two blockers" is the other half of
+  the story: on a play he doesn't finish himself, that guard never reaches the linebacker, who does.
+
+One wins by going and one by staying, and both are doing the same arithmetic: making the offense's blockers
+add up to less than the defense's gaps.
+
+## Takeaways
+
+- **Alignment is a job description.** The nose (0 or 1) anchors against double teams and wants mass; the
+  3-technique is the likeliest to get a guard one-on-one and wants quickness; the 4i, 4 and 5 want length to control a tackle; the
+  9 and the wide-9 want speed, and the wider the end, the more pass rush and the bigger the run lane inside him.
+- **One-gap attacks.** Each lineman owns one gap and attacks it, aiming for penetration. It wins with quickness,
+  creates sacks and tackles for loss, and turns the linemen loose, but a wrong guess leaves an empty gap, and traps,
+  draws and screens are built to punish it.
+- **Two-gap controls.** A head-up lineman strikes the blocker, locks out, reads (the blocker's head tells him where
+  the ball is going) and sheds to the ball's side. One man covering two gaps, and forcing a second blocker to stay
+  on him, keeps the linebackers clean, at the cost of rare bodies, little pass rush, and a stat sheet that hides
+  his value.
+- **Fight pressure with pressure.** Against a down block, the man blocked fights back outward and the man left alone
+  squeezes and looks for the puller (or, if nobody blocks him at all, asks "trap or read?"); against a reach, step
+  with the blocker and keep the outside arm free; against a double team, lean into the drive man, give no ground and
+  keep both blockers.
+- **The edge is everybody's boundary.** Setting the edge turns runs back inside; contain keeps the quarterback and
+  the misdirection plays from getting outside. Both ask an aggressive player for patience.
+- **Movement changes the picture after the snap.** Slants shift the whole line a gap; angles move one man while he
+  keeps attacking. Both beat pre-snap blocking assignments, especially gap schemes, and both are bets on direction
+  that the linebackers have to back up, above all against zone's cutback.
+
+## Connections
+
+**Builds on:** [The Twenty-Two](../01-foundations/01-03-the-twenty-two.qmd) (the nose tackle, defensive tackles and
+ends, edge rushers), [A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) (the
+4-3, the 3-4 and the box) and [The Language of the Run Game](../03-the-run-game/03-01-run-game-language.qmd) (gaps,
+technique numbers and the blocks), with the blocking schemes from
+[Zone Running](../03-the-run-game/03-02-zone-running.qmd) and
+[Gap and Power Runs](../03-the-run-game/03-03-gap-and-power-runs.qmd) as the opponents.
+
+**Sets up:**
+
+- [Even Fronts](05-02-even-fronts.qmd): the 4-3 Over and Under, the wide-9 front and the 46, built from the 3-technique,
+  the 1 and wide ends.
+- [Odd and Hybrid Fronts](05-03-odd-and-hybrid-fronts.qmd): the 3-4, the tite front's 4i-0-4i, and why two-gap ideas came
+  back in the light-box era.
+- [Linebackers and the Second Level](05-04-linebackers-and-second-level.qmd): the players who fill the gaps the line
+  leaves, and replace them after a slant.
+- [Run Fits and Box Math](05-05-run-fits-and-box-math.qmd): spill and squeeze, force, and how eleven gap assignments add up.
+- [The Pass Rush](../07-pressure/07-01-pass-rush.qmd): the same linemen on passing downs, rush moves, stunts, and why
+  pressure matters more than sacks.
+
+**See also (case study):** [Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd),
+for what happens to defensive line play when a defense keeps two safeties deep and asks six men to hold the box.
+
+**If you want to go deeper:** Pro Football Focus's "Defensive Prototypes" series (one article per technique, with
+player examples); Chris B. Brown's *The Art of Smart Football* on how fronts and run schemes answer each other; and
+any Patriots game from the late 2000s and any Rams game from 2018, watched for nothing but the man over the center
+and the man outside the guard.
+
+::: {.callout-note title="Go deeper"}
+**Penetration, measured.** Tracking data turns this chapter's distinction into a number. A one-gap penetrator is
+*behind* the line of scrimmage a second after the snap; a two-gapper is *at* it. In the two simulated plays above,
+here is how far each ringed defender is past the line (negative numbers mean he is in the offense's backfield),
+computed from their Big Data Bowl-format tracking frames exactly as you would from real data:
+
+```{python}
+#| code-summary: "Show the Python (depth past the line of scrimmage, from tracking frames)"
+def depth_table(plays, times=(0.3, 0.6, 1.0)):
+    rows = []
+    for name, play, key in plays:
+        trk = play.to_tracking()
+        los = trk.loc[(trk["displayName"] == "football") & (trk["time"] == 0.0), "x"].iloc[0]
+        me = trk[trk["displayName"] == key].set_index("time")
+        rows.append({"defender": name, **{f"+{t:.1f} s": round(float(me.loc[round(t, 1), "x"] - los), 1)
+                                          for t in times}})
+    return pd.DataFrame(rows).set_index("defender")
+
+
+from IPython.display import Markdown
+
+
+def as_markdown(df):
+    """A small table as a Markdown pipe table (no index column), which prints cleanly in every format."""
+    cols = list(df.columns)
+    rows = ["| " + " | ".join(cols) + " |", "|" + "|".join([":--"] + ["--:"] * (len(cols) - 1)) + "|"]
+    rows += ["| " + " | ".join(str(v) for v in r) + " |" for r in df.itertuples(index=False)]
+    return Markdown("\n".join(rows))
+
+
+as_markdown(depth_table([("one-gap 3-technique (simulated)", P_ONE, "R3"),
+                         ("two-gap nose (simulated)", P_TWO_R, "NT")]).reset_index())
+```
+
+The same calculation on real frames is a few lines with `gridiron.bdb`. The 2025 Big Data Bowl release (2022 season,
+weeks 1–9) has every player's location ten times a second, and its players file has his position label, so you can find each interior
+defensive lineman on each run and measure how deep he is at one second. Aggregated by player, it separates the
+penetrators from the anchors, with two caveats. Position labels are rosters, not jobs: filtering on "DT" and
+"NT" misses 3-4 ends who play a 4i or a 3 and edge players who slide inside on passing downs. And depth alone
+can't tell a penetrator from a defender the offense *let* through: an unblocked man on a trap, an option read or
+an influence block shows up deep in the backfield too. The data needs a free Kaggle login, so this cell is not run
+when the book is built.
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (real Big Data Bowl tracking; not run in the build)"
+import pandas as pd
+from gridiron import bdb
+
+plays = pd.read_csv("data/bdb/plays.csv")
+players = pd.read_csv("data/bdb/players.csv")[["nflId", "position", "displayName"]]
+runs = plays[plays["isDropback"] == False]                       # not a dropback: designed runs (plus kneels)
+trk = bdb.load_tracking("data/bdb/tracking_week_*.csv")
+if "position" not in trk:                                        # 2025 tracking has no position column:
+    trk = trk.merge(players[["nflId", "position"]], on="nflId", how="left")   # take it from players.csv
+
+out = []
+for g, pl in runs[["gameId", "playId"]].itertuples(index=False):
+    one = bdb.prepare(trk, plays, game_id=g, play_id=pl, label="position")
+    los = one.loc[(one["side"] == "ball") & (one["time"] == 0.0), "x"].iloc[0]
+    at1 = one[(one["time"].round(1) == 1.0) & one["position"].isin(["DT", "NT"])]
+    out += [{"nflId": r.nflId, "depth": r.x - los} for r in at1.itertuples()]
+
+depth = (pd.DataFrame(out).merge(players, on="nflId")
+         .groupby("displayName")["depth"].agg(["mean", "count"]).query("count >= 50").sort_values("mean"))
+depth.head(10)    # the deepest penetrators (most negative = furthest into the backfield)
+```
+:::
+
+[^combine]: Combine heights and weights in this chapter come from the nflverse combine file
+    (`nflreadpy.load_combine()`, which covers 2000 onward), read when the book is built: Vince Wilfork (2004) 6-1, 323;
+    Aaron Donald (2014) 6-1, 285; J.J. Watt (2011) 6-5, 290; T.J. Watt (2017) 6-4, 252; Jason Babin (2004) 6-3, 260;
+    Jordan Davis (2022) 6-6, 341; Dexter Lawrence (2019) 6-4, 342. Players' playing weights changed over their careers;
+    these are their weights as draft prospects. Lawrence's trade from the Giants to the Bengals for the 10th pick of the
+    2026 draft: NBC Connecticut (April 19, 2026),
+    <https://www.nbcconnecticut.com/news/sports/nfl/giants-trade-dexter-lawrence-bengals-10th-pick-draft/3727122/>.
+
+[^dtsize]: Listed playing sizes: Warren Sapp 6-2, 303 ("Warren Sapp," Wikipedia,
+    <https://en.wikipedia.org/wiki/Warren_Sapp>; Pro Football Reference lists 300); Aaron Donald 6-1, 280 ("Aaron Donald,"
+    Wikipedia, <https://en.wikipedia.org/wiki/Aaron_Donald>). Donald weighed 285 at his 2014 combine.
+
+[^pay]: The nflverse contracts file (`nflreadpy.load_contracts()`, compiled from OverTheCap), read in October 2026:
+    among contracts flagged active, the ten largest average annual values averaged about $30.6 million for interior
+    defensive linemen (the file's "IDL"), $39.2 million for edge rushers ("ED") and $28.5 million for cornerbacks, the
+    next defensive position. Interior linemen include noses as well as 3-techniques. Contract values change every
+    offseason.
+
+[^jjwatt]: J.J. Watt led the NFL in sacks in 2012 (20.5) and 2015 (17.5) and was Defensive Player of the Year three
+    times (2012, 2014, 2015): Pro Football Reference, <https://www.pro-football-reference.com/players/W/WattJ.00.htm>.
+    (Pro Football Reference blocks automated checks; the same years are in "J. J. Watt," Wikipedia,
+    <https://en.wikipedia.org/wiki/J._J._Watt>.) His role as the starting left end in Wade Phillips's 3-4, "a
+    five-technique between the right tackle and tight end": Houston Texans, "2011 position preview: defensive line"
+    (September 7, 2011), <https://www.houstontexans.com/news/2011-position-preview-defensive-line-5715572>.
+
+[^washburn]: Washburn's coaching career (Titans defensive line coach 1999–2010, Eagles 2011–2012):
+    <https://en.wikipedia.org/wiki/Jim_Washburn>. Quotations: Philadelphia Eagles, "Washburn waxes on scheme,
+    personnel" (February 9, 2011), <https://philadelphiaeagles.com/news/washburn-waxes-on-scheme-personnel-3636698>.
+
+[^eagles2011]: Philadelphia Eagles, "Position Preview: Defensive End" (January 17, 2012): "the Eagles tied for the
+    league lead with 50 sacks," and "Babin finished the season third in the league with 18.0 sacks":
+    <https://www.philadelphiaeagles.com/news/position-preview-defensive-end-6825622>. Babin had played for Washburn
+    in Tennessee in 2010: Philadelphia Inquirer, "How Eagles' Babin became a pass-rushing force" (December 17, 2011):
+    <https://www.inquirer.com/philly/sports/eagles/20111217_How_Eagles_Babin_became_a_pass-rushing_force.html>.
+
+[^schwartz]: Jim Schwartz: Titans defensive coordinator 2001–2008, Eagles defensive coordinator 2016–2020 (Super Bowl
+    LII, after the 2017 season), Browns defensive coordinator 2023–2025; he resigned in February 2026:
+    <https://en.wikipedia.org/wiki/Jim_Schwartz>. Myles Garrett's 23.0 sacks in 2025 (the single-season record) and his
+    unanimous 2025 Defensive Player of the Year award: NFL.com,
+    <https://www.nfl.com/news/browns-de-myles-garrett-reaches-23-sacks-sets-new-nfl-single-season-record>, and this book's
+    checked facts (planning/FACTS-current.md §2). Garrett was also 2023 Defensive Player of the Year. The wide-9 in
+    Cleveland: Anthony Poisal, "Jim Schwartz aims to help Myles Garrett play 'free and more productive,'"
+    ClevelandBrowns.com (January 18, 2023),
+    <https://www.clevelandbrowns.com/news/news-notes-jim-schwartz-aims-to-help-myles-garrett-play-free-and-more-productive>.
+
+[^greene]: Bob Labriola, "Steelers begin run to Super Bowl IX," Steelers.com (November 26, 2014): the Stunt 4-3 "put
+    Greene directly over the center but in a stance at a 45-degree angle"; it began as "an experiment confined to
+    Thursdays on the practice field" and was used "23 times in 60 snaps against the Patriots"; Simpson ran for 49 yards
+    on 15 carries in the 32–14 divisional playoff win:
+    <https://www.steelers.com/news/steelers-begin-run-to-super-bowl-ix-14412613>. The Pro Football Hall of Fame says
+    Greene "developed the new tactic of lining up at a sharp angle between the guard and center":
+    <https://www.profootballhof.com/players/joe-greene/>. "George Perles," Wikipedia, calls the Stunt 4-3 "designed by
+    Perles": <https://en.wikipedia.org/wiki/George_Perles>.
+
+[^sapp]: Warren Sapp: Buccaneers 1995–2003, Defensive Player of the Year 1999, 96.5 career sacks, Hall of Fame class of
+    2013: <https://www.profootballhof.com/players/warren-sapp/>; <https://en.wikipedia.org/wiki/Warren_Sapp>. Dungy was
+    Tampa Bay's head coach 1996–2001 and Kiffin its defensive coordinator 1996–2008: "Tampa 2," Wikipedia,
+    <https://en.wikipedia.org/wiki/Tampa_2>.
+
+[^pffnose]: Pro Football Focus, "Defensive Prototypes: 0-Technique" (the nose's job "to control the center, often draw
+    a double team from a guard," with two-gap noses "usually north of 330 pounds"):
+    <https://www.pff.com/news/defensive-prototypes-0-technique>.
+
+[^phillips34]: Houston Texans, "2011 position preview: defensive line" (September 7, 2011): Phillips "views them as a
+    perfect fit for his one-gap scheme," and defensive line coach Bill Kollar: "We're more still of a one-gap type
+    defense": <https://www.houstontexans.com/news/2011-position-preview-defensive-line-5715572>.
+    Bum Phillips and the technique numbers: [The Language of the Run Game](../03-the-run-game/03-01-run-game-language.qmd).
+
+[^movement]: On the mechanics (a 45-degree first step, staying low and getting upfield so the blocker can't push a
+    purely lateral slant along the line): Viqtory Sports, "How to coach your players to slant,"
+    <https://www.viqtorysports.com/how-to-coach-your-players-to-slant/>. Names for movements vary by staff.
+
+[^movementwhy]: Matt Welch and Bill Shaw (Friends University), "Defensive philosophy: defensive line movement,"
+    Gridiron Strategies: <https://gridironstrategies.com/article/defensive-philosophy-defensive-line-movement>.
+
+[^sb37]: "Super Bowl XXXVII," Wikipedia (Tampa Bay 48, Oakland 21, January 26, 2003; Gannon "threw a Super Bowl record
+    five interceptions, three of which were returned for touchdowns"): <https://en.wikipedia.org/wiki/Super_Bowl_XXXVII>.
+    Kiffin was Tampa Bay's defensive coordinator 1996–2008, under Dungy (1996–2001) and Gruden (2002–08): Buccaneers Ring
+    of Honor, <https://www.buccaneers.com/team/ring-of-honor/monte-kiffin>.
+
+[^wilfork]: Vince Wilfork: 21st overall pick in 2004; Patriots 2004–2014, Texans 2015–2016; Pro Bowls after the 2007
+    and 2009–2012 seasons; first-team All-Pro 2012; Super Bowls XXXIX and XLIX; shared nose tackle with Keith Traylor as a
+    rookie (and started Super Bowl XXXIX), then played nose for his first seven seasons before New England went to a 4-3
+    in 2011: <https://en.wikipedia.org/wiki/Vince_Wilfork>; Pro Football Reference,
+    <https://www.pro-football-reference.com/players/W/WilfVi99.htm>. Traylor's release in May 2005: Patriots.com,
+    <https://www.patriots.com/news/new-england-releases-dt-traylor-90391>. The two-gap 3-4 and Wilfork as its "two-gapping
+    war daddy": Chris B. Brown, "Ode to the War Daddies," Grantland (February 6, 2012),
+    <https://grantland.com/features/bill-belichick-vince-wilfork-new-england-patriots-defense/>.
+
+[^sb56]: "Super Bowl LVI," Wikipedia (Rams 23, Bengals 20, February 13, 2022, SoFi Stadium; on third down "Aaron Donald
+    and nose tackle Greg Gaines" tackled Samaje Perine for no gain; on fourth-and-1 Donald "wrapped Burrow up before he could
+    make the throw"): <https://en.wikipedia.org/wiki/Super_Bowl_LVI>.
+
+[^white]: Reggie White: Eagles 1985–1992, Packers 1993–1998, Panthers 2000; 198 sacks (the NFL record when he retired;
+    Bruce Smith later reached 200); three sacks in Super Bowl XXXI, a Super Bowl record since tied by Darnell Dockett
+    (XLIII), Kony Ealy (50) and Grady Jarrett (LI) (Guinness World Records, "Most sacks in a Super Bowl game,"
+    <https://www.guinnessworldrecords.com/world-records/461256-most-sacks-in-a-super-bowl-game>); Hall of Fame class of 2006: <https://en.wikipedia.org/wiki/Reggie_White>;
+    <https://www.profootballhof.com/players/reggie-white/>. Super Bowl XXXI (January 26, 1997): Green Bay 35, New England 21,
+    <https://en.wikipedia.org/wiki/Super_Bowl_XXXI>.
