@@ -1,0 +1,1838 @@
+---
+title: "Spread Formations: 2x2, Trips, Bunch, Empty, and the Condensed Revolution"
+subtitle: "Where the receivers stand, why spreading them across the field makes the defense show its hand, and why the best modern offenses squeezed them back in."
+description: "How to name the spread formations you see every Sunday (2x2, 3x1, empty, bunch, stack, nub and quads), how to number the receivers the way coaches do, why spreading the field forces the defense to declare itself and opens space, why modern NFL offenses condense their splits (crack blocks, the two-way go, rubs), and what wildcat, unbalanced lines and the swinging gate are trying to do."
+glossary:
+  "2x2": {def: "A formation with two receivers on each side of the ball (counting tight ends and backs who line up outside the tackles). Balanced, so it doesn't tell the defense which side the play is going to.", aliases: ["Doubles"]}
+  "3x1": {def: "A formation with three receivers on one side of the ball and one on the other. It overloads one side and isolates the single receiver on the other.", aliases: ["Trips"]}
+  Empty: {def: "A formation with nobody in the backfield beside or behind the quarterback: all five eligible receivers line up out wide or on the line, most often three on one side and two on the other (3x2).", aliases: ["3x2"]}
+  Bunch: "Three receivers clustered in a tight triangle on one side, usually within two or three yards of each other, with one of them on the line and two just off it."
+  Stack: "Two receivers lined up one directly behind the other, the front man on the line and the back man a yard or two behind him."
+  Nub: "A side of the formation where a tight end is the only receiver, with no wide receiver outside him. 'Trips nub' puts three receivers on one side and only the tight end on the other."
+  Quads: "Four receivers on the same side of the ball. Because only five players can be eligible, quads leaves at most one receiver on the other side."
+  "Condensed formation": "A formation in which the receivers line up close to the offensive line (reduced or tight splits) instead of out near the sidelines, to set up crack blocks, two-way gos and rubs, and to make runs and passes look the same."
+  "Two-way go": "A receiver with enough room on both sides of the defender covering him that he can break either inside or outside, so the defender has to guess."
+  Wildcat: "A formation in which the ball is snapped directly to a running back (or another non-quarterback) standing in the shotgun, while the quarterback lines up as a receiver or leaves the field. Popularized in the NFL by the 2008 Miami Dolphins."
+  "Unbalanced line": {def: "An offensive line with more linemen on one side of the center than the other, usually by moving a tackle to line up beside the other tackle ('tackle over'), so one side has an extra blocker.", aliases: ["Tackle over"]}
+  "Swinging gate": "A trick alignment, used mostly on extra points and two-point tries, in which the snapper stays over the ball and most of the other linemen line up in a group far out to one side. If the defense doesn't follow, the offense snaps it and attacks the uncovered group; if it does, the offense shifts back into its normal formation."
+  "Spread formation": "Any formation that lines its pass-catchers up across the width of the field, toward both sidelines, usually with the quarterback in the shotgun, so the defense has to spread out to cover them. Not the same thing as a 'spread offense,' which is a whole philosophy built on such formations."
+  "Receiver numbering": "Counting a formation's receivers from the sideline in, separately on each side: the widest is #1, the next #2, then #3. Defenses assign coverage by these numbers rather than by names."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared helpers for this chapter's diagrams)"
+import os
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from matplotlib.lines import Line2D
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, Polygon
+from IPython.display import HTML, display
+
+from gridiron import Play, Player, Field, routes as r, style, draw_marker
+from gridiron.formations import LINE_D, OFF_BALL, TE_W, WING_W, OL_SPLIT
+
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+UC, GUN, TB_D = -1.9, -5.0, -7.0          # QB under center, QB in the shotgun, deep tailback (yards)
+TE_RING = style.LINE_TO_GAIN               # gold ring: a tight end (as in the personnel chapter)
+RB_RING = style.THIRD                      # aqua ring: a running back
+SIDELINE = 26.67                           # yards from the middle of the field to either sideline
+
+
+def line5():
+    """The five offensive linemen, unlettered. (In this chapter "C" always means a cornerback, so the
+    center, always the middle lineman, carries no letter.)"""
+    return [Player(k, k, "off", LINE_D, w, label="")
+            for k, w in [("LT", -2 * OL_SPLIT), ("LG", -OL_SPLIT), ("C", 0.0),
+                         ("RG", OL_SPLIT), ("RT", 2 * OL_SPLIT)]]
+
+
+def P(key, pos, d, w, label=None):
+    """An offensive player at (d, w): d = yards from the ball (negative = backfield), w = yards to the
+    offense's right."""
+    return Player(key, pos, "off", d, w, label=label or key)
+
+
+def D(key, pos, d, w, label=None):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def check_legal(players):
+    """Seven men on the line, and only the two at its ends may be eligible receivers."""
+    off = [p for p in players if p.side == "off"]
+    line = sorted([p for p in off if abs(p.d - LINE_D) < 0.05], key=lambda p: p.w)
+    assert len(off) == 11, f"{len(off)} offensive players"
+    assert len(line) == 7, f"{len(line)} on the line: {[p.key for p in line]}"
+    for p in line[1:-1]:
+        assert p.pos not in ("WR", "TE", "RB", "FB"), f"covered receiver {p.key}"
+    return players
+
+
+def ring_bodies(p):
+    """Ring the backs (aqua) and tight ends (gold), so the personnel stays countable."""
+    for k, pl in p.players.items():
+        if pl.side == "off" and pl.pos in ("RB", "FB"):
+            p.highlight(k, color=RB_RING)
+        elif pl.side == "off" and pl.pos == "TE":
+            p.highlight(k, color=TE_RING)
+    return p
+
+
+def hide_yard_numbers(ax):
+    """Drop the faint painted field numbers (they sit where the receivers stand in these zoomed views)."""
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() is not None and abs(t.get_alpha() - 0.55) < 1e-6:
+            t.remove()
+
+
+def pxy(play, fld, d, w):
+    x, y = fld.xy(*play.to_abs(d, w))
+    return float(x), float(y)
+
+
+def put(ax, play, fld, text, d, w, size=7.5, color=style.INK, ha="center", va="center", weight="normal",
+        boxed=True, italic=False):
+    """A short on-field label at (d, w)."""
+    x, y = pxy(play, fld, d, w)
+    kw = dict(bbox=dict(boxstyle="round,pad=0.22", fc=style.SURFACE, ec=style.BASELINE, lw=0.5)) if boxed else {}
+    ax.text(x, y, text, fontsize=size, color=color, ha=ha, va=va, fontweight=weight, zorder=12,
+            style="italic" if italic else "normal", linespacing=1.1, **kw)
+
+
+def shade(ax, play, fld, pts, color, alpha=0.12, ls="-", lw=0.8, z=1.5):
+    """Shade a polygon given as (d, w) points."""
+    xy = [pxy(play, fld, d, w) for d, w in pts]
+    ax.add_patch(Polygon(xy, closed=True, fc=color, ec="none", alpha=alpha, zorder=z))
+    ax.add_patch(Polygon(xy, closed=True, fc="none", ec=color, alpha=min(1.0, alpha * 5), lw=lw, ls=ls, zorder=z))
+
+
+BOX_W, BOX_D = 6.0, 7.5        # the drawn "box": about six yards either side of the ball, 7.5 deep
+
+
+def shade_box(ax, play, fld):
+    shade(ax, play, fld, [(0.3, -BOX_W), (BOX_D, -BOX_W), (BOX_D, BOX_W), (0.3, BOX_W)], style.DEFENSE,
+          alpha=0.07, ls=(0, (3, 2)))
+
+
+def box_count(play):
+    return sum(1 for p in play.players.values()
+               if p.side == "def" and abs(p.w) <= BOX_W and 0 < p.d <= BOX_D)
+
+
+def branch(ax, play, fld, pts, color=style.OFFENSE, ls="-", lw=1.7, z=4):
+    """A route-style arrow drawn by hand through absolute (d, w) points (used for 'either/or' branches)."""
+    xs, ys = zip(*[pxy(play, fld, d, w) for d, w in pts])
+    ax.plot(xs[:-1] + (xs[-1],), ys[:-1] + (ys[-1],), color=color, lw=lw, ls=ls, zorder=z,
+            solid_capstyle="round")
+    ax.add_patch(FancyArrowPatch((xs[-2] + 0.8 * (xs[-1] - xs[-2]), ys[-2] + 0.8 * (ys[-1] - ys[-2])),
+                                 (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=11, color=color, lw=lw,
+                                 shrinkA=0, shrinkB=0, zorder=z))
+
+
+def receiver_numbers(ax, play, fld, d_lab=1.45, size=7.0, at=None):
+    """Write #1, #2, #3 ... above each receiver, counting from the sideline in on each side.
+    Backs in the backfield (within 3 yards of the ball, behind the line) are not counted. When two
+    receivers share a width (a stack), the one on the line counts first. `at` = {key: (d, w)} moves
+    a label (for clusters, where the default spots would collide)."""
+    at = at or {}
+    rec = [p for p in play.players.values() if p.side == "off" and p.pos in ("WR", "TE", "RB", "FB")
+           and not (abs(p.w) < 3.0 and p.d < -2.0)]
+    for sgn in (-1, 1):
+        side = sorted([p for p in rec if p.w * sgn > 0], key=lambda p: (-round(abs(p.w), 1), -p.d))
+        for i, p in enumerate(side, 1):
+            d, w = at.get(p.key, (d_lab, p.w))
+            put(ax, play, fld, f"#{i}", d, w, size=size, color=style.INK_2, boxed=False, weight="bold")
+
+
+def grid(nrows, ncols, lateral, window, width=6.6, extra=0.38):
+    pw = width / ncols
+    ph = pw * (window[1] - window[0]) / (lateral[1] - lateral[0]) + extra
+    return plt.subplots(nrows, ncols, figsize=(width, nrows * ph), squeeze=False)
+
+
+def title(ax, text, sub=None):
+    ax.set_title(text, loc="left", fontsize=9.5, fontweight="bold", color=style.INK, pad=3)
+    if sub:
+        ax.text(1.0, 1.0, sub, transform=ax.transAxes, ha="right", va="bottom", fontsize=7.5,
+                color=style.INK_2)
+
+
+# --- One personnel grouping (11: one back, one tight end, three receivers), eight formations. ------------
+# Every alignment below is legal: check_legal() confirms seven on the line with receivers only at the ends.
+def form(name):
+    q, rb = P("QB", "QB", GUN, 0, "Q"), P("RB", "RB", GUN, -2.2, "R")
+    f = {
+        "2x2": [q, rb, P("X", "WR", LINE_D, -15.5), P("H", "WR", OFF_BALL, -8.5),
+                P("Y", "TE", OFF_BALL, 8.5), P("Z", "WR", LINE_D, 15.5)],
+        "3x1": [q, rb, P("X", "WR", LINE_D, -15.5), P("Y", "TE", OFF_BALL, 7.0),
+                P("H", "WR", OFF_BALL, 11.2), P("Z", "WR", LINE_D, 15.5)],
+        "trey": [q, rb, P("X", "WR", LINE_D, -15.5), P("Y", "TE", LINE_D, TE_W),
+                 P("H", "WR", OFF_BALL, 10.0), P("Z", "WR", OFF_BALL, 15.5)],
+        "empty": [q, P("X", "WR", LINE_D, -15.5), P("H", "WR", OFF_BALL, -8.5),
+                  P("RB", "RB", OFF_BALL, 6.0, "R"), P("Y", "TE", OFF_BALL, 10.5), P("Z", "WR", LINE_D, 15.5)],
+        "bunch": [q, rb, P("X", "WR", LINE_D, -15.5), P("H", "WR", LINE_D, 8.6),
+                  P("Y", "TE", -2.2, 7.2), P("Z", "WR", -2.2, 10.0)],
+        "stack": [q, rb, P("X", "WR", LINE_D, -15.5), P("H", "WR", OFF_BALL, -8.5),
+                  P("Z", "WR", LINE_D, 11.0), P("Y", "TE", -2.5, 11.0)],
+        "nub": [q, P("RB", "RB", GUN, -2.2, "R"), P("Y", "TE", LINE_D, -TE_W), P("H", "WR", OFF_BALL, 7.0),
+                P("Z", "WR", OFF_BALL, 11.2), P("X", "WR", LINE_D, 15.5)],
+        "quads": [q, P("X", "WR", LINE_D, -15.5), P("RB", "RB", OFF_BALL, 5.8, "R"),
+                  P("Y", "TE", OFF_BALL, 9.1), P("H", "WR", OFF_BALL, 12.4), P("Z", "WR", LINE_D, 15.8)],
+    }[name]
+    return check_legal(line5() + [p.moved() for p in f])
+
+
+PLATE_LAT, PLATE_WIN = (-17.6, 17.6), (-7.0, 3.0)
+
+
+def plate(ax, name, head, sub, numbers=True, lateral=PLATE_LAT, window=PLATE_WIN, at=None):
+    p = ring_bodies(Play(form(name), None, los=40, to_go=None))
+    fld = p.draw(ax=ax, lateral=lateral, window=window, title=False)
+    hide_yard_numbers(ax)
+    if numbers:
+        receiver_numbers(ax, p, fld, at=at)
+    title(ax, head, sub)
+    return p, fld
+
+
+def ring_legend(fig, y=0.0):
+    h = [Line2D([], [], marker="o", ls="", ms=8, markerfacecolor=style.OFFENSE, markeredgecolor=RB_RING,
+                markeredgewidth=2.0, label="running back (R)"),
+         Line2D([], [], marker="o", ls="", ms=8, markerfacecolor=style.OFFENSE, markeredgecolor=TE_RING,
+                markeredgewidth=2.0, label="tight end (Y)"),
+         Line2D([], [], marker="o", ls="", ms=8, markerfacecolor=style.OFFENSE, markeredgecolor="white",
+                label="wide receivers X, Z, H; Q = quarterback")]
+    fig.legend(handles=h, loc="lower center", bbox_to_anchor=(0.5, y), ncol=3, fontsize=7.5, frameon=False,
+               handletextpad=0.3, columnspacing=1.2)
+
+
+# --- Frame strips (PDF) and videos (web) for the two animations. ------------------------------------------
+MARK_R = 0.62
+
+
+def tracking(play):
+    df = play.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    return df
+
+
+def panel(ax, play, df, t, lateral, window, rings=()):
+    """One moment of a simulated play: markers, trails, rings."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    ylo, yhi = sorted((play.ball_y - lateral[0], play.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=play.los, window=window, numbers=False, hashes=True,
+                lateral=(ylo, yhi), to_go=play.to_go)
+    cur = df[df["frameId"] == fid]
+    shown = cur[cur["x"].between(play.los + window[0] + 0.5, play.los + window[1] - 0.5)
+                & cur["y"].between(ylo + 0.5, yhi - 0.5)]
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(set(shown["_id"])) & (df["side"] != "ball")]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=0.9, alpha=0.4, zorder=3)
+    ppy = fld.pts_per_yard()
+    for key, col in rings:
+        rr = cur[cur["displayName"] == key]
+        if len(rr):
+            x, y = fld.xy(rr["x"].iloc[0], rr["y"].iloc[0])
+            ax.add_patch(Circle((float(x), float(y)), MARK_R * 1.65, fc="none", ec=col, lw=1.7, zorder=7))
+    for _, row in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(row["x"], row["y"]))
+        if row["side"] == "ball":
+            ax.add_patch(Ellipse((x, y + 0.5), 0.75, 0.45, fc=style.BALL, ec="white", lw=0.5, zorder=11))
+            continue
+        draw_marker(ax, x, y, row["side"], row["label"], ppy, r=MARK_R)
+    return fld
+
+
+def strip(play, times, notes, lateral, window, rings=(), ncols=2, width_in=6.5):
+    df = tracking(play)
+    nrows = int(np.ceil(len(times) / ncols))
+    pw = width_in / ncols
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False, figsize=(width_in, nrows * (pw * span_d / span_w + 0.55)))
+    for ax in axes.flat[len(times):]:
+        ax.axis("off")
+    for i, (ax, t) in enumerate(zip(axes.flat, times)):
+        panel(ax, play, df, t, lateral, window, rings)
+        ax.set_title(f"{i + 1}.  " + ("snap" if abs(t) < 1e-6 else f"{t:+.1f} s"), fontsize=8.5,
+                     color=style.INK_2, loc="left")
+        ax.text(0.5, -0.02, notes[i], transform=ax.transAxes, ha="center", va="top", fontsize=7.4,
+                color=style.INK, linespacing=1.15)
+    fig.tight_layout(h_pad=2.2, w_pad=0.8)
+    return fig
+
+
+def video(play, times, notes, lateral, window, rings=(), width_in=5.6):
+    df = tracking(play)
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w + 0.45))
+    tmap = df.groupby("frameId")["time"].first()
+
+    def update(fid):
+        ax.clear()
+        t = float(tmap[fid])
+        panel(ax, play, df, t, lateral, window, rings)
+        cur = [n for tt, n in zip(times, notes) if tt <= t + 1e-6]
+        txt = ("snap" if abs(t) < 0.05 else f"{t:+.1f} s") + (("   " + cur[-1].replace("\n", " ")) if cur else "")
+        ax.set_title(txt, fontsize=8.5, color=style.INK, loc="left")
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=sorted(df["frameId"].unique()), interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def animated(play, times, notes, lateral, window, rings=()):
+    """Video on the website; a numbered, captioned frame strip in the PDF."""
+    if PDF:
+        strip(play, times, notes, lateral, window, rings)
+        plt.show()
+    else:
+        video(play, times, notes, lateral, window, rings)
+```
+
+Third-and-6, midway through the second quarter. The offense breaks the huddle and the running back
+doesn't stop behind the quarterback. He keeps jogging, out past the right tackle, and settles in the
+slot just inside the tight end, who is himself standing ten yards from the ball. Nobody is left
+beside the quarterback. Five players are spread across the width of the field, and the defense
+starts to move: a linebacker drifts out after the running back, a safety creeps down toward the
+line, a cornerback points and shouts. The analyst says "empty set, they're going to make the
+defense show its hand." Two series later the same offense lines up with all three of its wide
+receivers squeezed in tight, the nearest one barely four yards outside the tackle, and the analyst
+says "look how condensed they are." Same team, same players, opposite pictures. This chapter
+explains both: what the spread formations are, why spreading players across the field makes a
+defense commit, and why so many of the best NFL offenses then pulled their receivers back in.
+
+**You'll be able to…**
+
+- Name the spread formations you'll see every week, 2x2, 3x1 (trips), empty, bunch, stack, nub and
+  quads, in a glance, and number the receivers on each side the way coaches do.
+- Explain why spreading receivers across the field forces the defense to declare itself and opens
+  space, and what the offense gives up to get that.
+- Count receivers against defenders on each side before the snap, with a three-step rule, and say
+  where the offense has the numbers.
+- Tell a condensed formation from a spread one (and from the old tight formations), and explain why
+  modern offenses squeeze their receivers in: crack blocks, the two-way go, rubs, and plays that all
+  look alike.
+- Recognize three specialty looks, wildcat, the unbalanced line and the swinging gate, and say what
+  each one is trying to make the defense do.
+- Read what the data says about how often NFL teams line up with an empty backfield, and when.
+
+Three ideas from [Formation Rules and the Language of
+Alignment](02-02-formation-rules-and-vocabulary.qmd) run through this chapter, so here they are in
+one line each. **Seven players must be on the line of scrimmage**, and only the two at the ends of
+that line can catch a pass; everyone else is a yard or more behind it, "off the line." **The
+letters** name spots, not body types: X is the receiver on the line on one side, Z the receiver off
+the line on the other, Y usually the tight end, H a slot receiver or second back. A
+[split](02-02-formation-rules-and-vocabulary.qmd) is how far a receiver lines up from the ball
+or the nearest lineman, and a [slot](02-02-formation-rules-and-vocabulary.qmd) receiver is one
+who lines up between the outside receiver and the line. And remember the last chapter's rule:
+[personnel](02-01-personnel-groupings.qmd) is *who* is on the field. Formation, this chapter's
+subject, is *where they stand*.
+
+## What makes a formation "spread"
+
+A formation is a picture of where the eleven offensive players stand at the snap. For most of
+football history that picture was compact: the receivers lined up a few yards outside the tackles,
+the quarterback was under center, and two backs stood behind him. The [classic
+formations](02-03-classic-formations.qmd), the I, the pro set and the singleback, are all built
+that way, and they are built to run the ball with as many blockers near it as possible.
+
+A [**spread formation**](../../appendices/glossary.qmd#gl-spread-formation) does the
+opposite. It takes the players who can catch passes and spreads them out across the width of the field, toward both sidelines, usually with the quarterback a few
+yards back in the [shotgun](02-02-formation-rules-and-vocabulary.qmd) so he can see it all. Nothing
+about the personnel has to change. The same eleven players can line up either way:
+
+```{python}
+#| label: fig-tight-vs-spread
+#| fig-cap: "The same 11 personnel (one back, R, aqua ring; one tight end, Y, gold ring; three wide receivers, X, Z and H), lined up two ways against the same nickel defense. Left: a tight formation, receivers close to the line; the defense can keep seven players in the box (shaded: the area near the ball where run defenders stand). Right: a spread 2x2, two receivers on each side out toward the sidelines; defenders have to go with them, and only six are left in the box. Offense: Q = quarterback; the five linemen are unlettered (the center is the middle one). Defense: E = end, T = tackle, M and W = linebackers, $ = nickel back (the fifth defensive back), C = cornerback, FS and SS = safeties."
+tight = check_legal(line5() + [P("QB", "QB", UC, 0, "Q"), P("RB", "RB", TB_D, 0, "R"),
+                               P("Y", "TE", LINE_D, TE_W), P("H", "WR", OFF_BALL, WING_W + 0.4),
+                               P("Z", "WR", OFF_BALL, 10.5), P("X", "WR", LINE_D, -9.0)])
+d_tight = [D("WDE", "DE", 1.0, -5.0, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 2.35, "T"),
+           D("SDE", "DE", 1.0, 5.7, "E"), D("WILL", "WILL", 4.5, -2.6), D("MIKE", "MIKE", 4.5, 1.4),
+           D("SS", "SS", 6.8, 3.9), D("NB", "NB", 4.0, 8.2, "$"), D("LCB", "CB", 6.0, -9.5),
+           D("RCB", "CB", 6.5, 11.5), D("FS", "FS", 13.0, -1.0)]
+spread = form("2x2")
+d_spread = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 2.35, "T"),
+            D("SDE", "DE", 1.0, 4.6, "E"), D("WILL", "WILL", 4.5, -2.0), D("MIKE", "MIKE", 4.5, 2.0),
+            D("NB", "NB", 5.0, -8.2, "$"), D("SS", "SS", 7.5, 7.6), D("LCB", "CB", 7.0, -15.5),
+            D("RCB", "CB", 7.0, 15.5), D("FS", "FS", 13.0, 0.0)]
+LAT, WIN = (-18, 18), (-8.5, 14.6)
+fig, axes = grid(1, 2, LAT, WIN)
+for ax, off, dfn, head in [(axes[0, 0], tight, d_tight, "Tight"), (axes[0, 1], spread, d_spread, "Spread (2x2)")]:
+    p = ring_bodies(Play(off, dfn, los=40, to_go=None))
+    fld = p.draw(ax=ax, lateral=LAT, window=WIN, title=False)
+    hide_yard_numbers(ax)
+    shade_box(ax, p, fld)
+    put(ax, p, fld, f"{box_count(p)} in the box", 9.8, -9.5, size=8,
+        weight="bold", color=style.DEFENSE_DARK)
+    title(ax, head)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+Look at what the spread did to the defense without anybody running a step. On the left, the
+defense can keep seven players in the [box](02-05-a-first-look-at-defense.qmd): the area near the
+ball, roughly between the ends of the offensive line and within about seven yards of it, where the
+defenders who stop runs stand. (The full definition, and the habit of counting the box before every
+snap, belong to [A First Look at Defense](02-05-a-first-look-at-defense.qmd).) On the right, the offense has put four players out
+toward the sidelines. Each of them is a threat to catch a pass, so each needs a defender somewhere
+near him, and those defenders have to come from somewhere. They come out of the box. Now there are
+six.
+
+That is the first and most basic reason spread formations exist. **The field is 53⅓ yards wide, and
+a spread formation makes the defense defend all of it.** Every defender who leaves the middle to
+cover a receiver out wide is a defender who isn't there to tackle a runner or to rush the
+quarterback.
+
+There are three more reasons, and they are what the rest of this chapter is about.
+
+**Spreading out makes the defense declare itself.** When receivers stand close together, defenders
+can stand close together too, in a clump that hides what they plan to do. When the receivers spread
+out, the defenders have to spread with them, and where they go is information. A cornerback who
+follows a receiver all the way across the field is probably playing man-to-man, each defender
+assigned to one receiver, rather than zone, each defender assigned to an area of the field (both
+are introduced properly in [A First Look at Defense](02-05-a-first-look-at-defense.qmd)). A safety who walks
+down toward a slot receiver has told you he isn't going to be deep. A linebacker who stays in the
+box has told you somebody outside is uncovered or covered by someone farther away. The quarterback
+reads all of that before the snap. So can you.
+
+**Spreading out creates space.** A receiver near the sideline with one defender in front of him and
+nobody else within fifteen yards is in a one-on-one race. A quick throw to him, or a run through a
+box with six defenders instead of eight, gives the ball carrier room to make one man miss.
+
+**Spreading out simplifies the quarterback's job.** With receivers spaced widely, each pass-catcher
+occupies his own patch of grass, and the quarterback can see who is open by seeing where the
+defenders *aren't*.
+
+::: {.callout-important title="Why it exists"}
+**Spread formations exist to make the defense cover the whole field and tell you how it plans to do
+it.** They trade blockers near the ball for space away from it. What the offense gives up is the
+old advantages of tight formations: extra blockers at the [point of
+attack](../03-the-run-game/03-01-run-game-language.qmd) (the spot where the run is aimed), a quarterback under
+center who can hand off and fake quickly, and a run game that can simply outnumber the defense. A
+spread offense can still run, often very well, but it runs by making the box *lighter*, not by
+bringing more bodies to it.
+:::
+
+### Formation, not philosophy
+
+A *spread formation* is a picture at the snap: receivers out wide. A [spread
+offense](../11-history/11-03-the-college-laboratory.qmd) is a whole philosophy, born mostly in
+college, built on those pictures. Every NFL team uses spread formations every week; only some would
+call their offense a spread offense. This chapter is about the pictures. The philosophy has its own
+chapter in [The College Laboratory](../11-history/11-03-the-college-laboratory.qmd), and the systems
+that grew out of it, like the [Air
+Raid](../04-the-passing-game/04-08-offensive-systems-and-languages.qmd), are installed in Part 4.
+
+::: {.callout-caution title="Common misconception"}
+**"Spread means pass."** Spreading out makes the defense lighter in the box, which is good for
+*running*. Many college spread offenses were built to run first, and in the NFL, 11-personnel
+formations with three receivers spread out are only slightly pass-leaning (about 56% pass in neutral
+situations, as [Personnel](02-01-personnel-groupings.qmd) showed). The one spread formation that
+really does mean "pass," the empty backfield, is the exception, and we'll
+measure it below.
+:::
+
+## The question every spread formation asks
+
+Spread formations work because they force the defense to answer a question it would rather not
+answer. Here is the cleanest version of it. The offense lines up in a 2x2 (two receivers on each
+side). On the right, the slot receiver is the tight end, Y. The defense has a cornerback on each
+outside receiver, a fifth defensive back (the nickel back, $) on the left slot, and two safeties
+deep. Who covers Y?
+
+```{python}
+#| label: fig-slot-dilemma
+#| fig-cap: "The slot question. Same offense, same defense, one decision: what does the linebacker W do about the slot receiver Y? Left: W stays in the box. The box has six defenders, but Y has nobody within seven yards of him, so the quarterback throws him a quick pass: a hitch, six yards up the field and a turn back to the ball. Right: W walks out over Y to take that throw away. Now the box has five defenders against five offensive linemen, and the offense hands the ball off. Shaded rectangle = the box; the safeties (FS, SS) are deep, 12 yards off the ball."
+def dilemma(w_out):
+    dfn = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 2.35, "T"),
+           D("SDE", "DE", 1.0, 4.6, "E"), D("MIKE", "MIKE", 4.5, -1.4),
+           D("WILL", "WILL", 4.3, 7.0) if w_out else D("WILL", "WILL", 4.5, 2.4),
+           D("NB", "NB", 5.0, -8.2, "$"), D("LCB", "CB", 7.0, -15.5), D("RCB", "CB", 7.0, 15.5),
+           D("FS", "FS", 12.0, -9.0), D("SS", "SS", 12.0, 9.0)]
+    p = ring_bodies(Play(form("2x2"), dfn, los=40, to_go=None))
+    p.highlight("WILL", color=style.DEFENSE)
+    if w_out:
+        p.handoff("RB", t=0.5)
+        p.run("RB", [(1.5, 2.0), (6.0, 2.4), (10.5, 1.6)], delay=0.15)
+    else:
+        p.route("Y", r.hitch(6))
+        p.pass_to("Y", t=1.3)
+    return p
+
+
+LAT, WIN = (-18, 18), (-7.5, 14.0)
+fig, axes = grid(1, 2, LAT, WIN)
+for ax, w_out, head in [(axes[0, 0], False, "W stays inside"), (axes[0, 1], True, "W walks out")]:
+    p = dilemma(w_out)
+    fld = p.draw(ax=ax, lateral=LAT, window=WIN, title=False)
+    hide_yard_numbers(ax)
+    shade_box(ax, p, fld)
+    n = box_count(p)
+    put(ax, p, fld, f"{n} in the box", 9.6, -1.0, size=7.6, weight="bold", color=style.DEFENSE_DARK)
+    put(ax, p, fld, "run it" if w_out else "throw to Y", 9.6, -10.0 if w_out else 12.6, size=7.6,
+        weight="bold", color=style.OFFENSE_DARK)
+    title(ax, head)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+If the linebacker stays inside, the box is solid against the run but the tight end is alone, and a
+five-yard throw to him is as easy as a handoff. If he walks out, he takes the throw away and leaves
+five defenders in the box to face five blockers. Every lineman now has someone to block, and the
+first defender the running back has to beat is a safety twelve yards away. The defense can't
+be right both ways, because one player can't stand in two places. The offense watches where he
+stands and does the other thing.
+
+That defender, the one stuck between the box and a slot receiver, is so important that he has his
+own names. A defender who stands halfway between the end of the line and the slot is "at the
+[apex](02-05-a-first-look-at-defense.qmd)" (the point of the triangle the three of them make), and
+the man outside the box but inside a receiver is the [overhang
+defender](02-05-a-first-look-at-defense.qmd), because he hangs over the edge of the box. The passing
+game builds whole plays around reading him. (The name for a defender with two jobs and time for only one is a [conflict
+defender](../04-the-passing-game/04-01-passing-fundamentals.qmd); you'll meet him again in
+[RPOs](../04-the-passing-game/04-06-rpos.qmd), run-pass options in which the quarterback decides after
+the snap whether to hand off or throw, and which turn this exact question into a play.) For now,
+notice that the *formation* created the question. In the tight formation there was no slot
+receiver, so there was no question.
+
+The defense isn't helpless, of course. It can bring a safety down to help, which leaves less help
+deep. It can play a coverage in which the outside cornerback and the linebacker trade
+responsibilities. It can disguise its answer and change it at the snap. Those are the defense's
+moves, and Parts 5 to 7 are full of them. But every one of them costs something somewhere else on
+the field, and the spread's whole idea is to make the defense pay that cost on every snap.
+
+::: {.callout-note title="Madden vs. real life"}
+In *Madden*, the defense lines itself up: you pick a play, and the computer slides every defender
+into place against whatever formation the offense shows. Real defenses have to do that themselves,
+in about the ten seconds between the offense breaking the huddle and the snap. They do it with
+**rules agreed in advance**: "against 2x2, the nickel takes the slot to the field and the Will
+takes the other one; against trips, the safety rotates down." The middle linebacker and the safeties
+shout those adjustments to everyone else, and they all have to hear and agree. That's why offenses
+love formations the defense hasn't prepared for, and why a defense that sees a formation it didn't
+practice sometimes ends up with two players covering one receiver and nobody on another.
+:::
+
+## Counting receivers: #1, #2, #3
+
+You met the coaches' counting system in [Formation Rules](02-02-formation-rules-and-vocabulary.qmd),
+and every formation name in this chapter is built on it, so here it is again with a name.
+[**Receiver numbering**](../../appendices/glossary.qmd#gl-receiver-numbering) counts the receivers
+from the sideline in, separately on each side of the ball. The widest receiver on a side is **#1**,
+the next one in is **#2**, the next is **#3**. It doesn't matter whether he's a wide receiver, a
+tight end or a running back who has lined up out wide: if he's out of the backfield, he gets a
+number. A back standing beside or behind the quarterback isn't counted until he leaves.
+
+Why number them instead of using names? Because the defense doesn't care who the receivers are; it
+cares where they are. A coverage rule like "the nickel back takes #2" works against any formation
+and any personnel. The numbers also give a formation its name: two on each side is "2x2," three on
+one side and one on the other is "3x1." The side with more receivers is the [passing
+strength](02-02-formation-rules-and-vocabulary.qmd) you met in the last chapter.
+
+Two wrinkles, because defenses don't all count the same way. Many coverage systems give an offset
+back (one standing to one side of the quarterback) the next number on his side *before* the snap,
+#3 beside two receivers, because he can release there in a step. And the count is redone after
+every [motion](02-06-motion-and-shifts.qmd): a receiver who motions across the formation changes
+both sides' numbers, so the player who was "#2 right" in the huddle can be "#3 left" at the snap.
+That re-counting, under a play clock, is one reason offenses motion so much.
+
+Here are the four formations you'll see most, all with the same 11 personnel:
+
+```{python}
+#| label: fig-core-plates
+#| fig-cap: "The core spread formations, all from the same 11 personnel (one back, R; one tight end, Y; three wide receivers, X, Z and H) with the quarterback (Q) in the shotgun. The numbers count each side's receivers from the sideline in; the back beside the quarterback isn't counted. Top left: 2x2, two on each side. Top right: 3x1 (trips), three detached receivers on the right and X alone on the left. Bottom left: the same 3x1 count with the tight end attached to the line, which many teams call 'trey' instead of trips. Bottom right: empty, the back has left the backfield, so all five receivers are out, three to one side and two to the other (3x2)."
+fig, axes = grid(2, 2, PLATE_LAT, PLATE_WIN, extra=0.42)
+fig.set_size_inches(6.6, fig.get_size_inches()[1] + 0.3)
+plate(axes[0, 0], "2x2", "2x2 (doubles)", "2 + 2")
+plate(axes[0, 1], "3x1", "3x1 (trips)", "1 + 3")
+plate(axes[1, 0], "trey", "3x1 with the TE attached (trey)", "1 + 3")
+plate(axes[1, 1], "empty", "Empty (3x2)", "2 + 3, nobody in the backfield")
+fig.subplots_adjust(left=0.01, right=0.99, top=0.92, bottom=0.12, hspace=0.55, wspace=0.05)
+ring_legend(fig)
+plt.show()
+```
+
+The names vary by team. One staff's "Doubles" is another's "Deuce" or "Spread"; "Trips" is also
+"Trio," "Tre" or "Triangle," and whether the tight end attached to the line makes it "trips" or
+"trey" depends on whose playbook you're reading. The counting doesn't vary, which is why this book
+uses the numbers.
+
+::: {.callout-caution title="Common misconception"}
+**"Trips means three wide receivers."** It means three *receivers* on one side, whatever their
+position. In the plate above, the third receiver in trips is a tight end, and in empty the third man
+on the right is the running back. Personnel counts bodies; formations count *spots*. When the
+broadcast says "11 personnel, trips right," that's two separate facts: who is on the field, and
+where three of them are standing.
+:::
+
+## 2x2: balance
+
+A [**2x2**](../../appendices/glossary.qmd#gl-2x2) formation, also called
+[**doubles**](../../appendices/glossary.qmd#gl-doubles), has two receivers on each side of the ball.
+In the most common NFL version the outside receivers (#1s, X and Z) stand on the line near the
+sidelines and the inside receivers (#2s, the slots) stand off the line, a few yards inside them.
+The slots *must* be off the line: if a slot receiver stood on the line, the outside receiver would
+be "covered" (no longer at the end of the line) and couldn't legally catch a pass. That's the
+[covered receiver](02-02-formation-rules-and-vocabulary.qmd) rule, and it's why you'll almost
+always see a slot receiver a step behind the receiver outside him.
+
+The 2x2's virtue is **balance**. The defense can't tell from the alignment which side the play is
+going to, because the two sides look alike. The offense can run the same route combination to
+both sides, called a "mirrored" concept, and let the quarterback pick whichever side the defense
+covers worse. Or it can run two *different* combinations and pick based on what the defense shows.
+Against a defense with two deep safeties, a 2x2 asks each safety to help on his own side, two
+receivers apiece, and a defense that wants to bring an extra defender into the box has to decide
+which side gets less help.
+
+What 2x2 gives up is **concentration**. Because the formation is balanced, the defense can be
+balanced too: it can play the same coverage to both sides with the same number of defenders, and
+nothing about the alignment forces it to shift. The formations that follow all trade some of that
+balance for an advantage somewhere specific.
+
+## 3x1: the overload
+
+Put three receivers on one side and one on the other, and you have a
+[**3x1**](../../appendices/glossary.qmd#gl-3x1) formation, almost universally called
+[**trips**](../../appendices/glossary.qmd#gl-trips). It's the formation of the opening play in
+[What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd), "Gun Trips Right," and
+it's one of the most common pictures in the NFL.
+
+Trips does two things at once. On the three-receiver side, the *trips side*, it puts more
+receivers than the defense normally has defenders, so the defense has to send help. On the other
+side, the *backside*, it leaves one receiver, often the offense's best, alone with one cornerback.
+
+To see the problem, you need a way to count a side. Here's the one this book uses, every time:
+
+1. **Count the receivers** on that side (#1, #2, #3).
+2. **Count the underneath defenders** who could cover them: everyone on that side who stands
+   *outside the box*, including an apex or overhang defender walked out toward a slot. Defenders
+   inside the box don't count; they're there for the run.
+3. **Note the deep safety** on that side separately, as help over the top ("+ safety"). He's too
+   deep to stop a quick throw, but he matters on anything thrown down the field.
+
+If step 1 beats step 2, the offense has a numbers advantage underneath, and a quick throw to that
+side is waiting. The defense has to choose which side's problem to solve:
+
+```{python}
+#| label: fig-trips-choice
+#| fig-cap: "Trips makes the defense choose. Left: the defense stays balanced with two deep safeties. Counted the three-step way, the three receivers on the right face three underneath defenders (the cornerback C, the nickel back $ and the linebacker W, walked out to the apex over Y) plus a deep safety, and the lone receiver X on the left has his cornerback and a safety over the top. Right: the defense rotates toward trips. The left safety (FS) moves to the deep middle and the right safety (SS) comes down between H and Y, so the trips side now has four underneath defenders against three receivers, but X is one-on-one with no safety on his side of the field. Either way the defense has given something up."
+def trips_d(rotate):
+    common = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 2.35, "T"),
+              D("SDE", "DE", 1.0, 4.6, "E"), D("MIKE", "MIKE", 4.5, -0.6),
+              D("LCB", "CB", 7.0, -15.5), D("RCB", "CB", 7.0, 15.5), D("NB", "NB", 5.0, 11.6, "$")]
+    if rotate:
+        return common + [D("WILL", "WILL", 4.4, 6.6), D("SS", "SS", 7.5, 9.2), D("FS", "FS", 12.0, -9.0)]
+    return common + [D("WILL", "WILL", 4.4, 6.6), D("SS", "SS", 12.0, 9.5), D("FS", "FS", 12.0, -9.0)]
+
+
+LAT, WIN = (-18, 18), (-7.4, 16.5)
+fig, axes = grid(1, 2, LAT, WIN)
+for ax, rot, head in [(axes[0, 0], False, "Stay balanced"), (axes[0, 1], True, "Rotate to trips")]:
+    p = ring_bodies(Play(form("3x1"), trips_d(rot), los=40, to_go=None))
+    if rot:
+        p.drop("FS", (14.0, 0.5))
+        p.highlight("X", color=style.OFFENSE_DARK)
+    fld = p.draw(ax=ax, lateral=LAT, window=WIN, title=False)
+    hide_yard_numbers(ax)
+    if rot:
+        put(ax, p, fld, "X alone:\none-on-one", -4.8, -11.5, size=7.2, weight="bold", color=style.OFFENSE_DARK)
+        put(ax, p, fld, "3 receivers vs\n4 defenders", -4.8, 11.5, size=7.2)
+    else:
+        put(ax, p, fld, "1 receiver vs\nC + safety", -4.8, -11.5, size=7.2)
+        put(ax, p, fld, "3 receivers vs\n3 + safety", -4.8, 11.5, size=7.2)
+    title(ax, head)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+If the defense stays balanced, the trips side is three receivers against three defenders underneath
+and one safety, and the offense can attack it with combinations designed to put two receivers on
+one defender. If the defense rotates, it gets an extra man to the trips side, but the backside
+receiver is now alone on what coaches call an *island*, one-on-one with nobody behind his
+cornerback. That's why offenses so often put their best receiver at the single-receiver spot in
+3x1. They're betting he wins one-on-one, and if the defense refuses that bet by keeping a safety on
+his side, the trips side is short-handed.
+
+Many modern defenses have a third answer. They keep both safeties deep before the snap, so the
+picture still looks balanced, and then let the *backside* safety leave X to his cornerback and drift
+across to help on the trips side's #3 if he runs deep. Coaches call it
+[poach](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd), and it and its cousins are the subject of
+[Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd).
+It looks like a better deal, but count it: X is still on an island. Every answer to trips spends
+the backside safety somewhere.
+
+The trade-off for the offense is that **trips announces its strength**. The defense knows which
+side has the numbers and can tilt its coverage, its front and its blitzes (extra pass rushers; see
+[A First Look at Defense](02-05-a-first-look-at-defense.qmd)) toward it. Trips also
+leaves the backside thin for the run game: with only one receiver over there, the defense can
+squeeze its run defenders toward the trips side without worrying much about a quick throw the
+other way. Offenses answer by running *away* from trips, toward the single receiver, where the
+defense has thinned out; the run game chapters show how.
+
+Trips also interacts with the hash. With the ball on a hash mark, one side of the field is about
+six yards wider than the other (the [field side and the boundary
+side](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd)). Most offenses put trips to the field
+side, where three receivers have room to spread out, and leave the single receiver to the short
+side. When an offense puts trips into the *boundary*, squeezing three receivers into the narrow side,
+it's usually a deliberate surprise: the defense's rules for the field and the boundary may not fit.
+
+## Empty: everyone out
+
+An [**empty**](../../appendices/glossary.qmd#gl-empty) formation has nobody in the backfield but
+the quarterback. All five eligible receivers are out, most often three on one side and two on the
+other, so it's also called [**3x2**](../../appendices/glossary.qmd#gl-3x2) (and "5-wide" on
+broadcasts). As the plates above showed, empty usually isn't a special personnel grouping. The
+running back and tight end simply line up as receivers. In 2025, about 72% of NFL empty snaps came
+from ordinary 11 personnel.[^empty-pers]
+
+Empty is the spread taken to its limit, and it does three things nothing else does.
+
+**It shows the quarterback everything.** With five receivers spread out, the defense has to put
+someone near each of them, and the quarterback can often make a good guess at man coverage or zone
+before the snap by watching who goes where. Where a defender lines up isn't enough on its own (a
+linebacker walked out over the back can be playing a zone area just as easily as the back himself),
+but how he lines up and moves is. A defender who presses the receiver or sits on his inside
+shoulder with his eyes on *him* is usually in man; one who stands off with his eyes on the
+quarterback is usually in zone. And if the back motions and a linebacker has to run across the field
+with him, that's a strong man tell, the trick [Motion and Shifts](02-06-motion-and-shifts.qmd) builds
+on.
+
+**It isolates the backs and tight ends.** A running back split out wide is often covered by a
+linebacker, who is bigger and slower than the defensive backs. If the defense brings in more
+defensive backs to cover him, it is smaller everywhere else.
+
+**It exposes the blitz.** Five receivers out means only the five offensive linemen are left to
+block. If the defense shows six pass rushers, everyone in the stadium can count: five blockers,
+six rushers, one man free. The protection decides *which* man: it usually blocks from the inside out
+and leaves the widest rusher, because he has the longest way to run. The quarterback knows it in
+advance, so the answer is built into the play: get the ball out before the free man arrives, to a
+receiver running into the space a blitzer just left. Coaches call that a [hot
+route](../04-the-passing-game/04-02-pass-protection.qmd), and a receiver who sees the blitz and cuts
+his route short for it is making a [sight
+adjust](../04-the-passing-game/04-02-pass-protection.qmd); you'll hear both words on broadcasts.
+
+```{python}
+#| label: fig-empty-pressure
+#| fig-cap: "Empty against a six-man pressure. The defense lines up six players at the line of scrimmage (four linemen and both linebackers, M and W) and plays man-to-man with no deep safety: C = cornerbacks, $ = nickel back, D = dime back (a sixth defensive back), SS = safety. The five offensive linemen each take one rusher (each of those rushers' arrows stops at the lineman who blocks him); the sixth, the widest rusher, the end on the left (ringed), is left free on purpose. The quarterback doesn't wait for him: H runs a quick slant (a sharp cut toward the middle) into the space the blitzing linebacker W just left, and the ball comes out within about a second of the snap. That's the hot throw. With five receivers and five blockers, every extra rusher the defense sends is one fewer defender in coverage."
+emp = form("empty")
+d_emp = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 3.0, "T"),
+         D("SDE", "DE", 1.0, 5.0, "E"), D("WILL", "WILL", 1.6, -2.4), D("MIKE", "MIKE", 1.6, 0.8),
+         D("LCB", "CB", 3.0, -15.5), D("NB", "NB", 3.5, -9.0, "$"), D("SS", "SS", 4.5, 6.2),
+         D("DB", "DB", 4.0, 10.9, "D"), D("RCB", "CB", 3.0, 15.5)]
+p = ring_bodies(Play(emp, d_emp, los=40, to_go=None))
+# Inside-out protection: five blockers each step to one rusher; the widest rusher (the end on the left)
+# is the sixth man, and nobody has him. Drawn the playbook way: each rusher's arrow stops at his blocker.
+for ol, dk, w_meet in [("LT", "WILL", -3.1), ("LG", "WDT", -1.3), ("C", "MIKE", 0.4),
+                       ("RG", "SDT", 2.2), ("RT", "SDE", 3.9)]:
+    d_ = p.players[dk]
+    p.rush(dk, pts=[(0.05 - d_.d, w_meet - d_.w)])
+p.rush("WDE", pts=[(-1.5, -0.7), (-5.0, 1.2), (-6.4, 3.4)])
+p.dropback(1.0)
+p.route("H", r.slant(1.0, 6.0))
+p.pass_to("H", t=0.85)
+p.highlight("WDE", color=style.DEFENSE_DARK)
+fld = p.draw(lateral=(-18, 18), window=(-8.0, 9.0), title=False)
+hide_yard_numbers(plt.gca())
+put(plt.gca(), p, fld, "free rusher", -4.4, -7.9, size=7.6, weight="bold", color=style.DEFENSE_DARK)
+put(plt.gca(), p, fld, "5 blockers vs 6 rushers", -4.2, 8.4, size=7.4, color=style.INK)
+put(plt.gca(), p, fld, "ball out fast", 6.2, -4.4, size=7.6, weight="bold", color=style.OFFENSE_DARK)
+plt.show()
+```
+
+The trade-offs are just as clear. Empty leaves nobody to pick up a blitzer, so the quarterback has to
+throw quickly and accurately every time the defense brings pressure, and some of those throws are
+short of the first-down marker. It makes the run game nearly disappear: there's no back to hand
+off to, so the only run left is the quarterback himself. And it is the most **predictable**
+formation in the spread family, because everyone knows what it's for.
+
+How predictable? Here is the empty-backfield rate in the NFL over the last decade, measured two
+ways, and what offenses did from it. (Empty is the only formation in this chapter the free
+play-by-play data can see; there's no free season-by-season count of 2x2 against 3x1.[^no-2x2])
+
+```{python}
+#| code-summary: "Show the Python (load play-by-play, participation and FTN charting data)"
+#| output: false
+from gridiron.data import nfl, pbp
+
+SEASONS = list(range(2016, 2026))
+COLS = ["season", "season_type", "game_id", "play_id", "posteam", "down", "ydstogo", "play_type", "pass",
+        "shotgun"]
+plays = pbp(SEASONS, columns=COLS)
+plays = plays[(plays.season_type == "REG") & plays.play_type.isin(["pass", "run"]) & plays.down.notna()]
+
+# Source 1, 2016-2022: Next Gen Stats formation labels in the participation file ("EMPTY" is one label).
+part = nfl().load_participation(list(range(2016, 2023))).to_pandas()
+ngs = plays.merge(part[["nflverse_game_id", "play_id", "offense_formation", "offense_personnel"]],
+                  left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"])
+ngs = ngs[ngs.offense_formation.notna()].copy()
+ngs["is_empty"] = ngs.offense_formation == "EMPTY"
+
+# Source 2, 2022-2025: FTN charting counts the offensive players in the backfield (not the QB);
+# zero means empty. From 2023 the participation file's formation labels no longer include EMPTY.
+ftn = nfl().load_ftn_charting(list(range(2022, 2026))).to_pandas()
+fx = plays.merge(ftn[["nflverse_game_id", "nflverse_play_id", "n_offense_backfield"]],
+                 left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "nflverse_play_id"])
+fx = fx[fx.n_offense_backfield.notna()].copy()
+fx["is_empty"] = fx.n_offense_backfield == 0
+
+ngs_rate = ngs.groupby("season").is_empty.mean() * 100
+wildcat_rate = (ngs.offense_formation == "WILDCAT").groupby(ngs.season).mean() * 100
+ftn_rate = fx.groupby("season").is_empty.mean() * 100
+recent = fx[fx.season >= 2023]
+
+# Empty rate within 11 personnel (participation personnel strings, e.g. "1 C, 2 G, 1 QB, 1 RB, 2 T, 1 TE, 3 WR").
+pers = nfl().load_participation([2024, 2025]).to_pandas()[["nflverse_game_id", "play_id", "offense_personnel"]]
+f11 = fx.merge(pers, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"],
+               suffixes=("", "_p"))
+f11 = f11[f11.offense_personnel.notna()]
+cnt = lambda col, pos: f11[col].str.extract(rf"(\d+) {pos}\b")[0].fillna(0).astype(int)
+f11["is11"] = ((cnt("offense_personnel", "RB") + cnt("offense_personnel", "FB")) == 1) & \
+              (cnt("offense_personnel", "TE") == 1) & (cnt("offense_personnel", "WR") == 3)
+e11 = f11[f11.is11].groupby("season").is_empty.mean() * 100
+s11 = f11.groupby("season").is11.mean() * 100
+empty_pass = recent[recent.is_empty]["pass"].mean() * 100
+other_pass = recent[~recent.is_empty]["pass"].mean() * 100
+```
+
+```{python}
+#| echo: false
+#| output: false
+# Guard the numbers quoted in the text.
+assert abs(ngs_rate[2022] - ftn_rate[2022]) < 0.5, (ngs_rate[2022], ftn_rate[2022])
+assert 6 < ftn_rate[2025] < 8 and 7 < ngs_rate.min() < 9.5 and ngs_rate.max() < 10, (ngs_rate, ftn_rate)
+assert 92 < empty_pass < 96 and 55 < other_pass < 60, (empty_pass, other_pass)
+assert abs(e11[2024] - 10.6) < 0.3 and abs(e11[2025] - 8.6) < 0.3, e11
+assert s11[2025] < s11[2024] - 3, s11
+assert wildcat_rate.max() < 1.0, wildcat_rate
+```
+
+```{python}
+#| label: fig-empty-trend
+#| fig-cap: "How often NFL offenses lined up with an empty backfield, regular-season runs and passes, 2016–2025 (course calculation from nflverse data). Through 2022 the formation label comes from Next Gen Stats; from 2022 on, from FTN's charted count of players in the backfield. The two sources overlap in 2022 and agree (8.1% each), so the series can be read as one. Empty has stayed between about 7% and 9.5% of plays for a decade: a specialty tool, not a base formation."
+fig, ax = plt.subplots(figsize=(6.5, 3.0))
+ax.plot(ngs_rate.index, ngs_rate.values, color=style.SERIES[0], lw=2.2, marker="o", ms=4,
+        label="Next Gen Stats formation label")
+ax.plot(ftn_rate.index, ftn_rate.values, color=style.SERIES[2], lw=2.2, marker="s", ms=4, ls=(0, (4, 2)),
+        label="FTN backfield count")
+ax.annotate("2022: both sources\n8.1%", xy=(2022, ftn_rate[2022]), xytext=(2019.6, 4.2), fontsize=7.5,
+            color=style.INK_2, arrowprops=dict(arrowstyle="-", color=style.BASELINE, lw=0.8))
+for yr in (2016, 2021, 2025):
+    v = (ngs_rate if yr <= 2022 else ftn_rate)[yr]
+    ax.text(yr, v + (0.55 if yr < 2025 else -1.25), f"{v:.1f}%", ha="center", fontsize=7.5, color=style.INK)
+ax.set_ylim(0, 12)
+ax.set_xlim(2015.5, 2025.5)
+ax.set_xticks(SEASONS, [str(s) for s in SEASONS], fontsize=8)
+ax.set_ylabel("share of plays (%)", fontsize=8)
+ax.legend(fontsize=7.5, loc="upper left", ncol=2)
+ax.set_title("Empty-backfield rate by season", fontsize=10)
+plt.show()
+```
+
+```{python}
+#| label: fig-empty-when
+#| fig-cap: "When offenses go empty: the share of plays with an empty backfield by down and distance, 2023–2025 regular seasons (FTN charting via nflverse). Empty is rare on first down and most common on third down with more than ten yards to go, the down and distance on which the offense most needs a completion and the run is least of a threat. The dashed line is the rate across all plays."
+def situation(row):
+    if row.down == 1:
+        return "1st down"
+    if row.down == 2:
+        return "2nd down"
+    if row.down == 4:
+        return "4th down"
+    return ("3rd & 1–3" if row.ydstogo <= 3 else "3rd & 4–6" if row.ydstogo <= 6
+            else "3rd & 7–10" if row.ydstogo <= 10 else "3rd & 11+")
+
+
+recent = recent.assign(sit=recent.apply(situation, axis=1))
+order = ["1st down", "2nd down", "3rd & 1–3", "3rd & 4–6", "3rd & 7–10", "3rd & 11+", "4th down"]
+g = recent.groupby("sit").is_empty.agg(["mean", "size"]).reindex(order)
+fig, ax = plt.subplots(figsize=(6.5, 2.9))
+ax.bar(range(len(order)), g["mean"] * 100, color=style.SERIES[0], width=0.62)
+for i, (k, row) in enumerate(g.iterrows()):
+    ax.text(i, row["mean"] * 100 + 0.4, f"{row['mean'] * 100:.0f}%", ha="center", fontsize=8, color=style.INK)
+allr = recent.is_empty.mean() * 100
+ax.axhline(allr, color=style.INK_2, lw=1, ls=(0, (4, 3)))
+ax.text(-0.42, allr + 0.6, f"all plays {allr:.0f}%", fontsize=7.5, color=style.INK_2, ha="left")
+ax.set_xticks(range(len(order)), [f"{k}\n(n={int(row['size']):,})" for k, row in g.iterrows()], fontsize=7.5)
+ax.set_ylim(0, 22)
+ax.set_ylabel("plays in empty (%)", fontsize=8)
+ax.grid(axis="x", visible=False)
+ax.set_title("Empty-backfield rate by down and distance, 2023–2025", fontsize=10)
+plt.show()
+```
+
+```{python}
+#| echo: false
+#| output: false
+assert g.loc["3rd & 11+", "mean"] > g.loc["3rd & 4–6", "mean"] > g.loc["1st down", "mean"], g
+assert g.loc["1st down", "mean"] < 0.05 and g.loc["3rd & 11+", "mean"] > 0.15, g
+```
+
+Two numbers tell the story. First, empty is a *specialty* formation: between about 7 and 9.5
+percent of plays, every season for a decade, with no steady trend either way. Second, it is
+overwhelmingly a passing formation: in 2023–2025, more than 94% of NFL plays from empty were
+dropbacks, against about 58% from everything else.[^empty-data] Offenses save it for third down, and
+especially third-and-long, when they need a completion and a run would rarely get the yards anyway.
+
+What about the dip to a decade low in 2025? It came in the same season that 11 personnel, the
+grouping most empty snaps come from, fell to a decade low of its own ([Personnel](02-01-personnel-groupings.qmd)
+tells that story). But the mix explains only a little of it. Offenses also went empty less often
+*from* 11 personnel: about 10.6% of 11-personnel snaps were empty in 2024, and 8.6% in
+2025.[^empty-2025] One season is a blip until the next one confirms it.
+
+That predictability is the price, and it's why empty is a *tool* rather than a base formation. If
+empty is almost always a pass, the defense can rush the passer without worrying about the run.
+Offenses that use it a lot find ways to make it less predictable, and the best way is a quarterback
+who is dangerous running the ball. The Buffalo Bills under Josh Allen have gone empty on about 10% of
+their plays since 2019, against a league rate of about 8%, and in 2023 about one in eight of their
+empty snaps was a designed run, nearly all by Allen, more than twice the rate for the rest of the
+league.[^bills] Why that works is the second drill at the end of the chapter.
+
+## Clusters: bunch and stack
+
+Spreading receivers apart is one idea. Putting them *close together* on purpose is another, and
+it's just as old. Here are the four variations you'll see most, again all from one personnel group:
+
+```{python}
+#| label: fig-variant-plates
+#| fig-cap: "Four variations, again all 11 personnel, with each side's receivers numbered. Top left: bunch, three receivers in a tight triangle on the right (H on the line, Y and Z a yard or two behind and either side of him); counted by width, the point man H is #2. Top right: stack, two receivers one directly behind the other (Z on the line, Y behind him); with no difference in width, the man on the line counts first. Bottom left: trips nub, three receivers to the right and only the tight end on the left, attached to the line with nobody outside him. Bottom right: quads, four receivers on the right (the back, R, among them) and X alone on the left, with nobody beside the quarterback."
+fig, axes = grid(2, 2, PLATE_LAT, PLATE_WIN, extra=0.42)
+fig.set_size_inches(6.6, fig.get_size_inches()[1] + 0.3)
+plate(axes[0, 0], "bunch", "Bunch", "3x1, clustered", at={"Y": (-3.9, 7.0), "Z": (-3.9, 10.4)})
+plate(axes[0, 1], "stack", "Stack", "2x2, one behind the other", at={"Y": (-2.5, 13.2)})
+plate(axes[1, 0], "nub", "Trips nub", "TE alone on the left")
+plate(axes[1, 1], "quads", "Quads", "4x1, empty")
+fig.subplots_adjust(left=0.01, right=0.99, top=0.92, bottom=0.12, hspace=0.55, wspace=0.05)
+ring_legend(fig)
+plt.show()
+```
+
+A [**bunch**](../../appendices/glossary.qmd#gl-bunch) is three receivers clustered in a tight
+triangle, usually within two or three yards of each other: one on the line (the "point"), the other
+two just off it, one inside and one outside. A [**stack**](../../appendices/glossary.qmd#gl-stack)
+is two receivers lined up one directly behind the other, the front man on the line and the back man
+a yard or two behind. Both are legal for the same reason as everything else in this chapter: only
+one receiver in each cluster is on the line, and he's the end of it.
+
+Clusters are where numbering gets awkward, so it's worth a rule. Count by width, as always: in the
+bunch above, Z is the widest (#1), the point man H is #2 and Y, tucked inside, is #3. In a stack the
+two receivers share a width, and most staffs count the man on the line as #1 and the man behind
+him as #2. Don't expect the numbers to hold for long, though. Many defenses facing a cluster
+number it *after* the snap, by who releases where ("whoever goes out is #1"), which is exactly
+the kind of on-the-fly agreement the cluster is designed to strain.
+
+Why would an offense that wants space squeeze its receivers together? Three reasons, and they all
+have to do with defenses that play man-to-man.
+
+**Traffic.** In man coverage, each defender follows one receiver wherever he goes. When three
+receivers start within two yards of each other and then run in different directions, their paths
+cross, and the defenders chasing them have to get around each other and around the other
+receivers. A defender who is a step late is a receiver who is a step open. Watch the ringed safety:
+
+```{python}
+#| label: fig-bunch-traffic
+#| fig-cap: "Bunch against man coverage (simulated, BDB-format tracking). Ringed: the tight end Y and the safety (SS) assigned to him. 1: each receiver in the bunch has one defender: the cornerback (C) on Z, the nickel ($) on H, the safety on Y. 2: H climbs, Z cuts inside underneath him and Y heads for the flat, so their paths cross right at the line, where the defenders have to get through them. 3: the safety can't go straight to Y; H and the defenders chasing H and Z are in his way, so he has to bend back over the top of them. 4: the ball arrives at Y in the flat with his defender still about three yards away. Nobody blocked anybody; the alignment did the work."
+bunch_off = form("bunch")
+bunch_def = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 2.35, "T"),
+             D("SDE", "DE", 1.0, 4.6, "E"), D("MIKE", "MIKE", 4.5, -0.5), D("WILL", "WILL", 4.5, 3.0),
+             D("LCB", "CB", 6.5, -16), D("RCB", "CB", 5.0, 12.2), D("NB", "NB", 4.2, 9.6, "$"),
+             D("SS", "SS", 5.2, 6.2), D("FS", "FS", 14.0, 0.0)]
+bp = Play(bunch_off, bunch_def, los=40, to_go=None)
+bp.route("H", [(0, 0), (5.5, 0), (10.5, 5.5)])                # point man climbs, then breaks to the corner
+bp.route("Z", [(0, 0), (2.2, 0), (5.2, -5.0)])                # outside man cuts in, under the point man
+bp.route("Y", [(0, 0), (2.4, 4.4), (3.2, 9.3), (6.2, 10.8)])  # inside man to the flat, crossing under both
+# Man defenders, drawn by hand. The nickel and the corner chase their men; the safety on Y can't go
+# straight through the bunch, so he bends back over the top of the traffic and arrives late.
+bp.path("NB", [(5.6, 10.0), (7.2, 10.6), (9.0, 12.4)], absolute=True, speed=5.8, delay=0.2)    # trails H
+bp.path("RCB", [(4.2, 11.0), (3.0, 8.4), (2.6, 6.4)], absolute=True, speed=5.4, delay=0.25)    # chases Z
+bp.path("SS", [(5.4, 7.0), (6.8, 8.4), (5.0, 11.4), (3.4, 14.4), (2.2, 16.6)], absolute=True, speed=5.4,
+        delay=0.35)
+bp.dropback(1.5)
+bp.pass_to("Y", t=1.0)
+T_CATCH = next(t for t in np.arange(1.0, 3.0, 0.05)
+               if np.linalg.norm(bp.ball_position(t) - bp.position("Y", t)) < 0.3)
+BUNCH_T = [0.0, 0.6, 1.2, float(np.ceil(T_CATCH * 10) / 10)]
+SS_GAP = float(np.linalg.norm(bp.position("SS", BUNCH_T[-1]) - bp.position("Y", BUNCH_T[-1])))
+assert SS_GAP > 2.5, SS_GAP                                     # the caption says "about three yards away"
+BUNCH_NOTES = ["Snap: each defender has\none receiver in the triangle",
+               "H climbs, Z cuts under him,\nY heads out: the paths cross",
+               "The safety on Y has to bend\nover the top of the traffic",
+               "The ball reaches Y with his\ndefender three yards away"]
+animated(bp, BUNCH_T, BUNCH_NOTES, lateral=(-5.0, 23.0), window=(-8.0, 15.0),
+         rings=(("Y", TE_RING), ("SS", style.DEFENSE)))
+```
+
+The receivers never touched the defenders, and that matters. Running into a defender on purpose to
+knock him off a receiver, after the snap and before the pass is touched, more than a yard past the
+line of scrimmage, is offensive pass interference.[^opi] Read that rule closely and you can see how
+bunch plays are built. Contact *within* a yard of the line isn't pass interference, which is one
+reason the crossings in a bunch release happen right at the line, as they do in the strip above.
+Past that yard, the receivers' own paths have to do the work: each one runs his route exactly as
+drawn, and if a defender has to go around him, that's the defender's problem. Officials have to
+judge the difference between a receiver running his route ("natural pick," or "rub") and a receiver
+who goes looking for a defender to block, and the second one draws a flag. The full family of [rub
+routes](../04-the-passing-game/04-04-dropback-concepts.qmd) is in [Dropback
+Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd).
+
+**Free releases.** A cornerback who wants to jam a receiver at the line (to
+[press](../06-pass-coverage/06-01-coverage-fundamentals.qmd) him) has to
+line up right in front of him. In a stack, only the front receiver can be pressed; the man behind
+him starts with a free run. In a bunch, the two back receivers are shielded in the same way. That
+makes clusters a favorite answer to defenses that press.
+
+**Communication.** Clustered receivers force defenders to decide, at the snap, who takes whom.
+Many defenses don't try to follow their man through the traffic; they agree to *switch* (coaches
+also say "swap"), so the
+defender nearest the receiver going out takes him and the defender nearest the receiver going in
+takes that one. Switching works, but it takes two defenders who see the same thing at the same time
+and talk. Every time a defense has to communicate under stress, it can get it wrong.
+
+What clusters give up is **width**. Three receivers within three yards of each other can be covered
+by fewer zone defenders than three receivers spread across the field, because a zone defender
+standing in the right spot can cover two of them. That's why bunch and stack are at their best
+against man coverage, and why you'll see them most in the [red
+zone](../01-foundations/01-02-downs-distance-and-field-position.qmd) and on third-and-short, where
+defenses play the most man. They aren't useless against zone, though: three receivers released from
+one spot can flood one defender's area at three depths (short, middle and deep), and he can only
+cover one of them.
+
+Andy Reid's Kansas City Chiefs are the best-known modern users, stacking and bunching receivers
+(often with Travis Kelce in the cluster) as an answer to man coverage; both of their
+fourth-quarter touchdowns in Super Bowl LVII came from a stack with a receiver tucked behind
+another, though the trick that beat the man coverage was the return motion you'll meet in [Motion and Shifts](02-06-motion-and-shifts.qmd).[^chiefs]
+
+## Lopsided: nub and quads
+
+Two more names describe formations by what's *missing*.
+
+A [**nub**](../../appendices/glossary.qmd#gl-nub) side is a side of the formation where a tight end
+is the only receiver, attached to the line with no wide receiver outside him. "Trips nub" (the
+bottom-left plate above) puts three receivers to one side and only the tight end on the other.
+It's a clever shape, because it splits the formation's identity in two. The tight end side is the
+**strong side** for the run game (it has the extra blocker), while the trips side is the receiver
+strength (it has the extra pass-catchers). Remember the common defensive rule from [Formation
+Rules](02-02-formation-rules-and-vocabulary.qmd): *front to the tight end, coverage to the passing
+strength*. Trips nub is built to make that rule hurt. The front leans one way and the coverage the
+other, so a defense that sets its front to the tight end is under-manned against the receivers, and
+a defense that rotates its coverage to the receivers is light against a run to the tight end.
+
+The defense's usual answer is to keep the backside cornerback on the nub side anyway, lined up over or
+just outside the tight end five to seven yards deep. From there he can come up and force a run to
+that side or run with the tight end if he goes deep. Other defenses send that cornerback across to
+the trips side and give the tight end to a linebacker or safety. Either way the defense has had to
+*decide*, which is the point of the formation.
+
+[**Quads**](../../appendices/glossary.qmd#gl-quads) puts four receivers on one side. Only five
+players can be eligible, and the line needs an eligible end on *each* side if the offense wants to
+be able to throw to both, so quads almost always means empty: four receivers on one side, one on the
+line on the other, nobody beside the quarterback (the 4x1 above). Keep a back beside the quarterback
+and the arithmetic breaks: with nobody on the other side, the tackle becomes that end of the line,
+both remaining players on the line have to stand on the quads side, and the inner one is covered and
+ineligible. It's the most
+extreme overload in football, and it's rare: you'll
+see it in two-minute drills, on trick plays, and from offenses testing whether the defense has a
+rule for it. Its value is the question it asks. A defense that hasn't practiced against four
+receivers on one side has to improvise, and improvised coverage is how receivers get open.
+
+## The condensed revolution
+
+Everything so far might suggest the answer is always "spread out more." For about a decade, that
+was roughly where NFL offenses were heading. Then, in the late 2010s, some of the most successful
+offenses in the league started doing something that looked like going backward: they pulled their
+receivers *in*.
+
+A [**condensed formation**](../../appendices/glossary.qmd#gl-condensed-formation) lines its
+receivers up close to the offensive line, with [reduced
+splits](02-02-formation-rules-and-vocabulary.qmd) (inside the painted numbers) or even tight
+ones (a few yards outside the tackle or tight end), instead of out near the sidelines. The
+personnel is the same; the receivers just stand closer to the ball. (Coaches have a dialect for
+this. Besides the *plus* and *minus* splits you met in [Formation
+Rules](02-02-formation-rules-and-vocabulary.qmd), you'll hear "reduced," "squeeze" and "nasty,"
+the last one for a receiver only two or three yards outside the tackle or tight end.) Sean McVay's
+Los Angeles Rams made it their signature in the late 2010s, Kyle Shanahan's San Francisco 49ers took
+it furthest, and much of the league followed: by Next Gen Stats' count, condensed alignments went
+from about 11% of NFL plays in 2016 to outnumbering wide ones in 2023.[^condensed]
+
+That raises a question of words. Is a condensed trips formation a "spread" formation? The cleanest
+way to think about it is as **two separate dials**. One dial is the *count*: how many receivers
+stand on each side (2x2, 3x1, empty). The other is the *width*: how far from the ball they stand
+(spread or condensed). Any count can be set at any width:
+
+```{python}
+#| label: fig-two-dials
+#| fig-cap: "Two dials. Rows: the count (2x2 on top, 3x1 below). Columns: the width (spread on the left, condensed on the right). Same 11 personnel and the same quarterback in the shotgun in all four; only the receivers' distance from the ball changes. In the condensed versions the outside receivers stand nine to ten and a half yards from the ball, well inside the painted numbers (grey bands, 12 to 14 yards in from each sideline, with the ball in the middle of the field). Broadcasters say 'spread' loosely for the whole family; in this book 2x2, 3x1 and empty name the count, and spread and condensed name the width."
+CONDENSED_W = {"2x2": {"X": -9.0, "H": -5.9, "Y": 5.9, "Z": 9.0},      # the same players, pulled in
+               "3x1": {"X": -9.0, "Y": 5.6, "H": 8.0, "Z": 10.6}}
+
+
+def condense(name):
+    return check_legal([p.moved(w=CONDENSED_W[name][p.key]) if p.key in CONDENSED_W[name] else p
+                        for p in form(name)])
+
+
+DIAL_LAT, DIAL_WIN = (-SIDELINE, SIDELINE), (-6.6, 2.6)
+fig, axes = grid(2, 2, DIAL_LAT, DIAL_WIN, extra=0.42)
+for r_i, name in enumerate(["2x2", "3x1"]):
+    for c_i, width_name in enumerate(["spread", "condensed"]):
+        ax = axes[r_i, c_i]
+        p = ring_bodies(Play(form(name) if width_name == "spread" else condense(name), None, los=40,
+                             to_go=None))
+        fld = p.draw(ax=ax, lateral=DIAL_LAT, window=DIAL_WIN, title=False)
+        hide_yard_numbers(ax)
+        for sgn in (-1, 1):
+            w0 = sgn * (SIDELINE - 13.0)
+            shade(ax, p, fld, [(-6.4, w0 - 1.0), (2.4, w0 - 1.0), (2.4, w0 + 1.0), (-6.4, w0 + 1.0)],
+                  style.MUTED, alpha=0.10, lw=0.4)
+        widest = max(abs(q.w) for q in p.players.values() if q.side == "off")
+        title(ax, f"{name}, {width_name}", f"widest: {widest:.1f} yd from the ball")
+fig.subplots_adjust(left=0.01, right=0.99, top=0.9, bottom=0.12, hspace=0.6, wspace=0.05)
+ring_legend(fig)
+plt.show()
+```
+
+So a condensed 3x1 is still a 3x1, and still part of the shotgun, three-receiver family the NFL
+lives in; it just isn't *wide*. Broadcasters will call all four of these pictures "spread" at some
+point. When this book says spread or condensed, it means the width dial.
+
+If the condensed pictures remind you of the tight formation in the very first figure of this
+chapter, they should. On paper the alignments are close. The difference is in who is standing there
+and what they're for:
+
+- **Different bodies.** The old tight formations got their blockers by bringing in a fullback or a
+  second tight end, and the defense answered with linebackers. A condensed formation is usually 11
+  personnel: three wide receivers. The defense still has to stay in nickel to cover them, so the
+  extra defender near the ball is a nickel back (about 195 pounds) rather than a linebacker. (In 2018,
+  defenses had five or more defensive backs on the field for about 94% of the Rams' snaps, as
+  [Personnel](02-01-personnel-groupings.qmd) showed.)
+- **Different threats.** A fullback or second tight end in a tight formation is mostly a blocker. A
+  wide receiver in a condensed split can block, but he can also run past the defender in front of
+  him or across the field, so every defender near him has to respect both.
+- **One picture for everything.** The point of condensing isn't to run the ball more; it's to run
+  the ball *and* throw it from a picture that doesn't tell the defense which. The four reasons below
+  are all versions of that.
+
+### 1. Room to the outside
+
+You met the basic trade in [Formation Rules](02-02-formation-rules-and-vocabulary.qmd), as a tell: a
+reduced split often means a route toward the sideline or a block on the inside. Here's why it works.
+A receiver lined up near the sideline has little grass outside him, and the cornerback covering him
+knows it. The cornerback can line up inside the receiver and let the sideline guard the outside,
+like a twelfth defender. A throw to that receiver on an outside-breaking route also has to travel
+across most of the field. Move the receiver in toward the ball and the grass outside him becomes his,
+and the same route turns into a shorter, safer throw:
+
+```{python}
+#| label: fig-wide-vs-condensed
+#| fig-cap: "The same route from two splits, left half of the field, ball in the middle. X runs an out: ten yards straight up, then a sharp cut toward the sideline (the dashed line is the ball). Left: X lines up wide, outside the numbers, about ten yards from the sideline. The cornerback (C) sits on his inside, the catch comes about three yards from the sideline with nowhere to run afterward, and the throw from the quarterback (Q) is long. Right: X condensed, about eight and a half yards from the ball. The cornerback has to move outside him to protect the open grass (shaded), which opens the inside, and if X still runs the out, the throw is several yards shorter and he has about ten yards of room after the catch. On a hash, the boundary-side receiver has even less room than the left panel shows."
+def split_view(w_x, cb_w):
+    """Left half of a 2x2 (the right half is off the picture, so legality isn't checked here)."""
+    off = [Player("LT", "LT", "off", LINE_D, -2 * OL_SPLIT, label=""),
+           Player("LG", "LG", "off", LINE_D, -OL_SPLIT, label=""), Player("C", "C", "off", LINE_D, 0.0, label=""),
+           P("QB", "QB", GUN, 0, "Q"), P("X", "WR", LINE_D, w_x), P("H", "WR", OFF_BALL, w_x / 2 - 1.0)]
+    dfn = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("WILL", "WILL", 4.5, -2.8),
+           D("NB", "NB", 5.0, w_x / 2 - 1.6, "$"), D("LCB", "CB", 7.0, cb_w), D("FS", "FS", 13.0, -9.5)]
+    p = Play(off, dfn, los=40, to_go=None)
+    p.route("X", r.out(10.0, 7.0))
+    p.pass_to("X", t=1.75)
+    p.highlight("X", color=style.OFFENSE_DARK)
+    return p
+
+
+LAT, WIN = (-SIDELINE, 2.0), (-7.0, 15.5)
+fig, axes = grid(1, 2, LAT, WIN)
+for ax, (w_x, cb_w, head) in zip(axes.flat, [(-16.5, -15.6, "Wide split"), (-8.5, -9.8, "Condensed split")]):
+    p = split_view(w_x, cb_w)
+    fld = p.draw(ax=ax, lateral=LAT, window=WIN, title=False)
+    hide_yard_numbers(ax)
+    shade(ax, p, fld, [(0.0, w_x - 0.8), (14.5, w_x - 0.8), (14.5, -SIDELINE), (0.0, -SIDELINE)],
+          style.OFFENSE, alpha=0.10)
+    (td, tw), (cd, cw) = p.pass_target_spot()
+    throw = float(np.hypot(cd - td, cw - tw))
+    left_after = SIDELINE + cw
+    put(ax, p, fld, f"throw about {throw:.0f} yd\n{left_after:.0f} yd to the sideline\nafter the catch",
+        12.6, -13.0, size=7.0, color=style.OFFENSE_DARK, weight="bold")
+    title(ax, head)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+That doesn't contradict the last chapter's split ladder. A receiver *on* the numbers, about 12 to
+14 yards from the sideline, does have room to break either way; it's a receiver outside the
+numbers, or one pinned into the short side of the field when the ball is on a hash, who has lost
+most of his outside room. Condensing goes the other direction: it turns "some room outside" into
+"more room outside than the cornerback can protect from where he's standing."
+
+### 2. The two-way go
+
+That leads to the second reason. A receiver with room on *both* sides of his defender has what
+coaches call a [**two-way go**](../../appendices/glossary.qmd#gl-two-way-go): he can break inside
+or outside, and the defender has to guess. Against a receiver near the sideline, the defender
+doesn't guess; he takes away the inside and lets the sideline squeeze everything that breaks
+outside. Against a receiver with a two-way go, a defender who leans one way gets beaten the other.
+
+```{python}
+#| label: fig-two-way-go
+#| fig-cap: "The two-way go. Left: a receiver outside the numbers, near the sideline. His defender (C) sits on his inside shoulder (inside leverage) and takes away everything breaking in (grey dotted, 'taken away'); everything breaking out (solid) runs toward the sideline, which squeezes it. One way to go, and the defender knows which. Right: a receiver in the slot or with a condensed split. With room on both sides, his defender lines up head-up and has to guess; the receiver can break in or out (both dashed options), and whichever way the defender leans, the receiver goes the other. The lineman on the right of each panel is the center, for scale."
+LAT, WIN = (-SIDELINE, 2.2), (-2.6, 10.0)
+fig, axes = grid(1, 2, LAT, WIN, extra=0.42)
+for ax, (w_x, head) in zip(axes.flat, [(-17.0, "Near the sideline: one way"), (-8.0, "Room both ways: two-way go")]):
+    off = [P("X", "WR", LINE_D, w_x), Player("C", "C", "off", LINE_D, 0.0, label="")]
+    cb_w = w_x + (1.0 if w_x < -12 else 0.0)
+    p = Play(off, [D("CB", "CB", 1.4, cb_w)], los=40, to_go=None)
+    fld = p.draw(ax=ax, lateral=LAT, window=WIN, title=False)
+    hide_yard_numbers(ax)
+    if w_x < -12:
+        branch(ax, p, fld, [(-0.7, w_x), (3.2, w_x), (7.4, w_x + 5.5)], color=style.MUTED, ls=(0, (2, 2)), lw=1.3)
+        branch(ax, p, fld, [(-0.7, w_x), (3.2, w_x), (6.6, w_x - 6.2)])
+        shade(ax, p, fld, [(-2.0, -SIDELINE), (9.5, -SIDELINE), (9.5, -SIDELINE + 2.0), (-2.0, -SIDELINE + 2.0)],
+              style.DEFENSE, alpha=0.12)
+        put(ax, p, fld, "sideline\n= help", 1.2, -SIDELINE + 3.6, size=7.0, color=style.DEFENSE_DARK)
+        put(ax, p, fld, "taken\naway", 8.3, w_x + 6.4, size=7.0, color=style.INK_2, boxed=False)
+        put(ax, p, fld, "inside\nleverage", 1.3, w_x + 4.4, size=7.0, color=style.DEFENSE_DARK, boxed=False)
+    else:
+        branch(ax, p, fld, [(-0.7, w_x), (3.2, w_x), (7.2, w_x + 5.5)], ls=(0, (3, 1.5)))
+        branch(ax, p, fld, [(-0.7, w_x), (3.2, w_x), (7.2, w_x - 5.5)], ls=(0, (3, 1.5)))
+        put(ax, p, fld, "in", 7.2, w_x + 6.9, size=7.4, color=style.OFFENSE_DARK, boxed=False, weight="bold")
+        put(ax, p, fld, "out", 7.2, w_x - 7.0, size=7.4, color=style.OFFENSE_DARK, boxed=False, weight="bold")
+        put(ax, p, fld, "head-up:\nmust guess", 1.4, w_x + 4.4, size=7.0, color=style.DEFENSE_DARK, boxed=False)
+    title(ax, head)
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+The defender's position relative to the receiver, inside him, outside him or straight in front, is
+called his [leverage](../04-the-passing-game/04-03-quick-game.qmd), and the quick passing game is
+largely a contest of reading it. The point here is about the formation: **where a receiver lines up
+decides how many ways he can go, and so how much the defender has to guess.** Slot receivers have
+always had two-way gos. Condensed splits give one to the outside receivers too.
+
+The two-way go matters most against man coverage with no help nearby, which is why you'll hear it so
+much on third down. If the defense has a safety or a linebacker helping inside, the cornerback can
+play outside leverage, give up the inside to his helper and stop guessing. Taking that help away,
+by spreading the other defenders out or pulling them toward the run, is the offense's job.
+
+### 3. Crack blocks
+
+The third reason is the run game. A receiver who lines up close to the formation is *already
+inside the cornerback* and right next to the defenders he wants to block, close enough to hit them
+from the side. A [crack block](../03-the-run-game/03-05-perimeter-and-misdirection.qmd) is a wide
+receiver blocking back toward the ball, on a nickel back, linebacker or safety who is watching the
+play and not him. It's one of the most effective blocks in football, because the defender is looking
+the other way and the receiver gets a running start. From a wide split it takes too long: by the
+time the receiver gets back inside, the play is over. From a condensed split he's there in a step or
+two.
+
+If that sounds like a cheap shot, the rulebook agrees with you halfway. A crack block is legal, but
+only if it's above the waist and not to the head or neck: a receiver who lines up more than two
+yards outside the tackle and blocks back toward the ball near the line may not go low, and doing it
+costs 15 yards.[^crackback] So the receiver needs to get his eyes and hands on the front of the
+defender, chest-high, which is one more reason he wants to start close to him. [Perimeter Runs and
+Misdirection](../03-the-run-game/03-05-perimeter-and-misdirection.qmd) has the full rule.
+
+Here's the classic version, a toss (the quarterback pitches the ball underhand to a back who is
+already running wide) with the receiver cracking inside and a pulling lineman (one who leaves his
+spot at the snap and runs along the line to block somewhere else) replacing him on the cornerback.
+Coaches call that pairing *crack-and-replace*. Here the guard pulls; in other versions, like the
+one in [Perimeter Runs](../03-the-run-game/03-05-perimeter-and-misdirection.qmd), the tackle does:
+
+```{python}
+#| label: fig-crack-toss
+#| fig-cap: "Crack toss from a condensed formation (simulated, BDB-format tracking). 1: X lines up only about eight and a half yards from the ball, outside the nickel back ($) and inside the cornerback (C). 2: the quarterback tosses the ball to the running back (R) heading left; X blocks down (cracks) on the nickel and the left guard pulls around the end. 3: the guard blocks the cornerback, the man X would have blocked from a wide split; H blocks the linebacker W; the left tackle reaches the end, the center cuts off the defensive tackle and the right guard climbs to the middle linebacker. 4: the back turns upfield between X's crack block and the guard's block, with only the deep safety left to beat. The ringed players are the two whose jobs the condensed split makes possible."
+crack_off = check_legal(line5() + [P("QB", "QB", UC, 0, "Q"), P("RB", "RB", -6.0, 0.0, "R"),
+                                   P("X", "WR", LINE_D, -8.6), P("H", "WR", OFF_BALL, -5.6),
+                                   P("Y", "TE", LINE_D, TE_W), P("Z", "WR", OFF_BALL, 8.6)])
+crack_def = [D("WDE", "DE", 1.0, -4.1, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 2.35, "T"),
+             D("SDE", "DE", 1.0, 4.2, "E"), D("WILL", "WILL", 4.5, -2.6), D("MIKE", "MIKE", 4.5, 1.6),
+             D("NB", "NB", 4.4, -6.6, "$"), D("LCB", "CB", 6.5, -10.2), D("RCB", "CB", 6.5, 10.0),
+             D("FS", "FS", 12.0, -7.0), D("SS", "SS", 12.0, 7.0)]
+cp = Play(crack_off, crack_def, los=40, to_go=None)
+cp.path("QB", [(-0.6, -0.8)], speed=3.0)
+cp.pitch("RB", t=0.35)
+cp.run("RB", [(-5.8, -3.5), (-4.4, -7.4), (-1.6, -9.2), (2.6, -8.8), (8.5, -9.0), (13.0, -10.0)],
+       absolute=True, speed=7.6)
+cp.block("X", pts=[(2.4, 1.0)], speed=6.0)                     # crack down on the nickel
+cp.path("NB", [(-0.6, -0.9)], speed=3.0, delay=0.2)            # nickel steps up to force and is met
+cp.pull("LG", [(-1.3, -2.4), (-0.1, -7.4), (3.1, -9.6)], speed=7.4)   # guard pulls and "replaces" on the corner
+cp.path("LCB", [(-3.1, -1.4)], speed=4.0, delay=0.3)           # corner comes up to force the play
+cp.block("H", pts=[(2.4, -0.6), (3.8, 1.6)], speed=5.0)        # H climbs past the end, seals the linebacker
+cp.path("WILL", [(-0.8, -1.2)], speed=4.0, delay=0.2)
+cp.path("WDE", [(-0.1, -0.3)], speed=2.0)                     # end widens to keep contain
+cp.block("LT", pts=[(0.3, -0.7)])                              # reach the end
+cp.block("C", pts=[(0.4, -1.0)])                               # cut off the backside-shaded tackle
+cp.block("RG", target="MIKE", speed=3.4)                       # climb to the Mike
+cp.path("FS", [(-3.5, -2.8)], speed=5.5, delay=0.4)
+CRACK_T = [0.0, 0.6, 1.4, 2.4]
+CRACK_NOTES = ["Condensed: X starts inside\nthe cornerback",
+               "Toss; X cracks the nickel,\nthe guard pulls",
+               "The guard 'replaces' X\non the cornerback",
+               "The back cuts up between the\nblocks; only the safety is left"]
+animated(cp, CRACK_T, CRACK_NOTES, lateral=(-18.5, 9.0), window=(-8.0, 14.5),
+         rings=(("X", style.OFFENSE_DARK), ("LG", style.OFFENSE_DARK)))
+```
+
+Notice the defender who got blocked. The nickel back was lined up to stop the toss, watching the
+ball, and the receiver he was "covering" turned around and hit him from the side. If the nickel
+starts watching the receiver instead, the receiver runs past him on a pass. That's the condensed
+formation's version of the slot question from earlier in the chapter: a defender who has to worry
+about the receiver *and* the run can't do both. The rest of the perimeter run game, including the
+jet sweep (a receiver running across the formation at full speed who takes a handoff and keeps
+going to the edge), is in [Perimeter Runs and
+Misdirection](../03-the-run-game/03-05-perimeter-and-misdirection.qmd).
+
+### 4. Everything looks the same
+
+The last reason is the subtlest, and for many coaches the most important. When receivers stand
+close to the formation on every play, a run and a pass start from **the same picture**. The
+receiver who cracks on a run is lined up exactly where he lines up to run a route on play-action
+(faking the handoff, then throwing). The defense can't read the play from the splits. The
+condensed formations of the late-2010s Rams and 49ers were built around exactly that: [outside
+zone](../03-the-run-game/03-02-zone-running.qmd) runs (on which the whole line steps sideways
+together and the back aims for the edge), crack blocks and [play-action](../04-the-passing-game/04-05-play-action-boots-screens.qmd)
+passes, all from one look. The condensed split is also the ideal launch point for a favorite
+play-action pass of those offenses: the receiver starts inside the cornerback and just outside the
+linebackers, the linebackers step up to stop the fake run, and he crosses the field behind them.
+A linebacker or safety who guessed "run" because the receivers were tight was guessing wrong half
+the time.
+
+Two more things come with the tight picture. A receiver eight yards from the ball can [motion](02-06-motion-and-shifts.qmd)
+across the formation in about a second, so condensed splits and pre-snap motion go naturally together. And the more often the offense lines up this way, the less
+any single snap gives away.
+
+### What condensed gives up
+
+Nothing in football is free, and condensing has two clear costs.
+
+**It brings the defense in too.** Defenders line up on receivers, so when the receivers move in,
+the defenders move in, and the box can get *more* crowded, not less. The spread's first benefit,
+thinning the box, runs backward. Condensed offenses accept that because the receivers now block
+those extra defenders, but a condensed formation against a defense that plays it well can feel
+very crowded.
+
+**It gives up horizontal stretch.** A spread formation makes defenders cover sideline to sideline; a
+condensed one lets them stay closer together, so one defender can sometimes cover two receivers,
+and quick throws to the outside, like screens to a receiver near the sideline, have less room. The
+[horizontal stretch](../04-the-passing-game/04-01-passing-fundamentals.qmd), making defenders cover
+too much width, is one of the passing game's basic weapons, and condensing trades some of it for
+the other advantages.
+
+::: {.callout-important title="Why it exists"}
+**Condensed formations exist because the spread taught defenses to play wide.** Once defenses
+learned to spread out and play the receivers from the inside, using the sideline as help, the open
+space moved: it was now *outside* the receivers and in the [run
+fits](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd) near the ball (each
+run defender's assigned gap, which a block from an unexpected angle can wipe out). Condensing puts
+the receivers where the new space is, and where they can block the defenders who are watching the
+ball. It trades width for angles. It's the same idea as the spread, making the defense defend
+space it would rather not, aimed at a different patch of grass.
+:::
+
+## Specialty looks
+
+Three more formations deserve names, not because you'll see them every drive but because when you
+do see them, they're asking a specific question, and you can answer it before the snap.
+
+### Wildcat: a direct snap to someone else
+
+In the [**wildcat**](../../appendices/glossary.qmd#gl-wildcat), the ball is snapped directly to a
+running back (or a receiver, or a tight end) standing where the shotgun quarterback would be, while
+the real quarterback lines up as a receiver or leaves the field. Usually another back or receiver
+runs in motion across the formation at the snap, so the player who takes the snap can hand it to
+him, fake to him, or keep it himself.
+
+```{python}
+#| label: fig-wildcat
+#| fig-cap: "A typical wildcat. The running back (R) stands in the shotgun spot and takes the snap; the quarterback (Q) is split out on the left as a receiver, and the nickel back ($) has gone out with him. A second back (F) runs in motion from the right (dashed) and crosses in front of R at the snap. R either hands it to him on a sweep to the left (give) or keeps it and runs off tackle to the right behind the pulling left guard (keep), a power play. Because the quarterback has drawn a defender out of the box, the offense has one more blocker or runner near the ball than a normal handoff would give it. Defense: E = end, T = tackle, W, M and S = the Will, Mike and Sam (strongside) linebackers, C = cornerbacks, FS = free safety."
+wc = check_legal(line5() + [P("RB", "RB", GUN, 0, "R"), P("QB", "QB", OFF_BALL, -11.8, "Q"),
+                            P("X", "WR", LINE_D, -16), P("Y", "TE", LINE_D, TE_W),
+                            P("F", "RB", OFF_BALL, 9.0, "F"), P("Z", "WR", OFF_BALL, 15.5)])
+wd = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 2.35, "T"),
+      D("SDE", "DE", 1.0, 5.6, "E"), D("WILL", "WILL", 4.5, -2.6), D("MIKE", "MIKE", 4.5, 1.6),
+      D("SAM", "SAM", 4.2, 7.4), D("LCB", "CB", 6.5, -16), D("NB", "NB", 5.5, -11.8, "$"),
+      D("RCB", "CB", 6.5, 15.5), D("FS", "FS", 12.5, 0.0)]
+wp = Play(wc, wd, los=40, to_go=None)
+wp.motion("F", to=(-2.6, 1.2))
+wp.run("F", [(-2.2, -3.0), (-0.6, -9.0), (3.2, -13.0), (8.5, -14.5)], absolute=True)
+wp.pull("LG", [(-1.5, 1.4), (-1.5, 4.0), (1.3, 4.9)])          # the power puller leads up through the hole
+wp.highlight("RB", color=RB_RING)
+wp.highlight("F", color=RB_RING)
+wp.highlight("QB", color=style.OFFENSE_DARK)
+fld = wp.draw(lateral=(-19.5, 19.5), window=(-8.0, 14.5), title=False)
+ax = plt.gca()
+hide_yard_numbers(ax)
+branch(ax, wp, fld, [(GUN, 0.0), (-3.4, 2.6), (-1.8, 4.0), (6.2, 4.0)], color=style.OFFENSE_DARK, lw=2.4)
+put(ax, wp, fld, "keep", 7.2, 4.0, size=7.4, boxed=False, color=style.OFFENSE_DARK, weight="bold")
+put(ax, wp, fld, "give", 9.6, -14.5, size=7.4, boxed=False, color=style.OFFENSE_DARK, weight="bold")
+put(ax, wp, fld, "QB split\nout wide", -4.6, -11.8, size=7.2)
+plt.show()
+```
+
+Why snap to a running back? Think about a normal handoff. The quarterback takes the snap, hands the
+ball off, and then does nothing useful for the run: he's one of the offense's eleven players, but
+he isn't blocking anybody. The defense, meanwhile, has all eleven of its players available to
+tackle. In the wildcat, the player who takes the snap is himself a running threat. And the
+quarterback, now split out wide, still needs a defender on him, because he is still an eligible
+receiver: leave him alone and the offense can throw to him, or toss him the ball back for a pass of
+his own. So the offense has one more player who matters to the run and the defense has one fewer to
+stop it. The motion man adds a second runner, so the defense can't key on one ball carrier.
+
+The wildcat's ancestor is the [single wing](../11-history/11-01-single-wing-to-scoring-drought.qmd),
+the direct-snap formation that ruled football before the [T-formation](02-03-classic-formations.qmd). Its modern NFL moment came in
+2008, when the Miami Dolphins used it to stun the New England Patriots (the story is in the film
+room below), and for a season or two teams all over the league copied it. Then it faded, for a reason worth
+remembering: the player taking the snap usually couldn't throw. Once defenses stopped respecting
+the pass, they put an extra player in the box, and the wildcat's one-player advantage disappeared.
+It survives today in short bursts, as a short-yardage or goal-line package, or built around a
+player who really can both run and throw. In Next Gen Stats' formation labels it never reached even
+one play in a hundred in any season from 2016 to 2022.[^wildcat-rate]
+
+### Unbalanced line: tackle over
+
+An [**unbalanced line**](../../appendices/glossary.qmd#gl-unbalanced-line) puts more offensive
+linemen on one side of the center than the other. The common way, [**tackle
+over**](../../appendices/glossary.qmd#gl-tackle-over), moves one tackle to line up next to the other
+one, so one side has three linemen outside the center and the other side has only a guard.
+
+```{python}
+#| label: fig-unbalanced
+#| fig-cap: "Balanced and unbalanced, against the same defensive front. Left: a normal line, two linemen on each side of the center, with the tight end (Y, gold ring) on the right. Counting the right side of the center, three blockers (the right guard, the right tackle and Y) face four defenders (the tackle T, the end E and the linebackers M and S). Right: tackle over. The left tackle (dark ring) lines up outside the right tackle, so the right side has three linemen plus the tight end, and the left side has only the guard. X lines up on the line on the left to keep seven on the line; he is now the left end. If the defense doesn't shift its front, the right side is now four blockers against four defenders: everyone has a man, and the back runs behind them. Q = quarterback, R = running back; linemen unlettered; S = Sam linebacker; C = cornerbacks; $ = nickel back."
+def unbal(over):
+    q, rb = P("QB", "QB", UC, 0, "Q"), P("RB", "RB", TB_D, 0, "R")
+    if over:
+        ol = [Player("LG", "LG", "off", LINE_D, -OL_SPLIT, label=""), Player("C", "C", "off", LINE_D, 0, label=""),
+              Player("RG", "RG", "off", LINE_D, OL_SPLIT, label=""), Player("RT", "RT", "off", LINE_D, 2 * OL_SPLIT, label=""),
+              Player("LT", "LT", "off", LINE_D, 3 * OL_SPLIT, label="")]
+        skill = [q, rb, P("Y", "TE", LINE_D, 4 * OL_SPLIT + 1.0), P("X", "WR", LINE_D, -10.0),
+                 P("H", "WR", OFF_BALL, -6.0), P("Z", "WR", OFF_BALL, 13.0)]
+    else:
+        ol = line5()
+        skill = [q, rb, P("Y", "TE", LINE_D, TE_W), P("X", "WR", LINE_D, -12.0),
+                 P("H", "WR", OFF_BALL, -7.5), P("Z", "WR", OFF_BALL, 12.0)]
+    return check_legal(ol + skill)
+
+
+ud = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 2.35, "T"),
+      D("SDE", "DE", 1.0, 5.6, "E"), D("WILL", "WILL", 4.5, -2.6), D("MIKE", "MIKE", 4.5, 1.6),
+      D("SAM", "SAM", 4.2, 7.2), D("LCB", "CB", 6.5, -11.0), D("NB", "NB", 5.5, -7.0, "$"),
+      D("RCB", "CB", 6.5, 12.5), D("FS", "FS", 12.0, 0.0)]
+LAT, WIN = (-16, 16), (-8.5, 13.5)
+fig, axes = grid(1, 2, LAT, WIN)
+for ax, over, head in [(axes[0, 0], False, "Balanced"), (axes[0, 1], True, "Tackle over")]:
+    p = Play(unbal(over), ud, los=40, to_go=None)
+    p.highlight("Y", color=TE_RING)
+    if over:
+        p.highlight("LT", color=style.OFFENSE_DARK)
+    fld = p.draw(ax=ax, lateral=LAT, window=WIN, title=False)
+    hide_yard_numbers(ax)
+    put(ax, p, fld, "2 linemen | 2 linemen" if not over else "1 lineman | 3 linemen", -4.4, 0.0,
+        size=7.0, color=style.INK_2)
+    put(ax, p, fld, ("right side:\n4 blockers vs 4" if over else "right side:\n3 blockers vs 4"), 9.8, 8.6,
+        size=7.0, color=style.OFFENSE_DARK if over else style.INK, weight="bold" if over else "normal")
+    title(ax, head)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+The point is arithmetic. A defense lines up its front by counting blockers on each side of the
+center. If one side suddenly has an extra lineman and the defense doesn't notice or doesn't shift,
+the offense has a blocker for every defender on that side, and it runs there. The defense's simplest
+answer is to declare the extra-lineman side its strong side and slide its whole front a gap over,
+which works if everyone sees it in time, and can open a hole somewhere else or leave a pass-rusher
+out of position if they don't.
+
+Moving the left tackle isn't the only way to get there. An offense can also bring in a sixth
+offensive lineman to stand next to a tackle, which gives the same extra blocker without
+weakening the other side of the line.
+
+Two rules keep the look honest. Linemen wear numbers 50 to 79 and are ineligible, so a tackle who
+moves to the end of the line is still just a blocker, which is why a tight end usually lines up
+outside him if the offense wants to threaten a pass that way. And the line still needs seven men, so
+the side left with only a guard needs a receiver on the line at its end, like X in the picture. (A
+lineman can become eligible by [reporting to the referee](02-02-formation-rules-and-vocabulary.qmd),
+a different trick.)
+
+### Swinging gate: make the defense follow
+
+The [**swinging gate**](../../appendices/glossary.qmd#gl-swinging-gate) is a trick alignment you'll
+see mostly on extra points and two-point tries. The snapper stays over the ball, with the holder
+behind him, and most of the other linemen line up in a group far out to one side.
+
+```{python}
+#| label: fig-swinging-gate
+#| fig-cap: "A swinging gate on an extra-point try. Only the snapper (the lone lineman at the ball) is over the ball, with the holder (P, usually the punter) and kicker (K) behind him. Four linemen and a tight end stand on the line far to the right, with a second tight end (U) and a receiver (Z) behind them: the 'gate,' seven players in all. A receiver (X) on the line on the far left gives the formation its seventh man on the line, so it's legal. Here the defense has sent only four players out to the gate (two cornerbacks, C, and two safeties, FS and SS), so the gate's six blockers can take all four while Z carries the ball; if more defenders follow, the offense shifts back into its normal kicking formation (the gate 'swings shut'). Defense at the ball: E = ends, T = tackles, LB = linebackers."
+gate_off = check_legal([
+    P("X", "WR", LINE_D, -13.0), Player("C", "C", "off", LINE_D, 0.0, label=""),
+    Player("G1", "LG", "off", LINE_D, 9.6, label=""), Player("G2", "LT", "off", LINE_D, 11.2, label=""),
+    Player("G3", "RG", "off", LINE_D, 12.8, label=""), Player("G4", "RT", "off", LINE_D, 14.4, label=""),
+    P("T2", "TE", LINE_D, 16.2, "Y"),
+    P("HOLD", "QB", -7.0, 0.0, "P"), Player("K", "K", "off", -9.5, -1.6, label="K"),
+    P("T1", "TE", -2.2, 11.2, "U"), P("W1", "WR", -2.2, 14.4, "Z")])
+gate_def = [D("D1", "DE", 1.0, -3.0, "E"), D("D2", "DT", 1.0, -1.0, "T"), D("D3", "DT", 1.0, 1.0, "T"),
+            D("D4", "DE", 1.0, 3.0, "E"), D("D5", "LB", 1.0, -5.0, "LB"), D("D6", "LB", 1.0, 5.0, "LB"),
+            D("D7", "CB", 4.5, -13.0, "C"), D("D8", "CB", 4.0, 10.6, "C"), D("D9", "SS", 5.5, 13.2, "SS"),
+            D("D10", "CB", 4.0, 16.0, "C"), D("D11", "FS", 8.0, 12.0, "FS")]
+gp = Play(gate_off, gate_def, los=95, to_go=None)
+fld = gp.draw(lateral=(-16.5, 21.0), window=(-11.5, 10.0), title=False)
+ax = plt.gca()
+hide_yard_numbers(ax)
+shade(ax, gp, fld, [(-3.4, 8.4), (2.4, 8.4), (2.4, 17.6), (-3.4, 17.6)], style.OFFENSE, alpha=0.08, ls=(0, (3, 2)))
+put(ax, gp, fld, "the 'gate': 5 on the line,\n2 behind (7 players)", -5.4, 13.0, size=7.2)
+put(ax, gp, fld, "4 defenders\nfollowed", 7.8, 18.0, size=7.2, color=style.DEFENSE_DARK)
+plt.show()
+```
+
+The gate asks the defense a yes-or-no question. If the defense lines up to block the kick and
+ignores the group out wide, the offense snaps the ball to the holder, who throws to or pitches to the
+gate, where there are more offensive players than defenders: in the picture, six blockers for four
+defenders, and a seventh man to carry the ball. If the defense sends people out to
+cover the gate, the gate "swings shut": the linemen run back to their normal spots and the team kicks,
+or the offense uses the defense's confusion to run a play from the normal formation. Either way the
+defense has to recognize it, count it, and adjust in a few seconds, which is exactly the kind of
+pressure every formation in this chapter is designed to create.[^pat]
+
+## Where spread formations came from
+
+The full story belongs to Part 11, but three sentences explain why the NFL looks the way it does.
+Spreading receivers out is almost as old as the forward pass: Dutch Meyer's TCU teams of the 1930s
+and 1940s used what he called the "spread formation," and from the late 1950s on, the run and shoot
+and later the [Air Raid](../04-the-passing-game/04-08-offensive-systems-and-languages.qmd) turned
+the idea into whole offenses, mostly in high school and college.[^history] The NFL came to it slowly,
+then all at once, as a generation of quarterbacks and receivers arrived having played nearly every
+snap in the shotgun with three or four receivers out, and as offenses like the 2007 Patriots (see the
+film room) showed what it could do; by the late 2010s the shotgun 11-personnel spread was the league's
+default, and the condensed formation was the next move in the same back-and-forth. [The College
+Laboratory](../11-history/11-03-the-college-laboratory.qmd) and [The Modern
+Era](../11-history/11-05-the-modern-era.qmd) tell it in full.
+
+## Film room
+
+::: {.callout-note title="Film room: New England Patriots 2007"}
+The 2007 Patriots went 16–0 in the regular season and scored 589 points, at the time an NFL
+record. Tom Brady threw 50 touchdown passes (also a record then), Randy Moss caught 23 of them (a
+single-season record), and Wes Welker caught 112 passes.[^pats07] The offense, coordinated by Josh
+McDaniels, lived in spread formations: by the play-by-play data's shotgun flag, the Patriots were
+in the shotgun on about half their plays, more than any other team and nearly twice the league rate
+of about 27%.
+
+The spread was built around two very different receivers, and it shows the two halves of this
+chapter. **Moss** was the deep threat outside, exactly the kind of receiver a 3x1 leaves on the
+island: a defense that rotated its safety away from him left him one-on-one with a cornerback, and
+a defense that kept a safety over him was short-handed everywhere else. **Welker** worked from the
+slot, where he had a two-way go on most snaps and could break inside or outside depending on how the
+defender played him.[^pats07-roles]
+
+**What to notice:** when an offense puts one receiver alone on one side and three on the other, find
+the safeties. Where they go before the snap tells you which bet the defense is making, and which
+receiver the quarterback will look at first.
+:::
+
+::: {.callout-note title="Film room: Los Angeles Rams 2018"}
+Sean McVay's 2018 Rams went 13–3 and reached Super Bowl LIII, and as [Personnel](02-01-personnel-groupings.qmd)
+showed, they used 11 personnel on about 93% of their plays. With the personnel never changing, the
+variety had to come from formation and motion, and the Rams' signature was the **condensed
+formation**: receivers lined up close to the formation, so tight that about 60% of the Rams'
+formations were less than 20 yards wide at the snap, against 37% for the next-tightest team. (For
+scale: a 2x2 with both outside receivers on the numbers and the ball in the middle is about 25 to
+30 yards wide from one outside receiver to the other.)
+
+The tight splits made the run game and the passing game look alike. On outside zone runs, the
+receivers were close enough to block the linebackers and safeties at the edge; on play-action and
+bootlegs, the same receivers released into routes from the same spots, and defenders who had been hit
+by those receivers on the previous run had to guess.[^rams18]
+
+**What to notice:** before the snap, measure the outside receiver against the numbers painted on the
+field. If he's well inside them, look for a crack block on a run or an outside-breaking route on a pass,
+and watch the cornerback: if he widens to protect the outside, the inside is open.
+:::
+
+::: {.callout-note title="Film room: Miami Dolphins 2008, the Wildcat"}
+On September 21, 2008, the Miami Dolphins, who had gone 1–15 the year before, traveled to New
+England and beat the Patriots 38–13. Running back Ronnie Brown took direct snaps in a formation the
+Dolphins called the Wildcat and scored four rushing touchdowns, and threw a touchdown pass from it as
+well. Miami stacked two of this chapter's tricks: the Wildcat line was unbalanced, and the handful of
+plays (a power, a counter, a sweep to Ricky Williams coming across in motion, a reverse and a couple
+of passes) all started from the same picture. The loss ended New England's 21-game regular-season winning streak, and Miami went on to win the
+AFC East at 11–5.[^dolphins08]
+
+The idea came to Miami through quarterbacks coach David Lee, who had run a version of it at the
+University of Arkansas with Darren McFadden. The name has a longer and disputed history: several high
+school and college coaches ran direct-snap formations under the same name in the late 1990s and 2000s,
+and all of them were rediscovering the single wing.[^wildcat-origin]
+
+**What to notice:** when a running back walks up to the shotgun spot and the quarterback jogs out wide,
+count the box. The wildcat's edge is one extra runner; if the defense has one extra defender inside,
+it has taken that edge away, and the offense's best play may be to shift back out of it.
+:::
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it: formation and leverage"}
+- **Name the formation.** As the offense breaks the huddle, count receivers on each side, from the
+  sideline in: 2x2, 3x1, empty (3x2), or a variation (bunch, stack, nub, quads). Is anybody beside the
+  quarterback?
+- **Find the strength.** Which side has more receivers? Is the tight end on the same side or the other
+  one (a nub)? A split strength means the defense has to pick one.
+- **Check the splits.** Use the painted numbers as your ruler. An outside receiver on or outside the
+  numbers is a normal or wide split; one clearly inside the numbers (a high camera shows it best) is
+  condensed, and one within a few yards of the tackle or tight end is tight. Condensed splits mean
+  crack blocks, outside-breaking routes, play-action crossers and rubs; wide splits mean the offense
+  wants the defense spread thin.
+- **Count each side, three steps.** Receivers on that side; underneath defenders outside the box on
+  that side (an apex defender counts); then the deep safety as "+ safety." More receivers than
+  underneath defenders is a quick throw waiting to happen; a lone receiver with no safety on his side
+  is on an island.
+- **Count the box.** Did the spread pull defenders out? Six or fewer in the box against a spread
+  formation is an invitation to run.
+- **Look for specialty clues.** The quarterback split out wide: wildcat. Three linemen on one side of
+  the center: unbalanced. Linemen standing far out on an extra point: swinging gate.
+- **Log it.** Add a "formation" column to your [prediction
+  log](../01-foundations/01-06-how-to-watch-a-broadcast.qmd) beside personnel: for example "11, 3x1
+  right, condensed." After a half, check how often empty meant pass.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: count the sides"}
+Second-and-6 at midfield. The offense is in 11 personnel and lines up like this; the defense is in
+nickel with two deep safeties.
+
+```{python}
+#| label: fig-predict-count
+#| fig-cap: "Drill 1. Defense: E = end, T = tackle, M and W = linebackers, $ = nickel back, C = cornerbacks, FS and SS = safeties (both about 12 yards deep). Shaded rectangle = the box. Offense: X, H and Z are wide receivers, Y the tight end (gold ring), R the running back (aqua ring), Q the quarterback. The thick gold line across the field, in all three drills, is the line to gain."
+dd = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 2.35, "T"),
+      D("SDE", "DE", 1.0, 4.6, "E"), D("MIKE", "MIKE", 4.5, -1.2), D("WILL", "WILL", 4.5, 2.6),
+      D("LCB", "CB", 7.0, -15.5), D("RCB", "CB", 7.5, 15.5), D("NB", "NB", 4.6, 11.6, "$"),
+      D("FS", "FS", 12.0, -9.0), D("SS", "SS", 12.5, 9.5)]
+q = ring_bodies(Play(form("3x1"), dd, los=60, to_go=6))
+fld = q.draw(lateral=(-18, 18), window=(-7.5, 14.5), title=False, width_in=5.2)
+hide_yard_numbers(plt.gca())
+shade_box(plt.gca(), q, fld)
+plt.show()
+```
+
+**Name the formation and number the receivers. Where does the offense have more receivers than
+defenders, and what's the likely play?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**3x1 (trips right).** On the right, Z is #1, H is #2 and the tight end Y is #3; on the left, X is #1.
+The back beside the quarterback isn't numbered.
+
+**Count the right side, three steps:** three receivers; two underneath defenders outside the box
+(the cornerback on Z and the nickel on H); and the safety, twelve yards deep, as "+ safety." The
+linebacker W is inside the box, so he doesn't count, and the third receiver, Y, has nobody within
+about seven yards. That's three against two underneath.
+
+**The likely play:** a quick throw to the trips side, to Y or on a screen to the three-receiver side,
+before the defense can bring the safety down or widen W. If W walks out before the snap, the box drops
+to five and the run looks better: that's the slot question from earlier in the chapter. Either way,
+the defense's alignment has handed the offense a numbers advantage, and good offenses check to it.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: empty with a running quarterback"}
+Third-and-4 at the opponent's 40. The offense has a quarterback who's one of the league's best
+runners. It goes empty, and the defense matches with six defensive backs.
+
+```{python}
+#| label: fig-predict-empty
+#| fig-cap: "Drill 2. Empty 3x2 against a dime defense (six defensive backs). Defense: E = end, T = tackle, M = linebacker, C = cornerbacks, $ = nickel, D = dime back, FS and SS = safeties. Shaded rectangle = the box."
+ed = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -1.6, "T"), D("SDT", "DT", 1.0, 1.6, "T"),
+      D("SDE", "DE", 1.0, 4.6, "E"), D("MIKE", "MIKE", 5.0, 0.0),
+      D("LCB", "CB", 7.0, -15.5), D("NB", "NB", 5.5, -9.0, "$"), D("DB", "DB", 5.5, 7.6, "D"),
+      D("SS", "SS", 7.5, 10.8), D("RCB", "CB", 7.0, 15.5), D("FS", "FS", 13.0, -3.0)]
+q = ring_bodies(Play(form("empty"), ed, los=70, to_go=4))
+fld = q.draw(lateral=(-18, 18), window=(-7.5, 14.5), title=False, width_in=5.2)
+hide_yard_numbers(plt.gca())
+shade_box(plt.gca(), q, fld)
+plt.show()
+```
+
+**Is this a pass? What does the defense's alignment invite, and why?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Probably a pass, but watch for a quarterback run.** League-wide, empty is nearly always a
+dropback, and third-and-4 is a passing down. That's the default.
+
+**What the alignment invites:** count the box. Four linemen and one linebacker: **five** defenders
+inside, against **five** offensive linemen. Every box defender has a blocker. The other six defenders
+are spread out over the five receivers: the strong safety has walked up over the tight end, and the
+free safety is alone, thirteen yards deep. If the quarterback is a real running threat, a quarterback
+draw (he drops back as if to pass, then runs up the middle) has the numbers: every box defender
+blocked, and the quarterback against defensive backs who are backing up to cover receivers. If the
+coverage is man, it's even better, because the man defenders turn and run with their receivers,
+their backs to the quarterback. That's the arithmetic behind the Bills' empty runs with Josh Allen.
+
+**The defense's dilemma:** to take the draw away it needs a sixth defender in the box, and the only
+place to get one is from coverage over five receivers. That's what empty is for.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: everybody's tight"}
+First-and-10 at the offense's own 35. The offense lines up in 11 personnel with the quarterback under
+center and the receivers squeezed in.
+
+```{python}
+#| label: fig-predict-condensed
+#| fig-cap: "Drill 3. A condensed 2x2 with the ball in the middle of the field: X and Z about eight and a half yards from the ball, H and the tight end Y inside them, the quarterback (Q) under center and the back (R) behind him. The defense has lined up as if the receivers were still wide: both cornerbacks (C) are a couple of yards *inside* the receivers they cover, with a nickel back ($), two linebackers (W, M) and two deep safeties (FS, SS)."
+cd = [D("WDE", "DE", 1.0, -4.1, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 2.35, "T"),
+      D("SDE", "DE", 1.0, 6.0, "E"), D("WILL", "WILL", 4.5, -2.4), D("MIKE", "MIKE", 4.5, 1.6),
+      D("NB", "NB", 4.2, -4.9, "$"), D("LCB", "CB", 6.5, -6.6), D("RCB", "CB", 6.5, 6.6),
+      D("FS", "FS", 12.0, -7.5), D("SS", "SS", 12.0, 7.5)]
+q = ring_bodies(Play(crack_off, cd, los=45, to_go=10))
+fld = q.draw(lateral=(-SIDELINE, SIDELINE), window=(-8.0, 13.0), title=False, width_in=6.5)
+hide_yard_numbers(plt.gca())
+plt.show()
+```
+
+**Where is the open grass, and what kinds of play does this formation set up? What would you expect
+the cornerbacks to do about it, and what does that set up?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The open grass is outside the receivers:** about 18 yards between each outside receiver and his
+sideline, and the cornerbacks, lined up *inside* them, aren't protecting any of it.
+
+**What it sets up right now:**
+
+1. **Outside-breaking routes:** an [out](../04-the-passing-game/04-01-passing-fundamentals.qmd) (straight up, then a sharp cut to the sideline), a corner
+   (up, then angling toward the back corner of the end zone) or a fade (a deep throw toward the
+   sideline). With the cornerback inside him, the receiver doesn't even need his two-way go; he has
+   a one-way go to the side the defender isn't protecting.
+2. **Play-action.** It's first down, the quarterback is under center and the receivers are tight:
+   the defense has to respect the run. A fake handoff pulls the linebackers forward, and the receivers
+   can release behind them or outside the cornerbacks.
+
+**What the corners should do:** widen and play outside leverage, protecting the grass. (Good
+defenses do this before the offense can punish them; the drill shows a defense that hasn't.) But
+look at what that creates. With the corners outside the receivers, X and Z are now *outside the
+nickel and the linebackers and inside the cornerbacks*, exactly the picture the crack toss started
+from. X can crack down on the nickel while a pulling lineman takes the cornerback. And with the
+corners guarding the outside, the inside opens for slants and digs (a dig is a route that goes
+straight up the field, then cuts flat across it). The defense can take away one thing; the formation
+has set up the other.
+:::
+:::
+
+## Takeaways
+
+- **A formation is where the players stand, and a spread formation puts the pass-catchers across the
+  width of the field.** It makes the defense defend all 53⅓ yards, thins the box and forces defenders to
+  show where they're going. Personnel doesn't change; one grouping can line up a dozen ways.
+- **Count receivers from the sideline in, side by side: #1, #2, #3.** That count names the formation
+  (2x2, 3x1, empty 3x2, quads 4x1) and sets the defense's coverage rules. Then count each side in three
+  steps (receivers, underneath defenders outside the box, the deep safety) to see where the offense
+  has the numbers.
+- **Every spread formation asks the defense a question it can't answer both ways.** Cover the slot or
+  stay in the box; help the trips side or the lone receiver; match an empty set with defensive backs or
+  keep a sixth man inside. The offense does whatever the defense didn't.
+- **Clusters and lopsided formations have specific jobs.** Bunch and stack beat man coverage and press
+  with traffic and free releases; nub splits the formation's strength; quads asks a question most
+  defenses haven't practiced. Empty shows the quarterback everything but is more than 94% pass.
+- **Count and width are two separate dials.** 2x2, 3x1 and empty describe the count; spread and
+  condensed describe the width. Condensed splits are the modern counter-move: pulling receivers in
+  gives them room outside, a two-way go, angles for crack blocks and a way to make runs and passes look
+  alike, at the cost of some width and a more crowded box. It differs from the old tight formations
+  because the bodies are wide receivers, so the defense has to stay small.
+- **Specialty looks (wildcat, unbalanced, swinging gate) are arithmetic tricks.** Each one adds a blocker
+  or a runner somewhere the defense hasn't counted. Count the defense's answer before the snap.
+
+## Connections
+
+**Builds on:** [Personnel](02-01-personnel-groupings.qmd) (who is on the field; this chapter is where
+they stand), [Formation Rules and the Language of
+Alignment](02-02-formation-rules-and-vocabulary.qmd) (seven on the line, the X/Y/Z/H letters, splits and
+strength), and [What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd) ("Gun Trips
+Right" as one chunk of a play call).
+
+**Sets up:** [A First Look at Defense](02-05-a-first-look-at-defense.qmd) (the box, the apex defender,
+man and zone, one-high and two-high: the defense's side of every picture in this chapter), [Motion and
+Shifts as Weapons](02-06-motion-and-shifts.qmd) (moving between these formations before the snap to make
+the defense reveal itself), [Passing Game
+Fundamentals](../04-the-passing-game/04-01-passing-fundamentals.qmd) (horizontal stretch and conflict
+defenders), [The Quick Game](../04-the-passing-game/04-03-quick-game.qmd) (leverage and the two-way go
+in action), [Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd) (rub routes from
+bunch and stack), [Perimeter Runs and Misdirection](../03-the-run-game/03-05-perimeter-and-misdirection.qmd)
+(crack blocks and the crack toss), [RPOs](../04-the-passing-game/04-06-rpos.qmd) (the slot question
+turned into a play), and on defense, [Disguise, Rotation, and Split-Field
+Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd) (how coverages adjust to 3x1
+and trips checks).
+
+**History and case studies:** [The College Laboratory](../11-history/11-03-the-college-laboratory.qmd)
+(where the spread offense grew up), [The Modern Era](../11-history/11-05-the-modern-era.qmd) (the
+spread, the condensed counter and the defenses in between), [Belichick's Patriots: the Game-Plan
+Offense and Defense](../12-case-studies/12-02-belichick-patriots-game-plan.qmd) and [the Shanahan
+tree](../12-case-studies/12-03-shanahan-wide-zone-tree.qmd).
+
+::: {.callout-note title="Go deeper"}
+- Chris B. Brown, *The Art of Smart Football* (2015) and *The Essential Smart Football* (2012): short,
+  clear essays on the spread, the run and shoot, the Air Raid and why formations create mismatches.
+- Tim Layden, *Blood, Sweat and Chalk* (2010): the stories behind the single wing, the spread and the
+  Wildcat, told through the coaches who built them.
+- Pat Kirwan, *Take Your Eye Off the Ball* (2010; 2nd ed. 2015): a former NFL coach on reading formations
+  and counting the defense before the snap.
+- The 2025 NFL Big Data Bowl data on Kaggle includes a receiver-alignment label ("2x2," "3x1," "3x2"
+  and so on) and full tracking for every play of the first nine weeks of the 2022 season. Counting
+  2x2 against 3x1, and measuring each team's receiver splits from the tracking coordinates, is a good
+  first project; the web edition of this chapter has starter code under "Show the Python" (not run
+  when the book is built).
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (measure receiver splits from real tracking; not run in the build)"
+import pandas as pd
+from gridiron import bdb
+
+plays = pd.read_csv("data/bdb/plays.csv")
+print(plays["receiverAlignment"].value_counts(normalize=True).round(3))   # 2x2, 3x1, 3x2 ...
+
+trk = bdb.load_tracking("data/bdb/tracking_week_*.csv")
+players = pd.read_csv("data/bdb/players.csv")[["nflId", "position"]]
+snap = trk[trk["frameType"] == "SNAP"]
+ball = snap[snap["displayName"] == "football"][["gameId", "playId", "y"]].rename(columns={"y": "ball_y"})
+wr = snap.merge(players, on="nflId").query("position == 'WR'").merge(ball, on=["gameId", "playId"])
+wr["split"] = (wr["y"] - wr["ball_y"]).abs()                 # yards from the ball, across the field
+widest = wr.groupby(["gameId", "playId", "club"])["split"].max()
+print(widest.groupby("club").median().sort_values())        # the most condensed offenses come first
+```
+:::
+
+[^condensed]: Domonique Foxworth, "Yes, Sean McVay is an offensive genius," Andscape, Jan. 29, 2019 (Rams' condensed formations): <https://andscape.com/features/rams-coach-sean-mcvay-is-an-offensive-genius>; Zach Barnett, "How Kyle Shanahan has mastered the play-calling trend that's sweeping the NFL," FootballScoop, Feb. 6, 2024, summarizing a *Wall Street Journal* analysis of Next Gen Stats data (condensed about 11% of plays in 2016; tight splits overtook the spread in 2023; the 49ers' formations the narrowest in the league, about 19.9 yards end to end): <https://footballscoop.com/news/how-kyle-shanahan-has-mastered-the-play-calling-trend-thats-sweeping-the-nfl>.
+
+[^empty-pers]: Course calculation from nflverse data: 2025 regular-season runs and passes with no offensive player in the backfield (FTN charting), joined to the participation file's personnel. 11 personnel made up 71.7% of empty snaps, 12 personnel 14.9%, and every other grouping 3% or less.
+
+[^empty-data]: Course calculation from nflverse data (`load_pbp`, `load_participation`, `load_ftn_charting`), regular-season plays with `play_type` of pass or run and a recorded down. Empty through 2022 is the Next Gen Stats `offense_formation` label "EMPTY" (the fewer than 1% of plays with no formation label are left out); from 2022 it is FTN's `n_offense_backfield` equal to zero. In 2022, the one season both sources cover, they agree at 8.1%. A pass is any dropback, including sacks and scrambles. Data dictionaries: <https://nflreadr.nflverse.com/articles/dictionary_participation.html> and <https://nflreadr.nflverse.com/articles/dictionary_ftn_charting.html>.
+
+[^opi]: NFL Rulebook, Rule 8, Section 5 (pass interference): pass interference is an act more than one yard beyond the line of scrimmage that significantly hinders an eligible player's opportunity to catch the ball; for the offense the restrictions run from the snap until the ball is touched, and "blocking downfield by an offensive player prior to the ball being touched" (the pick play) is the first listed example of offensive pass interference: <https://operations.nfl.com/the-rules/nfl-rulebook/>.
+
+[^pat]: The NFL moved the extra-point kick back to a snap from the 15-yard line in May 2015 (a 30–2 owners' vote); two-point tries stayed at the 2. Gregg Rosenthal, "NFL moves extra point to 15-yard line for 2015 season," NFL.com, May 19, 2015: <https://www.nfl.com/news/nfl-moves-extra-point-to-15-yard-line-for-2015-season-0ap3000000493347>. Both are unchanged for 2026.
+
+[^history]: Meyer (TCU head coach 1934–1952) and his book *Spread Formation Football* (1952): "Dutch Meyer," Wikipedia, <https://en.wikipedia.org/wiki/Dutch_Meyer>, and "Spread offense," <https://en.wikipedia.org/wiki/Spread_offense>. The run and shoot grew from Glenn "Tiger" Ellison's 1958 "Lonesome Polecat" formation at Middletown (Ohio) High School, was refined by Darrel "Mouse" Davis at Portland State in the 1970s and was the base offense of the Oilers, Lions and Falcons by the early 1990s: Dusty Evely, "Tiger Ellison and the Run and Shoot," summarizing Ellison's *Run and Shoot Football: Offense of the Future*: <https://dustyevely.substack.com/p/tiger-ellison-and-the-run-and-shoot>; "Run and shoot offense," Wikipedia, <https://en.wikipedia.org/wiki/Run_and_shoot_offense>. Hal Mumme and Mike Leach built the Air Raid at Iowa Wesleyan (1989–1991), Valdosta State (1992–1996) and Kentucky (1997–1998): "Mike Leach (American football coach)," Wikipedia, <https://en.wikipedia.org/wiki/Mike_Leach_(American_football_coach)>. For the wider story: Chris B. Brown, *The Art of Smart Football* (2015).
+
+[^pats07]: Pro Football Reference, 2007 New England Patriots: <https://www.pro-football-reference.com/teams/nwe/2007.htm> (16–0; 589 points; Brady 50 TD passes; Moss 23 TD receptions; Welker 112 receptions). The 2013 Denver Broncos later scored 606 points, and Peyton Manning threw 55 touchdown passes the same season. The Patriots lost Super Bowl XLII to the New York Giants, 17–14. Shotgun shares are a course calculation from nflverse play-by-play (`shotgun` flag, 2007 regular-season runs and passes): New England 50.3%, first in the league; league 26.9%.
+
+[^pats07-roles]: Welker's slot role and the three- and four-receiver sets: "The Near-Perfect Football Team," The Ringer, Aug. 7, 2017: <https://www.theringer.com/nfl/2017/8/7/16107814/2007-new-england-patriots-tom-brady-randy-moss-wes-welker>, which also describes the safety dilemma Moss created. How often Moss lined up alone on one side isn't recorded in the public data, so the text describes the dilemma rather than a frequency.
+
+[^rams18]: Pro Football Reference, 2018 Los Angeles Rams: <https://www.pro-football-reference.com/teams/ram/2018.htm> (13–3; lost Super Bowl LIII to New England, 13–3). The 11-personnel share is a course calculation from nflverse participation data (see [Personnel](02-01-personnel-groupings.qmd)). Formation widths (ESPN Analytics and Next Gen Stats, through the 2018 season) and the condensed sets' uses, outside runs, receivers blocking and receivers releasing on bootlegs: Domonique Foxworth, "Yes, Sean McVay is an offensive genius," Andscape, Jan. 29, 2019: <https://andscape.com/features/rams-coach-sean-mcvay-is-an-offensive-genius>.
+
+[^dolphins08]: Pro Football Reference box score, Miami 38, New England 13 (Sept. 21, 2008): <https://www.pro-football-reference.com/boxscores/200809210nwe.htm>. Brown's four rushing touchdowns and touchdown pass (19 yards to Anthony Fasano), the end of New England's 21-game regular-season winning streak, Miami's 1–15 2007 and 11–5 AFC East title in 2008, and David Lee's Arkansas version with Darren McFadden and Felix Jones: ESPN, "Wildcat strike: How 2008 Dolphins shocked Patriots and the NFL": <https://www.espn.com/blog/miami-dolphins/post/_/id/28295/wildcat-strike-how-2008-dolphins-shocked-patriots-and-the-nfl>; Pro Football Hall of Fame, "Wildcat immortalized": <https://www.profootballhof.com/news/wildcat-immortalized>.
+
+[^wildcat-origin]: "Wildcat formation," Wikipedia: <https://en.wikipedia.org/wiki/Wildcat_formation>. The *Wall Street Journal* credited Hugh Wyatt, whose La Center (Washington) High School Wildcats ran a direct-snap version from 1997 and who described it in *Scholastic Coach* in 1998, with the name; Bill Snyder's Kansas State Wildcats are also often cited as its namesake; Arkansas called its version the "Wild Hog." Lee's role in bringing it to Miami: the ESPN piece in the note above.
+
+[^bills]: Course calculation from nflverse data. Empty share: Next Gen Stats formation labels (2019–2022) and FTN backfield counts (2023–2025), regular-season runs and passes: Buffalo 10.0% of plays over 2019–2025, league 8.3%. Designed runs (runs that weren't scrambles) as a share of empty snaps in 2023: Buffalo 12.7% (14 of 110, 13 by Allen), the rest of the league 5.3% (5.6% with Buffalo included). Allen's listed height and weight: <https://www.buffalobills.com/team/players-roster/josh-allen/>.
+
+[^chiefs]: Barry Petchesky, Super Bowl LVII film breakdown, Defector, Feb. 13, 2023, on Kansas City's stacked receivers in Super Bowl LVII and Andy Reid's comment that the winning design worked against man coverage: <https://defector.com/chiefs-super-bowl-confuse-the-eagles-defense-with-this-one-weird-trick>.
+
+[^crackback]: NFL Rulebook, Rule 12, Section 2, Article 6 ("crackback" block): a player who lines up more than two yards outside the tackle, or is in motion or moves that wide, and blocks back toward the spot of the snap within five yards of the line of scrimmage may not contact an opponent below the waist or in the head or neck area; 15 yards: <https://operations.nfl.com/the-rules/nfl-rulebook/>. The rule and the newer blindside-block ban are covered in [Perimeter Runs and Misdirection](../03-the-run-game/03-05-perimeter-and-misdirection.qmd).
+
+[^empty-2025]: Course calculation from nflverse data: regular-season runs and passes with FTN's `n_offense_backfield` equal to zero, joined to the participation file's `offense_personnel` (11 personnel = one running back or fullback, one tight end, three wide receivers). Empty share of 11-personnel snaps: 10.6% in 2024, 8.6% in 2025; of all other snaps, about 5.4% and 4.7%. 11 personnel itself fell from about 62% to 57% of these plays.
+
+[^no-2x2]: Next Gen Stats' formation labels in the free participation data (2016–2022) say only SHOTGUN, SINGLEBACK, I_FORM, EMPTY and the like, and from 2023 just SHOTGUN, UNDER CENTER and PISTOL; FTN's charting counts players in the backfield but not where the receivers stand. The NFL's Big Data Bowl 2025 files (2022 season, weeks 1–9, on Kaggle with a free login) do have a `receiverAlignment` label ("2x2," "3x1," "3x2" and so on) for every play; starter code is in the "Go deeper" box at the end of the chapter's web edition. We couldn't find a published league-wide count to cite.
+
+[^wildcat-rate]: Course calculation from nflverse participation data (Next Gen Stats `offense_formation` label "WILDCAT"), regular-season runs and passes, 2016–2022: between 0.2% and 0.7% of plays each season. The label was dropped from 2023.

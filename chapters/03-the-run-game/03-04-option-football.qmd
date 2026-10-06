@@ -1,0 +1,1851 @@
+---
+title: "Option Football: Reading Defenders Instead of Blocking Them"
+subtitle: "Why the offense leaves a defender unblocked on purpose, and how the quarterback makes him wrong"
+description: "The option principle from the ground up: the end man on the line of scrimmage and the read key, give and keep at the mesh, the zone read and the scrape exchange, the inverted veer (power read), the speed option, the veer and the triple option from the flexbone, the midline option, designed quarterback runs (QB power, counter, draw and sweep) as a way to add a blocker, how defenses answer, and the NFL's on-and-off relationship with option football, from the 2012 wave to Lamar Jackson, Jalen Hurts and Josh Allen, with the data on designed quarterback runs."
+glossary:
+  "Option": "A play on which the offense deliberately leaves a defender unblocked and the quarterback decides after the snap, from what that defender does, who carries the ball; the read does the work of a blocker."
+  "End man on the line of scrimmage": {def: "The outermost defensive player lined up on the line of scrimmage on one side of the formation; the usual read key on option plays, because he is the defender an offense can most easily afford to leave unblocked.", aliases: ["EMOLOS", "EMOL"]}
+  "Read key": {def: "The defender an option play leaves unblocked and the quarterback watches after the snap; what he does decides whether the quarterback gives, keeps or pitches.", aliases: ["Read defender"]}
+  "Zone read": {def: "An option run in which the line blocks inside zone and leaves the backside end unblocked; the quarterback reads that end at the mesh and gives to the back if the end stays wide, or keeps and runs outside him if he crashes down on the back. Broadcasters usually call it the read option.", aliases: ["Read option"]}
+  "Give / keep": "The quarterback's two choices on a read play: give the ball to the running back at the mesh, or keep it and run himself. Coaches call the read 'give' or 'pull' depending on which answer is the default."
+  "Inverted veer": {def: "An option run in which the line blocks power with a pulling guard, the running back sweeps wide, and the quarterback reads the play-side end: if the end widens with the back, the quarterback keeps inside behind the puller; if he squeezes, the quarterback gives outside. The roles of the veer are inverted: the quarterback is the inside runner. Also called the dash read.", aliases: ["Power read"]}
+  "Speed option": "A two-way option with no dive: the quarterback runs straight at the end man on the line of scrimmage with a back trailing him in pitch position, and pitches if the end takes him or keeps if the end takes the pitch man."
+  "Triple option": "An option with three possible ball carriers and two read keys: the quarterback reads the first defender (the dive key) to give to the diving back or keep, then, if he keeps, reads the next defender (the pitch key) to pitch to a trailing back or keep."
+  "Dive": "The inside runner on an option play, usually a fullback or B-back driving straight at a guard or tackle; the first of the triple option's three threats."
+  "Pitch": "A one-handed underhand toss sideways or backward from the quarterback to a trailing back on an option play; also the name of the trailing back's role (the pitch man). A pitch that is dropped is a live ball."
+  "Midline option": "An option that reads the first defensive lineman outside the center (often a 3-technique): the back dives at the A gap, and the quarterback gives if that defender stays wide or keeps just outside him if he squeezes the dive."
+  "Veer": "An option blocking-and-read rule from Bill Yeoman's 1960s Houston teams: the play-side tackle releases inside, leaving the first defender outside him unblocked as the dive key, and the quarterback gives to the diving back or keeps. Add a pitch man and the veer becomes the triple option."
+  "QB power": "A designed quarterback run blocked like the power play: the backside guard pulls through the hole and the running back, no longer the ball carrier, becomes a lead or kick-out blocker."
+  "QB counter": "A designed quarterback run with counter blocking: the quarterback steps one way, then follows two linemen pulling the other way, one kicking out the end and one leading through the hole."
+  "QB draw": "A designed quarterback run that starts as a pass: the line pass-blocks, the quarterback shows a drop, then runs up the middle once the rushers have gone upfield and the coverage has turned to the receivers."
+  "QB sweep": "A designed quarterback run to the outside, with pulling linemen or the running back leading him around the edge."
+  "Scrape exchange": "A defensive answer to the zone read in which the unblocked end crashes down on the running back and a linebacker loops around him to take the quarterback, so that the quarterback's 'keep' runs into the linebacker."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared helpers for this chapter's diagrams)"
+#| output: false
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, RegularPolygon
+from gridiron import Play, Player, Field, offense, technique, style
+
+OL_NAMES = {"LT": "LT", "LG": "LG", "C": "C", "RG": "RG", "RT": "RT"}
+GREEN = "#0f7a55"           # darker step of the aqua highlight, for text on the light field
+PURPLE = style.SERIES[6]    # a ring colour that is neither offense blue nor defense orange
+
+
+def named_line(players):
+    """Label the five offensive linemen so the reader can follow each one."""
+    return [p.moved(label=OL_NAMES[p.key]) if p.key in OL_NAMES else p for p in players]
+
+
+def O(key, pos, d, w, label):
+    return Player(key, pos, "off", d, w, label=label)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line5():
+    return [q for q in named_line(offense("gun_2x2")) if q.key in OL_NAMES]
+
+
+def gun(rb_w=-1.6, extra=()):
+    """Shotgun box: five linemen, the quarterback 5 yards deep and a back beside him (receivers left out)."""
+    return line5() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, rb_w, "R"), *extra]
+
+
+def flexbone():
+    """The flexbone of 02-03: B-back behind the QB, two A-backs (slotbacks) off the line, X and Z receivers on it.
+    The QB is drawn at gridiron's under-center depth (a little off the center, for legibility)."""
+    return line5() + [O("QB", "QB", -1.9, 0.0, "Q"), O("FB", "FB", -4.6, 0.0, "B"),
+                      O("LA", "RB", -1.6, -5.2, "A"), O("RA", "RB", -1.6, 5.2, "A"),
+                      O("LW", "WR", -0.7, -12.0, "X"), O("RW", "WR", -0.7, 12.0, "Z")]
+
+
+def check_legal(players):
+    """Seven offensive players on the line, and only the two at its ends may be eligible receivers."""
+    off = [q for q in players if q.side == "off"]
+    on = sorted([q for q in off if q.d > -1.0], key=lambda q: q.w)
+    assert len(on) == 7, [q.key for q in on]
+    for q in on[1:-1]:
+        assert q.key in OL_NAMES, f"{q.key} is covered up but not a lineman"
+
+
+def go_to(p, key, end, kind="block", delay=0.0, speed=None, via=()):
+    """Move `key` through absolute (d, w) points `via` to `end`, as a block, path or run."""
+    start = np.array(p._cur(key))
+    pts = [tuple(np.array(q) - start) for q in (*via, end)]
+    if kind == "block":
+        return p.block(key, pts=pts, delay=delay, speed=speed)
+    return {"path": p.path, "run": p.run, "pull": p.pull}[kind](key, pts, delay=delay, speed=speed)
+
+
+def _P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def branch(fld, p, pts, color=style.THIRD, label=None, label_at=None, lw=2.0, fontsize=7.5,
+           dash=(0, (3, 2.2)), end="arrow"):
+    """A dashed 'option' path through absolute (d, w) points, with an arrowhead (or block tee)."""
+    xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    if end == "arrow":
+        fld.ax.plot(xs[:-1], ys[:-1], color=color, lw=lw, ls=dash, zorder=6, solid_capstyle="round")
+        fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>",
+                                         mutation_scale=11, color=color, lw=lw, zorder=6))
+    else:
+        fld.ax.plot(xs, ys, color=color, lw=lw, ls=dash, zorder=6)
+        v = np.array([xs[-1] - xs[-2], ys[-1] - ys[-2]])
+        perp = np.array([-v[1], v[0]]) / np.linalg.norm(v) * 0.75
+        fld.ax.plot([xs[-1] - perp[0], xs[-1] + perp[0]], [ys[-1] - perp[1], ys[-1] + perp[1]],
+                    color=color, lw=lw + 0.6, zorder=6)
+    if label:
+        x, y = _P(fld, p, *(label_at or pts[-1]))
+        fld.ax.text(x, y, label, fontsize=fontsize, color=color, fontweight="bold", ha="center",
+                    va="center", zorder=9,
+                    bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec=color, lw=0.8))
+
+
+def pitch_arc(fld, p, a, b, color=style.BALL):
+    """The pitch: a dashed brown arc from (d, w) a to (d, w) b."""
+    (x0, y0), (x1, y1) = _P(fld, p, *a), _P(fld, p, *b)
+    fld.ax.add_patch(FancyArrowPatch((float(x0), float(y0)), (float(x1), float(y1)), arrowstyle="-|>",
+                                     mutation_scale=10, color=color, lw=1.5, ls=(0, (2, 2)), zorder=7,
+                                     connectionstyle="arc3,rad=0.25"))
+
+
+def read_line(fld, p, a, b, color=style.THIRD):
+    """The quarterback's eyes: a dashed green line between two (d, w) spots."""
+    (x0, y0), (x1, y1) = _P(fld, p, *a), _P(fld, p, *b)
+    fld.ax.plot([x0, x1], [y0, y1], color=color, lw=1.3, ls=(0, (4, 2)), zorder=4)
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.5, ha="center", weight="normal"):
+    """A short on-field label at (d, w)."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=9, fontweight=weight,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=7, shrink=7):
+    """A label with a thin leader line to the player or spot it names."""
+    (xt, yt), (xp, yp) = _P(fld, p, *text_at), _P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha="center", va="center", zorder=9,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=shrink),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def tackle_x(fld, p, d, w, color=style.DEFENSE_DARK):
+    x, y = _P(fld, p, d, w)
+    fld.ax.plot([x], [y], marker="X", ms=10, color=color, mec="white", mew=0.8, zorder=12)
+
+
+def clean(ax):
+    """Box-zoomed diagrams: drop hash ticks and yard numbers, clip anything outside the window."""
+    for ln in list(ax.lines):
+        xs, ys = ln.get_data()
+        if len(xs) == 2 and ln.get_linewidth() == 0.5 and np.hypot(xs[1] - xs[0], ys[1] - ys[0]) < 1.0:
+            ln.remove()
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, width_in=5.8, ax=None, **kw):
+    """Play.draw, sized for the page, cleaned for a box-sized window."""
+    fld = p.draw(width_in=width_in, ax=ax, **kw)
+    clean(fld.ax)
+    return fld
+
+
+def pdf_build():
+    return os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+
+# ---------------------------------------------------------------- frame strips and videos
+MARK_R = 0.6   # frame-strip marker radius in yards (smaller than static diagrams, so engaged players stay apart)
+
+
+def tracking(play):
+    df = play.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    return df
+
+
+def carrier(play, t):
+    """Who holds the ball at time t (QB until the first handoff or pitch arrives)."""
+    holder = "QB"
+    for kind, to, te in sorted(play.ball_events, key=lambda e: e[2]):
+        if t >= te + (0.25 if kind == "pitch" else 0.0):
+            holder = to
+    return holder
+
+
+def panel(ax, play, df, t, lateral, window, rings=()):
+    """One moment of a simulated play: markers, trails, the ball, rings (and a ring on the ball carrier)."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    ylo, yhi = sorted((play.ball_y - lateral[0], play.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=play.los, window=window, numbers=False, hashes=False,
+                lateral=(ylo, yhi), to_go=play.to_go)
+    cur = df[df["frameId"] == fid]
+    shown = cur[cur["x"].between(play.los + window[0] + 0.4, play.los + window[1] - 0.4)
+                & cur["y"].between(ylo + 0.4, yhi - 0.4)]
+    ids = set(shown["_id"])
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(ids) & (df["side"] != "ball")
+                & df["x"].between(play.los + window[0], play.los + window[1])]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=0.9, alpha=0.4, zorder=3)
+    ppy = fld.pts_per_yard()
+    for _, r in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(r["x"], r["y"]))
+        if r["side"] == "ball":
+            ax.add_patch(Ellipse((x, y + 0.5), 0.75, 0.45, fc=style.BALL, ec="white", lw=0.5, zorder=11))
+            continue
+        lab = str(r.get("label", "") or "")
+        if r["side"] == "off":
+            ax.add_patch(Circle((x, y), MARK_R, fc=style.OFFENSE, ec="white", lw=0.6, zorder=8))
+            tc = "white"
+        else:
+            ax.add_patch(RegularPolygon((x, y), 4, radius=MARK_R * 1.3, orientation=np.pi / 4,
+                                        fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0, zorder=8))
+            tc = style.INK
+        fs = max(4.0, min(8.0, ppy * (0.8 if len(lab) <= 1 else 0.6)))
+        ax.text(x, y, lab, ha="center", va="center", fontsize=fs, color=tc, fontweight="bold", zorder=10)
+    for key, col in list(rings) + [(carrier(play, t), style.THIRD)]:
+        rr = cur[cur["displayName"] == key]
+        if len(rr):
+            x, y = fld.xy(rr["x"].iloc[0], rr["y"].iloc[0])
+            ax.add_patch(Circle((float(x), float(y)), 1.05, fc="none", ec=col, lw=1.7, zorder=7))
+    return fld
+
+
+def strip(plays, times, lateral, window, notes=None, rows=None, rings=(), width_in=6.5, ncols=None):
+    """Frame strip: one row per play (an option's branches), or one play wrapped over rows."""
+    dfs = [tracking(p) for p in plays]
+    if len(plays) > 1:
+        cells = [(i, t) for i in range(len(plays)) for t in times]
+        ncols = len(times)
+    else:
+        cells = [(0, t) for t in times]
+        ncols = ncols or min(3, len(times))
+    nrows = int(np.ceil(len(cells) / ncols))
+    pw = width_in / ncols
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False,
+                             figsize=(width_in, nrows * (pw * span_d / span_w + (0.55 if notes else 0.25))))
+    for ax in axes.flat[len(cells):]:
+        ax.axis("off")
+    for k, (ax, (i, t)) in enumerate(zip(axes.flat, cells)):
+        panel(ax, plays[i], dfs[i], t, lateral, window, rings)
+        head = f"{k % len(times) + 1 if len(plays) > 1 else k + 1}.  " + ("snap" if abs(t) < 1e-6 else f"{t:+.1f} s")
+        if rows and k % ncols == 0:
+            head = rows[i] + "   " + head
+        ax.set_title(head, fontsize=8, color=style.INK_2 if not (rows and k % ncols == 0) else style.INK,
+                     loc="left", fontweight="bold" if rows and k % ncols == 0 else "normal")
+        if notes:
+            ax.text(0.5, -0.03, notes[k], transform=ax.transAxes, ha="center", va="top",
+                    fontsize=7.2, color=style.INK)
+    fig.tight_layout(h_pad=1.4 if notes else 0.6, w_pad=0.5)
+    return fig
+
+
+def video(plays, times, lateral, window, notes=None, rows=None, rings=(), width_in=6.4):
+    """Web version: the same panels drawn at every tenth of a second, side by side for branches."""
+    import shutil
+    from matplotlib import animation
+    from IPython.display import HTML, display
+    dfs = [tracking(p) for p in plays]
+    t0 = min(float(df["time"].min()) for df in dfs)
+    t1 = max(float(df["time"].max()) for df in dfs)
+    grid = np.round(np.arange(t0, t1 + 1e-9, 0.1), 2)
+    n = len(plays)
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    pw = (width_in if n == 1 else width_in / n) * (0.85 if n == 1 else 1.0)
+    fig, axes = plt.subplots(1, n, squeeze=False, figsize=(pw * n, pw * span_d / span_w + 0.6))
+    axes = axes.flat
+
+    def update(t):
+        for i, ax in enumerate(axes):
+            ax.clear()
+            panel(ax, plays[i], dfs[i], t, lateral, window, rings)
+            txt = "snap" if abs(t) < 0.05 else f"{t:+.1f} s"
+            if notes:
+                per = len(times)
+                mine = notes[i * per:(i + 1) * per] if n > 1 else notes
+                cur = [m for tt, m in zip(times, mine) if tt <= t + 1e-6]
+                txt += ("\n" + cur[-1].replace("\n", " ")) if cur else ""
+            head = (rows[i] + ": ") if rows else ""
+            ax.set_title(head + txt, fontsize=7.5, color=style.INK, loc="left")
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=list(grid), interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def option_animation(plays, times, lateral, window, notes=None, rows=None, rings=(), **kw):
+    """Video on the website; a numbered, captioned frame strip in the PDF."""
+    if pdf_build():
+        strip(plays, times, lateral, window, notes=notes, rows=rows, rings=rings, **kw)
+        plt.show()
+    else:
+        video(plays, times, lateral, window, notes=notes, rows=rows, rings=rings)
+
+
+# ---------------------------------------------------------------- the generic even front of 03-02
+def front7(sam=True):
+    """5-technique and 1-technique to the offense's right, 3 and 5 to its left; Sam, Mike, Will."""
+    dl = [D("PE", "DE", 1.0, technique("5", 1), "5"), D("PT", "DT", 1.0, technique("1", 1), "1"),
+          D("BT", "DT", 1.0, technique("3", -1), "3"), D("BE", "DE", 1.0, technique("5", -1), "5")]
+    lbs = [D("MIKE", "MIKE", 4.5, 1.6, "M"), D("WILL", "WILL", 4.5, -2.6, "W")]
+    if sam:
+        lbs.append(D("SAM", "SAM", 4.0, 6.6, "S"))
+    return dl + lbs
+```
+
+Second-and-6, midway through the first quarter. The offense is in the shotgun with the running
+back standing beside the quarterback. At the snap the line surges to the right, the quarterback puts
+the ball in the back's stomach, and the two of them ride together toward the line for a heartbeat.
+The defensive end on the left side sees the handoff coming and crashes down the line to make the
+tackle. He gets there, too: he hits the running back square, a perfect form tackle. Except the back
+does not have the ball. The quarterback pulled it out at the last instant and is running around the
+left end, through the exact patch of grass the defensive end just left, and nobody is within ten
+yards of him. The replay shows something even stranger: **nobody blocked that end. On purpose.**
+This chapter explains why leaving a defender alone can be smarter than blocking him, and how to see
+the decision coming before the quarterback makes it.
+
+**You'll be able to:**
+
+- Find the read key on any option look before the snap (usually the end man on the line of scrimmage)
+  and predict give or keep from his first step.
+- Explain, with hat math, why leaving a defender unblocked and reading him gains the offense a man.
+- Tell the zone read, inverted veer, speed option, triple option and midline option apart by who runs
+  where and which defender the quarterback reads.
+- Explain designed quarterback runs (QB power, counter, draw and sweep) as a way to add a blocker,
+  and say what they cost.
+- Name the defense's answers (the scrape exchange, gap exchange, hitting the quarterback) and the
+  offense's replies.
+- Explain why the NFL embraced option football in 2012, cooled on it, and came back to it with Lamar
+  Jackson, Jalen Hurts and Josh Allen, and read the data on designed quarterback runs without being
+  fooled by it.
+
+::: {.callout-note title="You'll need"}
+- **[The Language of the Run Game](03-01-run-game-language.qmd)**: gaps, technique numbers (a
+  **5-technique** sits on the tackle's outside shoulder, a **3-technique** on the guard's), play side and
+  backside, the core blocks (down, reach, combo, pull, kick-out, lead), and especially **hat math**:
+  on a plain handoff the quarterback blocks nobody, so the defense has a free man.
+- **[Zone Running](03-02-zone-running.qmd)**: inside zone, the unblocked backside end, and the arc and
+  bash tags, which already borrowed this chapter's idea.
+- **[Gap Schemes](03-03-gap-and-power-runs.qmd)**: **power** (play-side linemen block down, the backside
+  guard pulls through the hole) and **counter** (two linemen pull: one kicks out the end, one leads
+  through). The inverted veer and the designed quarterback runs are built on them.
+- **[Formation Rules and Vocabulary](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)**
+  and **[Classic Formations](../02-personnel-and-formations/02-03-classic-formations.qmd)**: the
+  shotgun and the [pistol](../../appendices/glossary.qmd#gl-pistol), and the
+  [flexbone](../../appendices/glossary.qmd#gl-flexbone) with its B-back and two A-backs.
+- **[Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd)**:
+  EPA and success rate, for the numbers section near the end.
+:::
+
+**How to read the diagrams.** Offense is blue circles, defense orange squares; *left* and *right* mean the
+offense's left and right. Q is the quarterback and R the running back; Y is a tight end, H a slot receiver
+and Z a wide receiver on the right; in flexbone pictures B is the B-back (the fullback), A an A-back (a
+slotback), and X and Z the two wide receivers. LT, LG, C, RG and RT are the linemen. Defensive linemen are
+labelled by technique number; S, M and W are the Sam, Mike and Will linebackers; NB is the nickel back (a
+fifth defensive back who lines up over a slot receiver), CB a cornerback, and SS and FS the strong and free
+safeties. Lines ending in a short bar are blocks, thin arrows are paths without the ball (fakes, motion,
+rushers), thick dark arrows are ball carriers, and the **dashed green line from the quarterback is his
+eyes**: the defender he is reading. Dashed arrows are a play's *branches*: the paths the ball can take
+depending on the read. Rings: **orange** marks the defender to watch (usually the read key), **green** follows the ball in the animations,
+and **purple** marks a blocker to follow (a puller, or a back who has become a blocker). Receivers who do not matter to the play are often
+left out of the box-sized pictures.
+
+## The option principle: read one, block the rest
+
+Start from the arithmetic of [03-01](03-01-run-game-language.qmd#why-a-quarterback-who-only-hands-off-leaves-you-a-man-short):
+on a normal handoff the quarterback becomes a spectator, so some defender is always free. The only question
+is which one.
+
+An [**option**](../../appendices/glossary.qmd#gl-option) answers that question in the offense's favour. The
+offense **chooses** the free defender in advance and leaves him unblocked on purpose. Then the quarterback,
+holding the ball, watches what that defender does after the snap and hands the ball to whichever runner the
+defender is *not* playing. The defender is not blocked, but he is not free either: whatever he does, he is
+wrong. If he tackles the running back, the quarterback has the ball. If he takes the quarterback, the
+running back has it. The read did the work of a blocker, and the blocker the offense saved is now blocking
+someone else.
+
+That is the whole idea, and everything else in this chapter is detail. Option coaches say it in one line:
+**you don't block him, you read him.** The defender the quarterback watches is the
+[**read key**](../../appendices/glossary.qmd#gl-read-key) (also called the
+[**read defender**](../../appendices/glossary.qmd#gl-read-defender)).
+
+### Which defender gets read?
+
+Usually the [**end man on the line of scrimmage**](../../appendices/glossary.qmd#gl-end-man-on-the-line-of-scrimmage):
+the outermost defensive player lined up on the line on one side of the formation. Coaches shorten it to
+[**EMOLOS**](../../appendices/glossary.qmd#gl-emolos) or [**EMOL**](../../appendices/glossary.qmd#gl-emol),
+and you will see both in coaching material. "On the line" means within about a yard of the ball, in a
+lineman's stance or standing up; a linebacker four yards deep is *off* the line and doesn't count, however
+far outside he stands.
+
+Why him? Because he is the cheapest defender to leave alone. He is at the edge of the formation, so a
+blocker would have to travel to reach him; he is usually a big, fast pass rusher who is hard to block
+anyway; and on most runs he is the man whose job is to chase the play from behind or to squeeze it from
+outside. If the offense can make his decision for him, the five linemen can spend their blocks inside, where
+the double teams are.
+
+```{python}
+#| label: fig-emolos
+#| fig-cap: "Finding the end man on the line of scrimmage (ringed), shotgun with one tight end on the right. Left: the defense has four linemen and nobody else on the line. On the left, the side with no tight end, the 5-technique is the end man. On the right, the 5-technique is inside the tight end, so he is still the last defender on the line on that side; the Sam linebacker is outside him but four yards deep, off the line, so he does not count. Right: the defense walks the Sam up to the line outside the tight end. Now he is the end man on that side, and the 5-technique is not. The count changes with every alignment, which is why the quarterback (and you) must find the end man again before every snap."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.6))
+for ax, walked in zip(axes, (False, True)):
+    off = gun(extra=(O("Y", "TE", -0.7, 4.8, "Y"),))
+    dfn = front7()
+    if walked:
+        dfn = [q.moved(d=1.0, w=6.6) if q.key == "SAM" else q for q in dfn]
+    p = Play(off, dfn, los=35, to_go=None)
+    p.highlight("BE", color=style.DEFENSE)
+    p.highlight("SAM" if walked else "PE", color=style.DEFENSE)
+    f = draw(p, ax=ax, lateral=(-9.0, 9.5), window=(-6.5, 8.6), title=False)
+    say(f, p, 3.0, -6.4, "end man\n(left)", color=style.DEFENSE_DARK, fontsize=7)
+    if walked:
+        say(f, p, 3.6, 6.6, "end man\n(right)", color=style.DEFENSE_DARK, fontsize=7)
+        point_to(f, p, (-3.4, 5.8), (1.0, 4.0), "the 5 is now\ninside him", fontsize=6.6)
+    else:
+        say(f, p, 2.7, 4.3, "end man\n(right)", color=style.DEFENSE_DARK, fontsize=7)
+        say(f, p, 6.4, 6.6, "Sam: off the line,\ndoesn't count", fontsize=6.6)
+    ax.set_title("Sam walked up: he's the end man" if walked else "Four on the line",
+                 fontsize=9, loc="left", color=style.INK, fontweight="bold")
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+The end man is the *usual* read key, not the only one. Later in the chapter you will see plays that read a
+defensive tackle (the midline), the play-side end instead of the backside one (the inverted veer), and two
+defenders one after the other (the triple option). The principle is the same every time: pick a defender
+the offense would struggle to block, and make his choice the wrong one.
+
+### What the option costs
+
+::: {.callout-important title="Why it exists"}
+Option football exists because **an offense that blocks every defender it can reach still leaves the
+defense a free man, and the option turns that man into a non-factor without spending a blocker on him.**
+It also attacks the defense where it is strongest: the best pass rushers usually line up on the edge, and
+the option makes the best of them guess. The trade is real, though. The quarterback has to be a genuine
+running threat, or the defender simply ignores him. He takes hits, often from big men, on plays where he
+keeps the ball, and sometimes on plays where he doesn't. Every exchange between quarterback and back is a
+chance to fumble (the numbers section near the end puts a figure on the cost). And because the defense decides who gets the ball, the offense cannot always put the ball
+in its best player's hands.
+:::
+
+::: {.callout-note title="Madden vs. real life"}
+In a video game, an option play is a button press: you decide who gets the ball. In real football, **the
+defense decides**. The quarterback's job is not to choose who gets the ball but to see, in a fraction of a
+second, which choice the defender has already made, and to take the other one. Good option quarterbacks
+talk about it this way: the defender tells them what to do. That is also why option plays are so hard to
+call against: a defensive coordinator who guesses right on the read defender only changes *which* runner
+gets the ball.
+:::
+
+## The mesh: deciding in half a second
+
+On most read plays the quarterback and the running back meet just after the snap, the quarterback holding
+the ball in the back's stomach while both move toward the line. That meeting is the *mesh* (or *mesh
+point*), which you met in [03-02](03-02-zone-running.qmd). Don't confuse it with the passing concept called mesh, which you will meet in
+[04-04](../04-the-passing-game/04-04-dropback-concepts.qmd); same word, different thing.
+
+The mesh is a **ride**, not a handoff. The quarterback puts the ball in the back's belly, the back closes
+his arms softly over it, and the quarterback "rides" him for a step or two, with his eyes not on the back
+but on the read key. At the end of the ride he either lets go (the **give**) or pulls the ball back out and
+runs (the **keep**). Those are the quarterback's two answers on every read, and the vocabulary is simply
+[**give / keep**](../../appendices/glossary.qmd#gl-give-keep) (coaches also say *pull* for the keep).
+
+The ride has a deadline. The ball meets the back at the quarterback's *back* hip, and the ride carries it
+forward across his body; option coaches teach that the decision must be made before the ball passes his
+*front* hip. A quarterback who reads past that point, and the back who clamps down on the ball too early,
+cause most mesh fumbles: both men think they own it.[^mesh]
+
+What is the quarterback looking for? Not where the defender *is*, but what he can do *next*, which
+coaches teach him to judge from two things: the defender's **shoulders** (turned down the line toward the
+back, or still square to the line of scrimmage) and his **distance** to the back:
+
+- If the read key **can tackle the running back**, because he is crashing down the line toward the mesh
+  or squeezing inside, the quarterback **keeps**. The defender has taken himself out of the quarterback's
+  path.
+- If the read key **can't tackle the running back**, because he stays wide, sits, or rushes upfield
+  outside, the quarterback **gives**. The defender is in position to tackle the quarterback, so the
+  quarterback is the wrong man to carry it.
+
+Teams differ on which answer is the default. A **give read** says: hand it off unless the defender
+clearly takes the back away. A **pull read** says the opposite. Most teams teach the give as the default,
+because the running back is the designated ball carrier and a hesitant keep is the worst outcome of all:
+a quarterback who isn't sure should give.
+
+Why does the ride matter? Because the defender has to commit too. A read key who sees the handoff
+immediately can stop, wait, and play whoever comes out with the ball. The ride hides the ball and buys
+time: by the time the defender knows who has it, he is already moving toward one of them.
+
+## The zone read
+
+The first option play most NFL fans saw, and still the most common, is the
+[**zone read**](../../appendices/glossary.qmd#gl-zone-read), which broadcasters usually call the
+[**read option**](../../appendices/glossary.qmd#gl-read-option). You already know its pieces from
+[03-02](03-02-zone-running.qmd). The line blocks **inside zone** to one side, every lineman stepping
+play-side and double-teaming to the linebackers. As in plain inside zone, the defender farthest from the
+play on the backside, usually the backside end, is not on anyone's list. On plain inside zone he is a
+problem the quarterback can only fake at. On the zone read, he is the read key.
+
+The two branches play out like this.
+
+```{python}
+#| label: fig-zone-read
+#| fig-cap: "The zone read, two branches of the same play (the line zones right; the quarterback reads the backside end, ringed in orange; the green ring follows the ball). Top, the end crashes: at the mesh he is already sliding down the line at the running back, so the quarterback keeps and runs where the end used to be, with nobody left on that side to tackle him. Bottom, the end stays home: he shuffles wide and keeps his eyes on the quarterback, so the quarterback gives, the back runs the inside-zone track, and the end is now a yard or more too wide to tackle him. Simulated in Big Data Bowl coordinates; the box only, receivers and deep safeties left out."
+def zone_read_play(keep):
+    off = gun(extra=(O("Y", "TE", -0.7, 4.8, "Y"),))
+    p = Play(off, front7(), los=35, to_go=None)
+    # defenders first (blocks aim at where they end up)
+    go_to(p, "BT", (1.3, -2.1), "path", speed=0.8)
+    go_to(p, "PT", (1.4, 0.9), "path", speed=0.8)
+    go_to(p, "PE", (1.4, 4.3), "path", speed=0.8)
+    go_to(p, "WILL", (3.5, -0.9), "path", speed=2.6, delay=0.3)
+    go_to(p, "MIKE", (3.6, 2.4), "path", speed=2.6, delay=0.3)
+    go_to(p, "SAM", (3.7, 5.8), "path", speed=2.6, delay=0.3)
+    # inside zone right
+    go_to(p, "LT", (0.45, -2.75), speed=1.6)
+    go_to(p, "LG", (2.2, -1.0), speed=2.6, via=[(-0.3, -1.4), (0.6, -1.5)])
+    go_to(p, "C", (0.5, 0.45), speed=1.6)
+    go_to(p, "RG", (2.3, 2.1), speed=2.6, via=[(-0.3, 1.9), (0.7, 2.0)])
+    go_to(p, "RT", (0.55, 3.75), speed=1.6)
+    go_to(p, "Y", (2.4, 5.3), speed=2.6, via=[(0.0, 4.7)])
+    # the mesh: the back rides across the quarterback's face
+    go_to(p, "RB", (-3.9, 0.7), "run", speed=3.5, delay=0.25, via=[(-4.3, -0.4)])
+    go_to(p, "QB", (-5.2, 0.0), "path", speed=0.5)
+    if keep:   # a real crash: flat down the line, a yard deep, at the back's near hip
+        go_to(p, "BE", (-1.2, -2.2), "path", speed=4.0, delay=0.15)
+        go_to(p, "BE", (-1.4, -0.6), "path", speed=2.5)
+        go_to(p, "RB", (3.0, 2.8), "run", speed=6.5, via=[(-1.2, 2.3)])
+        go_to(p, "QB", (6.5, -7.0), "run", speed=6.8, delay=0.2,
+              via=[(-4.9, -1.0), (-3.6, -3.6), (-1.0, -6.1)])
+    else:
+        go_to(p, "BE", (-0.9, -5.6), "path", speed=2.6, delay=0.15, via=[(0.4, -4.5)])
+        p.handoff("RB", t=0.85)
+        go_to(p, "RB", (6.0, 2.9), "run", speed=6.8, via=[(-1.2, 2.3)])
+        go_to(p, "QB", (-3.6, -4.1), "path", speed=4.5, delay=0.2, via=[(-4.9, -1.4)])
+    return p
+
+
+TIMES_ZR = [0.0, 0.85, 2.4]
+NOTES_ZR = ["Q catches the snap and\nlooks at the end", "End crashes at the back:\nQ pulls the ball", "Q runs where the\nend used to be",
+            "Same snap, same look", "End stays wide:\nQ gives", "Back on the zone track;\nthe end is too wide"]
+option_animation([zone_read_play(True), zone_read_play(False)], TIMES_ZR, lateral=(-10.5, 8.0),
+                 window=(-6.8, 7.8), notes=NOTES_ZR, rows=["End crashes: keep", "End stays: give"],
+                 rings=(("BE", style.DEFENSE),))
+```
+
+**If the end crashes** (top row of @fig-zone-read), he has done exactly what he would do against plain
+inside zone: chase the running back from behind, down the line. Against a handoff, that is the play that
+catches the cutback. Against the zone read, it leaves the whole backside empty. The quarterback pulls the
+ball, the end tackles a back with no ball, and the quarterback runs around him.
+
+**If the end stays home** (bottom row), he takes the quarterback away, so the quarterback gives. Now the
+end is a step or two wider than he would have been on a normal run, which means the back's cutback lane,
+the best part of inside zone, is wider too. Either way the offense got what it wanted from the one
+defender it didn't block.
+
+Count the hats to see why this matters. In the picture the defense has seven in the box (four linemen,
+three linebackers) and the offense has six blockers (five linemen and the tight end). On a plain handoff,
+that's one defender free, and inside zone picks the backside end to be him. On the zone read, the free man
+is "blocked" by the read, and the box is seven against seven. Remember 03-01's lesson: the defense can
+always bring one more defender than the offense can block, and the read is the offense's way of getting
+that man back. Expect the defense to answer by bringing yet another one, usually a safety, which is the
+[plus-one](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd) idea that
+[05-05](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd) builds.
+
+**What the zone read gives up.** The keep only gains *one* man. The quarterback who pulls the ball runs
+into the next defender out. In @fig-zone-read the left guard has climbed to the Will, so that man is
+outside the picture: a slot defender (the nickel back lined up over a slot receiver) or a safety coming
+down. If nobody accounts for him, the quarterback is running into a free tackler. That is why zone-read
+teams add an [arc block](03-02-zone-running.qmd#tags-insert-arc-and-bash) (a tight end running past the
+read end to block the next man) or have a receiver block the
+[force defender](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd) (the defender
+whose job is to turn outside runs back inside), and why the quarterback has to be a runner who can make
+that man miss, and why he is exposed even on a give: he can be hit while carrying out his fake (see "Hit
+the quarterback," under *How defenses answer the option* below).
+
+::: {.callout-caution title="Common misconception"}
+"The quarterback decides whether to run." On a true read, he doesn't; the read key does. The quarterback's
+skill is in seeing the decision early and riding the mesh long enough to make the defender commit. That is
+why the best option quarterbacks are not always the fastest ones: a quarterback who reads the end cleanly and
+keeps only when the end is truly gone gains more than a faster one who guesses.
+:::
+
+## The defense strikes back: the scrape exchange
+
+If the offense reads one defender, the defense can answer by making that defender lie. The classic answer
+is the [**scrape exchange**](../../appendices/glossary.qmd#gl-scrape-exchange), which
+[03-02](03-02-zone-running.qmd#tags-insert-arc-and-bash) previewed. The end crashes down hard on the
+running back, every time, showing the quarterback a "keep" read. Meanwhile a linebacker who would normally
+fill inside instead loops around behind the end (a **scrape**, in linebacker language: a sideways run
+behind the line to a gap outside;
+[05-04](../05-defensive-fronts-and-run-defense/05-04-linebackers-and-second-level.qmd) teaches it) to the
+spot where the quarterback will be running. The end and the linebacker have *exchanged* jobs: the end takes
+the back, the linebacker takes the quarterback.
+
+```{python}
+#| label: fig-scrape-exchange
+#| fig-cap: "The scrape exchange against the zone read (line zoning right; the quarterback reads the backside end). The end crashes inside at the running back (thin arrow: the back carries out a fake without the ball), so the quarterback reads 'keep.' But the Will linebacker (ringed) was never going inside: at the snap he scrapes over the top of the end to the outside, and arrives where the quarterback is running, while the left guard climbs to the spot the Will has left. The read was right and the play still fails, because the defense swapped jobs between the two men the quarterback could see."
+p = Play(gun(extra=(O("Y", "TE", -0.7, 4.8, "Y"),)), front7(), los=35, to_go=None)
+go_to(p, "BE", (-2.4, -2.1), "path", speed=4.0)
+go_to(p, "WILL", (-0.6, -6.1), "path", speed=5.5, via=[(3.4, -4.8), (1.2, -6.0)])
+for k, end in [("LT", (0.4, -2.6)), ("C", (0.4, 0.5)), ("RT", (0.4, 3.7))]:
+    go_to(p, k, end)
+go_to(p, "LG", (3.2, -1.6), via=[(-0.3, -1.4), (0.8, -1.5)])
+go_to(p, "RG", (3.4, 1.8), via=[(-0.3, 1.9), (0.8, 2.0)])
+go_to(p, "Y", (3.2, 5.6), via=[(0.0, 4.7)])
+go_to(p, "RB", (1.0, 2.6), "path", via=[(-4.3, -0.4), (-3.6, 0.9)])   # the back's fake (no ball)
+p.read("BE")
+p.highlight("WILL", color=style.DEFENSE)
+f = draw(p, lateral=(-11.5, 8.0), window=(-7.0, 7.5), title=False, width_in=5.4)
+branch(f, p, [(-5.0, 0.0), (-4.6, -1.1), (-3.3, -3.7), (-1.2, -5.7)], color=GREEN, label="keep",
+       label_at=(-3.0, -6.6), fontsize=7)
+tackle_x(f, p, -0.9, -6.4)
+point_to(f, p, (-5.4, -4.6), (-2.4, -2.1), "end crashes:\nQ reads 'keep'", color=style.DEFENSE_DARK,
+         fontsize=6.8)
+point_to(f, p, (5.7, -8.8), (3.4, -4.8), "Will scrapes over\nthe top to the QB", color=style.DEFENSE_DARK,
+         fontsize=6.8)
+point_to(f, p, (6.6, 1.0), (3.3, -1.4), "LG climbs to\nan empty spot", fontsize=6.6)
+point_to(f, p, (-5.8, 4.6), (-3.2, 1.5), "R: fake, no ball", fontsize=6.6)
+f.ax.set_title("The scrape exchange", fontsize=10, loc="left", color=style.INK, fontweight="bold")
+plt.show()
+```
+
+The scrape exchange is clever because it beats the quarterback while he does everything right. He read
+the end correctly; the end really could not tackle the quarterback. The defense simply put someone else
+there. A cousin of the same idea, the **gap exchange**, has two defenders swap gaps after the snap in other
+ways (a linebacker replacing a slanting lineman, for instance); it is built from the defense's side in
+[Run Fits](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd), along with the other
+ways a defense "fits" an option play.
+
+The defense pays for the exchange, too. The scraping linebacker is no longer filling his gap inside, so the
+give is now running at one fewer defender, and a running back who sees the crashing end can cut back into
+the space the linebacker left. And a defense that exchanges every time is predictable, which is exactly what
+the offense's counters feed on.
+
+**The offense's replies** are the chapter in miniature, each one a different way of turning the
+exchange against itself:
+
+- **Bash** ([03-02](03-02-zone-running.qmd#tags-insert-arc-and-bash)): swap the runners. The back runs wide
+  around the read end and the quarterback, if he keeps, runs the inside-zone track. The read flips with
+  them: if the end squeezes, give; if he widens with the back, keep. Here is why that hurts an exchange.
+  The exchange is a plan made before the snap, built on where the runners *usually* go: the end crashes at
+  the inside runner, and the Will races to the spot a yard or two outside the end where a zone-read keep
+  arrives. Against bash, the end crashes as planned, which is now a *squeeze*, so the quarterback gives. The
+  ball goes to the back on a much wider path, bending around the spot the Will is racing to rather than
+  through it, and the Will has to turn and chase a running back in space from inside, instead of meeting a
+  quarterback head-on. If the end refuses to crash and widens with the back, the quarterback keeps on the
+  inside track the Will has just left. Bash doesn't make the scraper vanish; it makes the defense's plan
+  point the wrong way.
+- **Arc** ([03-02](03-02-zone-running.qmd#tags-insert-arc-and-bash)): send a tight end or H-back past the
+  read end to block the scraper. The quarterback keeps into a lane with a blocker already in it.
+- **Read someone else.** Leave the end blocked and read the linebacker instead, or read a defensive tackle
+  (the midline, below). The defense's exchange only works if it knows who is being read.
+- **Throw it.** If the linebacker is scraping outside at the snap, the space he left behind him is open for
+  a quick pass. Packaging a throw with the read is the
+  [run-pass option](../04-the-passing-game/04-06-rpos.qmd) (RPO), which gets its own chapter.
+
+The defense, in turn, has answers to those. Option football is a conversation, and in the eras this
+chapter visits (1960s Houston, the college spread offenses of the 2000s, 2010s Baltimore) it was usually
+the offense who spoke last.
+
+## Inverted veer: the quarterback goes inside
+
+The zone read sends the back inside and the quarterback outside. The
+[**inverted veer**](../../appendices/glossary.qmd#gl-inverted-veer) (also called the
+[**power read**](../../appendices/glossary.qmd#gl-power-read)) flips them: the **back goes outside** on a
+sweep path, the **quarterback is the inside runner**, and the read is the **play-side** end, the defender
+right where the play is going.
+
+```{python}
+#| label: fig-inverted-veer
+#| fig-cap: "The inverted veer (power read) to the right. The line blocks power: the right tackle and right guard double-team the 3-technique, then the guard climbs to the Will; the center blocks back on the 1-technique; the left guard pulls across for the Mike. The slot receiver (H) blocks the nickel back inward, so the edge outside him is clear. The play-side end (ringed) is left unblocked and read (dashed green eyes line). The back sweeps wide across the quarterback's face. If the end squeezes inside to take the quarterback, the quarterback gives and the back bends outside the slot's block; if the end widens with the back, the quarterback keeps and runs inside him, between the end and the tackle's down block, behind the pulling guard."
+dfn = [D("PE", "DE", 1.0, technique("5", 1) + 1.4, "5"), D("PT", "DT", 1.0, technique("3", 1), "3"),
+       D("BT", "DT", 1.0, technique("1", -1), "1"), D("BE", "DE", 1.0, technique("5", -1), "5"),
+       D("MIKE", "MIKE", 4.5, 2.4, "M"), D("WILL", "WILL", 4.5, -2.0, "W"), D("NB", "NB", 4.0, 8.4, "NB")]
+p = Play(gun(extra=(O("H", "WR", -1.5, 10.2, "H"),)), dfn, los=35, to_go=None)
+go_to(p, "RT", (0.5, 2.6), via=[(-0.4, 3.0)])                              # down on the 3
+go_to(p, "RG", (3.7, -1.2), via=[(-0.2, 1.9), (0.4, 2.0), (1.2, 1.0)])     # double the 3, then climb to the Will
+go_to(p, "C", (0.4, -0.5))                                                 # back on the 1
+go_to(p, "LT", (0.3, -3.6), via=[(-0.6, -3.4)])                            # hinge on the backside end
+go_to(p, "LG", (3.4, 2.6), "pull", via=[(-1.6, -1.2), (-1.8, 1.4), (0.2, 3.4)])
+go_to(p, "H", (3.3, 9.0), via=[(1.2, 9.9)])                                # slot blocks the nickel inward
+p.highlight("PE", color=style.DEFENSE)
+f = draw(p, lateral=(-7.5, 14.5), window=(-7.5, 8.6), title=False, width_in=5.8)
+read_line(f, p, (-4.4, 0.3), (0.4, 5.6))
+branch(f, p, [(-5.0, -1.6), (-4.7, 0.6), (-4.2, 5.0), (-3.0, 9.0), (-1.0, 12.0), (4.8, 12.4)],
+       color=style.OFFENSE_DARK, label="give if the end\nsqueezes", label_at=(-5.9, 11.3), fontsize=6.8)
+branch(f, p, [(-5.0, 0.0), (-3.6, 0.6), (-1.9, 2.5), (-0.6, 4.7), (5.6, 4.8)], color=GREEN,
+       label="keep if the end\nwidens", label_at=(6.2, 2.4), fontsize=6.8)
+point_to(f, p, (-2.6, -5.0), (-1.7, -1.2), "LG pulls", fontsize=6.8)
+point_to(f, p, (6.2, 10.6), (2.4, 9.3), "H blocks\nthe nickel", fontsize=6.6)
+f.ax.set_title("Inverted veer (power read)", fontsize=10, loc="left", color=style.INK, fontweight="bold")
+plt.show()
+```
+
+Why build it this way? Three reasons, each a trade.
+
+**It puts the bigger runner inside.** Many running quarterbacks are big, strong men (Cam Newton, Jalen
+Hurts, Josh Allen), better suited to running through a crease behind a pulling guard than to outrunning a
+safety on the edge. The inverted veer gives them the inside track and a lead blocker: power blocking, with
+the quarterback as the ball carrier.
+
+**It attacks the edge with the back.** The running back, already moving sideways at full speed, gets the
+ball going outside a defender who has just stepped inside. Defenses are taught to "squeeze" plays
+inside-out with their end; the inverted veer makes that squeeze the wrong answer.
+
+**It saves the blocker the play needed most.** On power as [03-03](03-03-gap-and-power-runs.qmd) drew it,
+the fullback or H-back kicks out the play-side end and the pulling guard leads through the hole for a
+linebacker. The inverted veer doesn't block the end at all; it reads him. The guard still pulls for the
+linebacker, but the back who would have been the kick-out man is now a second runner, attacking the
+edge.
+
+What it gives up: the back is running sideways, not downhill, so if the read is wrong (the quarterback
+gives when the end was actually wide), the back is running at a defender with no momentum and loses yards.
+And the quarterback is a ball carrier between the tackles, in traffic, on every keep.
+
+**Inverted veer or bash?** Both put the back outside and the quarterback inside, so they are easy to
+merge. Two things separate them. *Which end is read:* bash reads the **backside** end, away from the
+line's flow, while the inverted veer reads the **play-side** end, the man the play is aimed at. *What the
+line does:* bash is zone blocking with everyone stepping the same way; the inverted veer is power
+blocking, down blocks and a guard pulling across the formation. Look for the puller: if one crosses the
+center toward the read end, it is a power read. Many NFL teams also hand the outside role to a receiver
+instead of the back, a [jet motion](../02-personnel-and-formations/02-06-motion-and-shifts.qmd) man
+sprinting across the formation at the snap (a "jet" power read); the read is the same, and
+[03-05](03-05-perimeter-and-misdirection.qmd) builds the jet sweep it borrows from.
+
+The name comes from the older **veer** (next section), in which the *back* is the inside runner and the
+quarterback the outside one. Turn it inside out and you have the "inverted" version. Who invented the play is
+unclear; it was made famous by TCU in 2009 and by Gus Malzahn's Auburn offense with Cam Newton in 2010,
+when Newton won the Heisman Trophy and Auburn the national championship, and in Malzahn's circle it also
+went by **dash read**.[^iv]
+
+## Speed option: straight at the edge
+
+The fastest of the option plays, and the simplest to watch, is the
+[**speed option**](../../appendices/glossary.qmd#gl-speed-option). There is no handoff and no mesh. The
+quarterback takes the snap and runs straight at the end man on the line of scrimmage, with the running back
+trailing him, ready for a [**pitch**](../../appendices/glossary.qmd#gl-pitch): a one-handed, underhand
+toss, sideways or backward, to the trailing back (the *pitch man*). The back keeps a **pitch relationship**
+with the quarterback: typically about four or five yards outside him and a yard or so
+deeper, so that a toss can reach him without traveling forward (coaches differ on the exact spacing; the
+one fixed rule is that the end man must not be able to tackle both runners).[^pitchrel] The end man has two runners coming at him. If he takes
+the quarterback, the quarterback pitches; if he takes the back, the quarterback keeps and turns up inside
+him.
+
+```{python}
+#| label: fig-speed-option
+#| fig-cap: "Speed option to the right from the shotgun (the receivers on the left are out of the picture). The line reaches to the right and leaves the end man (ringed) unblocked; the left tackle walls off the backside end and the left guard climbs to the Will. The slot receiver (H) blocks the nickel defender, the next man outside, from the inside out, and the Z blocks the cornerback. The quarterback (thick arrow, he has the ball) attacks the end man's outside shoulder, forcing him to choose, with the running back (thin arrow) about four yards outside and a yard deeper. If the end takes the quarterback, the ball is pitched (dashed brown arc) and the back runs inside the slot's block; if the end widens to take the back, the quarterback keeps and cuts up inside him."
+off = gun(rb_w=1.6, extra=(O("H", "WR", -1.5, 12.2, "H"), O("Z", "WR", -0.7, 16.0, "Z")))
+dfn = [D("PE", "DE", 1.0, technique("5", 1) + 0.6, "5"), D("PT", "DT", 1.0, technique("3", 1), "3"),
+       D("BT", "DT", 1.0, technique("1", -1), "1"), D("BE", "DE", 1.0, technique("5", -1), "5"),
+       D("MIKE", "MIKE", 4.5, 1.8, "M"), D("WILL", "WILL", 4.5, -2.2, "W"),
+       D("NB", "NB", 4.5, 11.6, "NB"), D("RCB", "CB", 6.5, 16.0, "CB")]
+p = Play(off, dfn, los=35, to_go=None)
+go_to(p, "RT", (3.8, 2.6), via=[(-0.3, 3.9), (0.9, 3.4)])      # skips the end, climbs to the Mike
+go_to(p, "RG", (0.4, 2.9), via=[(-0.4, 2.2)])                  # reach the 3
+go_to(p, "C", (0.4, 0.2), via=[(-0.4, 0.4)])                   # reach the 1
+go_to(p, "LG", (3.6, -2.0), via=[(-0.4, -1.2)])                # climbs to the Will
+go_to(p, "LT", (0.3, -4.3), via=[(-0.6, -3.8)])                # hinge: wall off the backside end
+go_to(p, "H", (3.6, 11.0), via=[(1.0, 10.9)])                     # inside-out onto the nickel
+go_to(p, "Z", (5.6, 16.0))
+go_to(p, "QB", (-1.6, 6.0), "run", via=[(-4.4, 1.6), (-2.8, 4.4)])
+go_to(p, "RB", (-2.8, 10.0), "path", via=[(-5.6, 3.6), (-4.4, 7.6)])
+p.read("PE")
+p.highlight("PE", color=style.DEFENSE)
+f = draw(p, lateral=(-7.0, 19.5), window=(-7.5, 10.0), title=False, width_in=5.8)
+pitch_arc(f, p, (-1.6, 6.2), (-2.8, 9.7))
+branch(f, p, [(-2.8, 10.0), (0.2, 9.4), (6.6, 9.0)], color=style.OFFENSE_DARK, label="pitch if the\nend takes Q",
+       label_at=(-5.8, 12.4), fontsize=6.8)
+branch(f, p, [(-1.6, 6.0), (-0.2, 4.0), (6.2, 3.9)], color=GREEN, label="keep if the end\nwidens to the back",
+       label_at=(7.7, 4.4), fontsize=6.8)
+f.ax.set_title("Speed option", fontsize=10, loc="left", color=style.INK, fontweight="bold")
+plt.show()
+```
+
+The speed option exists to get the ball to the edge **fast**, against a defense that is outnumbered there.
+Count it in @fig-speed-option: on the right side the offense has the quarterback, the back and two blockers
+(H and Z) against the end, the nickel and the cornerback. The end is read, the other two are blocked, and
+the two runners face nobody until a linebacker or the safety arrives from inside. The play is over before
+the defense can rally.
+
+Its costs are the pitch and the quarterback. Two rules shape the pitch. A toss that goes sideways or
+backward is a backward pass, and if nobody catches it, it is a **live ball**, like a fumble, that either
+team can recover. A toss that drifts forward is a forward pass, and that is worse, not safer: a forward
+pass is legal only from behind the line of scrimmage, and an option quarterback who has reached the end
+man is often at or past the line when he pitches. A forward pitch from there is an illegal forward pass,
+five yards and the loss of the down.[^pitch] So the pitch must go back, and a backward ball on the ground
+belongs to whoever falls on it. Option teams drill the pitch endlessly, and a quarterback who pitches under
+pressure, falling, with a defender hitting him, is the play's weak point. That is the other cost: on
+the pitch branch, the end man has been *invited* to hit the quarterback, and he will, every time, often
+just after the ball is gone.
+
+## Veer and the triple option: two reads, three runners
+
+Everything so far has had **two** possible ball carriers. The older option plays had **three**, and that is
+where the modern idea came from.
+
+The [**veer**](../../appendices/glossary.qmd#gl-veer) came from Bill Yeoman's University of Houston teams in
+the mid-1960s. Yeoman had a weak offensive line that could not block a dive play straight up; his solution,
+first used in the middle of a losing 1965 season that he expected to get him fired, was to stop blocking the
+first defensive lineman outside the play-side tackle and read him instead.[^yeoman] The play-side tackle
+releases inside to a linebacker, which makes the down lineman a free man, and the quarterback either gives
+to a back diving just inside that defender or keeps the ball. Yeoman ran it from
+[**split backs**](../../appendices/glossary.qmd#gl-split-backs) (two running backs side by side behind the
+quarterback, the pro set's backfield in 02-03): the play-side halfback was the dive, and the
+other halfback swung out behind the quarterback to trail him.[^splitveer] Yeoman's Houston teams ran it for
+two decades, and it spread across college football in the 1970s.
+
+So be precise about the words. **The veer** is a blocking-and-read rule: release the play-side tackle, read
+the first man outside him, give to the dive or keep. Put a pitch man behind the quarterback, so a keep can
+become a pitch, and the veer becomes the [**triple option**](../../appendices/glossary.qmd#gl-triple-option):
+the same first read with a second one bolted on. The triple is the play the
+[wishbone](../../appendices/glossary.qmd#gl-wishbone) (1968) and later the flexbone of
+[02-03](../02-personnel-and-formations/02-03-classic-formations.qmd) were built to run, and the version
+drawn here is the flexbone one. It has three runners:
+
+- the [**dive**](../../appendices/glossary.qmd#gl-dive): the fullback (the flexbone's B-back) driving
+  straight at the play-side guard's outside hip;
+- the **quarterback**, who rides the dive, then, if he keeps, runs down the line toward the edge;
+- the **pitch man**: an A-back who went in motion before the snap and is now trailing the quarterback in
+  pitch relationship.
+
+And it has **two read keys**. The first, the **dive key**, is the first defensive lineman on or outside
+the play-side tackle; the second, the **pitch key**, is the next defender outside him, often an outside
+linebacker or a safety who has come down. Everyone else is blocked. Option coaches turn that into a count,
+numbering the defenders from the inside out on the play side: **#1** is the dive key and **#2** the pitch
+key, both "blocked" by the quarterback's reads; **#3** is the run-support defender who shows up in the
+alley (the gap between the pitch key and the sideline), and the play-side A-back arcs to block him; **#4**
+is the deep defender, usually the cornerback, and the receiver takes him.[^count] Count #1 to #4 in the
+next picture and every defender on that side is accounted for.
+
+```{python}
+#| label: fig-triple-option
+#| fig-cap: "The triple option from the flexbone, to the right: the assignments. Before the snap the backside A-back (A, left) goes in motion (thin dashed path) to a spot behind the quarterback; he will be the pitch man. The B-back dives at the right guard's outside hip. The right tackle 'veer releases' inside to the Mike, leaving the 5-technique unblocked as the first read (the dive key, #1). The Sam, standing on the line outside him, is left unblocked too, as the second read (the pitch key, #2): the play-side A-back arcs well outside him, never touching him, to block the safety (#3, the alley defender), and the receiver Z blocks the cornerback (#4, the deep defender). Count them: every defender on the right side is blocked or read."
+def triple_play(react):
+    off = flexbone()
+    dfn = [D("PE", "DE", 1.0, technique("5", 1), "5"), D("PT", "DT", 1.0, technique("1", 1), "1"),
+           D("BT", "DT", 1.0, technique("3", -1), "3"), D("BE", "DE", 1.0, technique("5", -1), "5"),
+           D("SAM", "SAM", 1.0, 8.6, "S"), D("MIKE", "MIKE", 4.5, 1.6, "M"), D("WILL", "WILL", 4.5, -2.6, "W"),
+           D("SS", "SS", 8.0, 9.6, "SS"), D("FS", "FS", 12.5, -2.0, "FS"),
+           D("RCB", "CB", 6.0, 12.6, "CB"), D("LCB", "CB", 6.0, -12.6, "CB")]
+    p = Play(off, dfn, los=35, to_go=None)
+    check_legal(off)
+    p.motion("LA", to=(-3.6, -1.6))                                   # pitch man in motion
+    if react:   # this branch: the dive key squeezes the dive, the pitch key attacks the quarterback
+        go_to(p, "PE", (0.6, 3.3), "path", speed=3.8, delay=0.1)
+        go_to(p, "SAM", (-0.6, 6.3), "path", speed=3.6, delay=0.55)
+        go_to(p, "MIKE", (3.4, 2.4), "path", speed=2.4, delay=0.3)
+        go_to(p, "WILL", (3.0, -1.2), "path", speed=2.4, delay=0.3)
+        go_to(p, "SS", (3.0, 9.2), "path", speed=5.0, delay=0.3)         # fills the alley hard
+        go_to(p, "RCB", (4.5, 14.1), "path", speed=2.0, delay=0.3)
+        go_to(p, "PT", (1.4, 0.9), "path", speed=0.8)
+    go_to(p, "RT", (2.6, 2.3), via=[(0.0, 2.6)], speed=3.0)            # veer release to the Mike
+    go_to(p, "RG", (0.6, 1.1), speed=1.6)                             # down on the 1
+    go_to(p, "C", (2.2, -1.3), via=[(0.2, -0.4)], speed=2.5)           # climbs to the Will
+    go_to(p, "LG", (0.5, -1.9), speed=1.6)
+    go_to(p, "LT", (0.5, -3.6), speed=1.6)
+    if react:   # arc meets the safety in the alley; the receiver walls the corner off outside
+        go_to(p, "RA", (2.7, 10.0), via=[(-0.6, 7.4), (0.6, 10.4)], speed=5.0)
+        go_to(p, "RW", (3.3, 12.9), speed=2.5)
+    else:       # arc around the pitch key (never touch him) to the safety; the receiver takes the corner
+        go_to(p, "RA", (4.8, 10.8), via=[(-0.9, 8.0), (0.3, 11.4), (2.6, 11.7)], speed=5.0)
+        go_to(p, "RW", (4.6, 12.4), speed=2.5)
+    go_to(p, "FB", (0.6, 2.2), "run", speed=6.0, via=[(-2.6, 1.6)])     # the dive
+    go_to(p, "QB", (-2.6, 1.0), "path", speed=3.0)                      # open to the mesh
+    go_to(p, "QB", (-2.5, 1.5), "path", speed=1.2)                      # ride
+    if react:
+        go_to(p, "QB", (-0.8, 5.9), "path", speed=5.5, via=[(-2.1, 3.5)])   # pull, attack the pitch key
+        go_to(p, "LA", (6.4, 11.6), "run", speed=7.0,
+              via=[(-4.3, 2.0), (-3.6, 6.5), (-2.2, 9.6), (-0.4, 11.4)])
+        p.pitch("LA", t=1.45)
+    return p
+
+
+p = triple_play(react=False)
+p.highlight("PE", color=style.DEFENSE); p.highlight("SAM", color=style.DEFENSE)
+f = draw(p, lateral=(-13.5, 15.5), window=(-6.5, 11.0), title=False, width_in=6.3)
+read_line(f, p, (-2.5, 1.5), (1.0, 4.0))
+read_line(f, p, (-2.5, 1.5), (1.0, 8.6))
+branch(f, p, [(-3.6, -1.6), (-4.3, 2.0), (-3.7, 6.2), (-2.4, 8.8)], color=style.OFFENSE_DARK, lw=1.6)
+for n, (d, w) in {"1": (2.6, 4.2), "2": (2.6, 7.6), "3": (9.4, 8.4), "4": (7.4, 11.4)}.items():
+    say(f, p, d, w, n, color=style.DEFENSE_DARK, fontsize=8.5, weight="bold")
+say(f, p, 7.9, -7.0, "1 = dive key (first read)\n2 = pitch key (second read)\n3 = alley: the A-back's block\n"
+    "4 = deep: the receiver's block", color=style.DEFENSE_DARK, fontsize=6.8)
+point_to(f, p, (-5.3, 4.2), (-2.4, 1.7), "dive", color=style.OFFENSE_DARK, fontsize=7)
+point_to(f, p, (-5.0, -5.6), (-2.6, -3.4), "pitch man's\nmotion", fontsize=6.8)
+point_to(f, p, (-4.6, 11.4), (-2.6, 8.8), "pitch path", fontsize=6.8, color=style.OFFENSE_DARK)
+point_to(f, p, (5.6, 4.6), (0.2, 11.1), "A-back arcs around\nthe Sam to the safety", fontsize=6.6)
+f.ax.set_title("Triple option from the flexbone", fontsize=10, loc="left", color=style.INK, fontweight="bold")
+plt.show()
+```
+
+The quarterback's two decisions come one after the other, both in less than two seconds:
+
+1. **At the mesh, read the dive key.** If he squeezes inside to tackle the dive, pull the ball. If he
+   stays outside, or rushes upfield, give to the dive: it is going straight up the field just inside him.
+2. **If he kept, run at the pitch key.** If the pitch key attacks the quarterback, pitch. If he widens to
+   take the pitch man, keep and turn up inside him.
+
+Notice the order. The first read decides most snaps: if the dive key does not squeeze, the ball goes to
+the dive and the second read never happens. That is the triple's most common result and much of its point.
+A fullback who gains four yards every time he is given the ball lets the offense run the play all day, and
+the only way to stop him is to squeeze the dive key inside, which opens the keep and the pitch.
+
+Here is one branch, in motion: the dive key takes the dive and the pitch key takes the quarterback.
+
+```{python}
+#| label: fig-triple-anim
+#| fig-cap: "The triple option, one branch, in motion (simulated, Big Data Bowl coordinates; the green ring follows the ball). 1: the backside A-back's motion puts him behind the quarterback at the snap. 2: at the mesh the dive key (the 5, ringed) squeezes down on the B-back, so the quarterback pulls the ball. 3: the quarterback runs at the pitch key (the Sam, ringed); the Sam comes up to tackle him, so the quarterback pitches. 4: the pitch man has the ball in the alley, between the other A-back's block on the safety (who filled hard) and the Z's block on the cornerback."
+option_animation([triple_play(react=True)], [-0.6, 0.85, 1.45, 2.5], lateral=(-8.0, 16.0), window=(-6.5, 10.0),
+                 notes=["A-back in motion:\nthe pitch man", "Dive key squeezes the\ndive: Q pulls",
+                        "Pitch key takes Q:\nQ pitches", "A-back outside the\nlast defender"],
+                 rings=(("PE", style.DEFENSE), ("SAM", style.DEFENSE)), ncols=2)
+```
+
+The triple option is a machine for one thing: **making a defense play eleven men against eleven with every
+assignment perfect, every snap.** Against it, a defense needs someone for the dive, someone for the
+quarterback and someone for the pitch, on both sides of the formation, and it needs them to do their job and
+nothing else. That idea, "assignment football," is how coaches describe defending it. A defender who does
+two jobs (who tackles the dive *and* tries to get the quarterback) is doing neither. One player out of place
+and the ball goes to the man he should have had.
+
+Why isn't it everywhere, then? Because its costs are steep, and steeper the higher the level:
+
+- **The quarterback takes a hit on nearly every play**, from the dive key on the pull and from the pitch key
+  on the pitch. College option quarterbacks are built for that and are replaceable; NFL franchise
+  quarterbacks are neither.
+- **The classic flexbone version needs under-center snaps and three backs in the backfield**, which tilts
+  the offense toward the run and makes passing harder (though option teams hit big play-action passes
+  because the safeties have to play the run). The dive needs the quarterback right behind the center, so
+  he can open, put the ball in the B-back's belly a step later and ride him downhill. Spread teams get a
+  shotgun triple another way: a zone read with a pitch man added behind it, a slot in motion or a second
+  back, so a keep can still become a pitch. Even Washington's 2012 NFL offense mixed in what NFL.com called
+  "double- and triple-option play calls,"[^wastriple] and Navy itself has moved much of its option game into
+  the shotgun.[^navygun]
+- **It is hard to come from behind with**: it runs clock and gains yards in chunks, not in bursts of
+  passing.
+- **NFL defenders are fast enough to cover mistakes.** A pitch key who is a step slow in college is a step
+  fast in the NFL.
+
+The triple option lives on where its trade still pays: at the service academies, in many high schools, and
+for eleven seasons (2008–2018) at Georgia Tech under Paul Johnson, whose flexbone teams
+[02-03](../02-personnel-and-formations/02-03-classic-formations.qmd#the-flexbone) introduced. The full
+college story, from the split-T to the wishbone to the spread option, is told in
+[The College Laboratory](../11-history/11-03-the-college-laboratory.qmd).
+
+::: {.callout-note title="Film room: Navy 2015"}
+The triple option's best recent showcase is Navy under Ken Niumatalolo, with Keenan Reynolds at quarterback.
+Reynolds closed his career in the Military Bowl on December 28, 2015, a 44–28 win over Pittsburgh in which
+Navy ran for 417 yards. His 88th career touchdown that day set the FBS record, and his 4,559 career rushing
+yards were then the most by a quarterback in FBS history.[^reynolds]
+
+**What to notice** on a Navy or Army broadcast: for the first second, ignore the ball and watch #1, the dive
+key. If he stays outside, the B-back is through the line before the quarterback has turned around. If #1
+squeezes, watch the quarterback come off the mesh and run at #2, with the pitch man about four yards
+outside him and a yard deeper. And watch the play-side A-back: on a well-run triple he runs past the pitch
+key without touching him.
+:::
+
+## Midline: reading the man in the middle
+
+The option doesn't have to read someone on the edge. The
+[**midline option**](../../appendices/glossary.qmd#gl-midline-option) reads the **first defensive lineman
+outside the center**, often a 3-technique, the defensive tackle on the guard's outside shoulder. The guard
+in front of him leaves him alone and climbs to a linebacker. The dive back runs at the A gap, right at the
+center's hip, and the quarterback reads the tackle.
+
+```{python}
+#| label: fig-midline
+#| fig-cap: "The midline option from the flexbone, to the right. The 3-technique (ringed) is read: the right guard leaves him and climbs to the Mike, the right tackle blocks the end, and the center blocks back. The B-back dives at the A gap. If the 3-technique squeezes inside to tackle the dive, the quarterback keeps and runs just outside him, through the B gap; if he stays in his gap or rushes upfield, the quarterback gives and the B-back hits the A gap. The play-side A-back releases outside the 5-technique and leads up on the Sam."
+dfn = [D("PE", "DE", 1.0, technique("5", 1) + 0.9, "5"), D("PT", "DT", 1.0, technique("3", 1), "3"),
+       D("BT", "DT", 1.0, technique("1", -1), "1"), D("BE", "DE", 1.0, technique("5", -1), "5"),
+       D("SAM", "SAM", 4.5, 5.8, "S"), D("MIKE", "MIKE", 4.5, 1.6, "M"), D("WILL", "WILL", 4.5, -2.6, "W")]
+off = [q for q in flexbone() if q.key not in ("LW", "RW")]
+p = Play(off, dfn, los=35, to_go=None)
+go_to(p, "RG", (3.6, 1.6), via=[(0.3, 1.2)])                    # climb to the Mike
+go_to(p, "RT", (0.5, 4.7))                                      # block the end
+go_to(p, "C", (0.4, -0.6))                                      # back on the 1
+go_to(p, "LG", (3.6, -2.4), via=[(0.3, -1.4)])
+go_to(p, "LT", (0.4, -3.6))
+go_to(p, "RA", (3.7, 6.3), via=[(0.2, 7.0)])                    # outside the 5, lead up on the Sam
+p.read("PT")
+p.highlight("PT", color=style.DEFENSE)
+f = draw(p, lateral=(-8.5, 9.5), window=(-6.8, 9.5), title=False, width_in=5.4)
+branch(f, p, [(-4.6, 0.0), (-2.6, 0.6), (0.4, 0.9), (6.2, 0.6)], color=style.OFFENSE_DARK,
+       label="give if the 3\nstays put", label_at=(7.3, -1.6), fontsize=6.8)
+branch(f, p, [(-1.9, 0.0), (-2.5, 0.6), (-1.4, 2.0), (-0.6, 2.45), (0.8, 3.6), (6.2, 3.7)], color=GREEN,
+       label="keep if the 3\nsqueezes", label_at=(7.3, 5.4), fontsize=6.8)
+f.ax.set_title("Midline option", fontsize=10, loc="left", color=style.INK, fontweight="bold")
+plt.show()
+```
+
+Why read a tackle? Two reasons. First, **the 3-technique is often the defense's best interior player**, a
+penetrator who is very hard to block one-on-one (03-01 explains why the position became a star's job).
+Leaving him unblocked and reading him neutralizes him the same way the zone read neutralizes an edge
+rusher. Second, the midline **beats defenses that load up on the edge** to stop the outside options: if the
+pitch and the keep outside are covered, the ball goes up the middle. Option teams use the midline as a
+change-up when defenses crowd the edges: it reads a different man and attacks the middle.
+
+The cost: the read is in the middle of the line, among bodies, with almost no time. A dive back in the A
+gap is at the line in about a second, and a defensive tackle who reads the play can split the difference
+(step inside and tackle the quarterback a step later). The give is a chain-mover by design, a dive into
+the A gap for a few yards; the keep is different, because a clean read puts the quarterback through the
+line with the linebackers already blocked, and it can go the distance.
+
+## Designed quarterback runs: adding a blocker
+
+Everything above *reads* a defender. The other way to make the quarterback count in the run game is
+simpler: **give him the ball on purpose.** On a designed quarterback run there is no read. The quarterback
+is the ball carrier from the start, and that changes the arithmetic in the offense's favour, because the
+**running back is free to block**. On a normal run, the back is the ball carrier and the quarterback
+watches. On a quarterback run, the quarterback carries and the back blocks: the offense has gained a hat.
+
+```{python}
+#| label: fig-qb-power
+#| fig-cap: "QB power to the right, from the shotgun with one tight end (11 personnel; wide receivers out of the picture). It is the power play of 03-03 with the quarterback as the ball carrier: the tight end and right tackle block down, the right guard climbs, the center blocks back, the left guard pulls through the hole for the Mike, and the running back, freed from carrying the ball, kicks out the Sam on the edge (purple ring: the back is now a blocker). The quarterback (thick arrow) runs just outside the tight end's down block and inside the kick-out. Seven defenders in the box (shaded) against seven blockers: a hat on every hat. On a handoff, the same front would leave one man free. The deep safety is out of the picture."
+dfn = [D("PE", "DE", 1.0, technique("5", 1), "5"), D("PT", "DT", 1.0, technique("3", 1), "3"),
+       D("BT", "DT", 1.0, technique("1", -1), "1"), D("BE", "DE", 1.0, technique("5", -1), "5"),
+       D("SAM", "SAM", 1.0, 7.4, "S"), D("MIKE", "MIKE", 4.5, 2.4, "M"), D("WILL", "WILL", 4.5, -2.4, "W")]
+p = Play(gun(rb_w=1.6, extra=(O("Y", "TE", -0.7, 4.8, "Y"),)), dfn, los=35, to_go=None)
+go_to(p, "Y", (0.4, 4.2), via=[(-0.3, 4.6)])                  # down on the 5
+go_to(p, "RT", (0.4, 2.6), via=[(-0.3, 3.0)])                 # down on the 3
+go_to(p, "RG", (3.7, -1.6), via=[(-0.2, 1.8), (0.6, 1.0)])    # climbs to the backside Will
+go_to(p, "C", (0.4, -0.5))                                    # back on the 1
+go_to(p, "LT", (0.3, -3.6), via=[(-0.6, -3.4)])               # hinge
+go_to(p, "LG", (3.6, 3.0), "pull", via=[(-1.6, -1.2), (-1.8, 2.0), (0.4, 4.6)])
+go_to(p, "RB", (0.3, 6.8), via=[(-3.6, 4.0)], speed=5.0)       # kick out the Sam
+go_to(p, "QB", (6.6, 5.9), "run", via=[(-4.0, 0.4), (-2.6, 3.0), (-0.7, 5.75), (1.0, 5.9)])
+p.highlight("RB", color=PURPLE)
+f = draw(p, lateral=(-8.5, 10.0), window=(-8.0, 9.5), title=False, width_in=5.4)
+x0, y0 = _P(f, p, 6.0, -5.2)
+x1, y1 = _P(f, p, 0.0, 8.5)
+from matplotlib.patches import Rectangle
+f.ax.add_patch(Rectangle((min(x0, x1), min(y0, y1)), abs(x1 - x0), abs(y1 - y0), fc=GREEN, alpha=0.07,
+                         ec=GREEN, lw=0.8, ls=(0, (3, 2)), zorder=1))
+say(f, p, 7.4, -5.6, "7 in the box\nv 7 blockers", color=GREEN, fontsize=7.2, weight="bold")
+point_to(f, p, (-6.4, 7.0), (-3.4, 4.2), "R: now a blocker", color=PURPLE, fontsize=6.8)
+point_to(f, p, (-6.6, -3.0), (-5.3, -0.6), "Q: the ball carrier", color=style.OFFENSE_DARK, fontsize=6.8)
+point_to(f, p, (-3.6, -5.6), (-1.7, -1.2), "LG pulls", fontsize=6.8)
+f.ax.set_title("QB power: the back becomes a blocker", fontsize=10, loc="left", color=style.INK,
+               fontweight="bold")
+plt.show()
+```
+
+There are four designed quarterback runs you will see most weeks.
+
+- [**QB power**](../../appendices/glossary.qmd#gl-qb-power) (@fig-qb-power): the power play, with the
+  backside guard pulling through the hole and the running back as a lead or kick-out blocker. It is a
+  short-yardage and red-zone favourite, because on third-and-2 the extra hat is worth more than anything a
+  running back can do with the ball.
+- [**QB counter**](../../appendices/glossary.qmd#gl-qb-counter) (@fig-qb-counter): the quarterback steps one way, as if
+  running with the back's flow, then follows two linemen pulling the other way: one kicks out the end, the
+  other leads through the hole (03-03's counter blocking). The back often runs the opposite way as a decoy
+  or blocks the backside end the pulling tackle left.
+- [**QB draw**](../../appendices/glossary.qmd#gl-qb-draw) (@fig-qb-draw): a run disguised as a pass. The line shows pass
+  protection, the quarterback shows a drop, and only when the pass rushers have charged upfield and the
+  linebackers have turned to cover receivers does he run up the middle, through the space they left. It is
+  strongest against man coverage, where defenders have their backs to the quarterback.
+- [**QB sweep**](../../appendices/glossary.qmd#gl-qb-sweep): the quarterback runs wide, with pulling
+  linemen or the back leading him around the edge. It is the outside version of QB power, built for a
+  quarterback with a running back's speed.
+
+```{python}
+#| label: fig-qb-counter
+#| fig-cap: "QB counter to the right, from the shotgun with the back on the left, in two moments (simulated, Big Data Bowl coordinates; purple rings mark the two pullers, the green ring the ball; faint trails show where each player has been). 1, the quarterback has taken a short step left with the back, selling a run that way, while the left guard and left tackle pull to the right behind the line; the right tackle blocks down on the 3-technique, the right guard climbs to the Will and the center blocks back. 2, the left guard has kicked out the play-side end, the left tackle has wrapped through the hole for the Mike, and the quarterback follows him through the space the right tackle's down block left. The back fills on the backside end for the pulled tackle."
+def qb_counter():
+    dl = [D("PE", "DE", 1.0, technique("5", 1) + 0.6, "5"), D("PT", "DT", 1.0, technique("3", 1), "3"),
+          D("BT", "DT", 1.0, technique("1", -1), "1"), D("BE", "DE", 1.0, technique("5", -1), "5")]
+    lbs = [D("MIKE", "MIKE", 4.5, 2.4, "M"), D("WILL", "WILL", 4.5, -2.2, "W")]
+    p = Play(gun(rb_w=-1.6), dl + lbs, los=35, to_go=None)
+    # the defense: the end squeezes, the tackles are driven, the linebackers step up
+    go_to(p, "PE", (0.6, 5.3), "path", speed=1.2, delay=0.3)
+    go_to(p, "PT", (1.0, 1.0), "path", speed=0.9, delay=0.2)
+    go_to(p, "BT", (0.9, -0.5), "path", speed=0.5)
+    go_to(p, "BE", (-0.2, -4.6), "path", speed=2.0)
+    go_to(p, "MIKE", (3.3, 1.8), "path", speed=1.4, delay=0.4)
+    go_to(p, "WILL", (3.5, -1.6), "path", speed=1.4, delay=0.4)
+    # the offense
+    go_to(p, "RT", (0.4, 1.6), via=[(-0.3, 2.8)], speed=1.8)                     # down on the 3
+    go_to(p, "RG", (2.4, -0.8), via=[(-0.2, 1.6), (0.6, 0.8)], speed=2.4)       # climbs to the Will
+    go_to(p, "C", (0.2, -0.4), speed=1.0)                                       # back on the 1
+    go_to(p, "LG", (-0.1, 4.3), "pull", via=[(-1.7, -1.2), (-1.9, 2.4)], speed=5.0)        # kick out the end
+    go_to(p, "LT", (2.1, 2.6), "pull", via=[(-2.3, -3.0), (-2.6, 1.6), (-0.6, 3.1), (1.0, 3.0)], speed=6.5)  # wrap
+    go_to(p, "RB", (-1.0, -4.2), via=[(-4.2, -3.0), (-1.8, -4.0)], speed=4.5)  # fill for the pulled tackle
+    go_to(p, "QB", (-5.6, -0.9), "path", speed=2.4)                             # step left with the back
+    go_to(p, "QB", (4.0, 3.0), "path", speed=5.0, delay=0.3, via=[(-4.6, 0.4), (-2.6, 2.2), (-0.8, 2.9)])
+    return p
+
+
+fig = strip([qb_counter()], [0.8, 2.0], lateral=(-6.5, 7.5), window=(-6.8, 5.5),
+            notes=["Q steps left with the back;\nthe guard and tackle pull right",
+                   "The guard kicks out the end, the\ntackle wraps; Q follows through"],
+            rings=(("LG", PURPLE), ("LT", PURPLE)), ncols=2)
+plt.show()
+```
+
+```{python}
+#| label: fig-qb-draw
+#| fig-cap: "QB draw. The line sets as if to pass and lets the four rushers charge upfield into their pass blocks; the linebackers, reading pass, drop to cover receivers. The quarterback shows a drop, then runs up the middle, through the space the rushers and linebackers have left."
+dl = [D("PE", "DE", 1.0, technique("5", 1), "5"), D("PT", "DT", 1.0, technique("3", 1), "3"),
+      D("BT", "DT", 1.0, technique("1", -1), "1"), D("BE", "DE", 1.0, technique("5", -1), "5")]
+lbs = [D("MIKE", "MIKE", 4.5, 2.4, "M"), D("WILL", "WILL", 4.5, -2.2, "W")]
+p = Play(gun(rb_w=1.6), dl + lbs, los=35, to_go=None)
+for k, rush in [("PE", (-4.6, 6.4)), ("PT", (-1.5, 2.4)), ("BT", (-1.5, -1.4)), ("BE", (-4.6, -6.4))]:
+    go_to(p, k, rush, "path", speed=4.0)
+go_to(p, "MIKE", (6.2, 3.8), "path"); go_to(p, "WILL", (6.2, -3.8), "path")
+for k, end in [("LT", (-3.6, -5.4)), ("LG", (-2.3, -1.4)), ("C", (-2.0, 0.0)), ("RG", (-2.3, 2.4)), ("RT", (-3.6, 5.4))]:
+    go_to(p, k, end)
+go_to(p, "RB", (-3.0, 6.6), "path", via=[(-4.0, 3.6)])
+go_to(p, "QB", (-6.5, 0.0), "path", speed=3.0)
+f = draw(p, lateral=(-9.0, 9.5), window=(-8.5, 8.0), title=False, width_in=4.8)
+branch(f, p, [(-6.5, 0.0), (-4.8, 0.2), (-1.0, 0.6), (5.6, 0.8)], color=style.OFFENSE_DARK, label="then run",
+       label_at=(6.3, -1.8), fontsize=6.8)
+say(f, p, -7.0, -3.4, "Q shows\na drop", fontsize=6.6)
+say(f, p, 3.6, 6.9, "LBs drop\nto cover", fontsize=6.6, color=style.DEFENSE_DARK)
+f.ax.set_title("QB draw", fontsize=10, loc="left", color=style.INK, fontweight="bold")
+plt.show()
+```
+
+**QB power or power read?** The names sit side by side, and a beginner (or a broadcaster) can merge them.
+The power *read* is an option: two runners, one unblocked end, and the quarterback decides after the snap
+who carries. **QB power** has no read at all: the quarterback carries every time, and the back, who on the
+power read was a runner, is now the man who blocks the end. Same blocking up front, a different job for
+the back.
+
+Two more versions matter in the NFL. The first adds a blocker without a back: from **empty** (no back
+beside the quarterback, five receivers spread wide;
+[02-04](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)), the defense has to send
+defenders out with the receivers, the box thins to five linemen against five or six defenders, and a
+quarterback draw or counter makes the quarterback the extra hat by himself. The numbers section below
+counts how often NFL designed runs come from empty. The second is the **quarterback zone**: the quarterback runs the
+inside-zone track himself with the back leading him, or, in the version coaches call *dart*, with the
+backside tackle pulling across to lead him through the hole.
+
+The simplest designed quarterback run of all is the sneak, where the quarterback follows his center for a
+yard; its pushed-from-behind version, the tush push, has its own story in
+[Red Zone, Goal Line, and Short Yardage](../10-situational-football/10-03-red-zone-goal-line-and-short-yardage.qmd).
+
+::: {.callout-important title="Why it exists"}
+Designed quarterback runs exist because **a quarterback carrying the ball turns the running back into an
+extra blocker**: ten men block for the ball carrier instead of nine, which no handoff can do. On short
+yardage and near the goal line, where the defense crowds the box and every inch is contested, that extra
+hat is often the difference. The cost is the quarterback's body, and NFL teams pay their quarterbacks too
+much to spend it twenty times a game. So designed quarterback runs are a spice, used when
+the extra blocker matters most and rationed the rest of the time.
+:::
+
+## How defenses answer the option
+
+You have met the scrape exchange. Defenses have five broader answers, and you will see all of them on a
+Sunday when an option team is in town.
+
+**Assignment football.** Every option has a fixed number of ball carriers, and the defense assigns one
+defender to each: someone for the dive (or the back), someone for the quarterback, someone for the pitch.
+The rule is discipline. The defender assigned to the quarterback takes the quarterback even when the ball
+was given, every time, and trusts that his teammate has the back.
+
+**Make the read hard.** The read key does not have to commit. A defensive end can **slow-play** or
+**feather** the read: shuffle down the line with his shoulders square, inside enough to threaten the back
+and outside enough to threaten the quarterback, giving the quarterback a muddy picture until the last
+instant. A slow-playing end wants the quarterback to give, so the defense can tackle the back with the
+linebackers inside, or to hesitate, which kills the play.
+
+So what does the quarterback do? The rule "if he can tackle the back, keep" doesn't settle it, because a
+slow-player is built to sit exactly between *can* and *can't*: he can reach either runner, a step late.
+This is where the shoulder-and-distance read from the mesh
+section earns its keep: shoulders turned down the line toward the back mean pull; shoulders still square and
+upfield mean give. Against a true slow-play, most offenses fall back on their default, the **give**,
+because a give into a slow-playing end gives the back a one-on-one with a man moving sideways, and a late,
+hesitant keep is the worst outcome on the menu. The offense's longer answers are the ones you have met:
+an arc block, so a keep has a blocker in front of it; bash or the power read, so the end's in-between
+spot is the wrong spot; or simply block the end and run the ball somewhere else.
+
+**Out-number it.** Every read gains the offense a man (the triple option, with two reads, gains two). The
+defense can bring one more into the box, usually by rolling a safety down, and get its plus-one back. That
+is the box-count battle of
+[05-05](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd), and it is why option
+offenses work best when the passing game keeps the safeties deep.
+
+**Spy the quarterback.** Against a quarterback who runs, a defense can assign one defender, often a
+linebacker or a safety, to do nothing but shadow him: a
+[**spy**](../../appendices/glossary.qmd#gl-spy) ([10-02](../10-situational-football/10-02-third-down.qmd)
+uses him on third down). The spy takes the quarterback on every keep and every designed run, which frees
+the rest of the defense to play the back, at the cost of one fewer man in coverage or in the box.
+
+**Hit the quarterback.** The bluntest answer is also legal. Since 2013, NFL officials have treated a
+quarterback who is carrying out a read-option fake as a runner: as the league's vice president of officiating,
+Dean Blandino, put it in a 2013 rules video, "the quarterback can be hit like a runner until he's clearly out of the play."[^hit] A
+defense facing a read offense will tell its read key to hit the quarterback whenever he can, ball or no
+ball, to make every keep, and every fake, cost something.
+
+## Where option came from, briefly
+
+Option football is older than the forward pass's dominance, and almost all of it was invented in college,
+by coaches who had worse players than their opponents and needed arithmetic to win.
+
+- **The split-T option, 1941.** Missouri's Don Faurot widened the T-formation's line splits and built a
+  series of plays (a dive, a quarterback keep and a "running pitchout") that together worked like the
+  modern option. Bud Wilkinson learned it from Faurot in the Navy during the war and took it to Oklahoma,
+  whose split-T teams won a record 47 straight games from 1953 to 1957.[^faurot]
+- **The veer, 1965**, Bill Yeoman at Houston, as above, and **the wishbone, 1968**, Emory Bellard at Texas
+  ([02-03](../02-personnel-and-formations/02-03-classic-formations.qmd#the-wishbone)): the triple option's
+  two great formations.
+- **The zone read, early 1990s.** At Glenville State, a small college in West Virginia, Rich Rodriguez's
+  quarterback Jed Drenning fumbled a handoff on a zone play in practice in 1991, picked the ball up, saw
+  the end crashing inside, and ran where the end had been. Rodriguez saw that the mistake was a play.[^rr] He took it to
+  Tulane and West Virginia, and Urban Meyer's
+  [spread-option](../../appendices/glossary.qmd#gl-spread-option) offenses at Utah and Florida (shotgun,
+  three or four receivers spread wide, and the quarterback's legs as the run game's extra threat) made it
+  national.
+- **The pistol, 2005**, Chris Ault at Nevada ([02-02](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd#pistol)):
+  shotgun depth for the quarterback's read, with the back directly behind him so the run can go either
+  way. In 2009 Ault's Nevada became the first team in NCAA history with three 1,000-yard rushers in one
+  season; one of them was the quarterback, Colin Kaepernick.[^nevada]
+
+The whole lineage, from the single wing through the spread option and the RPO, is in
+[The College Laboratory](../11-history/11-03-the-college-laboratory.qmd).
+
+## The NFL's on-and-off romance with option
+
+For most of NFL history, option football was a college thing. Professional quarterbacks were pocket
+passers, too valuable to be hit, and professional defenders were fast enough to punish a slow read. There
+were exceptions, like Michael Vick's Falcons, and there were workarounds, like the 2008 Dolphins'
+[wildcat](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd), which snapped the ball
+directly to a running back to get the option's arithmetic without putting the quarterback at risk. But no
+NFL team built its run game on the read until 2012.
+
+**The 2012 wave.** In one season, four young, fast quarterbacks, three of them from college spread-option or pistol offenses, arrived
+in, or took over, NFL offenses at once: Robert Griffin III in Washington, Russell Wilson in Seattle, Colin
+Kaepernick in San Francisco and, a year after his own rookie season, Cam Newton in Carolina. Washington's
+coaches, Mike Shanahan and his son Kyle, the offensive coordinator, married their outside-zone run game to
+Griffin's pistol zone read, and the result was the league's top rushing attack: the rookie running back
+Alfred Morris ran for 1,613 yards and Griffin for 815, then a record for a rookie quarterback.[^was2012]
+In the playoffs, Kaepernick ran for 181 yards against Green Bay, a playoff record for a quarterback (the
+film room below has the details).[^kaep] The season is remembered as the
+[read-option wave](../11-history/11-04-dynasties-and-counterpunches.qmd).
+
+**The fade.** Then it cooled. Griffin, already playing on a sprained knee, tore the ACL and LCL in his right knee
+in the wild-card loss to Seattle on January 6, 2013, and never recaptured his rookie form.[^rg3]
+Defenses spent the 2013 offseason studying the read, the scrape exchange and the slow-play became
+standard, and the league told officials that read quarterbacks could be hit as runners. Most coaches
+concluded that the read option was a good change-up and a dangerous base offense, and through the mid-2010s
+it became a few plays a game.
+
+**The return.** Lamar Jackson changed the conversation. In 2019 Baltimore built an entire offense around his
+reads, from the pistol and the gun, with zone read, inverted veer, speed option and designed quarterback runs,
+and set the NFL's team rushing record while Jackson ran for 1,206 yards, a quarterback record, and won the
+MVP award unanimously.[^ravens] Jalen Hurts's Eagles leaned on QB power, the read and the sneak; in Super Bowl
+LVII he ran for 70 yards and three touchdowns, both Super Bowl records for a quarterback.[^hurts] Josh Allen
+made the designed run a weapon for a pocket passer, especially near the goal line, and in 2024 the
+Commanders' rookie Jayden Daniels broke Griffin's rookie rushing record.[^daniels] The Ravens era is the
+subject of its own case study, [12-05](../12-case-studies/12-05-ravens-lamar-run-game.qmd).
+
+### What the numbers say
+
+Can we see that history in data? Partly. The NFL's play-by-play does not record the play call, so it cannot
+tell a zone read from inside zone. But it records **who carried the ball**, and it separately flags
+quarterback *scrambles*, the unplanned runs when a pass play breaks down. A quarterback run that is not a
+scramble, not a kneel-down and not a botched snap is, almost always, a **designed** quarterback run: a keep
+on a read, or a planned quarterback run. We also set aside likely sneaks (up the middle, two yards or less
+to go), because they are their own play with their own story. What is left is a fair proxy for the
+quarterback run game this chapter is about.
+
+```{python}
+#| label: fig-qb-run-data
+#| fig-cap: "Designed quarterback runs in the NFL, regular seasons 2006–2025. Left: how often teams ran them, per team per game; the dark bars mark the two eras of the text (the 2012–2013 read-option wave and the rise from 2018), the light bars the seasons between. Right: efficiency, EPA per play, against running back carries in the same seasons; before 2012 each season has only a couple of hundred designed quarterback runs in the whole league, so its EPA swings widely from year to year. Designed quarterback runs are counted as runs by a player who threw at least 10 passes that season (so a gadget passer such as Taysom Hill counts), excluding scrambles, kneel-downs, aborted snaps and likely sneaks (middle runs with two yards or less to go). Read the right panel with the caveats in the text: the comparison is not like for like. Data: nflverse play-by-play via nflreadpy."
+from gridiron.data import pbp, nfl
+
+style.apply()
+SEASONS = list(range(2006, 2026))
+cols = ["season", "season_type", "posteam", "play_type", "epa", "success", "qb_scramble", "qb_kneel", "down",
+        "ydstogo", "rusher_player_id", "rusher_player_name", "run_location", "game_id", "aborted_play",
+        "passer_player_id", "pass_attempt", "yards_gained", "fumble", "play_id"]
+plays = pbp(SEASONS, columns=cols)
+reg = plays[plays["season_type"] == "REG"]
+att = reg[reg["pass_attempt"] == 1].groupby(["season", "passer_player_id"]).size()
+passers = set(att[att >= 10].index)
+runs = reg[(reg["play_type"] == "run") & (reg["qb_kneel"] == 0) & (reg["aborted_play"] == 0)
+           & reg["down"].notna() & reg["epa"].notna()].copy()
+runs["qb"] = [(s, i) in passers for s, i in zip(runs["season"], runs["rusher_player_id"])]
+runs["sneak"] = runs["qb"] & (runs["ydstogo"] <= 2) & (runs["run_location"] == "middle")
+rosters = nfl().load_rosters(SEASONS).to_pandas()
+backs = set(rosters.loc[rosters["position"].isin(["RB", "FB"]), "gsis_id"].dropna())
+runs["kind"] = np.select([runs["qb"] & (runs["qb_scramble"] == 1), runs["sneak"], runs["qb"],
+                          runs["rusher_player_id"].isin(backs)],
+                         ["scramble", "sneak", "designed", "rb"], "other")
+team_games = runs.groupby("season")["game_id"].nunique() * 2
+des = runs[runs["kind"] == "designed"]
+rb = runs[runs["kind"] == "rb"]
+per_game = des.groupby("season").size() / team_games
+epa_des, epa_rb = des.groupby("season")["epa"].mean(), rb.groupby("season")["epa"].mean()
+
+fig, axes = plt.subplots(1, 2, figsize=(6.8, 3.3))
+ax = axes[0]
+ax.bar(per_game.index, per_game.values, color=[style.SERIES[0] if s in (2012, 2013) or s >= 2018 else "#9ec5f4"
+                                                for s in per_game.index], width=0.75)
+n_season = des.groupby("season").size()
+ax.set_title("Designed QB runs per team-game", fontsize=9.5)
+ax.annotate("2012\nwave", (2012, per_game[2012] + 0.03), xytext=(2009.6, 1.15), fontsize=7.5,
+            color=style.INK_2, ha="center", arrowprops=dict(arrowstyle="-", color=style.MUTED, lw=0.7))
+ax.annotate("Lamar Jackson\nstarts (2018)", (2018, per_game[2018] + 0.03), xytext=(2014.8, 1.38), fontsize=7.5,
+            color=style.INK_2, ha="center", arrowprops=dict(arrowstyle="-", color=style.MUTED, lw=0.7))
+ax.set_ylim(0, 1.6)
+ax.grid(axis="x", visible=False)
+ax = axes[1]
+ax.axhline(0, color=style.BASELINE, lw=1, zorder=1)
+for ser, name, col in [(epa_des, "Designed QB runs", style.SERIES[0]), (epa_rb, "RB carries", style.SERIES[1])]:
+    ax.plot(ser.index, ser.values, color=col, lw=2, marker="o", ms=3.5, label=name)
+    ax.annotate(name, (ser.index[-1], ser.values[-1]), xytext=(4, 0), textcoords="offset points",
+                fontsize=7.5, color=col, va="center")
+ax.set_title("EPA per play", fontsize=9.5)
+ax.set_xlim(2005.5, 2031)
+ax.set_ylim(-0.2, 0.35)
+for a in axes:
+    a.tick_params(labelsize=7.5)
+    a.set_xticks([2006, 2010, 2014, 2018, 2022, 2025])
+fig.tight_layout(w_pad=1.2)
+plt.show()
+
+d_all, r_all = des["epa"].mean(), rb["epa"].mean()
+d_sr, r_sr = des["success"].mean(), rb["success"].mean()
+d_first = des.loc[des["down"] == 1, "epa"].mean(); r_first = rb.loc[rb["down"] == 1, "epa"].mean()
+third_share_d = (des["down"] >= 3).mean(); third_share_r = (rb["down"] >= 3).mean()
+was12 = des[(des["season"] == 2012) & (des["posteam"] == "WAS")]
+lj19 = des[(des["season"] == 2019) & des["rusher_player_name"].eq("L.Jackson")]
+bal_rb19 = rb[(rb["season"] == 2019) & (rb["posteam"] == "BAL")]["epa"].mean()
+rb19 = rb[rb["season"] == 2019]["epa"].mean()
+peak = int(per_game.idxmax())
+n_early = (int(n_season.loc[2006:2011].min()), int(n_season.loc[2006:2011].max()))
+n_late = int(n_season.loc[2018:2025].min())
+by_qb = des.groupby(["season", "rusher_player_name"]).size()
+vick06, young06 = int(by_qb.get((2006, "M.Vick"), 0)), int(by_qb.get((2006, "V.Young"), 0))
+
+
+def per_start(name, season):
+    """Designed runs per game in which the quarterback threw a pass."""
+    ids = des.loc[des["rusher_player_name"].eq(name), "rusher_player_id"].unique()
+    games = reg[(reg["season"] == season) & reg["passer_player_id"].isin(ids)]["game_id"].nunique()
+    return int(by_qb.get((season, name), 0)), games
+
+
+lj24, lj25 = per_start("L.Jackson", 2024), per_start("L.Jackson", 2025)
+jh24, jh25 = per_start("J.Hurts", 2024), per_start("J.Hurts", 2025)
+jd24, jd25 = per_start("J.Daniels", 2024), per_start("J.Daniels", 2025)
+fum_d, fum_r = des["fumble"].mean(), rb["fumble"].mean()
+# FTN charting (2022-2025): how many players besides the quarterback stood in the backfield?
+ftn = nfl().load_ftn_charting([2022, 2023, 2024, 2025]).to_pandas()
+ftn = ftn.rename(columns={"nflverse_game_id": "game_id", "nflverse_play_id": "play_id"})
+des_ftn = des[des["season"] >= 2022].merge(ftn[["game_id", "play_id", "n_offense_backfield"]],
+                                           on=["game_id", "play_id"], how="inner")
+empty_share = (des_ftn["n_offense_backfield"] == 0).mean()
+```
+
+Three things to read from @fig-qb-run-data.
+
+**The history is there.** Designed quarterback runs nearly doubled from the late 2000s to 2012–2013, settled
+back, and then rose again, much higher, from 2018, peaking in `{python} str(peak)` at
+`{python} f"{per_game[peak]:.1f}"` per team per game before falling back in 2025. Two bars break the
+pattern, and both are about a few quarterbacks rather than the league. The high 2006 bar is mostly Michael
+Vick (`{python} str(vick06)` designed runs, by this chapter's count, in the season he set the quarterback
+rushing record) and the rookie Vince Young (`{python} str(young06)`). The 2025 dip comes mostly from the
+heaviest users: Lamar Jackson went from `{python} str(lj24[0])` designed runs in `{python} str(lj24[1])`
+games in 2024 to `{python} str(lj25[0])` in `{python} str(lj25[1])`, Jalen Hurts from
+`{python} str(jh24[0])` to `{python} str(jh25[0])`, and Jayden Daniels, who played
+`{python} str(jd25[1])` games, from `{python} str(jd24[0])` to `{python} str(jd25[0])`. The data shows *who*
+ran less, not *why*: missed games account for part of it, play-calling for the rest. Notice how small these numbers are: about one designed
+quarterback run a game for a typical team, even at the peak. (Washington in 2012 had
+`{python} str(len(was12))` of them, more than four a game; Jackson alone had `{python} str(len(lj19))` in
+2019.) Most of the option's effect on a game is invisible in these counts, because **the read's main product
+is the give**, a running back carry that looks like any other in the data. No public source flags a read
+play either: FTN's charting marks run-pass options, but not whether a quarterback read an end on a
+handoff, so how often an NFL "gun handoff" is really a read is invisible in the numbers.
+
+**Per play, designed quarterback runs look far better than running back carries.** Across the twenty
+seasons they averaged `{python} f"{d_all:+.2f}"` EPA per play against `{python} f"{r_all:+.2f}"` for running
+backs, and a `{python} f"{d_sr:.0%}"` success rate against `{python} f"{r_sr:.0%}"`. On first down, where
+the situations are most comparable, the gap is smaller but still there (`{python} f"{d_first:+.2f}"` against
+`{python} f"{r_first:+.2f}"`). Read the early seasons of the right panel loosely: before 2012 the league ran
+only `{python} str(n_early[0])` to `{python} str(n_early[1])` designed quarterback runs a season, so one
+long run moves the average, while every season since 2018 has had at least `{python} str(n_late)`.
+
+**But the comparison is not like for like, and the right panel cannot tell you to run your quarterback
+more.** Three reasons:
+
+- *Selection.* On a read play, the quarterback keeps precisely when the defense has taken the back away,
+  that is, when the keep is the open option. The keeps in this data are the reads that came out in the
+  quarterback's favour; the reads that said "give" are filed under the running back.
+- *Situation.* `{python} f"{third_share_d:.0%}"` of designed quarterback runs come on third or fourth down,
+  against `{python} f"{third_share_r:.0%}"` of running back carries, often against defenses spread out to stop
+  a pass. A run that converts third-and-4 is worth a lot of EPA.
+- *Survivorship.* The quarterbacks who run often are the ones who are good at it: Jackson, Allen, Hurts.
+  A team without one cannot buy their numbers by calling the plays.
+
+**Some of the costs do show up.** Designed quarterback runs end in a fumble far more often: on
+`{python} f"{fum_d:.1%}"` of them across these seasons, against `{python} f"{fum_r:.1%}"` of running back
+carries, roughly `{python} f"{fum_d / fum_r:.0f}"` times the rate, a number that bundles mesh exchanges,
+quarterbacks who carry the ball less securely, and the hits they take. The hits themselves are not in the
+play-by-play, and injuries are recorded by week, not by play, so the injury cost the chapter keeps
+mentioning cannot be measured cleanly from public data. One more thing the charting does show is *how*
+NFL teams build these runs: from 2022 to 2025, `{python} f"{empty_share:.0%}"` of designed quarterback runs
+came from an **empty** backfield, with nobody beside the quarterback, the five-receiver version of adding
+a blocker.
+
+The fairest reading is the one coaches reached on their own: **a quarterback who is a real running threat
+makes the whole run game better**, partly through his own carries and partly through the gives and the
+defenders he occupies. Baltimore's running backs in 2019 averaged `{python} f"{bal_rb19:+.3f}"` EPA per
+carry, against a league average of `{python} f"{rb19:+.3f}"` for running backs that season; this data cannot
+prove the reads caused that, but it is what the arithmetic predicts.[^data]
+
+::: {.callout-note title="Film room: Washington 2012"}
+Washington's 2012 offense is the cleanest NFL example of the zone read as a *base* play, not a gadget. The
+Shanahans ran their outside-zone system from the **pistol**, with Griffin about four yards deep and Morris
+directly behind him, so the back could run zone either way and the quarterback could read either end. The
+line's first step looked like outside zone every time; the backside end had to decide whether to chase
+Morris or stay home for Griffin, and Griffin, a former college hurdler, was one of the fastest quarterbacks in the league.
+
+**What to notice** on the broadcasts and the All-22 of that season: the backside end's first step. Ends
+who chased gave up Griffin keeps around the edge; ends who stayed home left wide cutback lanes for Morris.
+Watch, too, how often Griffin carried out his fake after a give, running toward the sideline without the
+ball: that fake kept the end honest on the next play, and it was also where he took hits.
+:::
+
+::: {.callout-note title="Film room: San Francisco 49ers, NFC divisional round, January 12, 2013"}
+Kaepernick's 181 rushing yards against Green Bay, in his eighth NFL start, are the read option's most famous
+day in the NFL. San Francisco won 45–31. The 49ers ran their read plays from the pistol and the
+shotgun, and the Packers' edge had no answer. In Robert Mays's account for Grantland, midway through the
+first quarter, on third-and-2, outside linebacker Erik Walden chased Frank Gore on an option read and
+Kaepernick kept around the end for 13 yards; two quarters later the 49ers ran the same play, with fullback
+Bruce Miller sealing Walden (blocking him inside, away from the play), and Kaepernick went 56 yards for a
+touchdown.[^walden]
+
+**What to notice:** the read key on Kaepernick's keeps. An end who chases the back takes himself out of the
+play, an end who is sealed can't recover, and the free safety is too deep to arrive in time. Then watch how
+defenses played the read the next season: the crash-and-scrape became standard, and long keeps got rarer.
+That is the defense learning.
+:::
+
+::: {.callout-note title="Film room: Baltimore Ravens 2019"}
+The 2019 Ravens are the read game as a complete offense: zone read, bash, inverted veer, speed option,
+QB power and the sneak, run from the pistol and the gun with tight ends and fullbacks as extra blockers.
+Jackson's `{python} str(len(lj19))` designed runs that season (by this chapter's count) averaged
+`{python} f"{lj19['epa'].mean():+.2f}"` EPA per play.
+
+**What to notice:** how many Ravens runs had *two* threats in the backfield on every snap, and how often the
+same unblocked end had to defend a different blocking scheme underneath the read. The power read is this
+chapter's inverted veer. A *counter read* uses 03-03's counter blocking (two pullers) and reads the
+backside end: the back follows the pullers, and the quarterback keeps around the end if he crashes.
+*Counter bash* swaps the runners: the back runs away from the pullers, around the read end, and the
+quarterback, if he keeps, follows the pullers. All three leave an end alone, but each sends the runners
+to different places.[^balreads] Defenses fought back with the scrape exchange, with ends who kept **outside
+leverage** (staying outside the runner, so the only way past them is inside, toward help) to force the
+give, and with extra second-level defenders flowing to the ball, as Tennessee did in its January 2020
+playoff upset with a 3-3 front (three down linemen and three linebackers, one more defender off the ball
+than usual);[^balanswer] the full story, including how the offense changed when Derrick Henry arrived
+in 2024, is in the [Ravens case study](../12-case-studies/12-05-ravens-lamar-run-game.qmd).
+:::
+
+::: {.callout-tip title="Watch for it"}
+**On Sunday: find the read key.** Option plays happen fast, so do the work before the snap.
+
+*Before the snap*
+
+- **Where is the quarterback, and where is the back?** Shotgun or pistol with a back beside or behind the
+  quarterback is the read *look*, but most NFL snaps from that look are plain handoffs or passes, so treat
+  it as "a read is possible," not "a read is coming." The more the quarterback has run this season, the
+  more seriously to take it.
+- **Which end?** On the zone read, a back offset to one side usually runs to the *other* side (crossing the
+  quarterback's face), which makes the end on the back's side, the backside end, the read key. The power
+  read flips this: the back still crosses the quarterback's face, but the read is the **play-side** end,
+  the one the back is running toward. Look for a guard pulling toward that end to tell them apart.
+  (Which end gets read is part of the play call; on some plays the quarterback can flip it at the line.)
+- **Find the end man on the line of scrimmage on each side.** Count from the outside in: who is the last
+  defender standing on the line? Recheck after every shift; a linebacker walking up changes the answer.
+- **Is anyone left unblocked on purpose?** You can't know until the snap, but look for a tight end or H-back
+  lined up to the side away from the line's likely flow: he may be the arc blocker, which means read.
+
+*At the snap*
+
+- **Real read or plain handoff?** On a real read nobody touches the end, the quarterback's head is turned
+  toward him rather than toward the back, and the ball stays in the back's belly for a long ride. On a
+  plain handoff the quarterback looks at the back and the ball is gone in a step.
+- **Watch the read key's first step, not the ball.** Crash or squeeze inside: predict *keep*. Sit, widen or
+  rush upfield outside: predict *give*. Say it out loud before the ball comes out.
+- **If the end crashes, find the linebacker behind him.** Is he scraping outside? Then the keep is running
+  into a scrape exchange.
+
+*After the play*
+
+- On the replay, check your call. Did the quarterback do what the read key "told" him? If not, was it a
+  mistake, or was the defender slow-playing?
+- On designed runs, count the hats: if the running back is blocking and the quarterback carries, the offense
+  added a blocker. Did the defense answer with a safety in the box?
+
+For your prediction log ([01-06](../01-foundations/01-06-how-to-watch-a-broadcast.qmd)): on every read look,
+write the read key's position and your prediction (G or K) from his first step; afterward, write what
+happened.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play"}
+**Drill 1: the end who always crashes.** Second-and-7 in the second quarter. The offense has run the zone
+read four times today, the running back aligned on the left and the line zoning right each time. On all
+four, the defense's backside end crashed hard down the line at the back. The quarterback read him
+correctly and kept twice, and both keeps were stopped for two yards near the left sideline, both times by
+a defender who was *not* the end. The offense lines up in the same look again. Who has probably been making
+those tackles, what is the defense doing to put him there, and what should the offense call instead?
+
+```{python}
+#| label: fig-drill-1
+#| fig-cap: "Drill 1: gun, 11 personnel (tight end on the right), the back offset left; an even front with the backside end (ringed) and the Will linebacker 4½ yards deep over the left guard. Two deep safeties out of the picture."
+p = Play(gun(extra=(O("Y", "TE", -0.7, 4.8, "Y"),)), front7(), los=35, to_go=7,
+         title="Drill 1: 2nd and 7, the same look again")
+p.highlight("BE", color=style.DEFENSE)
+f = draw(p, lateral=(-11.0, 9.5), window=(-7.5, 8.0), width_in=5.2)
+say(f, p, 3.2, -7.2, "crashed\n4 of 4", color=style.DEFENSE_DARK, fontsize=7)
+plt.show()
+```
+:::
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The Will, on a scrape exchange.** The end crashes to take the back and the Will, who lines up inside,
+scrapes over the top at the snap to the spot where a zone-read keep arrives. The quarterback has been
+reading correctly; the end's crash is a *lie* told to him, and a plain zone read believes it every time.
+Two clues give it away: the tackler wasn't the end, and he arrived from the inside, near the sideline,
+where a linebacker who had read "keep" before the ball came out would be. The left guard, climbing to
+where the Will used to be, has been blocking air (@fig-scrape-exchange).
+
+**Better calls** use the exchange against itself, as *The offense's replies* laid out: **bash** (the back
+goes wide around the crashing end, so his crash becomes a squeeze and the ball goes outside him), **arc**
+(the tight end runs past the end to block the scraping Will), or **read the Will instead** (block the end,
+read the scraper, or throw behind him on an RPO, 04-06).
+
+The general lesson: an option defense that does the same thing every time has stopped being an option
+defense. A good play-caller counts the crashes, as you just did.
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 2: name that option.** Two plays from the same game, drawn with the line's blocks and the back's
+path; both send the back wide and leave a defensive end unblocked. For each one: name the play, name the
+read key, and say who gets the ball if that read key squeezes inside.
+
+```{python}
+#| label: fig-drill-2
+#| fig-cap: "Drill 2: two read plays from the shotgun. Each shows the line's blocks (short bars), the back's path (dashed dark arrow) and the quarterback's possible keep path (dashed green arrow). Which is which, and who is read?"
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.6))
+dl = [D("PE", "DE", 1.0, technique("5", 1) + 1.3, "5"), D("PT", "DT", 1.0, technique("3", 1), "3"),
+      D("BT", "DT", 1.0, technique("1", -1), "1"), D("BE", "DE", 1.0, technique("5", -1) - 0.6, "5")]
+lbs = [D("MIKE", "MIKE", 4.5, 2.4, "M"), D("WILL", "WILL", 4.5, -2.2, "W")]
+# A: power read to the right
+p = Play(gun(), dl + lbs, los=35, to_go=None)
+go_to(p, "RT", (0.5, 2.6), via=[(-0.4, 3.0)]); go_to(p, "RG", (3.7, -1.2), via=[(-0.2, 1.9), (0.6, 1.4)])
+go_to(p, "C", (0.4, -0.5)); go_to(p, "LT", (0.3, -4.2), via=[(-0.6, -3.8)])
+go_to(p, "LG", (3.4, 2.6), "pull", via=[(-1.6, -1.2), (-1.8, 1.4), (0.2, 3.4)])
+f = draw(p, ax=axes[0], lateral=(-9.0, 9.5), window=(-7.5, 7.0), title=False)
+branch(f, p, [(-5.0, -1.6), (-4.7, 0.6), (-4.2, 4.6), (-2.2, 7.6), (3.6, 8.0)], color=style.OFFENSE_DARK)
+branch(f, p, [(-5.0, 0.0), (-3.6, 0.6), (-1.9, 2.5), (-0.6, 4.6), (4.8, 4.7)], color=GREEN)
+axes[0].set_title("Play A", fontsize=9, loc="left", color=style.INK, fontweight="bold")
+# B: bash (zone right, back away to the left)
+dl_b = [D("PE", "DE", 1.0, technique("5", 1), "5")] + dl[1:]
+p = Play(gun(rb_w=1.6), dl_b + lbs, los=35, to_go=None)
+go_to(p, "LT", (0.4, -2.3), via=[(-0.4, -2.8)])                  # step inside: zone right
+go_to(p, "LG", (3.6, -1.6), via=[(-0.4, -1.2), (0.6, -1.0)])    # climb to the Will
+go_to(p, "C", (0.6, -0.3))                                       # on the 1
+go_to(p, "RG", (0.6, 2.9), via=[(-0.4, 2.1)])                    # reach the 3
+go_to(p, "RT", (0.6, 4.6), via=[(-0.4, 3.7)])                    # reach the end
+f = draw(p, ax=axes[1], lateral=(-9.5, 9.0), window=(-7.5, 7.0), title=False)
+branch(f, p, [(-5.0, 1.6), (-4.8, 0.3), (-4.0, -3.4), (-1.8, -6.6), (3.6, -7.6)], color=style.OFFENSE_DARK)
+branch(f, p, [(-5.0, 0.0), (-3.6, 0.6), (-1.6, 1.0), (4.4, 1.1)], color=GREEN)
+axes[1].set_title("Play B", fontsize=9, loc="left", color=style.INK, fontweight="bold")
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+:::
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Play A is the power read (inverted veer); play B is bash.** In both, if the read key squeezes inside,
+the quarterback **gives** and the back has the ball outside the end. What differs is *which* end, and the
+line tells you.
+
+- **Play A:** the line blocks power. The right tackle blocks down, the right guard climbs, the center blocks back, and the
+  left guard **pulls across the center toward the right end**. Nobody blocks that end, the one the play is
+  aimed at: he is the read key, the **play-side** end. The back sweeps right across the quarterback's face.
+- **Play B:** the line **zones right**, every lineman stepping the same way, with no puller. The back runs
+  the other way, wide around the **left** end, the **backside** end, who is the read key. It is a zone read
+  with the runners swapped.
+
+The tell is the puller. A guard crossing the formation toward the unblocked end means power read; a line
+flowing away from the unblocked end means a zone-based read, and the back's path tells you whether it is
+the plain zone read (back inside) or bash (back outside).
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 3: third-and-2.** Third-and-2 at the opponent's 36, fourth quarter, tie game. The offense lines up in
+the shotgun with one tight end and the running back beside a quarterback who has run for 600 yards this
+season. The defense puts seven in the box and plays man coverage on the receivers, with one deep safety.
+Count the hats: on a handoff, how many blockers against how many box defenders? Which kinds of run would give
+the offense a hat on every hat, and what is the defense's likely answer?
+
+```{python}
+#| label: fig-drill-3
+#| fig-cap: "Drill 3: third-and-2, gun 11 personnel with the back to the quarterback's right, against seven in the box (four linemen, the Sam on the line outside the tight end, Mike and Will 3½ yards deep) and one deep safety; the three receivers and their man-coverage defenders are outside the picture."
+p = Play(gun(rb_w=1.6, extra=(O("Y", "TE", -0.7, 4.8, "Y"),)),
+         [D("PE", "DE", 1.0, technique("5", 1), "5"), D("PT", "DT", 1.0, technique("3", 1), "3"),
+          D("BT", "DT", 1.0, technique("1", -1), "1"), D("BE", "DE", 1.0, technique("5", -1), "5"),
+          D("SAM", "SAM", 1.0, 6.4, "S"), D("MIKE", "MIKE", 3.5, 2.4, "M"), D("WILL", "WILL", 3.5, -2.4, "W"),
+          D("FS", "FS", 12.0, 0.0, "FS")], los=64, to_go=2, title="Drill 3: 3rd and 2, opponent's 36")
+f = draw(p, lateral=(-9.5, 10.0), window=(-7.5, 13.5), width_in=5.2)
+plt.show()
+```
+:::
+
+::: {.callout-tip title="Answer" collapse="true"}
+**On a handoff, six blockers (five linemen and the tight end) against seven in the box**: one defender free,
+and on third-and-2 one free defender is usually enough.
+
+**Two kinds of run get a hat on every hat.** A **designed quarterback run** makes the running back the
+seventh blocker: on **QB power** (@fig-qb-power) the back kicks out the Sam, the guard pulls for the Mike,
+and seven blockers meet seven defenders. A **read** gets there the other way, by leaving one defender
+unblocked and reading him: a zone read or power read makes it six blockers plus a read against seven. A
+**QB draw** is tempting against man coverage too, because defenders turn their backs to chase receivers and
+the middle empties. (A sneak is the shortest version of the same idea, if the line to gain were a yard or
+less.)
+
+**But man coverage has a catch.** In man, one of the box defenders, usually a linebacker, is assigned to
+the running back. When the back stays in to block, as on QB power or a draw, that defender has nobody to
+cover, and good defenses tell him to attack the run instead (coaches call him a **hug** or **green dog**
+player: he "hugs" the back, and when the back blocks, he comes). So the count stays an honest seven on
+seven, but none of the seven is busy with a pass, and on a QB draw the man who had the back is already
+looking at the quarterback. Power, which blocks him, suits this defense better than the draw.
+
+**The defense's likely answer** is to account for the quarterback: put a **spy** on him (from *How
+defenses answer the option*), or bring the deep safety down as an eighth man and live with no help deep.
+Either choice gives something back to the passing game, which is exactly the trade the quarterback's legs
+create.
+:::
+
+## Takeaways
+
+- An **option** leaves one defender unblocked on purpose and reads him. Whatever he does, the ball goes to
+  the runner he isn't playing, so the read does a blocker's work and the offense gets back the man a handoff
+  leaves free.
+- The usual **read key** is the **end man on the line of scrimmage**; find him before the snap, and predict
+  **give** or **keep** from his first step: if he can tackle the back, keep; if he can't, give.
+- The families differ by who runs where and who is read: the **zone read** (back inside, quarterback outside,
+  read the backside end), the **inverted veer** (back outside, quarterback inside behind a puller, read the
+  play-side end; bash also puts the back outside but reads the backside end behind zone blocking), the
+  **speed option** (quarterback and pitch man at the edge), the **triple option** (dive,
+  keep, pitch, with two reads) and the **midline** (read a defensive tackle).
+- **Designed quarterback runs** (power, counter, draw, sweep) don't read anyone; they turn the running back
+  into a blocker. Their price, like every option's, is hits on the quarterback.
+- Defenses answer with assignment football, the **scrape exchange** and gap exchanges, slow-playing the
+  read, an extra man in the box, and hitting the quarterback; offenses answer back with bash, arc, new read
+  keys and RPOs.
+- The NFL adopted the read in **2012**, cooled on it, and returned to it with **Jackson, Hurts and Allen**.
+  Designed quarterback runs look efficient per play, but selection and situation inflate that; their real
+  value is what they do to the defense on every other run.
+
+## Connections
+
+**Builds on:** [The Language of the Run Game](03-01-run-game-language.qmd) (hat math and why a handoff
+leaves a man free), [Zone Running](03-02-zone-running.qmd) (inside zone, arc and bash) and
+[Gap Schemes](03-03-gap-and-power-runs.qmd) (power and counter, the blocking under the inverted veer and the
+quarterback runs).
+
+**Sets up:**
+
+- [Run-Pass Options](../04-the-passing-game/04-06-rpos.qmd): the same read, with a pass as one of the
+  branches.
+- [Linebackers and the Second Level](../05-defensive-fronts-and-run-defense/05-04-linebackers-and-second-level.qmd)
+  and [Run Fits: Gap Integrity, Force, Spill, and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd):
+  the defense's side, the scrape, the gap exchange and the plus-one.
+- [Red Zone, Goal Line, and Short Yardage](../10-situational-football/10-03-red-zone-goal-line-and-short-yardage.qmd):
+  the quarterback as the extra hat near the goal line, and the tush push.
+- [The College Laboratory](../11-history/11-03-the-college-laboratory.qmd): the split-T, veer, wishbone,
+  flexbone and spread option in full.
+
+**See also (case studies):** [The Ravens' Option Run Game with Lamar Jackson](../12-case-studies/12-05-ravens-lamar-run-game.qmd)
+and [The Eagles: Trenches and the Tush Push](../12-case-studies/12-06-eagles-trenches-and-tush-push.qmd).
+
+**If you want to go deeper:** Chris B. Brown's *The Art of Smart Football* and his Smart Football essays on
+the zone read, the inverted veer and the triple option; Tim Layden's *Blood, Sweat and Chalk*, whose chapters
+on the wishbone and the zone read include the coaches' own accounts; and Paul Johnson's flexbone clinic
+talks, widely circulated among high-school coaches, for the triple option's blocking rules in detail.
+
+::: {.callout-note title="Go deeper"}
+**From diagrams to tracking data.** The two animations in this chapter are gridiron simulations written in
+NFL Big Data Bowl coordinates, so real tracking data drops into the same drawing code. Big Data Bowl
+releases carry a run-concept label in some editions, but they do not flag the read itself, so finding real
+read plays means looking for the signature in the tracking: a quarterback and back who stay together for
+half a second after the snap, and an end left unblocked. The website version of this chapter includes the
+shape of that code in a folded cell (it is not run, because the course does not download the Big Data Bowl
+files): load the tracking files, pick a play, prepare it with `gridiron.bdb.prepare()`, and animate it
+with the same `show_animation()` used for the simulations.
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (real tracking data; not run)"
+import pandas as pd
+from gridiron import bdb, show_animation
+
+trk = bdb.load_tracking("data/bdb/tracking_week_*.csv")
+plays = pd.read_csv("data/bdb/plays.csv")
+one = bdb.prepare(trk, plays, game_id=2022091100, play_id=55)   # pick a zone-read play from plays.csv
+show_animation(one, times=[0.0, 0.8, 1.6, 2.4])
+```
+:::
+
+[^iv]: The inverted veer's origin is unclear; the play is usually credited as popularized by TCU (Justin
+    Fuente and Andy Dalton, 2009) and Auburn (Gus Malzahn and Cam Newton, 2010). Inside the Pylon glossary,
+    "Inverted Veer," republished by the Scouting Academy: <https://scoutingacademy.com/glossary-inverted-veer/>
+    ("not exactly clear who invented or ran the play first"); Chris B. Brown, "Cam Newton and the Diversity of
+    Carolina's Zone-Read Package," Grantland (Sept. 20, 2012), on the "inverted veer" or "dash read" Newton
+    made famous at Auburn: <https://grantland.com/the-triangle/cam-newton-and-the-diversity-of-carolinas-zone-read-package/>.
+
+[^mesh]: Chris Haddad, "How To Coach The Read Option With Your Quarterbacks," Viqtory Sports:
+    <https://www.viqtorysports.com/how-to-coach-read-option-with-your-quarterbacks/> (the mesh "shouldn't happen
+    at the quarterback's belly button, but rather his back hip"; the quarterback reads the end's "distance to the
+    running back and their shoulder angle"). On the front hip: "Post #3 in a Series on QB Development: Ride and
+    Decide Method of Option Mesh," Flexbone Nation (Feb. 11, 2019): the quarterback "will never read past his front
+    hip," and "fumbles in the mesh are caused by quarterbacks reading past the front hip or fullbacks clamping in the
+    mesh." The Flexbone Nation site is no longer online; the wording is as indexed by search engines in October 2026.
+
+[^pitchrel]: Spacing varies by coach (some want the pitch man flat, others one or two yards deeper), but every
+    version keeps him where the pitch key cannot take both runners. See "Master the Pitch Relationship in the
+    Midline Triple Option," Triple Option Football (Sept. 2024):
+    <https://tripleoptionfootball.com/2024/09/15/master-the-pitch-relationship-in-the-midline-triple-option/>.
+
+[^pitch]: NFL Rule 8, Section 1 (forward pass: only one per down, thrown from in or behind the line of
+    scrimmage; a forward pass thrown from beyond the line is illegal, loss of five yards from the spot of the
+    pass and loss of down; NFL Video Rulebook, "Forward Pass":
+    <https://operations.nfl.com/the-rules/nfl-video-rulebook/forward-pass>) and Section 7 (backward pass and fumble: players of either team may recover and advance a
+    backward pass, including after it touches the ground; the fourth-down and two-minute limits on advancing
+    apply to fumbles, not backward passes). Official Playing Rules:
+    <https://operations.nfl.com/the-rules/nfl-rulebook/>; NFL Video Rulebook, "Backward Pass":
+    <https://edge-operations.nfl.com/the-rules/nfl-video-rulebook/backward-pass>.
+
+[^yeoman]: Yeoman coached Houston from 1962 to 1986 and was inducted into the College Football Hall of Fame in
+    2001. In his own account, Houston "couldn't block their tackles," and after a 1–4 start in 1965 "I'd drawn
+    it on paper and practiced it in the spring of 1965, but I didn't have the guts to go to it until midseason
+    when it looked as if we were all about to be fired." Ryan Monceaux, "Bill Yeoman Introduces The Veer
+    Offense," GoCoogs (Oct. 23, 2025): <https://gocoogs.com/bill-yeoman-veer-offense/>; "Veer Meets Son of
+    Veer," *Sports Illustrated* (Oct. 1, 1973): <https://vault.si.com/vault/1973/10/01/veer-meets-son-of-veer>;
+    "Bill Yeoman," Wikipedia: <https://en.wikipedia.org/wiki/Bill_Yeoman>.
+
+[^splitveer]: "Veer," Wikipedia: <https://en.wikipedia.org/wiki/Veer> (the Houston veer "is often referred to as
+    the 'split-back' veer," the two backs split behind the guards; the play-side halfback dives to the mesh and the
+    quarterback reads a key to give or pull and pitch to the other halfback).
+
+[^count]: "Teaching the Count System to Identify the Read, Pitch, Run Support, and the Deep Defender on Triple
+    Option," Triple Option Football (July 10, 2016):
+    <https://tripleoptionfootball.com/2016/07/10/teaching-the-count-system-to-identify-the-read-pitch-run-support-and-the-deep-defender-on-triple-option/>
+    ("#1 (Read Key)- Defender touching the Tackle"; "#2 (Pitch Key)- Defender on or past #1"; "#3 (Run Support)-
+    Defender on or past #2"); "Playside A-Back's Blocking Progression on the Triple Option," Triple Option Football
+    (Sept. 21, 2014): <https://tripleoptionfootball.com/2014/09/21/playside-a-backs-blocking-progression-on-the-triple-option/>
+    ("The Playside A-Back arcs to #3 and blocks whoever shows in the alley").
+
+[^wastriple]: Marc Sessler, "Redskins gamble on RG3's health with option attack," NFL.com (Sept. 23, 2012):
+    <https://www.nfl.com/news/redskins-gamble-on-rg3-s-health-with-option-attack-0ap1000000065151> (against
+    Cincinnati, Washington leaned "heavily on an array of double- and triple-option play calls").
+
+[^navygun]: "Refined Navy offense emerging under Newberry," *Stars and Stripes* (Aug. 16, 2023):
+    <https://www.stripes.com/sports/2023-08-16/refined-navy-offense-emerging-newberry-10996804.html>; "Yes,
+    Navy has an undefeated record, and one of the nation's most explosive offenses," Fox Baltimore (Oct. 24,
+    2025): <https://foxbaltimore.com/sports/sports-unlimited/navy-football-undefeated-explosive-offense-wing-t>
+    (Drew Cronic's "millennial Wing-T," with the option, RPOs and shotgun snaps). Both are also cited in 02-03.
+
+[^reynolds]: "Keenan Reynolds ends Navy career as FBS leader in TDs," Associated Press via ABC7 New York (Dec. 29,
+    2015): <https://abc7ny.com/post/keenan-reynolds-ends-navy-career-as-fbs-leader-in-tds/1138644/> (88 career
+    touchdowns, breaking Kenneth Dixon's FBS record; 4,559 rushing yards, the most by an FBS quarterback; Navy 44,
+    Pittsburgh 28, with 417 rushing yards).
+
+[^hit]: Dean Blandino, NFL vice president of officiating, in the league's 2013 rules video, quoted in "Jim
+    Harbaugh calls NFL's option ruling 'biased'," National Football Post (Sept. 7, 2013):
+    <https://www.nationalfootballpost.com/jim-harbaugh-calls-nfls-option-ruling-biased>.
+
+[^faurot]: State Historical Society of Missouri, "Don Faurot": <https://historicmissourians.shsmo.org/don-faurot>;
+    "Split T," Wikipedia: <https://en.wikipedia.org/wiki/Split-T> (Faurot's 1941 Missouri team; Wilkinson learned
+    it as Faurot's assistant at Iowa Pre-Flight; Oklahoma's 47 straight wins, 1953–1957).
+
+[^rr]: "Zone read still giving defenses fits," Associated Press (Sept. 25, 2014), via *Sports Illustrated*:
+    <https://www.si.com/college/2014/09/25/ap-fbc-zone-read> (Rodriguez: Drenning "said he saw the end coming
+    in, kept it and ran for 15 or 20 yards"); PFF, "As NFL and college offenses continue to adapt, the zone
+    read has stood the test of time":
+    <https://www.pff.com/news/nfl-college-football-offenses-adapt-zone-read-has-stood-test-of-time>.
+
+[^nevada]: Kaepernick (1,183 yards), Vai Taua and Luke Lippincott, 2009: "Nevada Trio Will be Honored at College
+    Football HOF for Making History," CBS News (Aug. 2010; "the first trio of teammates in the NCAA" to do it):
+    <https://www.cbsnews.com/chicago/news/nevada-trio-will-be-honored-at-college-football-hof-for-making-history/>;
+    Nevada Sports Net, "This week in Pack history: Nevada becomes only NCAA team with three 1,000-yard rushers":
+    <https://nevadasportsnet.com/news/reporters/this-week-in-pack-history-nevada-becomes-only-ncaa-team-with-three-1000-yard-rushers>.
+
+[^was2012]: Morris (1,613 yards, second in the NFL) and Griffin (815, the rookie quarterback record): "Washington
+    Redskins 2013 Offseason Preview," *Sports Illustrated* (Feb. 20, 2013):
+    <https://www.si.com/nfl/2013/02/20/washington-redskins-offseason-preview>. Team rank: this book's count from
+    nflverse play-by-play, 2012 regular season, has Washington first with 2,709 rushing yards (169.3 a game),
+    ahead of Minnesota's 2,634; see also "2012 Washington Redskins season," Wikipedia:
+    <https://en.wikipedia.org/wiki/2012_Washington_Redskins_season>.
+
+[^kaep]: Associated Press via KQED, "49ers Beat Packers 45-31; QB Kaepernick Sets Record With 181 Rushing Yards"
+    (Jan. 12, 2013): <https://www.kqed.org/news/85576/49ers-beat-packers-45-31-qb-kaepernick-sets-record-with-181-rushing-yards>
+    (the previous quarterback playoff record was Michael Vick's 119; it was Kaepernick's eighth NFL start).
+
+[^walden]: Robert Mays, "We Went There: 49ers-Packers," Grantland (Jan. 14, 2013):
+    <https://grantland.com/the-triangle/we-went-there-49ers-packers/>. Brad Biggs later judged the Packers "woefully prepared to defend the read option
+    and the pistol" that day (National Football Post, June 11, 2013): <https://www.nationalfootballpost.com/packers-going-to-school-to-stop-read-option>.
+
+[^rg3]: "RG3 has surgery to repair ACL, LCL tears," Associated Press via Fox News (Jan. 9, 2013):
+    <https://www.foxnews.com/sports/rg3-has-surgery-to-repair-acl-lcl-tears>; on the earlier sprain, "Griffin
+    leaves Redskins' 24-14 loss to Seahawks after injuring knee in fourth quarter," AP via Fox News (Jan. 6,
+    2013): <https://www.foxnews.com/sports/griffin-leaves-redskins-24-14-loss-to-seahawks-after-injuring-knee-in-fourth-quarter.amp>.
+
+[^ravens]: "Ravens break single-season team rushing record," NFL.com (Dec. 2019; 3,296 yards, breaking the 1978
+    Patriots' 3,165): <https://www.nfl.com/news/ravens-break-single-season-team-rushing-record-0ap3000001092761>;
+    "Lamar Jackson," Wikipedia: <https://en.wikipedia.org/wiki/Lamar_Jackson> (1,206 rushing yards, breaking
+    Michael Vick's 2006 quarterback record of 1,039; unanimous 2019 MVP).
+
+[^balreads]: Mike Santagata, an in-depth look at the Ravens' rushing attack, *Sports Illustrated* All Bengals
+    (Oct. 22, 2021), on the Ravens' power read, counter read and counter bash, each
+    reading an end: <https://www.si.com/nfl/bengals/allbengals-insiders-plus/in-depth-look-at-lamar-jackson-and-the-baltimore-ravens-rushing-attack>.
+
+[^balanswer]: Danny Kelly, The Ringer (Sept. 10, 2020), on how defenses might solve the Ravens' read-option offense:
+    on the scrape exchange, edge defenders keeping outside leverage, and Tennessee's 3-3 front in its 28–12
+    divisional-round win: <https://www.theringer.com/nfl/2020/9/10/21430211/lamar-jackson-read-option-offense-nfl-solve>.
+
+[^hurts]: CBS Sports, "Super Bowl 2023: Eagles' Jalen Hurts breaks two longstanding Super Bowl records in losing
+    effort" (Feb. 2023; 70 rushing yards, topping Steve McNair's 64, and three rushing touchdowns, tying Terrell
+    Davis's Super Bowl record for any player; Chiefs won 38–35):
+    <https://www.cbssports.com/nfl/news/super-bowl-2023-eagles-jalen-hurts-breaks-two-longstanding-super-bowl-records-in-losing-effort/>.
+
+[^daniels]: CBS Sports, "Commanders' Jayden Daniels breaks former Washington QB Robert Griffin III's NFL rookie
+    record" (Week 17, 2024, a 30–24 overtime win over Atlanta): <https://www.cbssports.com/nfl/news/commanders-jayden-daniels-breaks-robert-griffin-iiis-nfl-rookie-record>.
+
+[^data]: This book's calculation from nflverse play-by-play (`load_pbp`) and rosters (`load_rosters`),
+    regular seasons 2006–2025. Designed quarterback runs: `play_type == "run"` by a player with 10 or more pass
+    attempts that season, excluding `qb_scramble`, `qb_kneel`, `aborted_play` and likely sneaks (`run_location
+    == "middle"` with `ydstogo <= 2`). Checked against FTN charting's `is_qb_sneak` flag for 2022–2025, the sneak
+    rule catches about three in four charted sneaks and rarely mislabels other runs. Fumbles: the play-by-play
+    `fumble` flag (any fumble on the play, lost or recovered). Empty backfield: FTN charting's
+    `n_offense_backfield == 0` (backfield players other than the quarterback), joined on game and play ID. Running back carries: rushers
+    listed at RB or FB. Aborted snaps matter: about one in seven non-scramble quarterback "runs" in the raw data is
+    a botched snap, and leaving them in drags the quarterback average far below zero.

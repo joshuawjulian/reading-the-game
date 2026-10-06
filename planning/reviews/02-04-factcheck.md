@@ -1,0 +1,40 @@
+# Fact-check: 02-04 Spread Formations (2x2, Trips, Bunch, Empty, and the Condensed Revolution)
+
+Checked 2026-10-06 against FACTS-current.md, nflverse (every course-calculation figure recomputed in the `rtg` container with the chapter's method) and web sources.
+All 8 `<!-- VERIFY -->` comments are resolved and removed. The data-ranks HTML comment in the Bills film room was re-checked and kept. Each footnote is referenced exactly once. The chapter builds (`build_pdfs.py 02-04-spread-and-modern-formations --html`: OK). Only prose and footnotes changed, no figure code.
+
+| Claim | Verdict | Source | Change |
+|---|---|---|---|
+| Field 53⅓ yd wide; ball on a hash leaves one side about 6 yd wider | VERIFIED | NFL field dimensions (hashes 70'9" from each sideline → 23.6 vs 29.75 yd) | None |
+| Seven on the line, only the ends eligible; covered receiver; numbers 50–79 ineligible unless reported | VERIFIED | NFL Rules 5 and 7; 02-01/02-02 fact-checks | None |
+| 11 personnel ≈56% pass in neutral situations; Rams 2018 11 personnel ≈93% | VERIFIED | 02-01 fact-check (own recalculation) | None |
+| Empty rate 2016–2025 between ~7% and 9.5%; NGS and FTN agree in 2022 at 8.1% | VERIFIED | Own recalculation: NGS 7.75–9.39 (2016–22), FTN 8.10/7.72/8.62/6.92 (2022–25) | None |
+| NGS formation labels: through 2022 SHOTGUN/SINGLEBACK/I_FORM/EMPTY…; from 2023 only SHOTGUN/UNDER CENTER/PISTOL | VERIFIED | FACTS-current §7 | None |
+| Footnote: plays with no NGS formation label "about a fifth" | CORRECTED | Own recalculation: 0.6% of 2016–22 runs/passes unlabelled (the ~80% coverage in FACTS refers to all rows incl. special teams) | "the fewer than 1% of plays with no formation label" |
+| 2025: 71.7% of empty snaps from 11 personnel, 12 personnel 14.9%, others ≤3% | VERIFIED | Own recalculation (71.7, 14.9, 01 3.0) | None |
+| 2023–25: empty >94% dropbacks vs ~58% from everything else | VERIFIED | Own recalculation (94.5%, 58.1%) | None |
+| Empty by down/distance (rare on 1st, highest 3rd & 11+) | VERIFIED | Guarded by in-chapter asserts; build passed | None |
+| BDB 2025 = 2022 season weeks 1–9, `receiverAlignment` in plays.csv, Kaggle login | VERIFIED | FACTS-current §8 | None |
+| McVay's Rams and Shanahan's 49ers as the condensed popularizers; league followed | VERIFIED (detail added) | Foxworth, Andscape Jan 29 2019 (Rams 60% of formations <20 yd wide vs 37% next); FootballScoop Feb 6 2024 summarizing WSJ/NGS (condensed ~11% in 2016, overtook spread 2023, 49ers narrowest at 19.9 yd) | Sentence now gives the NGS trend; new fn `condensed` |
+| Wildcat descends from the single wing; T-formation replaced it; faded when snapper couldn't throw; survives in packages | VERIFIED (general) | Wikipedia "Wildcat formation"; Layden 2010 (Gailey on Wildcat as resurrected single wing, per CS Monitor review) | VERIFY comment removed; Taysom Hill not named (text was already generic) |
+| Unbalanced line / tackle-over mechanics; swinging gate mechanics | VERIFIED (football-technical, consistent with rules above) | NFL Rules 5, 7 | None |
+| OPI: deliberately blocking a defender off a receiver "before the ball is thrown", >1 yd past LOS | CORRECTED | NFL Rule 8-5: PI = act >1 yd beyond LOS; offensive restrictions run from snap until ball touched; "blocking downfield … prior to the ball being touched" (pick play) listed first | Text now "after the snap and before the pass is touched"; footnote rewritten, VERIFY removed |
+| PAT snapped from the 15 since 2015; 2-pt from the 2 | VERIFIED | NFL.com May 19 2015 (30–2 vote); FACTS-current §6 (2-pt unchanged 2026) | Footnote now cites NFL.com directly |
+| Dutch Meyer's TCU "spread formation", 1930s–40s; book by that name | VERIFIED (year added) | Wikipedia "Dutch Meyer", "Spread offense" (TCU 1934–52; *Spread Formation Football*, 1952) | Book title and 1952 added |
+| Ellison, late 1950s, losing team, "built an offense around four receivers … called it the Lonesome Polecat" | CORRECTED | Evely summary of Ellison's book; Wikipedia "Run and shoot offense": 1958, 0–4–1 start; the Polecat was the desperation spread formation (named by line coach Stan Lewis) that later grew into the run and shoot | Reworded: 1958, 0–4–1; Polecat → grew into run and shoot |
+| Mouse Davis carried it to Portland State (1970s) and "to several NFL teams" by early 1990s | CORRECTED (precision) | Wikipedia "Mouse Davis" (PSU HC 1975–80; Lions 1988–90, Falcons 1994–95); "Run and shoot offense" (Oilers, Lions, Falcons as base offense) | "refined it at Portland State… by the early 1990s the Oilers, Lions and Falcons all ran it as their base offense" |
+| Mumme & Leach Air Raid at small colleges then Kentucky | VERIFIED | Wikipedia "Mike Leach": Iowa Wesleyan 1989–91, Valdosta State 1992–96, Kentucky 1997–98 | Sources added to fn `history`; dropped the unverified Layden-chapter attribution |
+| 2007 Patriots 16–0, 589 pts (record then), Brady 50 TD, Moss 23 TD (record), Welker 112 rec; McDaniels OC; 2013 Broncos 606 / Manning 55; SB XLII 17–14 | VERIFIED | PFR 2007 NE; Ringer Aug 7 2017; common record | None |
+| 2007 NE shotgun 50.3% (1st), league 26.9% | VERIFIED | Own recalculation (NE .503, NYJ .466 2nd; league .269) | None |
+| Moss "often lined up as the single receiver in a 3x1"; Welker slot two-way go "on nearly every snap" | SOFTENED | The Ringer 2017 (Welker in the slot; three/four-receiver sets; safety dilemma vs Moss). No public alignment data for 2007 | Moss described as the kind of receiver a 3x1 isolates (no frequency claim); "most snaps"; new fn `pats07-roles` |
+| Rams 2018 13–3, lost SB LIII 13–3 | VERIFIED | PFR | None |
+| Rams 2018 "signature formation was a condensed 3x1 … with the tight end attached"; crack blocks on outside zone | SOFTENED | Andscape 2019 supports condensed/tight formations (60% <20 yd wide), receivers blocking on outside runs, bootleg releases; not the 3x1 specific | Now "signature was the condensed formation" with the width stat; "block" not "crack-block"; Andscape added to fn `rams18` |
+| Dolphins 2008: Sept 21, 38–13 at NE, Brown 4 rush TD + TD pass, ended NE's 21-game regular-season streak, 1–15 in 2007, 11–5 AFC East | VERIFIED | PFR box score; ESPN Dolphins blog; PFHOF "Wildcat immortalized" (record 21-game streak) | Sources added, VERIFY removed |
+| Wildcat to Miami via QB coach David Lee, who ran it at Arkansas with McFadden | VERIFIED | ESPN Dolphins blog (Lee, Arkansas, McFadden and Felix Jones); NFL.com (Lee hired as Miami QB coach) | None |
+| Wildcat name origin disputed; several HS/college coaches late 1990s–2000s | VERIFIED (presented as disputed) | Wikipedia "Wildcat formation" (WSJ credits Hugh Wyatt, La Center HS, 1997–98; Kansas State's Snyder/Miller also cited; Arkansas "Wild Hog") | Footnote rewritten; the unverified Layden-chapter claim and the "2006–2007" dates removed |
+| Bills empty 10.0% 2019–25 vs league 8.3%; top ten in 6 of 7 seasons | VERIFIED | Own recalculation (10.06 vs 8.32; ranks 3,10,26,5,5,8,9) | None |
+| Bills 2023: designed runs 12.7% of empty (14/110, 13 Allen), league 5.3% | CORRECTED (label) | Own recalculation: 5.3% is the rest of the league; 5.6% including BUF | Footnote clarifies; "more than twice" still holds |
+| Josh Allen 6-5, 237 | VERIFIED | buffalobills.com roster | VERIFY removed |
+| Chiefs "leaned on bunch and stack sets throughout the Mahomes era, especially in the red zone and against man" | SOFTENED | Defector (Petchesky) Feb 13 2023: stacked receivers in SB LVII, Reid: design worked against man; no charting source for frequency/red-zone emphasis | Rephrased as "known for stacking and bunching… a favorite answer to man coverage"; red-zone claim dropped; new fn `chiefs` |
+| Go deeper: Layden covers "the run and shoot, the spread and the Wildcat" | CORRECTED | CS Monitor review (spread, single wing, Wildcat; run and shoot not confirmed) | "the single wing, the spread and the Wildcat" |
+| Brown *Art of Smart Football* 2015, *Essential Smart Football* 2012; Kirwan 2010 / 2.0 2015 | VERIFIED | Publisher listings; prior fact-checks (01-04) | None |
