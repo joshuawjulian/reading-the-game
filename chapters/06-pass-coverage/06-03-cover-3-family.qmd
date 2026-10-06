@@ -1,0 +1,1693 @@
+---
+title: "Cover 3: Sky, Buzz, Cloud, and Seattle's Match Version"
+subtitle: "Three deep, four under: the NFL's most common zone, the three ways a defense rotates into it, the holes every offense knows about, and how Seattle taught it to carry the seams."
+description: "Cover 3 from the ground up: who guards each deep third and each underneath zone and why; the sky, buzz and cloud rotations and what each one is for; the curl-flat and seam-flat defenders; Cover 3's bargain (a safety freed for an eight-man front) and its holes (the seams, the curl-flat stretch, the flood, the hitch under a bailing corner); four verticals against spot-drop and match Cover 3; Pete Carroll's Seattle defense and the coaches who spread it; and how to recognise the coverage before and after the snap."
+glossary:
+  "Cover 3": "A zone coverage with three deep defenders, each guarding a third of the field's width (usually the two cornerbacks outside and one safety in the middle), and four underneath zone defenders. A one-high, middle-of-the-field-closed coverage, and the most common zone in the NFL."
+  "Sky rotation": "A Cover 3 rotation in which a safety comes down to play the curl-flat area on one side ('s' for safety), while the cornerback on that side keeps his deep third."
+  "Buzz rotation": "A Cover 3 rotation in which a safety comes down to the hook-curl area, inside, and the linebacker or nickel back already aligned outside on that side takes the curl-flat."
+  "Cloud rotation": {def: "A Cover 3 rotation in which the cornerback on one side stays shallow and plays the flat ('c' for cloud and for corner), and the safety on that side runs to the deep outside third behind him. It often starts from a two-high look and resembles Cover 2 on that side before the snap.", aliases: ["Corner rotation"]}
+  "Curl-flat defender": "The outside underneath defender on one side of a zone coverage (in Cover 3, one on each side). He drops toward the curl zone under the outside receiver and breaks to the flat when the ball or a receiver goes there: one player guarding two areas."
+  "Seam-flat defender": "An outside underneath defender whose first job is the number 2 receiver's vertical route up the seam (he walls it off or carries it), and who works to the flat only once the seam is gone. The match-Cover 3 and zone-blitz version of the curl-flat defender."
+  "Cover 3 match": "Cover 3 played with pattern-matching rules: the defenders start in their zones and then pick up receivers by their routes (the corners carry the outside receivers deep, the seam-flat defenders carry the slot receivers up the seams), so four vertical routes meet four defenders instead of three."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import os
+import logging
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse, FancyArrowPatch, FancyBboxPatch, RegularPolygon, Patch
+from matplotlib.lines import Line2D
+
+import gridiron.play as gplay
+from gridiron import Play, Player, Field, offense, defense, style, draw_marker, show_animation, routes as r
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+HALF = 80 / 3            # yards from the middle of the field to either sideline (26.7)
+THIRD_W = HALF / 3       # where one deep third meets the next: 8.9 yards either side of the middle
+HASH_W = 18.5 / 6        # NFL hash marks: 18 ft 6 in apart, so 3.1 yards either side of the middle
+NUM_W = HALF - 12.0      # the painted numbers start 12 yards in from the sideline: 14.7 from the middle
+DD, OD, GREY = style.DEFENSE_DARK, style.OFFENSE_DARK, style.MUTED
+GREEN_TEXT = "#0f7a55"   # a darker step of the green highlight, for text on the light field
+LOS = 40
+# gridiron's default ball speed (18 yd/s) is a conservative average; a firm NFL throw to a seam or a
+# hitch covers 20-30 yards in about a second, so this chapter's simulated passes use 24 yd/s.
+# (A runtime setting for this chapter only; gridiron's source is unchanged.)
+gplay.BALL_SPEED = 24.0
+
+# ---------------------------------------------------------------- players and alignments
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=key if label is None else label)
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+def line5():
+    """The five offensive linemen, 1.6 yards apart (only the center is lettered)."""
+    return [O(k, k, -0.7, w, "C" if k == "C" else "") for k, w in
+            (("LT", -3.2), ("LG", -1.6), ("C", 0.0), ("RG", 1.6), ("RT", 3.2))]
+
+def spread(rb_w=-1.5):
+    """11 personnel, shotgun 2x2: X and Z on the line (with the five linemen: seven on the line),
+    H in the left slot and the tight end Y flexed into the right slot, both a step off the ball."""
+    return line5() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, rb_w, "R"),
+                      O("X", "WR", -0.7, -15.0), O("H", "WR", -1.5, -9.0),
+                      O("Y", "TE", -1.5, 9.0), O("Z", "WR", -0.7, 15.0)]
+
+def front4():
+    return [D("WDE", "DE", 1.0, -5.6, "E"), D("WDT", "DT", 1.0, -0.8, "T"),
+            D("SDT", "DT", 1.0, 2.4, "T"), D("SDE", "DE", 1.0, 5.6, "E")]
+
+LAB = {"MIKE": ("MIKE", "M"), "WILL": ("WILL", "W"), "NB": ("NB", "$"), "LCB": ("CB", "CB"),
+       "RCB": ("CB", "CB"), "FS": ("FS", "FS"), "SS": ("SS", "SS")}
+
+# The Cover 3 look before the snap (one-high) and the landmarks the seven droppers reach after it.
+C3_PRE = {"MIKE": (4.5, 1.8), "WILL": (4.5, -2.2), "NB": (5.0, -7.0), "LCB": (7.5, -16.3),
+          "RCB": (7.5, 16.3), "FS": (14.5, 0.0), "SS": (5.5, 6.9)}
+C3_POST = {"MIKE": (9.0, 4.2), "WILL": (9.0, -4.2), "NB": (9.5, -12.5), "LCB": (18.0, -16.8),
+           "RCB": (18.0, 16.8), "FS": (17.5, 0.0), "SS": (9.5, 12.5)}
+
+def nickel(spots):
+    """4-2-5 nickel: the front four plus seven droppers at `spots` = {key: (d, w)}."""
+    return front4() + [D(k, LAB[k][0], *spots[k], LAB[k][1]) for k in spots]
+
+def protect(p, rushers=("WDE", "WDT", "SDT", "SDE"), linemen=("LT", "LG", "C", "RG", "RT")):
+    """Linemen set, four rushers engage them: enough to say 'pass', no more."""
+    for k in linemen:
+        if k in p.players:
+            p.block(k, pts=[(-1.2, 0.0)])
+    for k in rushers:
+        if k in p.players:
+            p.rush(k, pts=[(-1.6, 0.0)], speed=2.0)
+
+# ---------------------------------------------------------------- drawing helpers
+def P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+def clean(ax):
+    """Drop the painted yard numbers (they sit where receivers stand); clip text to the window."""
+    for t in list(ax.texts):
+        if t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+def ruler(fld, p, fs=6.0, step=5, top=40):
+    """Depth labels (yards past the line of scrimmage) just inside the left edge of the window."""
+    xl = (160 / 3) - fld.y1 + 0.4
+    for d in range(step, top + 1, step):
+        y = p.los + d
+        if fld.x0 + 1.5 <= y <= fld.x1 - 1.5:
+            fld.ax.text(xl, y, f"{d}" + (" yd" if d == step else ""), fontsize=fs, color=style.INK_2,
+                        ha="left", va="center", zorder=12,
+                        bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.85))
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.0, ha="center", weight="normal", box=True):
+    x, y = P(fld, p, d, w)
+    fld.ax.text(float(x), float(y), text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=13,
+                fontweight=weight, linespacing=1.15,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9) if box else None)
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=7.0, ha="center"):
+    (xt, yt), (xp, yp) = P(fld, p, *text_at), P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha=ha, va="center", zorder=13, linespacing=1.15,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=7),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+def zone_box(fld, p, d0, d1, w0, w1, label="", color=style.DEFENSE, alpha=0.12, fs=6.8, ls=(0, (3, 2)),
+             label_d=None):
+    """A rounded, shaded rectangle from depth d0 to d1 and width w0 to w1 (yards), labelled near its top."""
+    (x0, y0), (x1, y1) = P(fld, p, d0, w0), P(fld, p, d1, w1)
+    lo_x, lo_y = float(min(x0, x1)), float(min(y0, y1))
+    for fc, ec, a in ((color, "none", alpha), ("none", color, 1.0)):
+        fld.ax.add_patch(FancyBboxPatch((lo_x, lo_y), float(abs(x1 - x0)), float(abs(y1 - y0)),
+                                        boxstyle="round,pad=0,rounding_size=1.2", fc=fc, alpha=a if fc != "none" else 0.8,
+                                        ec=ec, lw=0.8, ls=ls, zorder=1.5))
+    if label:
+        say(fld, p, label_d if label_d is not None else d1 - 1.0, (w0 + w1) / 2, label, color=style.INK,
+            fontsize=fs, box=False)
+
+def path(fld, p, pts, color=style.DEFENSE, lw=1.4, dash=(0, (3, 2)), z=5, shrink=1.15):
+    """A dashed arrow through absolute (d, w) points, stopping just short of the last one (the marker)."""
+    pts = [tuple(map(float, q)) for q in pts]
+    (a, b), (c, e) = pts[-2], pts[-1]
+    n = float(np.hypot(c - a, e - b))
+    if n > shrink + 0.2:
+        pts[-1] = (c - (c - a) / n * shrink, e - (e - b) / n * shrink)
+    xs, ys = P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    fld.ax.plot(xs, ys, color=color, lw=lw, ls=dash, zorder=z, solid_capstyle="round")
+    fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>",
+                                     mutation_scale=9, color=color, lw=lw, zorder=z))
+
+def route_line(fld, p, pts, alpha=0.9, lw=1.5, color=style.OFFENSE, ls="-", z=4):
+    """A receiver's route through absolute (d, w) points, with an arrowhead (alpha < 1 for 'faint')."""
+    xs, ys = P(fld, p, np.array([float(q[0]) for q in pts]), np.array([float(q[1]) for q in pts]))
+    fld.ax.plot(xs, ys, color=color, lw=lw, alpha=alpha, zorder=z, ls=ls, solid_capstyle="round")
+    fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=9,
+                                     color=color, lw=lw, alpha=alpha, zorder=z))
+
+def ghost(fld, p, d, w, label="", color=style.DEFENSE):
+    """A hollow, dashed defender: where he stood before he moved."""
+    x, y = P(fld, p, d, w)
+    ppy = fld.pts_per_yard()
+    fld.ax.add_patch(RegularPolygon((float(x), float(y)), 4, radius=gplay.MARKER_R * 1.25, orientation=np.pi / 4,
+                                    fc="none", ec=color, lw=1.1, ls=(0, (2, 1.2)), zorder=6))
+    if label:
+        fld.ax.text(float(x), float(y), label, ha="center", va="center", color=color, fontweight="bold",
+                    zorder=6, fontsize=max(4.0, min(8.5, ppy * 0.75)))
+
+def hole(fld, p, d, w, wd, dd, num, text=None, text_at=None, fs=6.6):
+    """A green dashed ellipse marking a soft spot, with a numbered tag (and optional caption)."""
+    x, y = P(fld, p, d, w)
+    fld.ax.add_patch(Ellipse((float(x), float(y)), wd, dd, fc=style.THIRD, alpha=0.16, ec=style.THIRD,
+                             lw=1.3, ls=(0, (3, 1.5)), zorder=2.5))
+    say(fld, p, d, w, num, color=GREEN_TEXT, fontsize=8.5, weight="bold", box=False)
+    if text:
+        say(fld, p, *text_at, text, color=GREEN_TEXT, fontsize=fs)
+
+def panel_title(ax, text, fs=8.5):
+    ax.set_title(text, fontsize=fs, loc="left", color=style.INK, fontweight="bold")
+
+def draw(p, ax=None, lateral="full", window=(-8.5, 22), width_in=6.5, show_ruler=True, rfs=6.0):
+    fld = p.draw(ax=ax, lateral=lateral, window=window, width_in=width_in, title=False)
+    clean(fld.ax)
+    if show_ruler:
+        ruler(fld, p, fs=rfs)
+    return fld
+
+LEGEND = {
+    "route": Line2D([], [], color=style.OFFENSE, lw=1.8, label="route"),
+    "drop": Line2D([], [], color=style.DEFENSE, lw=1.3, ls=(0, (3, 2)), label="defender's movement"),
+    "ghost": Patch(fc="none", ec=style.DEFENSE, lw=1.1, ls=(0, (2, 1.2)), label="where he lined up"),
+    "ring": Line2D([], [], marker="o", ls="", ms=11, mfc="none", mec=style.THIRD, mew=2, label="watch him"),
+    "zone": Patch(fc=style.DEFENSE, alpha=0.18, ec=style.DEFENSE, ls=(0, (3, 2)), label="his zone"),
+    "hole": Patch(fc=style.THIRD, alpha=0.25, ec=style.THIRD, ls=(0, (3, 1.5)), label="soft spot"),
+    "pass": Line2D([], [], color=style.BALL, lw=1.3, ls=(0, (2, 2)), label="the throw"),
+}
+
+def field_legend(ax, keys, fs=7.0, ncol=None):
+    hs = [LEGEND[k] for k in keys]
+    ax.legend(handles=hs, loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=ncol or min(len(hs), 5),
+              fontsize=fs, frameon=False, handlelength=2.0, columnspacing=1.2, borderaxespad=0.2)
+
+def two_state(off, pre, post, via=None, rings=(), ax=None, lateral="full", window=(-8.5, 27.0),
+              width_in=6.5, rfs=6.0, rush=True, keep=()):
+    """The diagram style for drops and rotations: every defender drawn where he ends up, a dashed
+    outline where he lined up (the pre-snap picture) and a dashed path between them.
+    via = {key: [(d, w), ...]} bends a path through intermediate points."""
+    p = Play(off, nickel(post), los=LOS, to_go=None)
+    if rush:
+        protect(p)
+    p.highlight(*rings)
+    fld = draw(p, ax=ax, lateral=lateral, window=window, width_in=width_in, rfs=rfs)
+    for k, a in pre.items():
+        b = post.get(k, a)
+        if np.hypot(b[0] - a[0], b[1] - a[1]) > 0.8 or k in keep:
+            ghost(fld, p, *a, LAB[k][1])
+            path(fld, p, [a] + list((via or {}).get(k, [])) + [b])
+    return fld, p
+
+def deep_thirds(fld, p, d0=15.0, d1=26.5, labels=("deep ⅓", "deep middle ⅓", "deep ⅓"), label_d=None,
+                fs=6.8):
+    edges = [-HALF, -THIRD_W, THIRD_W, HALF]
+    for i, (a, b) in enumerate(zip(edges[:-1], edges[1:])):
+        zone_box(fld, p, d0, d1, a + 0.6, b - 0.6, labels[i], alpha=0.07 if i % 2 == 0 else 0.14, fs=fs,
+                 label_d=label_d)
+
+# ---------------------------------------------------------------- moments of a simulated play
+def set_track(p, key, rows):
+    """Hand-made keyframes [(t, d, w), ...] for one player (zone reads and pattern-match carries
+    that gridiron's straight-line drop() and man() can't express). Call after every other action."""
+    kf, t0, t1 = p._compile()
+    kf = dict(kf)
+    q = p.players[key]
+    rows = [(min(t0, -1.0), q.d, q.w), (0.0, q.d, q.w)] + [tuple(x) for x in rows]
+    kf[key] = np.array(rows, dtype=float)
+    p._compiled = (kf, t0, max(t1, rows[-1][0]))
+
+def shadow(p, key, target, off, lag=0.3, t_on=0.9, t_from=0.0, start=None, t_end=3.6):
+    """Keyframes for a defender who leaves `start` (or his alignment) at t_from and settles
+    `off` = (down, right) yards from where `target` was `lag` seconds earlier, fully by t_on."""
+    q = p.players[key]
+    s = np.array(start if start is not None else (q.d, q.w), dtype=float)
+    rows = []
+    for tt in np.round(np.arange(t_from + 0.05, t_end + 1e-9, 0.05), 3):
+        f = min(1.0, max(0.0, (tt - t_from) / max(1e-6, t_on - t_from)))
+        f = f * f * (3 - 2 * f)
+        tgt = p.position(target, max(0.0, tt - lag)) + np.array(off)
+        rows.append((tt, *(s * (1 - f) + tgt * f)))
+    return rows
+
+def moment(ax, p, t, lateral, window, rings=(), throw_t=None):
+    """Everyone at time t, with faint trails of where they have been and the ball's flight so far."""
+    ylo, yhi = sorted((p.ball_y - lateral[0], p.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=p.los, window=window, numbers=False, lateral=(ylo, yhi),
+                to_go=None)
+    ppy = fld.pts_per_yard()
+    inside = lambda d, w: (window[0] + 0.6 <= d <= window[1] - 0.6) and (lateral[0] + 0.6 <= w <= lateral[1] - 0.6)  # noqa: E731
+    for k, q in p.players.items():
+        if q.pos in ("LT", "LG", "C", "RG", "RT", "DE", "DT"):
+            continue
+        pts = np.array([p.position(k, tt) for tt in np.linspace(0.0, max(t, 0.0), 40)])
+        if t > 0 and np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) > 0.3:
+            xs, ys = P(fld, p, pts[:, 0], pts[:, 1])
+            ax.plot(xs, ys, color=style.OFFENSE if q.side == "off" else style.DEFENSE,
+                    lw=1.0, alpha=0.55, zorder=3, ls="-" if q.side == "off" else (0, (3, 2)))
+    if throw_t is not None and t > throw_t:
+        b = np.array([p.ball_position(tt) for tt in np.linspace(throw_t, t, 25)])
+        xs, ys = P(fld, p, b[:, 0], b[:, 1])
+        ax.plot(xs, ys, color=style.BALL, lw=1.3, ls=(0, (2, 1.5)), zorder=9)
+    for k, q in p.players.items():
+        d, w = p.position(k, t)
+        if not inside(d, w):
+            continue
+        x, y = P(fld, p, d, w)
+        draw_marker(ax, float(x), float(y), q.side, q.label, ppy, ring=style.THIRD if k in rings else None)
+    if t > 0.05:
+        bd, bw = p.ball_position(t)
+        if inside(bd, bw):
+            bx, by = P(fld, p, *((bd, bw - 1.0) if t <= (throw_t or 99) else (bd + 1.2, bw)))
+            ax.add_patch(Ellipse((float(bx), float(by)), 1.0, 0.62, fc=style.BALL, ec="white", lw=0.5, zorder=11))
+    return fld
+
+def arrival(p, key, t_throw):
+    """When the thrown ball reaches its receiver (first moment it is within half a yard of him)."""
+    for tt in np.arange(t_throw + 0.05, t_throw + 4.0, 0.02):
+        if np.linalg.norm(p.ball_position(tt) - p.position(key, tt)) < 0.5:
+            return float(round(tt, 2))
+    return t_throw + 1.5
+
+def tag(fld, text, fs=6.6, loc="bl"):
+    """A caption tucked into a corner of a frame panel."""
+    x, ha = (0.03, "left") if loc[1] == "l" else (0.97, "right")
+    y, va = (0.03, "bottom") if loc[0] == "b" else (0.97, "top")
+    fld.ax.text(x, y, text, transform=fld.ax.transAxes, ha=ha, va=va, fontsize=fs, color=style.INK, zorder=15,
+                linespacing=1.15, bbox=dict(boxstyle="round,pad=0.25", fc=style.SURFACE, ec=style.BASELINE, lw=0.5))
+
+def strip(p, times, titles, tags, lateral, window, rings=(), throw_t=None, width_in=6.6, ncols=2,
+          tag_loc="bl", fs=6.4, depth=True, extra=None):
+    """The print version of an animation: one panel per moment, with trails and a caption in each.
+    depth=True adds the yard ruler; extra(fld, i, t) draws panel-specific annotations."""
+    n = len(times)
+    nrows = int(np.ceil(n / ncols))
+    pw = width_in / ncols
+    span_w, span_d = abs(lateral[1] - lateral[0]), window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, figsize=(width_in, nrows * (pw * span_d / span_w + 0.3)), squeeze=False)
+    for ax in axes.flat[n:]:
+        ax.axis("off")
+    for i, (ax, t) in enumerate(zip(axes.flat, times)):
+        fld = moment(ax, p, t, lateral, window, rings=rings, throw_t=throw_t)
+        if depth:
+            ruler(fld, p, fs=5.2)
+        if extra is not None:
+            extra(fld, i, t)
+        panel_title(ax, titles[i], fs=7.8)
+        if tags[i]:
+            tag(fld, tags[i], fs=fs, loc=tag_loc if isinstance(tag_loc, str) else tag_loc[i])
+    fig.tight_layout(h_pad=0.7, w_pad=0.5)
+    return fig
+```
+
+First-and-10 near midfield. Before the snap the broadcast's high camera shows one safety, alone, 15
+yards deep in the middle of the field. The other safety has walked down to eight yards, just
+outside the tight end, and stands there like an extra linebacker. The offense hands the ball to
+its running back, who runs into a wall: eight defenders near the line against seven blockers, and
+the one nobody blocked makes the tackle for a yard. Two plays later, same formation, same defense.
+This time it's a fake handoff, the eight defenders lean forward, and the tight end runs straight up
+the field past the linebackers. The quarterback drops it in behind them for 28 yards. Same
+coverage both times, and the analyst says, "That's the deal with Cover 3." What deal? Why would a
+defense take a safety out of the deep part of the field, where the big plays happen, and leave one
+man in the middle? Why does the same structure stop the run so well and leak a seam route? And why,
+for more than a decade, was the most feared defense in the NFL built almost entirely on this one
+plain-looking coverage? This chapter takes Cover 3 apart: what each defender does, the three
+ways a defense rotates into it, where the holes are, and the version that taught it to close them.
+
+**You'll be able to…**
+
+- Draw Cover 3 from memory: who has each of the three deep thirds and each of the four underneath
+  zones, where they line up, and where they go.
+- Tell sky, buzz and cloud apart one second after the snap by watching where the rotating defender
+  lands, and say why a defense would choose each one.
+- Explain Cover 3's bargain: the extra run defender it buys (the eight-man front) and the holes it
+  pays with (the seams, the curl-flat stretch, the flood, the hitch under a bailing corner).
+- Explain how Cover 3 match handles four verticals, what changed when the curl-flat defender became
+  a seam-flat defender, and what offenses attack instead.
+- Recognise Cover 3 before the snap from the safeties and corners, and confirm it after the snap by
+  counting deep defenders.
+
+::: {.callout-note title="You'll need"}
+- **The zone map and the shell** ([Coverage Fundamentals](06-01-coverage-fundamentals.qmd)): a
+  [deep third](../../appendices/glossary.qmd#gl-deep-third) is a third of the field's width, about 18
+  yards. Underneath, from the sideline in, are the [flat](../../appendices/glossary.qmd#gl-flat-zone)
+  (0–7 yards deep, near the sideline), the [curl](../../appendices/glossary.qmd#gl-curl-zone) (10–12
+  yards, between the numbers and the hash), the [hook](../../appendices/glossary.qmd#gl-hook-zone)
+  (around the hash, over the tackles) and the [hole](../../appendices/glossary.qmd#gl-hole-zone) (the
+  middle, in front of the deep defenders). Zone defenders drop to a
+  [landmark](../../appendices/glossary.qmd#gl-landmark). In [spot-drop zone](../../appendices/glossary.qmd#gl-spot-drop-zone)
+  they guard a place; in [pattern matching](../../appendices/glossary.qmd#gl-pattern-matching) they
+  pick up receivers by their routes. [MOFC](../../appendices/glossary.qmd#gl-mofc) (middle of the
+  field closed) means one safety deep in the middle. A corner who shows press and runs deep at the
+  snap [bails](../../appendices/glossary.qmd#gl-bail).
+- **The defense's personnel and the box** ([A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)):
+  the [nickel](../../appendices/glossary.qmd#gl-nickel) (five defensive backs) is the everyday
+  package; the [box](../../appendices/glossary.qmd#gl-box) is the area near the line between the
+  offensive tackles (and tight ends) where run defenders stand, and the
+  [box count](../../appendices/glossary.qmd#gl-box-count) is how many defenders are in it. A
+  [one-high](../../appendices/glossary.qmd#gl-one-high) shell has one deep safety in the middle. A
+  defender who lines up halfway between the slot receiver and the tackle is in an
+  [apex](../../appendices/glossary.qmd#gl-apex) alignment.
+- **The routes and concepts aimed at Cover 3** ([Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd)):
+  [four verticals](../../appendices/glossary.qmd#gl-four-verticals) sends four receivers deep;
+  [flood](../../appendices/glossary.qmd#gl-flood) puts three receivers at three depths on one side,
+  the middle one usually a [sail](../../appendices/glossary.qmd#gl-sail) (a route that climbs to 12
+  to 15 yards and bends toward the sideline);
+  [curl-flat](../../appendices/glossary.qmd#gl-curl-flat) puts a curl and a flat route on one
+  defender. A [seam](../../appendices/glossary.qmd#gl-seam) runs straight up between the hash and
+  the numbers, a [hitch](../../appendices/glossary.qmd#gl-hitch) stops and turns back at 5 or 6
+  yards, a [dig](../../appendices/glossary.qmd#gl-dig) breaks flat across toward the middle at 10
+  to 15 yards. Receivers are numbered from the sideline in: #1 is the widest on his side, then #2,
+  then #3.
+
+*Reading the diagrams:* offense is blue circles (X, H, Y and Z receivers; Q quarterback; R running
+back; C center; F fullback). Defense is outlined squares: E and T the defensive ends and tackles, M,
+W and Sm the Mike, Will and Sam linebackers (Sm, so the Sam isn't mistaken for the strong safety), $
+the nickel back, CB a cornerback, FS and SS the free and strong safeties. A dashed outline is where
+a defender lined up before the snap and a dashed orange arrow is where he went; a green ring marks
+the player to watch. Faint lines across the field are 5 yards apart, starting at the line of
+scrimmage (the darker blue line), and the small numbers on the left edge give the depth in yards.
+Where a down and distance matters, a thick orange line marks the
+[line to gain](../../appendices/glossary.qmd#gl-line-to-gain).
+:::
+
+## Cover 3 in one picture: three deep, four under
+
+**[Cover 3](../../appendices/glossary.qmd#gl-cover-3)** is a zone coverage with three deep
+defenders, each guarding a third of the field's width, and four underneath defenders, each guarding
+an area in front of them. With four rushers, that's all eleven. The two cornerbacks take the outside
+thirds, one safety takes the middle third, and the other safety comes down to join three linebackers
+or nickel backs underneath. That last move, a safety coming down, is what the rest of this chapter
+is about, and it has a name. Here is the picture with the most common version of it, the sky
+rotation.
+
+```{python}
+#| label: fig-cover3-sky
+#| fig-cap: "Cover 3 sky against a 2x2 formation (11 personnel: three receivers, a tight end flexed into the right slot). Dashed outlines show where each defender lined up, dashed arrows where he goes at the snap. Deep: the two cornerbacks (CB) bail to the outside thirds and the free safety (FS) sinks to the middle third, about 17 to 18 yards deep. Underneath: the strong safety (SS, ringed), who lined up about 11 yards deep just outside the tight end (Y), comes down and out to the right curl-flat area (the sky rotation); the nickel ($) widens to the left curl-flat, and the Mike (M) and Will (W) drop to the hooks. Seven defenders cover, four rush. Notice where the SS started: outside the tight end. That is the sky tell."
+fld, p = two_state(spread(), C3_PRE | {"SS": (11.0, 10.4)}, C3_POST, rings=("SS",))
+deep_thirds(fld, p, label_d=24.8)
+for s in (-1, 1):
+    zone_box(fld, p, 2.0, 13.5, s * 9.4, s * 23.6, "curl-flat", label_d=12.4)
+    zone_box(fld, p, 4.5, 13.5, s * 0.6, s * 9.0, "hook", label_d=12.4)
+say(fld, p, 4.0, 20.6, "sky: the SS\ncomes down to\nthe curl-flat", fontsize=6.6, color=DD)
+say(fld, p, -6.8, 5.5, "four rush", fontsize=6.4)
+field_legend(fld.ax, ["ghost", "drop", "zone", "ring"])
+plt.show()
+```
+
+Read the picture from the top down, because that's how the coverage is built.
+
+**The deep three.** Each cornerback has the deep third on his side, from a few yards inside the
+numbers out to the sideline, and the free safety has the middle third, from hash to hash and a few yards beyond. Their
+rule is the oldest one in pass defense: *nobody gets behind me.* A Cover 3 corner lines up 7 to 9
+yards off his receiver with outside leverage and, at the snap, opens his hips toward the sideline
+and runs back, keeping the receiver in front of him and his eyes, as much as he can, on the
+quarterback. He'll give up a five-yard hitch all day. He will not give up the deep ball over his
+head. The free safety starts 13 to 16 yards deep in the middle and drifts back to 17 or 18, reading
+the quarterback, ready to break toward whichever side the ball is thrown. He is the *post safety*:
+the man in the post, where post routes go, and the reason the middle of the field is "closed."
+
+Why three, and why these three? Because a third of the field, about 18 yards, is ground a deep
+defender can cover comfortably from a good starting spot while the ball is in the air, and because
+the corners are the defense's best pure cover men and the outside thirds are where a single receiver
+runs a go route along the sideline. Two deep defenders can split the field too (that's
+[Cover 2](06-04-cover-2-and-tampa-2.qmd)), but then each has 27 yards and nobody stands in the deep
+middle. Three is the fewest that keeps a defender in the post and a defender over each sideline.
+
+**The underneath four.** That leaves four players for the short and intermediate areas, and there
+are seven named zones underneath (two flats, two curls, two hooks and the hole). Cover 3 solves the
+arithmetic the way all zones do, by giving each underneath defender two zones and an order to play
+them in:
+
+- **The two curl-flat defenders**, one on each side, take the outside underneath areas. Here they
+  are the strong safety on the right and the nickel on the left. A
+  **[curl-flat defender](../../appendices/glossary.qmd#gl-curl-flat-defender)** drops toward the
+  curl area, about 10 to 12 yards deep under the outside receiver, and breaks to the flat when a
+  receiver or the ball goes there. He's the busiest man in the coverage, and the next section is
+  about him.
+- **The two hook defenders**, the Mike and Will linebackers here, take the inside areas: they drop
+  to 8 to 10 yards around the hashes, wall off anything crossing the middle, and keep an eye on the
+  running back, who may slip out late. Some staffs call them hook-curl players, because when a
+  receiver runs a curl inside the curl-flat defender, the hook defender widens to take it.
+
+**The four rushers** don't cover anything, but they're part of the deal. Cover 3 is a four-man-rush
+coverage. If the defense wants to send a fifth rusher and still play three deep, it has to take one
+of the underneath four away, and then it's a different call, a three-deep, three-under
+[fire zone](../../appendices/glossary.qmd#gl-fire-zone), which
+[Zone Blitzes, Fire Zones, and Simulated Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd)
+builds.
+
+::: {.callout-important title="Why it exists"}
+**Cover 3 exists because it is the cheapest way to guard the whole deep field.** Three deep
+defenders, a third each, means nothing goes over the top, and yet one safety is left over to come
+down and help against the run or underneath. Two-deep coverages (Cover 2, quarters) need two safeties
+deep; man coverage needs a defender for every receiver. Cover 3 is the middle path: deep security
+with only three, an extra body near the line, and every underneath defender facing the
+quarterback, so the ball is always thrown in front of somebody who can see it and tackle (and
+somebody who sees a quarterback scramble the moment it starts, which man defenders, turned to
+their receivers, often don't).
+
+**What it gives up.** Four underneath defenders for seven underneath zones, so there are always
+soft spots, and three deep defenders against an offense that can send four receivers deep. Every
+hole this chapter draws comes from one of those two numbers.
+:::
+
+## The curl-flat defender, and why he became a seam-flat defender
+
+If you want to understand Cover 3, watch the curl-flat defender. He has the hardest job in the
+coverage because he has two zones, the curl and the flat, and the offense knows it.
+
+Here is his problem. He lines up a few yards inside the slot receiver, in an apex between the slot
+and the tackle, because he also has a job against the run. At the snap the outside receiver (#1) is
+somewhere outside and in front of him, the slot (#2) right in front of him. If #1 runs a curl at 12
+yards and #2 runs to the flat at 3 yards, one defender has to cover both: if he sits under the
+curl, the flat is open; if he jumps the flat, the curl is open behind him. That's the whole idea of
+the offense's [curl-flat](../../appendices/glossary.qmd#gl-curl-flat) concept, and of a dozen others
+([Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd) and
+[The Quick Game](../04-the-passing-game/04-03-quick-game.qmd) draw them from the quarterback's side:
+he reads this one defender and throws away from him).
+
+Coaches handle the problem in two different ways, and the difference is one of the most important
+in this chapter.
+
+**The spot-drop answer: play the quarterback.** The classic curl-flat defender drops to his
+landmark, about 10 to 12 yards deep, a few yards inside the outside receiver, and reads the
+quarterback's eyes. If the quarterback looks at the curl, he's already under it; if the quarterback
+looks at the flat, he breaks down on it as the ball is thrown, and since he's facing the throw, a
+quick receiver in the flat should gain only a few yards before he arrives. The coaching phrase is
+"sink and drive": sink under the curl, drive on the flat. It's simple, it's fast to teach, and it
+keeps the defender's eyes where they can see a scramble or a throw. Its weakness is everything that
+runs *past* him. The slot receiver's seam route, straight up the field between the hash and the numbers, is
+not his business in spot-drop: he lets it go by, and the deep defenders have to deal with it.
+
+**The match answer: play the slot receiver first.** The other approach changes the order of his
+jobs. A **[seam-flat defender](../../appendices/glossary.qmd#gl-seam-flat-defender)** keys the
+number 2 receiver from the snap. If #2 goes vertical, the defender *walls* him (gets his body into
+the receiver's inside path so #2 has to run around him; any contact has to come within 5 yards of
+the line) and then *carries* him up the seam, running with him
+like a man defender until the deep help is over the top. If #2 goes to the flat, the defender goes
+with him. If #2 goes inside, the defender passes him to the hook defender and only then settles
+under the outside receiver's curl. Seam first, flat second, curl last.
+
+```{python}
+#| label: fig-curl-vs-seam-flat
+#| fig-cap: "Two ways to play the same spot, on the offense's left. Left: the curl-flat defender of spot-drop Cover 3. Whatever the receivers do, the nickel ($, ringed, drawn where he ends up) widens and sinks to his landmark, about 11 yards deep under the outside receiver's curl (X), with his eyes on the quarterback. If the ball is thrown to the flat (to a back or a receiver, not drawn), he breaks down on it as it's thrown (thin arrow). The slot's seam route (H) runs past him, inside, and becomes someone else's problem. Right: the seam-flat defender of match Cover 3 reads the slot receiver (#2) first, so he is drawn at the snap with his three possible reactions. If H goes vertical, the nickel walls him off and carries him up the seam; if H breaks out to the flat, he goes with him; if H breaks inside, he passes him to the hook defender and sinks under X. Faint routes are H's three choices. In both panels the corner (CB) bails to his deep third."
+LAT2, WIN2 = (-26.6, 1.5), (-6.0, 22.0)
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.25))
+for ax, kind in zip(axes, ("curl", "seam")):
+    off = line5()[:3] + [O("QB", "QB", -5.0, 0.0, "Q"), O("X", "WR", -0.7, -15.0), O("H", "WR", -1.5, -9.0)]
+    nb_at = (10.2, -11.6) if kind == "curl" else (5.0, -7.0)
+    dfn = [D("NB", "NB", *nb_at, "$"), D("LCB", "CB", 18.5, -17.0, "CB"), D("WILL", "WILL", 4.5, -2.2, "W")]
+    p = Play(off, dfn, los=LOS, to_go=None)
+    p.highlight("NB")
+    fld = p.draw(ax=ax, lateral=LAT2, window=WIN2, title=False)
+    clean(ax)
+    ruler(fld, p, fs=5.4)
+    ghost(fld, p, 7.5, -16.3, "CB")
+    path(fld, p, [(7.5, -16.3), (18.5, -17.0)], lw=1.0)
+    if kind == "curl":
+        route_line(fld, p, [(-1.5, -9.0), (6.0, -7.9), (20.5, -6.4)])
+        route_line(fld, p, [(-0.7, -15.0), (12.8, -15.4), (11.0, -14.9)], lw=1.7)
+        ghost(fld, p, 5.0, -7.0, "$")
+        path(fld, p, [(5.0, -7.0), (8.6, -10.0), (10.2, -11.6)])
+        path(fld, p, [(9.0, -12.4), (4.0, -17.6)], lw=0.9, dash="-", shrink=0.0)
+        bx, by = P(fld, p, 3.0, -18.6)
+        ax.add_patch(Ellipse((float(bx), float(by)), 1.0, 0.62, fc=style.BALL, ec="white", lw=0.5, zorder=11))
+        say(fld, p, 15.8, -10.8, "landmark: curl,\n~11 yd, under #1", fontsize=6.3, color=DD)
+        say(fld, p, 7.4, -22.4, "breaks to\nthe flat on\nthe throw", fontsize=6.0)
+        say(fld, p, 1.2, -22.4, "ball thrown\nto the flat", fontsize=5.8, color=style.INK_2)
+        say(fld, p, 19.5, -2.6, "seam runs\npast him", fontsize=6.3, color=OD)
+        panel_title(ax, "Curl-flat (spot-drop): a place", fs=8.3)
+    else:
+        branches = {"vertical": [(-1.5, -9.0), (6.0, -7.9), (20.5, -6.4)],
+                    "out": [(-1.5, -9.0), (2.0, -9.8), (2.8, -17.5)],
+                    "in": [(-1.5, -9.0), (2.2, -9.0), (2.8, -4.8)]}
+        for name, pts in branches.items():
+            route_line(fld, p, pts, alpha=0.55, lw=1.3)
+        path(fld, p, [(6.3, -6.7), (9.0, -6.6), (17.5, -5.6)])
+        path(fld, p, [(4.7, -8.4), (4.5, -11.0), (4.3, -14.6)], lw=1.0)
+        path(fld, p, [(6.2, -8.1), (8.6, -10.2), (10.4, -12.3)], lw=1.0)
+        say(fld, p, 19.0, -1.6, "#2 vertical:\ncarry him\nup the seam", fontsize=6.2, color=DD)
+        say(fld, p, 1.7, -21.7, "#2 out:\ngo with him", fontsize=6.2, color=DD)
+        say(fld, p, 13.6, -13.6, "#2 in: pass him\nto the hook,\nsink under #1", fontsize=6.2, color=DD)
+        panel_title(ax, "Seam-flat (match): a receiver", fs=8.3)
+    for k, txt in (("X", "#1"), ("H", "#2")):
+        q = p.players[k]
+        say(fld, p, q.d - 2.4, q.w, txt, fontsize=6.2)
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+Why would a defense choose one over the other? Because they lose to different things. The
+curl-flat defender is beaten by routes that go past him (the seam) or that put two receivers on
+his two zones at once. The seam-flat defender closes the seam, but he is now following a receiver,
+so he's beaten by routes that drag him away from his area (a vertical release that pulls him deep
+while the outside receiver runs a quick out underneath) and by switches, crossing releases in which
+#1 and #2 trade places at the snap so the defenders' rules have to trade them back at full speed.
+The seam-flat label is also what you'll hear in fire zones (three under, three deep), where the
+two outside underneath defenders are called seam-flat players for exactly this reason: with only
+three underneath, nobody else can protect the seams.
+
+Most NFL Cover 3 today is closer to the seam-flat version, at least against vertical releases. Hold
+that thought: it's the heart of the four-verticals section below.
+
+## Why defenses love it: the eighth man
+
+Now the payoff. Cover 3 brings one of the two safeties down. Against a passing formation he becomes
+a curl-flat defender. Against a running formation, he's something more valuable: an **eighth man in
+the box**.
+
+```{python}
+#| label: fig-eight-man-front
+#| fig-cap: "Why Cover 3 is a run defense: a base 4-3 against 21 personnel (two backs, one tight end) in an I-formation. With the free safety (FS) alone in the deep middle, the strong safety (SS, ringed) can stand 8 yards deep just outside the tight end, where he is a run defender first. The shaded box holds eight defenders (four linemen, the Sam (Sm), Mike (M) and Will (W) linebackers, and the SS) against seven possible blockers (five linemen, the tight end Y and the fullback F): one more defender than the offense can block. The two cornerbacks (CB) line up 7 to 8 yards off but still bail to the deep outside thirds at the snap (short arrows), so the deep field stays covered."
+off_i = offense("i_form")
+d43 = defense("4-3_over", "single_high", off_i)
+moves = {"SS": (8.0, 7.6), "FS": (14.5, 0.0), "LCB": (7.5, -15.8), "RCB": (7.5, 15.8)}
+d43 = [q.moved(d=moves[q.key][0], w=moves[q.key][1], label="CB" if q.pos == "CB" else q.label)
+       if q.key in moves else q for q in d43]
+d43 = [q.moved(label="Sm") if q.key == "SAM" else q for q in d43]
+off_i = [q.moved(label="R") if q.key == "RB" else q for q in off_i]
+pr = Play(off_i, d43, los=LOS, to_go=None)
+pr.highlight("SS", "FS")
+fld = draw(pr, lateral=(-22, 22), window=(-9.0, 21.0))
+zone_box(fld, pr, 0.2, 9.6, -6.6, 9.8, "", color=style.DEFENSE, alpha=0.10)
+say(fld, pr, 11.2, 1.6, "8 defenders in the box", color=DD, fontsize=7.4, weight="bold")
+say(fld, pr, -4.6, 6.4, "7 blockers: five linemen,\nthe tight end (Y),\nthe fullback (F)", color=OD, fontsize=6.8, ha="left")
+say(fld, pr, 17.0, 0.0, "one deep safety", fontsize=6.8)
+for s in (-1, 1):
+    path(fld, pr, [(8.9, s * 15.9), (14.6, s * 16.3)], lw=1.0, shrink=0.0)
+    say(fld, pr, 16.4, s * 16.3, "to the deep ⅓", fontsize=6.6, color=DD)
+plt.show()
+```
+
+The logic is simple arithmetic, and it's the arithmetic of every run game in this book
+([Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd)
+builds it properly). An offense has at most five linemen plus whatever tight ends and backs stay in
+to block. If the defense has more men near the line than the offense has blockers, somebody is
+unblocked, and an unblocked defender usually makes the tackle. That spare man is the
+[plus-one](../../appendices/glossary.qmd#gl-plus-one). Two-high coverages keep both safeties 10 to 14
+yards deep. They can still fit the run (quarters safeties, in particular, are taught to fill the
+lane just outside the box as soon as they read run), but they arrive a beat later, from depth, so
+at the snap the box is seven against seven. Cover 3 puts the eighth man there from the start, and
+still has three deep.
+
+That down safety also gives the defense a clean answer to the hardest question in run defense:
+who stops the ball from getting to the outside? In a sky rotation the safety is the
+[force](../../appendices/glossary.qmd#gl-force-defender) player, the defender whose job is to turn a
+wide run back inside toward the pursuit. In a buzz rotation he's the
+[alley player](../../appendices/glossary.qmd#gl-alley-player), filling the lane between the force
+player and the box from the inside out. Behind him the linebackers fit the gaps inside, each
+knowing that the safety owns the edge or the lane next to it
+([Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd)
+draws the full fits). Either way, the coverage and the run fit come from the same
+call. That's why Cover 3, and its man-coverage cousin [Cover 1](../../appendices/glossary.qmd#gl-cover-1),
+were for decades the default on first-and-10: one call that defends the run with eight and still
+guards the deep ball with three.
+
+The data shows the pattern. On dropbacks charted from 2018 to 2022, Cover 3 was the call on 38
+percent of first downs but only 19 percent of third-and-4-to-6 and 19 percent of snaps in the red
+zone, against 34 percent elsewhere on the field. Defenses reach for it on early downs, when they
+have to respect the run, and turn to man coverage when the field is short or the down demands a
+tight cover: Cover 1 or Cover 0 was the call on about half of those third-and-medium and red-zone
+dropbacks, against 28 percent elsewhere.[^downs]
+
+```{python}
+#| code-summary: "Show the Python (coverage labels on early-down dropbacks, nflverse, 2018–2022)"
+#| output: false
+from gridiron.data import nfl, pbp
+
+COLS = ["game_id", "play_id", "season_type", "qb_dropback", "defteam", "down", "ydstogo", "yardline_100",
+        "complete_pass", "yards_gained"]
+
+def labelled_dropbacks(season):
+    """Regular-season dropbacks with a charted coverage label (nflverse pbp + participation)."""
+    b = pbp([season], columns=COLS)
+    b = b[(b["season_type"] == "REG") & (b["qb_dropback"] == 1)]
+    part = nfl().load_participation([season]).to_pandas().rename(columns={"nflverse_game_id": "game_id"})
+    m = b.merge(part[["game_id", "play_id", "defense_coverage_type", "defenders_in_box"]],
+                on=["game_id", "play_id"])
+    m = m[m["defense_coverage_type"].notna()].copy()
+    m["season"] = season
+    return m
+
+# 2018-2022 only: one charting source (Next Gen Stats); FTN's labels from 2023 split coverages differently
+COV = pd.concat([labelled_dropbacks(s) for s in range(2018, 2023)], ignore_index=True)
+EARLY = COV[COV["down"].isin([1, 2]) & COV["yardline_100"].between(21, 80)]
+NAMES = {"COVER_1": "Cover 1", "COVER_3": "Cover 3", "COVER_2": "Cover 2", "COVER_4": "Quarters"}
+TRADE = (EARLY[EARLY["defense_coverage_type"].isin(NAMES)]
+         .groupby("defense_coverage_type")
+         .agg(box=("defenders_in_box", "mean"), cmp=("complete_pass", "mean"),
+              big=("yards_gained", lambda s: (s >= 20).mean()), n=("yards_gained", "size"))
+         .rename(index=NAMES).reindex(["Cover 1", "Cover 3", "Cover 2", "Quarters"]))
+```
+
+```{python}
+#| label: fig-c3-trade
+#| fig-cap: "Cover 3's bargain in numbers: first- and second-down dropbacks between the 20s, 2018–2022 (Next Gen Stats charting via nflverse; about 45,000 plays in these four coverages). Cover 3 (orange) keeps nearly as many defenders in the box as Cover 1 (left) and gives up completions at about the rate of the two-high zones (middle), but more plays of 20 yards or more than either two-high zone (right): the seams and the single safety are the price of the extra man near the line. The dashed line separates the one-high coverages (top two bars) from the two-high ones (bottom two)."
+fig, axes = plt.subplots(1, 3, figsize=(6.6, 2.35), sharey=True)
+y = np.arange(len(TRADE))[::-1]
+cols = [style.DEFENSE if nm == "Cover 3" else style.BASELINE for nm in TRADE.index]
+panels = [("box", "box defenders (avg.)", (0.0, 7.0), "{:.1f}"),
+          ("cmp", "completion rate", (0.0, 0.8), "{:.0%}"),
+          ("big", "plays of 20+ yards", (0.0, 0.14), "{:.1%}")]
+for ax, (col, title, lim, fmt) in zip(axes, panels):
+    vals = TRADE[col].values
+    ax.barh(y, vals, color=cols, height=0.62)
+    for yy, v in zip(y, vals):
+        ax.text(v + (lim[1] - lim[0]) * 0.02, yy, fmt.format(v), va="center", fontsize=7, color=style.INK_2)
+    ax.set_xlim(lim[0], lim[1] + (lim[1] - lim[0]) * 0.22)
+    ax.set_title(title, fontsize=8, loc="left", color=style.INK)
+    ax.grid(axis="y", visible=False)
+    ax.tick_params(axis="x", labelsize=6.5)
+    ax.axhline(1.5, color=style.BASELINE, lw=0.6, ls=(0, (2, 2)))
+for txt, yy in (("one-high ↑", 1.5 + 0.05), ("two-high ↓", 1.5 - 0.05)):
+    axes[2].text(0.995, yy, txt, transform=axes[2].get_yaxis_transform(), ha="right",
+                 va="bottom" if "one" in txt else "top", fontsize=6.0, color=style.INK_2, style="italic")
+axes[0].set_yticks(y, TRADE.index, fontsize=8)
+axes[1].xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+axes[2].xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+Read the chart as a trade. Cover 3 puts as many defenders near the line as Cover 1 does (about 6.3
+per dropback, against fewer than 6 for the two-high zones), because one safety is down.
+
+*Where's the eighth man, then?* An average of 6.3 isn't eight, because this chart is all
+dropbacks, most of them against three-receiver sets, where the down safety is out over a slot as a
+curl-flat defender rather than in the box. The eighth man shows up against run formations. On the
+same early downs, when the offense had two or fewer wide receivers on the field, Cover 3 had eight
+or more defenders in the box on about a quarter of its dropbacks; Cover 2 did on 1 in 20 and
+quarters almost never.[^box] The point isn't that Cover 3 always has eight; it's that it can, at
+no cost to its deep coverage, whenever the formation calls for it.
+
+Cover 3 is still a zone with every underneath defender facing the ball, so completions come at
+about the two-high rate, mostly in front of the defense. Cover 1 allows far fewer completions
+(about 60 percent) but more 20-yard plays: man coverage contests every catch, but when a defender
+is beaten there's nobody behind him except one safety. Cover 3 gives up more 20-yard plays than
+either two-high zone, about one dropback in ten against fewer than one in eleven for Cover 2 and
+quarters. Those extra explosive plays are the seams and the single safety, the holes the rest of
+this chapter is about. (These are observational numbers: defenses choose coverages for situations,
+so this shows what each coverage looks like when teams call it, not what would happen if they
+swapped one for another.)
+
+::: {.callout-caution title="Common misconception"}
+"Three deep defenders means Cover 3 is safe against the deep ball." It's safe against a deep ball
+*along the sideline* and *down the middle*, where the three deep defenders start. It's thinnest
+exactly between them, up the seams (hole 1 below). Four receivers going deep against three deep
+defenders is the oldest Cover 3 problem there is, and the deep defenders can't solve it alone. The underneath defenders have to help, and
+how they help is the difference between the 1980s version of the coverage and the modern one.
+:::
+
+## Sky, buzz and cloud: three ways to get to Cover 3
+
+Very little Cover 3 in the NFL is simply lined up and played. The defense usually *arrives* at it,
+because the shell it shows before the snap is part of the plan: it wants the quarterback guessing,
+and it wants its run fits to match the formation. The three classic ways to arrive have names that
+describe which defender drops into the extra underneath spot, and they come with a handy memory aid:
+**sky** is the **s**afety to the flat, **cloud** is the **c**orner to the flat, and **buzz** is the
+safety to the hook, buzzing around inside.
+
+All three end with the same skeleton, three deep and four under. What changes is *who* plays which
+zone, and that matters because players aren't interchangeable: a safety coming from depth, a
+linebacker already outside, and a cornerback already pressing a receiver are each good at different
+things. ([Disguise, Rotation, and Split-Field Coverage](06-06-disguise-rotation-and-split-field.qmd)
+shows these rotations launched from a two-high shell at the last instant; here we start each one
+from the alignment where it is most natural, so you can see what it's for.)
+
+### Sky: the safety takes the flat
+
+The **[sky rotation](../../appendices/glossary.qmd#gl-sky-rotation)** is the one in the first figure.
+The safety on the rotation side comes down and out at the snap to become the curl-flat defender.
+The corner on that side bails to his deep third as usual, and the free safety goes to the middle.
+
+*Which side is the rotation side?* Whatever the call's rule says. The most common rule is "rotate to
+the strength," and for a coverage, strength usually means the passing strength, the side with more
+receivers ([Coverage Fundamentals](06-01-coverage-fundamentals.qmd) makes the distinction from
+[formation strength](../../appendices/glossary.qmd#gl-formation-strength), which counts the tight
+end). In a 2x2 like the first figure the receiver count is even, so the defense needs a tiebreaker,
+and staffs pick different ones: the tight end's side (as drawn), the
+[field side](../../appendices/glossary.qmd#gl-field-side) or the
+[boundary side](../../appendices/glossary.qmd#gl-boundary-side), or the side the running back sets
+to. Some calls rotate *away* from the strength on purpose (a weak rotation; more on the names in the
+box below). Because the rule is tied to the formation, motion that changes the formation can change
+the rotation, and that is how an offense finds out which way it goes.
+
+**Why sky?** Because it puts a safety, a player who is both a good tackler and fast enough to cover,
+at the point of the field where the run game and the quick passing game meet. Against a run toward
+him he's the force player, coming downhill from outside in. Against a pass he's the curl-flat
+defender, reading #2 and #1. Teams with a big, physical strong safety (Kam Chancellor in Seattle is
+the archetype, below) build their defense around this.
+
+**What sky gives up.** The safety has a long way to go if he starts deep, so the quick game to his
+side (a hitch, a bubble screen to the slot, a quick out) can be thrown before he arrives, which is
+why teams that sky from a deep alignment often "cheat" him down before the snap. That's a tell.
+And with the strong safety committed to the flat, the free safety is alone in the middle, with no
+help on either seam.
+
+### Buzz: the safety takes the hook
+
+```{python}
+#| label: fig-buzz
+#| fig-cap: "Cover 3 buzz to the right, against the same 2x2 with the slots swapped: the tight end (Y) is now the left slot and the receiver H the right one. Before the snap the nickel ($) is in an apex over the receiver in the right slot, the Will (W) over the tight end on the left, and the strong safety (SS, ringed) stands about 12 yards deep over the inside shoulder of the right slot: inside, with a nickel outside him, the buzz tell. At the snap the SS runs downhill to the right hook-curl area, inside the slot's seam; the $, already outside, widens to the right curl-flat; the Will takes the left curl-flat and the Mike (M) slides to the left hook. What to notice: compared with sky, the safety and the outside defender on the rotation side have traded jobs. The deep three are unchanged: two corners and the free safety (FS)."
+off_b = [q.moved(w=-q.w) if q.key in ("H", "Y") else q for q in spread()]
+BUZZ_PRE = {"MIKE": (4.5, 0.8), "WILL": (5.0, -6.4), "NB": (5.0, 6.8), "LCB": (7.5, -16.3),
+            "RCB": (7.5, 16.3), "FS": (15.0, -0.8), "SS": (11.8, 5.4)}
+BUZZ_POST = {"MIKE": (9.0, -3.6), "WILL": (9.5, -12.5), "NB": (9.5, 12.5), "LCB": (18.0, -16.8),
+             "RCB": (18.0, 16.8), "FS": (17.5, 0.0), "SS": (8.6, 7.4)}
+fld, p = two_state(off_b, BUZZ_PRE, BUZZ_POST, rings=("SS",))
+deep_thirds(fld, p, label_d=24.8)
+zone_box(fld, p, 2.0, 14.4, 9.4, 23.6, "curl-flat ($)", label_d=13.7)
+zone_box(fld, p, 4.5, 14.4, 0.6, 9.0, "hook-curl (SS)", label_d=13.7)
+zone_box(fld, p, 4.5, 14.4, -9.0, -0.6, "hook (M)", label_d=13.7)
+zone_box(fld, p, 2.0, 14.4, -23.6, -9.4, "curl-flat (W)", label_d=13.7)
+say(fld, p, 9.6, 3.0, "buzz", fontsize=6.8, color=DD, weight="bold")
+field_legend(fld.ax, ["ghost", "drop", "zone", "ring"])
+plt.show()
+```
+
+In the **[buzz rotation](../../appendices/glossary.qmd#gl-buzz-rotation)** the safety comes down
+*inside*, to the hook-curl area, and the player already lined up outside on that side (a nickel or
+an outside linebacker) takes the curl-flat. Compared with sky, the two defenders on the rotation
+side trade jobs: the safety goes inside, the outside man goes to the flat. The other side doesn't
+change. That's also why the nickel has moved in the figure. Defenses put the nickel, a defensive
+back, over the slot *receiver* and let a linebacker take the tight end; in the first figure the
+receiver slot was on the left, here it is on the right, and buzz needs that outside defender
+standing on the rotation side.
+
+**Why buzz?** Three reasons. First, the flat defender is already standing near the flat, so the
+quick game to that side is covered from the snap instead of from three seconds later. Second, a
+safety coming down from depth and inside is perfectly placed to wall the slot receiver's seam: he
+arrives on the inside of it, facing it, which makes buzz a good answer to the seam route that
+haunts Cover 3. Third, against the run he is the alley player, filling inside the force defender
+rather than outside him, which suits a safety who is a better downhill tackler than a cover man in
+space.
+
+**What buzz gives up.** The defender on the edge is now the nickel or linebacker, usually smaller or
+slower than the safety, so the force against outside runs is weaker on that side. The hook
+defender who slides across has ground to cover if the offense runs away from the rotation. And the safety's
+landing spot, the hook-curl area, is close to where a robber would sit, which makes buzz and Cover 3
+robber easy to confuse on a broadcast. The difference: a robber sits in the middle of the field and
+jumps in-breaking routes, a buzz safety walls the seam on his side and widens to the curl
+([Man Coverage](06-02-man-coverage.qmd) covers the [robber](../../appendices/glossary.qmd#gl-robber)).
+
+### Cloud: the corner takes the flat
+
+```{python}
+#| label: fig-cloud
+#| fig-cap: "Cover 3 cloud to the right. Before the snap the defense looks two-high: both safeties about 12 to 14 yards deep, and on the right a cornerback (ringed) squatting about 5 yards off Z with outside leverage, the Cover 2 look on that side. The left corner is off, 8 yards deep. The free safety (FS) is shaded toward the ball, inside the left hash, rather than out on his own side. At the snap the right corner re-routes Z (gets in his way as he releases) and sits in the flat; the strong safety (SS, ringed) runs to the deep right third behind him, and the free safety rotates to the deep middle, a short trip from where he started. The left corner bails to his third, the nickel ($) takes the left curl-flat, the Mike (M) the right hook-curl and the Will (W) the left hook."
+CLOUD_PRE = {"MIKE": (4.5, 2.4), "WILL": (4.5, -2.2), "NB": (5.0, -7.0), "LCB": (8.0, -16.3),
+             "RCB": (5.0, 16.4), "FS": (14.0, -2.0), "SS": (12.5, 11.8)}
+CLOUD_POST = {"MIKE": (9.0, 6.0), "WILL": (9.0, -3.6), "NB": (9.5, -12.5), "LCB": (18.0, -16.8),
+              "RCB": (7.5, 19.0), "FS": (17.5, 0.0), "SS": (18.0, 16.6)}
+fld, p = two_state(spread(), CLOUD_PRE, CLOUD_POST, rings=("RCB", "SS"),
+                   via={"RCB": [(3.4, 15.7)], "SS": [(15.5, 14.0)]})
+deep_thirds(fld, p, label_d=24.8, labels=("deep ⅓ (CB)", "deep middle ⅓ (FS)", "deep ⅓ (SS)"))
+zone_box(fld, p, 1.0, 9.6, 12.2, 24.4, "flat (CB)", label_d=1.9)
+zone_box(fld, p, 4.5, 13.5, 0.6, 12.0, "hook-curl (M)", label_d=12.6)
+zone_box(fld, p, 4.5, 13.5, -9.0, -0.6, "hook (W)", label_d=12.6)
+zone_box(fld, p, 2.0, 13.5, -23.6, -9.4, "curl-flat ($)", label_d=12.6)
+say(fld, p, 11.6, 21.3, "cloud corner:\nre-route #1,\nsit in the flat", fontsize=6.4, color=DD)
+field_legend(fld.ax, ["ghost", "drop", "zone", "ring"])
+plt.show()
+```
+
+The **[cloud rotation](../../appendices/glossary.qmd#gl-cloud-rotation)**, also called a
+[corner rotation](../../appendices/glossary.qmd#gl-corner-rotation), flips the roles of the corner
+and the safety on one side. The corner stays shallow and plays the flat; the safety on that side
+takes the deep outside third. On the other side it's ordinary Cover 3, and the other safety still
+goes to the middle.
+
+**Why cloud?** Look at the picture before the snap: a corner squatting at 5 yards with a safety deep
+behind him is exactly what a [Cover 2](06-04-cover-2-and-tampa-2.qmd) side looks like, so a cloud
+rotation is a natural disguise, a two-high shell that becomes three-deep. It also puts the
+defense's best cover man, already near the receiver, on the quick throws to that side: he can
+re-route #1 (from 5 yards off he gets in the receiver's path rather than jamming him; teams that
+want a real jam press the cloud corner at a yard or two) and sit on the hitch, the quick out and
+the flat. And it makes him the force player against outside runs, so a defense can cloud to the
+side where it expects the offense to throw quick or run wide. Defenses like it to the boundary
+(the short side of the field), where the deep third is a shorter run for a safety. Every diagram
+in this chapter puts the ball in the middle; with the ball on an NFL hash, the boundary is about
+23.6 yards from the ball to the sideline against 29.8 on the field side, so a deep third measured
+from the ball is about 3 yards narrower on the boundary. That's a modest gift in the NFL, whose hashes sit only 3 yards off the
+middle, and a large one in college and high school, whose hashes are much wider
+([The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd) draws
+the difference).
+
+**What cloud gives up.** The deep outside third now belongs to a safety, who is usually not as fast
+or as practised at running with a wide receiver as the corner. A go route by a fast #1 against a safety who started 12 yards deep and several yards inside him is
+the classic cloud beater, and the
+[smash](../../appendices/glossary.qmd#gl-smash) corner route (a route that breaks toward the
+sideline behind a squatting corner) attacks exactly the spot between the cloud corner and the
+safety, just as it does against Cover 2.
+
+::: {.callout-important title="Why it exists: three rotations for one coverage"}
+A defense wants to play Cover 3 against many formations without telling the quarterback which
+defender is the extra underneath player, and it wants that player to be the right *kind* of player
+for the job. Each rotation moves a defender who is good at one thing into a job he's merely adequate
+at, and each leaks a hint before the snap.
+
+| | Sky | Buzz | Cloud |
+|:--|:--|:--|:--|
+| Extra underneath man | Safety, to the curl-flat | Safety, to the hook-curl | Corner, to the flat |
+| Who gets the curl-flat | The safety | Nickel or linebacker already outside | The corner (flat) |
+| Run job of the rotating man | Force | Alley | Force (the corner) |
+| Best against | The run and the flat | The slot's seam; the quick game to an outside defender already there | Quick throws to #1; disguise (looks like Cover 2) |
+| Pre-snap tell | A safety cheated down, outside the slot or tight end | A safety inside over the slot, a nickel outside him | Two-high, one squatting corner, the other corner off |
+| What hurts it | Quick throws before he arrives; both seams on the post safety | Outside runs at a smaller edge defender | A fast #1 against the safety in the deep third; smash |
+:::
+
+::: {.callout-note title="Madden vs. real life"}
+In Madden, "Cover 3 Sky," "Cover 3 Buzz" and "Cover 3 Cloud" are separate plays on the menu, and you
+pick one. Real defenses rarely call them that way. The call is usually "three" plus a *rule* for the
+rotation ("rotate to the strength," "cloud the boundary," "buzz to the tight end"), and the players
+work out the rest from the formation: which side is strong, which is the boundary, where the motion
+went. That's why the same call can be sky on one snap and buzz on the next, and why a defensive
+back's first job before every play is to say out loud which way the rotation goes. In Nick Saban's
+system the rotating safety's declaration is literally a word: "Rip" or "Liz," for the side he is coming down to.[^ripliz]
+
+The names are dialects, too. "Sky" and "cloud" are also used for the two *sides* of split-field
+coverages (the "cloud side" of a [Cover 6](../../appendices/glossary.qmd#gl-cover-6), a coverage
+that plays quarters on one half of the field and Cover 2 on the other, is the side where the corner
+sits in the flat), and a Cover
+3 whose rotation goes *away* from the strength, a weak rotation, is Saban's "6" and some NFL staffs'
+[Cover 9](../../appendices/glossary.qmd#gl-cover-9), as
+[Coverage Fundamentals](06-01-coverage-fundamentals.qmd) explained. When you hear a coverage name,
+ask which rule it describes, not which picture.
+:::
+
+## The holes: where Cover 3 can be hit
+
+Every coverage has soft spots, and Cover 3's are well known, because it's been the most common zone
+in football for decades and offensive coaches have been designing against it the whole time. Most
+of the concepts in [The Quick Game](../04-the-passing-game/04-03-quick-game.qmd) and
+[Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd) were drawn against a Cover 3
+look for exactly that reason. Here are the four places they aim.
+
+```{python}
+#| label: fig-holes
+#| fig-cap: "Where Cover 3 can be hit: the defenders at their spot-drop landmarks about a second and a half after the snap (sky rotation, as in the first figure), three classic soft spots in green, and, faintly, the routes that attack them. (1) The seams, about 9 yards either side of the middle at 15 to 25 yards, where one deep third meets the next: four verticals puts receivers here. (2) The curl-flat stretch, on the left: X's curl behind the nickel ($) and H's flat route in front of him, one defender for two zones. (3) The flood, on the right: Z's go route takes the corner deep, Y's sail (up, then bending to the sideline) lands at 12 to 15 yards behind the strong safety (SS), and the back's (R) flat route runs under him: three receivers, two defenders. The fourth hole, the hitch in front of a corner, is about timing, so it gets its own picture next."
+hp = Play(spread(rb_w=1.5), nickel(C3_POST), los=LOS, to_go=None)
+fld = draw(hp, lateral="full", window=(-8.5, 30.0))
+for s in (-1, 1):
+    hole(fld, hp, 20.5, s * THIRD_W, 6.6, 9.5, "1")
+say(fld, hp, 27.2, 0.0, "(1) the seams: where the thirds meet", color=GREEN_TEXT, fontsize=6.8)
+# (2) the curl-flat stretch, on the left: X's curl behind the $, H's flat route in front of him
+route_line(fld, hp, [(-0.7, -15.0), (12.6, -15.3), (10.9, -14.1)], alpha=0.45, lw=1.3)
+route_line(fld, hp, [(-1.5, -9.0), (1.2, -10.8), (2.6, -19.2)], alpha=0.45, lw=1.3)
+hole(fld, hp, 13.2, -15.6, 4.6, 3.6, "2")
+hole(fld, hp, 2.8, -20.6, 4.6, 3.4, "2")
+(x0, y0), (x1, y1) = P(fld, hp, 11.4, -16.6), P(fld, hp, 4.5, -19.8)
+fld.ax.annotate("", (float(x1), float(y1)), xytext=(float(x0), float(y0)),
+                arrowprops=dict(arrowstyle="<->", color=GREEN_TEXT, lw=1.0, shrinkA=2, shrinkB=2), zorder=6)
+say(fld, hp, 7.8, -22.9, "(2) curl or\nflat: one\ndefender", color=GREEN_TEXT, fontsize=6.4)
+# (3) the flood, on the right: the go takes the corner deep, the sail and flat stretch the SS
+route_line(fld, hp, [(-0.7, 15.0), (8.0, 15.8), (27.0, 17.0)], alpha=0.45, lw=1.3)
+route_line(fld, hp, [(-1.5, 9.0), (12.5, 9.6), (14.6, 20.2)], alpha=0.45, lw=1.3)
+route_line(fld, hp, [(-5.0, 1.5), (-4.4, 7.0), (-1.0, 11.5), (1.5, 14.0), (2.8, 19.4)], alpha=0.45, lw=1.3)
+hole(fld, hp, 14.6, 20.6, 4.6, 3.4, "3")
+hole(fld, hp, 2.8, 20.8, 4.6, 3.4, "3")
+say(fld, hp, 17.2, 22.8, "sail", color=GREEN_TEXT, fontsize=6.2)
+say(fld, hp, 5.4, 23.4, "flat", color=GREEN_TEXT, fontsize=6.2)
+point_to(fld, hp, (25.6, 22.2), (22.5, 17.1), "go takes\nthe CB deep", color=GREEN_TEXT, fontsize=6.2)
+say(fld, hp, 9.0, 21.8, "(3) flood", color=GREEN_TEXT, fontsize=6.4)
+field_legend(fld.ax, ["hole"])
+plt.show()
+```
+
+**1. The seams.** The boundaries between the thirds sit about 9 yards either side of the middle of
+the field, between the hashes and the numbers, which is precisely where a slot receiver or a tight end runs a
+seam route. A seam thrown 18 to 25 yards downfield lands between a corner who is guarding the
+sideline and a free safety who is guarding the middle, and if both receivers run seams, the free
+safety can take only one. This is four verticals' target, and the next section draws it.
+*Against match:* mostly closed, because the seam-flat defenders carry the seams; the cost moves
+underneath, to the flat they leave.
+
+**2. The curl-flat stretch.** The curl-flat defender guards two zones, so two receivers, one in each,
+force him to choose: the curl-flat concept, slant-flat, stick, snag. The quarterback reads him and
+throws to the receiver he didn't take. The hook defenders help on the curl only if they're not
+needed elsewhere, which is why offenses add a third route that holds them inside (a check-down by the
+back or a crossing route). *Against match:* smaller. The seam-flat defender goes with #2 to the
+flat by rule, and the corner, seeing #1 break short, sinks and then drives on the curl from above,
+so both routes have a defender; the curl is still the softer of the two, because the corner
+arrives from depth.
+
+**3. The flood.** Put three receivers on one side at three depths (a go route that takes the corner
+deep, a [sail](../../appendices/glossary.qmd#gl-sail) at 12 to 15 yards, a flat route) and there
+are two defenders to cover them, the corner and the curl-flat defender. One is always open. The sail,
+landing behind the curl-flat defender and in front of the bailing corner, is the money throw against
+spot-drop Cover 3, and some version of flood is in every NFL playbook. *Against match:* still open.
+Matching changes *who* is stretched, not how many defenders are on that side (the third drill at the
+end of the chapter works through it).
+
+**4. In front of the corners.** A Cover 3 corner's first rule is to stay deeper than the deepest
+receiver in his third, so he bails at the snap. A hitch at 5 or 6 yards, or a quick out, is caught
+in front of him. The curl-flat defender is the nearest help, and in the first figure his zone
+seems to cover the spot, so why is it open? Timing. Look at the next figure.
+
+```{python}
+#| label: fig-hitch
+#| fig-cap: "Why the hitch is there (simulated, BDB-format tracking). X runs a 6-yard hitch against the sky Cover 3 of the first figure, and the quarterback throws it on time from a quick drop. Left, the throw (+0.9 s): the corner (CB) is still bailing, 11 yards deep, and the nickel ($, ringed), the curl-flat defender, is still sinking toward his landmark, moving up and away from X with his eyes on the quarterback. Right, the catch: both have planted and driven on the ball, but they arrive as X turns with it. The defense gives up 6 yards and tackles: the trade it chose."
+def hitch_play():
+    p = Play(spread(), nickel(C3_PRE | {"SS": (11.0, 10.4)}), los=LOS, to_go=None)
+    protect(p)
+    p.dropback(1.5)
+    p.route("X", [(-0.7, -15.0), (6.2, -15.3), (5.4, -14.7)], absolute=True)
+    p.route("H", [(-1.5, -9.0), (6.0, -7.9), (24.0, -6.6)], absolute=True)
+    p.drop("WILL", (9.0, -4.2), speed=4.0)
+    p.drop("MIKE", (9.0, 4.2), speed=4.0)
+    p.drop("FS", (17.5, 0.0), speed=3.0)
+    p.pass_to("X", t=0.9)
+    t_c = arrival(p, "X", 0.9)
+    xc = p.position("X", t_c)
+    set_track(p, "NB", [(0.9, 8.0, -10.6), (1.05, 8.4, -11.0), (t_c, xc[0] + 1.6, xc[1] + 1.6)])
+    set_track(p, "LCB", [(0.9, 11.2, -16.5), (1.05, 11.7, -16.5), (t_c, xc[0] + 3.4, xc[1] - 0.8)])
+    return p, t_c
+
+hplay, T_HC = hitch_play()
+
+def hitch_notes(fld, i, t):
+    if i == 0:
+        say(fld, hplay, 15.0, -10.6, "$ still sinking,\neyes on the QB", fontsize=6.0, color=DD)
+        say(fld, hplay, 15.2, -21.4, "CB still\nbailing", fontsize=6.0, color=DD)
+    else:
+        say(fld, hplay, 13.4, -16.0, "both plant and drive;\nthey arrive as he turns", fontsize=6.0, color=DD)
+
+strip(hplay, [0.9, T_HC], ["+0.9 s · the throw", f"+{T_HC:.1f} s · the catch"],
+      ["", "Caught at 6 yd:\nconceded, then tackled"], (-25.5, 1.5), (-7.5, 19.5), rings=("NB",),
+      throw_t=0.9, width_in=6.6, extra=hitch_notes, tag_loc="bl")
+plt.show()
+```
+
+The hitch is thrown before the receiver turns around, at a spot, while the curl-flat defender is
+still doing his first job: sinking toward the curl with his eyes on the quarterback. He can't stop,
+turn and close 5 yards in the time the ball is in the air, so the best he and the corner can do is
+arrive with the catch and tackle. It's not a big play, but it's a completion every time the defense
+lets it be, which is why offenses throw it to "keep the defense honest" and why a corner who cheats
+up to stop it opens the deep ball. A corner can drive on a hitch once the receiver stops and the
+quarterback's arm commits, never earlier, because the hitch-and-go
+([Man Coverage](06-02-man-coverage.qmd) drew the double move) is waiting for the corner who guesses.
+This is the trade the coverage makes on purpose: five yards in front of the corner rather than
+fifty behind him. *Against match:* the same. The corner's rule is still to stay on top, so match
+concedes the hitch too.
+
+There's a fifth, quieter soft spot you'll hear analysts mention: the window between the hook
+defender and the curl-flat defender at 10 to 14 yards, where a dig sits down. And there's the run
+game's answer: a play-action fake that pulls the eight-man front forward and throws behind it, as in
+this chapter's opening. Cover 3 brought a safety down to stop the run, and play-action punishes
+exactly that.
+
+## Four verticals: the stress test
+
+Of all these, the seams are the one that shaped the coverage's history, because four verticals is
+both simple and brutal against a spot-drop Cover 3. The quarterback doesn't need to read the
+underneath defenders at all; he reads the free safety. Watch it from the defense's side.
+
+```{python}
+#| label: fig-verts-spot
+#| fig-cap: "Four verticals against spot-drop Cover 3 (simulated, BDB-format tracking generated by gridiron). The two cornerbacks bail and stay on top of X and Z. The two curl-flat defenders, the nickel ($) and the strong safety (SS), drop to their curl landmarks, wide and about 11 yards deep, so the seam routes by H and Y run past them on the inside. The free safety (FS, ringed) reads the quarterback, who looks at Y on the right seam as he drops (dotted arrow); the safety leans 4 to 5 yards that way. Just as H clears the nickel, about 15 yards downfield, the ball goes to him on the left seam, and he catches it between the corner and the safety, who is still several yards away. Every defender did his job; the coverage is one deep defender short. On the web this is a video."
+def verts(kind):
+    off = spread(rb_w=1.5)
+    p = Play(off, nickel(C3_PRE), los=LOS, to_go=10)
+    protect(p)
+    p.dropback(3.0)
+    for k, s in (("X", -1), ("Z", 1)):
+        p.route(k, [(-0.7, s * 15.0), (8.0, s * 15.8), (34.0, s * 17.2)], absolute=True)
+    for k, s in (("H", -1), ("Y", 1)):
+        p.route(k, [(-1.5, s * 9.0), (6.0, s * 7.9), (34.0, s * 6.0)], absolute=True)
+    for k, s in (("LCB", -1), ("RCB", 1)):
+        p.drop(k, (30.0, s * 17.4), speed=6.4)
+    if kind == "spot":
+        p.route("RB", [(-4.6, 2.6)], absolute=True, speed=2.0)
+        p.drop("NB", (11.5, -12.8), speed=4.6)
+        p.drop("SS", (11.5, 12.8), speed=4.6)
+        p.drop("WILL", (9.5, -4.6), speed=4.0)
+        p.drop("MIKE", (9.5, 4.4), speed=4.0)
+        p.pass_to("H", t=T_THROW)
+        set_track(p, "FS", [(0.5, 15.6, 0.4), (1.6, 17.6, 3.0), (2.35, 19.2, 4.6), (2.6, 19.6, 4.2),
+                            (3.6, 21.6, -0.6)])
+    else:
+        p.route("RB", [(-4.6, 2.6), (-2.0, 7.5), (1.5, 13.0)], absolute=True, speed=5.5, delay=0.9)
+        p.drop("WILL", (12.0, -2.6), speed=3.6)
+        p.pass_to("RB", t=2.6)
+        set_track(p, "FS", [(0.5, 15.8, 0.0), (1.6, 19.6, 0.6), (2.4, 22.2, -0.4), (3.6, 25.4, 0.2)])
+        set_track(p, "NB", [(0.3, 6.0, -7.4)] + shadow(p, "NB", "H", off=(-1.3, 1.0), lag=0.12, t_from=0.3,
+                                                        t_on=1.1, start=(6.0, -7.4), t_end=3.6))
+        set_track(p, "SS", [(0.3, 6.4, 7.3)] + shadow(p, "SS", "Y", off=(-1.3, -1.0), lag=0.12, t_from=0.3,
+                                                       t_on=1.1, start=(6.4, 7.3), t_end=3.6))
+        set_track(p, "MIKE", [(0.6, 6.4, 2.8), (1.6, 7.0, 5.0), (2.6, 6.4, 7.4), (3.6, 4.4, 11.2), (4.2, 3.0, 13.5)])
+    return p
+
+T_THROW = 2.35
+spot = verts("spot")
+T_CATCH = arrival(spot, "H", T_THROW)
+CATCH_D = spot.position("H", T_CATCH)[0]
+SPOT_T = [0.0, 1.0, T_THROW, T_CATCH]
+LAT_V, WIN_V = (-24.5, 24.5), (-9.0, 32.5)
+
+def qb_eyes(fld, i, t):
+    """Panels 2 and 3: a dotted line from the quarterback toward the right seam, where he is looking."""
+    if i in (1, 2):
+        q, y = spot.position("QB", t), spot.position("Y", t)
+        tip = q + (y - q) * 0.55
+        xs, ys = P(fld, spot, np.array([q[0] + 1.0, tip[0]]), np.array([q[1], tip[1]]))
+        fld.ax.annotate("", (float(xs[1]), float(ys[1])), xytext=(float(xs[0]), float(ys[0])), zorder=8,
+                        arrowprops=dict(arrowstyle="-|>", color=OD, lw=1.0, ls=(0, (1, 1.5))))
+        say(fld, spot, tip[0] + 1.6, tip[1] + 0.6, "QB's eyes", fontsize=5.6, color=OD)
+
+if PDF:
+    strip(spot, SPOT_T,
+          ["Snap · one-high", "+1.0 s · the drops", f"+{T_THROW:.1f} s · the throw", f"+{T_CATCH:.1f} s · the catch"],
+          ["3 deep: CB, FS, CB\n4 under: $, W, M, SS",
+           "$ and SS run to curl\nspots; seams go inside",
+           "QB looks right; FS leans\nright; ball to H on the left",
+           f"Caught {CATCH_D:.0f} yd deep,\nbetween CB and FS"],
+          LAT_V, WIN_V, rings=("FS",), throw_t=T_THROW, extra=qb_eyes)
+    plt.show()
+else:
+    show_animation(spot, times=SPOT_T)
+```
+
+Look at what went wrong, because nothing did. The corners stayed on top of the outside receivers.
+The curl-flat defenders got to their landmarks. The hook defenders got to theirs. The free safety
+read the quarterback, as he's coached to, and drifted toward the side the quarterback was looking at.
+The ball went to the other seam. Spot-drop Cover 3 against four verticals is a math problem the
+defense loses: four receivers past 15 yards, three defenders back there, and the one in the middle
+can be moved by the quarterback's eyes. Offensive coaches knew this by the 1980s; the
+"run-and-shoot" and the BYU passing game of LaVell Edwards made four verticals a staple, and every
+spread offense since has carried it[^verts] ([Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd)
+tells that history from the offense's side).
+
+There are three ways for the defense to stop it, and each has a price. The safety can guess right
+(he can't do it every time). The curl-flat defenders can *sink* deeper and narrower, giving the seams
+a defender underneath for a few steps longer (which opens the flat and the curl in front of them).
+Or the coverage can stop being a spot-drop zone and start matching the routes.
+
+## Cover 3 match: carrying the seams
+
+**[Cover 3 match](../../appendices/glossary.qmd#gl-cover-3-match)** keeps the Cover 3 shell, three
+deep and four under, but gives every defender a rule about *which receiver* to take once the routes
+declare. It is the pattern-matching idea from
+[Coverage Fundamentals](06-01-coverage-fundamentals.qmd) applied to Cover 3, and it's the version
+most NFL teams play today. Nick Saban, building it with Bill Belichick in Cleveland in the early
+1990s, is the coach most often credited with turning Cover 3 into a match coverage, and his later
+college defenses spread the idea; like most origin stories it's disputed, and other staffs built
+similar rules.[^saban] The rules differ from staff to staff, but the core of most versions fits in a
+table.
+
+| Defender | Reads | Rule (simplified) |
+|:----------------------|:--------------------|:------------------------------------------------------|
+| Cornerbacks | #1 | #1 goes vertical: carry him, on top, like man. #1 breaks short: sink, look for #2 coming outside, then drive on #1. |
+| Seam-flat defenders ($, SS) | #2, then #1 | #2 vertical: wall him, carry him up the seam until the post safety is over the top. #2 out: take him in the flat. #2 in: pass him inside, sink under #1. |
+| Hook defenders (M, W) | #3 (the back), then the crossers | The back releases: take him. No release: wall the crossers and sink into the hole. |
+| Free safety | the #2 away from the rotation (in many versions), or both #2s; the quarterback | Stay in the middle third; play over the top of the seam he's assigned or the quarterback looks at, or the deepest route in the middle. |
+
+The key line is the seam-flat defender's: *#2 vertical, carry him.* That single rule turns four
+verticals from a math problem into a matchup. Staffs split on the far seam, though. Some carry both
+#2s, as drawn below. Many, Seattle among them, carry only the seam on the rotation side and give
+the other one to the post safety, who leans toward it before the ball is snapped. That keeps the
+other curl-flat defender home for the flat and the curl, at the price of asking more of the free
+safety.
+
+::: {.callout-important title="Why it exists: Cover 3 match"}
+**The problem it solves.** Spot-drop Cover 3 had a structural problem that no amount of effort
+fixed: four verticals,
+and more generally any concept that puts two receivers into one deep defender's area. Matching the
+routes gives every vertical receiver a defender, without giving up what makes Cover 3 attractive:
+three deep, the extra man near the line before the snap, and defenders who start out facing the
+quarterback.
+
+**What it gives up.** Simplicity, and the empty spaces the carries leave behind. A seam-flat defender
+running up the field with #2 is not in the flat, so a quick out by #1, or the back releasing to the
+flat, is open underneath him. And any route combination that makes two defenders' rules collide
+becomes a target: [post-wheel](../../appendices/glossary.qmd#gl-post-wheel) (the corner carries the
+post inside while the wheel goes up the sideline behind the seam-flat defender), switch releases
+that cross #1 and #2 at the snap, and motion that changes who is #2 at the last moment. The match
+coverage's rules close the seams; offensive coaches now design plays to open the gaps between the
+rules.
+:::
+
+```{python}
+#| label: fig-verts-match
+#| fig-cap: "The same four verticals against Cover 3 match (simulated, BDB-format tracking). Now the nickel ($) and the strong safety (SS), the seam-flat defenders (ringed), read the slot receivers: both go vertical, so each walls his man and carries him up the seam, running underneath and inside him. The corners carry X and Z as before. The free safety (FS) no longer has two seams to himself; he sits in the middle over both carries, ready to help on either. Four vertical routes now face four defenders deep, plus a safety. The quarterback holds the ball and checks down to the back (R), who has released to the flat that the carries emptied; the Mike (M), matched to the back, has to run him down from the hook, about 5 yards away when the ball arrives, for a gain of four or five. On the web this is a video."
+match = verts("match")
+MATCH_T = [0.0, 1.0, 2.1, arrival(match, "RB", 2.6)]
+if PDF:
+    strip(match, MATCH_T,
+          ["Snap · same shell", "+1.0 s · the walls", "+2.1 s · the carries", f"+{MATCH_T[3]:.1f} s · the check-down"],
+          ["Same picture: 3 deep,\n4 under",
+           "#2s go vertical: $ and\nSS wall them and run",
+           "Each seam: a defender\nunder it, the FS over it",
+           "Nothing deep: ball to R in\nthe flat; M runs him down"],
+          LAT_V, WIN_V, rings=("NB", "SS"), throw_t=2.6)
+    plt.show()
+else:
+    show_animation(match, times=MATCH_T)
+```
+
+Compare the second panels of the two plays. In spot-drop, the nickel and the strong safety ran away
+from the slot receivers toward their curl landmarks. In match, they ran *with* them. That's the
+whole difference, and it's visible on a broadcast replay if you watch the slot defender for one
+second. Now each seam has a defender underneath it and the free safety above, a two-on-one in the
+defense's favour on both sides, and the quarterback who expected one safety and two seams finds
+nobody open. He checks the ball down to the back in the flat, the space the two carries emptied,
+and the Mike has to run him down from the hook. Four or five yards: the price of carrying both seams,
+and one the defense will pay every time instead of a 25-yard seam.
+
+### What offenses attack instead
+
+Match rules are a set of if-then statements, and an offense that knows them can write a route
+combination in which every defender obeys his rule and the rules still leave a hole. The cleanest
+example is the post-wheel.
+
+```{python}
+#| label: fig-post-wheel
+#| fig-cap: "Post-wheel against Cover 3 match, on the offense's left. X (#1) starts vertical and breaks to the post at about 12 yards; by rule the corner (CB, ringed) carries a vertical #1 on top, so he goes inside with him. H (#2) runs toward the flat, so by rule the nickel ($, ringed) goes with him, underneath; then H turns up the sideline (the wheel). The corner is inside, the nickel is trailing from below, and the free safety (FS) is in the middle: the sideline behind them (green) is empty. Every defender obeyed his rule; together the rules left the hole."
+PW_PRE = {"NB": (5.0, -7.0), "LCB": (7.5, -16.3), "FS": (14.5, 0.0), "WILL": (4.5, -2.2)}
+PW_POST = {"NB": (11.0, -19.6), "LCB": (21.5, -11.4), "FS": (19.0, -3.4), "WILL": (9.0, -4.2)}
+pw = Play(spread(), nickel(C3_POST | PW_POST), los=LOS, to_go=None)
+pw.highlight("NB", "LCB")
+fld = draw(pw, lateral=(-26.67, 7.4), window=(-7.5, 30.0), width_in=5.0)
+route_line(fld, pw, [(-0.7, -15.0), (11.5, -15.6), (25.0, -9.8)], lw=1.7)
+route_line(fld, pw, [(-1.5, -9.0), (1.4, -12.6), (3.6, -18.4), (8.6, -21.6), (25.5, -22.4)], lw=1.7)
+for k in PW_PRE:
+    ghost(fld, pw, *PW_PRE[k], LAB[k][1])
+path(fld, pw, [PW_PRE["LCB"], (13.5, -16.4), PW_POST["LCB"]])
+path(fld, pw, [PW_PRE["NB"], (3.6, -14.6), PW_POST["NB"]])
+path(fld, pw, [PW_PRE["FS"], PW_POST["FS"]])
+path(fld, pw, [PW_PRE["WILL"], PW_POST["WILL"]])
+hole(fld, pw, 21.5, -22.0, 4.6, 6.0, "")
+say(fld, pw, 26.8, -19.5, "wheel: open up\nthe sideline", color=GREEN_TEXT, fontsize=6.4)
+say(fld, pw, 15.4, -7.6, "#1 post: the CB\ncarries him inside", fontsize=6.2, color=DD)
+say(fld, pw, 6.6, -23.2, "#2 to the\nflat: $ goes\nwith him", fontsize=6.2, color=DD)
+for k, txt in (("X", "#1"), ("H", "#2")):
+    q = pw.players[k]
+    say(fld, pw, q.d - 2.4, q.w, txt, fontsize=6.2)
+plt.show()
+```
+
+Two other answers don't need a picture once you see this one. A **switch release** crosses #1 and
+#2 at the snap, the outside receiver running inside and the slot running outside, so the corner and
+the seam-flat defender, each reading "his" number, have to decide in the first step who is now #1
+and who is #2; if they hesitate or both take the same man, the other one is free. And **motion**
+changes the count late: a slot who motions across the formation turns a 2x2 into trips, so the
+defense's numbering, its rotation side and possibly its trips check all have to change in the
+seconds before the snap. The defense's counter is communication, which is why match defenses talk
+so much before every snap.
+
+### The trips problem
+
+Match rules work cleanly against 2x2, two receivers each side. Against
+[3x1](../../appendices/glossary.qmd#gl-3x1) (trips: three receivers to one side), Cover 3 has a
+counting problem: four underneath defenders, but three receivers on one side whose routes can all go
+vertical. If #3, the innermost trips receiver, runs straight up the middle, who carries him? In
+spot-drop it's the free safety, and he can't be on #3 and over #2's seam at the same time, so the
+trips side's seam falls to the corner and the curl-flat defender, who are guarding other things. Match
+teams answer with a trips *check*, a pre-planned adjustment (the two-high versions are the
+[3x1 checks](../../appendices/glossary.qmd#gl-3x1-check) of
+[Disguise, Rotation, and Split-Field Coverage](06-06-disguise-rotation-and-split-field.qmd)). The
+check doesn't add a defender; it moves one. In one common version the backside corner takes the
+lone receiver on the other side by himself, man to man wherever he goes (Saban's playbook calls this
+[MEG](../../appendices/glossary.qmd#gl-meg), "man everywhere he goes"). That frees the defenders who
+would have helped on the backside to slide toward the trips, where the trips-side corner and the free
+safety stay the deep players and one of the freed underneath defenders (which one varies by staff)
+takes #3 if he goes vertical, so the free safety can stay over #2. Saban's system names its trips
+checks (one is "Mable," in which the safety comes down toward the trips), and every NFL staff has
+its own.[^mable] The tell for a viewer: against trips, look at the backside corner. If he's pressing
+the single receiver, alone, with no safety leaning his way, the defense has probably checked its
+Cover 3 to put its help on the trips side.
+([Disguise, Rotation, and Split-Field Coverage](06-06-disguise-rotation-and-split-field.qmd) covers
+the two-high answers to trips, including rotating to Cover 3 match.)
+
+## Seattle's version: Cover 3 as an identity
+
+For most of the 2000s, Cover 3 was something defenses played on early downs between the more
+fashionable calls. Then Pete Carroll's Seattle Seahawks made it the most feared defense in football,
+mostly by showing one pre-snap picture, a single high safety and corners pressed on the receivers,
+and playing two coverages behind it: Cover 3 and its man twin, Cover 1 ("man free").[^durkin]
+[Coverage Fundamentals](06-01-coverage-fundamentals.qmd) met this defense in its film room; here
+is why it worked as a *scheme*.
+
+Carroll had spent decades as a defensive backs coach, coordinator and head coach before Seattle hired
+him in 2010; Gus Bradley ran the defense from 2009 to 2012 and Dan Quinn in 2013 and 2014.[^staff]
+Carroll's idea, laid out in his book *Win Forever*, was that a program needs one clearly defined
+philosophy and should try to do things "better than they have ever been done before."[^winforever]
+On defense, that meant a 4-3 front with a one-high safety and five distinctive pieces:
+
+1. **A free safety with rare range.** Earl Thomas, the 14th pick of the 2010 draft, covered the deep
+   middle third alone, and fast enough to arrive at either seam. Cover 3 lives or dies with its post
+   safety; Seattle's could erase mistakes in front of him.
+2. **A strong safety built like a linebacker.** Kam Chancellor, a fifth-round pick that same year,
+   was the eighth man in the box: the sky or buzz player who came down at the snap, the force or
+   alley defender against the run, and a seam-flat defender who could carry a tight end up the
+   field.
+3. **Tall corners who pressed and carried.** Richard Sherman and Brandon Browner (both 6 feet 3 or
+   taller, a fifth-round pick and a Canadian Football League signing)[^draft] lined up on receivers'
+   noses, jammed them inside the 5-yard limit with Carroll's step-kick technique, and if the receiver
+   went deep, ran *with* him into the corner's own deep third. That press looked exactly like man
+   coverage, which is the point: before the snap the quarterback couldn't tell Cover 3 from Cover 1.
+   The difference shows only after it, when a receiver breaks inside. In Cover 1 the corner follows
+   him across the field; in Cover 3 he lets him go and sinks.
+4. **Match rules on the verticals.** The corners carried #1's vertical release like man defenders,
+   the down safety matched a seam route from his underneath spot, and the free safety leaned toward
+   the other seam (the "both versions" note in the match section), so four verticals met four
+   defenders.[^match]
+5. **Repetition.** With few calls, the players practised the same reads thousands of times, and
+   rarely blew an assignment. The scheme was simple enough to play fast.
+
+The results were extraordinary. Seattle allowed the fewest points in the NFL four seasons running,
+2012 to 2015, the first team to do so since the Cleveland Browns of the 1950s.[^points]
+
+::: {.callout-note title="Film room: Seattle Seahawks, Super Bowl XLVIII (Feb. 2, 2014) — one buzz snap"}
+Early in the third quarter, Seattle leading Denver 29–0. Denver lines up in 11 personnel with twins
+to the right, Wes Welker in the slot; Kam Chancellor is on the other side, over the tight end. The
+call is buzz: Chancellor's landing spot is the hook-curl on his side. Byron Maxwell, at corner,
+starts pressed on the line.
+
+At the snap the tight end and the receiver on Chancellor's side both run go routes. Chancellor, in
+his own words, "stayed with the tight end up the seam, keeping one eye on Peyton in the backfield":
+the seam carry, from the buzz spot, exactly as the match table says. Then Welker comes underneath
+on a drag, into the zone Chancellor has just left. Chancellor can let the tight end go because Earl
+Thomas is in the post over the top, so he peels off, drives on Welker, and punches the ball away: pass
+broken up.[^xlviii]
+
+**What to notice:** one defender doing three jobs in three seconds, in the order the chapter
+taught: buzz down inside, carry the seam while it's a threat, come off it when the deep safety has
+it and the ball goes underneath. That's Cover 3 match, and that's why Seattle needed a strong
+safety who could run with a tight end and still hit like a linebacker.
+:::
+
+### The tree
+
+Carroll's assistants took the scheme with them, and for a while Seattle-style Cover 3 was the
+NFL's fastest-spreading defense. Bradley went on to coach or coordinate four more defenses
+(Jacksonville, the Chargers, the Raiders and the Colts); Quinn took Atlanta to Super Bowl LI as head
+coach and is Washington's head coach today.[^tree] Robert Saleh, a junior
+[quality-control](../../appendices/glossary.qmd#gl-quality-control-coach) assistant in Seattle (the
+entry-level staffer who breaks down film), built his first San Francisco defenses on the same
+eight-man-front Cover 3 before mixing in more coverages.[^saleh] The tree is still growing: Saleh,
+the Tennessee Titans' head coach in 2026, hired Bradley as his defensive coordinator.
+
+You can follow the coaches through the data. Bradley is the clearest case, because he moved three
+times in five years.
+
+```{python}
+#| label: fig-bradley
+#| fig-cap: "Follow the coach: the share of each defense's charted dropbacks played in Cover 3, 2018–2022 (Next Gen Stats charting via nflverse). Orange points are seasons in which Gus Bradley, Seattle's defensive coordinator from 2009 to 2012, ran that defense; grey points are seasons he didn't. The dashed line is the league average (32 percent). Bradley's 2019 and 2018 Chargers and his 2021 Raiders posted the three highest Cover 3 rates of any defense in this period (his 2020 Chargers were sixth), and the Raiders' rate jumped from 18 to 65 percent the year he arrived and fell back to 27 percent the year he left."
+C3_SHARE = COV.assign(c3=COV["defense_coverage_type"].eq("COVER_3")).groupby(["defteam", "season"])["c3"].mean()
+LEAGUE = COV["defense_coverage_type"].eq("COVER_3").mean()
+BRADLEY = {"LAC": ("Chargers", {2018, 2019, 2020}), "LV": ("Raiders", {2021}), "IND": ("Colts", {2022})}
+seasons = list(range(2018, 2023))
+fig, axes = plt.subplots(1, 3, figsize=(6.6, 2.5), sharey=True)
+for ax, (team, (name, years)) in zip(axes, BRADLEY.items()):
+    vals = [C3_SHARE.get((team, s), np.nan) for s in seasons]
+    ax.plot(seasons, vals, color=style.BASELINE, lw=1.4, zorder=2)
+    for s, v in zip(seasons, vals):
+        on = s in years
+        ax.scatter([s], [v], s=34 if on else 22, color=style.DEFENSE if on else GREY, zorder=3,
+                   edgecolor="white", lw=0.6)
+        ax.text(s, v + 0.035, f"{v:.0%}", ha="center", va="bottom", fontsize=6.3,
+                color=DD if on else style.INK_2)
+    ax.axhline(LEAGUE, color=style.INK_2, lw=0.8, ls=(0, (3, 2)), zorder=1)
+    ax.set_title(name, fontsize=8, loc="left", color=style.INK)
+    ax.set_xticks(seasons, [f"'{s % 100:02d}" for s in seasons], fontsize=7)
+    ax.set_ylim(0.0, 0.9)
+    ax.set_xlim(2017.55, 2022.45)
+    ax.grid(axis="x", visible=False)
+axes[0].yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+axes[0].tick_params(axis="y", labelsize=7)
+axes[0].set_ylabel("Cover 3 share of dropbacks", fontsize=7.5)
+axes[0].text(2018.0, LEAGUE - 0.07, "league average", fontsize=6.3, color=style.INK_2)
+handles = [Line2D([], [], marker="o", ls="", color=style.DEFENSE, ms=6, label="Bradley ran the defense"),
+           Line2D([], [], marker="o", ls="", color=GREY, ms=5, label="another coordinator")]
+fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=2, fontsize=7, frameon=False)
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+The pattern is hard to miss. The 2019 Chargers played Cover 3 on 74 percent of their charted
+dropbacks, the highest rate of any defense from 2018 to 2022; the 2018 Chargers and the 2021 Raiders
+were second and third. When Bradley left Los Angeles the Chargers fell to the league average; when he
+arrived in Las Vegas the Raiders more than tripled their rate; when he left, it fell back. Coaches
+are their schemes, and a coverage this simple travels well. Indianapolis is the weaker case, and
+it's worth saying why. The Colts' rate rose from 29 to 41 percent in Bradley's first year, a real
+jump but nothing like Las Vegas, partly because his predecessor, Matt Eberflus, had already played
+Cover 3 above the league average in two of his four seasons (38 percent in 2018), and partly because by 2022 the whole league
+was moving toward two-high shells.[^colts] (The chart stops in 2022 because this charting source
+does.) (Not every member of the tree stayed
+with it: Quinn's 2021 Cowboys played Cover 3 on about 27 percent of their dropbacks, below the
+league average, part of a broader shift you'll see next.)
+
+::: {.callout-note title="Film room: Los Angeles Chargers 2019 and Las Vegas Raiders 2021 — the coverage in the numbers"}
+If you want to see Seattle's Cover 3 without Seattle's players, Bradley's Chargers are the best
+library: a single-high safety, corners off and turned in, a safety rotating down to the strong side
+on nearly every early down (by the same nflverse count, Cover 3 on about 82 percent of their charted
+first- and second-down dropbacks in 2019), and the same handful of rotations week after week. The 2021 Raiders are
+the controlled experiment: a different roster, a new coordinator, and within one season their
+coverage mix looks like the Chargers'.
+
+**What to notice:** how *few* different pictures the defense shows. That is the Carroll philosophy,
+and it has a modern cost: an offense that knows the coverage before the snap can call the concept
+that beats it. In the same years, Vic Fangio's two-high defenses were showing quarterbacks a
+different picture on every snap ([Coverage Fundamentals](06-01-coverage-fundamentals.qmd) tells
+that story), and the league's split-safety rate climbed every year. The fact that Cover 3 was still
+the most-charted single coverage in the NFL in 2025 says that the simple version keeps working;[^c3share]
+the fact that it's now usually disguised says what changed. (The 2025 figure, about 28 percent,
+comes from a different charting service than this chapter's 2018–2022 numbers, which label Cover 3
+more often, so don't read the gap as a decline of ten points.)
+:::
+
+The coach who made it famous has moved on too. Carroll coached Seattle through the 2023 season and the
+Raiders in 2025, when they went 3–14 and dismissed him after one year. Seattle won Super Bowl LX in
+February 2026 under Mike Macdonald, with a split-safety defense from a different school (from Week
+14 through the Super Bowl, two-high coverage on 54.8 percent of pass plays)
+([Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd)).[^carroll]
+But nearly every NFL defense still plays Cover 3 on some early downs, usually as a match coverage,
+usually arrived at by one of the three rotations above. The Seattle version didn't disappear; it
+became part of everyone's playbook.
+
+## Recognising Cover 3: before and after the snap
+
+Everything above adds up to a two-step read you can make from your couch: a hypothesis before the
+snap, a test one second after it. Here is the reasoning behind each check; the checklist at the end
+of the section is the short version.
+
+**Before the snap: the Cover 3 look.**
+
+- **One safety deep in the middle**, 13 to 16 yards, roughly over the ball. *Why it matters:* the
+  middle of the field is closed, which narrows the menu to the one-high coverages, Cover 3 and
+  Cover 1.
+- **Corners off and turned in**, 7 to 9 yards from their receivers with outside leverage, shoulders
+  angled toward the quarterback. *Why:* a corner who must stay deeper than everyone in his third
+  starts deep and watches the ball; a man corner is more often pressed and square to his receiver.
+  Seattle-style corners who press and then carry are the exception, and you check them after the
+  snap.
+- **A safety down near the box**, 7 to 11 yards deep. *Why:* he is the fourth underneath defender
+  and the eighth man against the run. Where he stands hints at the rotation: outside the slot or
+  tight end suggests sky; inside, over the slot, with a nickel outside him, suggests buzz.
+- **Underneath defenders in apex alignments**, a few yards inside the slot receivers, not tight on
+  them. *Why:* zone defenders split the difference between a run fit and a pass drop; man defenders
+  line up on their man.
+- **The cloud tell**: a two-high look in which only *one* corner squats at 5 yards and the other is
+  off, often with the free safety shaded toward the middle. *Why:* a real Cover 2 usually squats
+  both corners; the off corner is already in a deep-third alignment. (Asymmetry is also how Cover 6
+  looks, so check after the snap.)
+- **Motion.** When a receiver motions across, watch the safeties. If they spin with him, one coming
+  down on the new strong side and the other heading for the middle, the call is a single-high
+  rotation tied to the strength; if a defender runs across with the motion man, think man coverage.
+
+**After the snap: count the deep defenders, at one second.** About one second after the snap, look at
+the deep part of the field and count the defenders backpedalling or running away from the line,
+spread across the width. Three means a Cover 3 family call (Cover 3 or a three-deep fire zone); two
+means Cover 2 or a relative; four means quarters; one means Cover 1 (with or without a robber, it's
+still Cover 1). Two refinements make the count reliable:
+
+- **Count early.** In Cover 3 match, the seam-flat defenders who carry slot receivers up the seams
+  are 15 to 20 yards deep two seconds later and look like extra deep players (count the last panel
+  of the match strip and you get five). The count means something only before the carries.
+- **Check *who* the three are.** In Cover 3, two of them are the corners, deep and wide. If the
+  corners are sitting in the flats and the middle man is a linebacker running down the middle of
+  the field, it's [Tampa 2](06-04-cover-2-and-tampa-2.qmd), which also shows three deep at one
+  second.
+
+Then look underneath. Corners who keep their eyes inside and let a receiver who breaks short or
+across go are zone; corners who turn and follow him across the field are man. A safety into the flat
+is sky, a safety into the hook-curl is buzz, a corner sitting in the flat with a safety running over
+him is cloud. Slot defenders who run away from a vertical release to a spot are spot-drop; slot
+defenders who run with him up the seam are match. Four rushers and three deep is Cover 3; five
+rushers and three deep, with a defensive lineman dropping into coverage, is a fire zone
+([Zone Blitzes, Fire Zones, and Simulated Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd)).
+And for how often a one-high picture before the snap is honest, and how to keep score of a defense
+that lies, see [Disguise, Rotation, and Split-Field Coverage](06-06-disguise-rotation-and-split-field.qmd).
+
+::: {.callout-tip title="Watch for it on Sunday: count to three"}
+For one quarter, on every passing down:
+
+- **Before the snap:** one high safety, corners off and turned in, a safety near the box? Say "Cover
+  3" and guess sky (safety outside) or buzz (safety inside, nickel outside). Two-high with one
+  squatting corner? Say "cloud?"
+- **Motion:** do the safeties spin with it?
+- **At one second, count deep defenders.** Three, with the corners among them, is the Cover 3
+  family. Name the extra underneath player.
+- **Watch one slot defender against a vertical release.** Away to a spot (spot-drop) or up the seam
+  with him (match)?
+- **Find the ball.** Hitch in front of a corner, seam between thirds, sail behind the curl-flat
+  defender, or a check-down? On the replay, find the defender whose job that area was.
+- **On early downs, count the box.** Eight near the line against a two-back or two-tight-end set,
+  with one safety deep, is Cover 3's run defense. Watch for the play-action pass that punishes it.
+:::
+
+::: {.callout-note title="Go deeper: Cover 3 in real tracking data"}
+The NFL's Big Data Bowl files (no download is bundled with this book) label each play's coverage,
+so you can find real Cover
+3 plays and draw them with the same code. A sketch (the code is in the web version), assuming the
+2025 edition's `plays.csv` and tracking files in `data/bdb/`:
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (finding a real Cover 3 play in Big Data Bowl data)"
+from gridiron import bdb
+plays = pd.read_csv("data/bdb/plays.csv")
+trk = bdb.load_tracking("data/bdb/tracking_week_1.csv")
+c3 = plays[plays["pff_passCoverage"].str.startswith("Cover-3", na=False)]   # Cover-3, Cover-3 Seam, ...
+one = bdb.prepare(trk, plays, game_id=c3["gameId"].iloc[0], play_id=c3["playId"].iloc[0])
+show_animation(one, times=[0.0, 1.0, 2.0, 3.0])          # count the deep defenders at +1.0 s
+```
+
+The coverage labels come from PFF's charting and split Cover 3 into variants whose names map onto
+this chapter: labels such as `Cover-3 Seam` (Cover 3 with the seams carried, roughly the match
+version) and `Cover-3 Cloud` left and right (the corner rotation), alongside plain `Cover-3`. Check
+the year's data dictionary for the exact strings before filtering on them. The diagrams in this
+chapter are simulated in the same format (`Play.to_tracking()`), which is why the two draw
+identically.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: first-and-10, two tight ends"}
+```{python}
+#| label: fig-predict-sky
+#| fig-cap: "First-and-10, ball in the middle, 12 personnel (two tight ends, Y and U, attached to the line; X and Z split wide). The defense is in its base 4-3: the Sam (Sm), Mike (M) and Will (W) linebackers behind four linemen. One safety (FS) is 15 yards deep in the middle; the strong safety (SS) is 8 yards deep, about 3 yards outside the right tight end; both corners (CB) are 8 yards off with outside leverage. The safeties are ringed; the orange line is the line to gain."
+off12 = offense("ace")
+d12 = defense("4-3_over", "single_high", off12)
+mv = {"SS": (8.0, 8.0), "FS": (15.0, 0.0), "LCB": (8.0, -16.2), "RCB": (8.0, 16.2)}
+d12 = [q.moved(d=mv[q.key][0], w=mv[q.key][1], label="CB" if q.pos == "CB" else q.label)
+       if q.key in mv else q for q in d12]
+d12 = [q.moved(label="Sm") if q.key == "SAM" else q for q in d12]
+pp1 = Play(off12, d12, los=LOS, to_go=10)
+pp1.highlight("FS", "SS")
+fld = draw(pp1, lateral=(-23, 23), window=(-9.0, 19.0))
+plt.show()
+```
+
+**What coverage family is this, what will the strong safety do at the snap, and if the offense
+wants to throw, where should it aim?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Cover 3 (or its man cousin, Cover 1), with the strong safety rotating down: a sky look.** One
+safety deep in the middle closes the middle of the field; the corners off and outside say zone, deep
+thirds. The strong safety at 8 yards outside the tight end is the tell: he's the eighth man in the
+box and the force player against a run to his side, and against a pass he'll come down and out to the
+curl-flat area. The other three underneath jobs fall to the linebackers: the Sam takes the right
+hook-curl, the Mike the left hook, and the Will widens to the left curl-flat. Against 12 personnel on
+first down the defense is daring the offense to run into eight.
+
+If the offense throws, the soft spots are the ones this chapter drew. **Play-action** first: the
+safety and linebackers are reading run, so a fake handoff followed by a tight end up the seam, or a
+deep crossing route behind the linebackers, attacks the exact space the eighth man left. Without a
+fake, the **hitch** in front of the bailing corners and the **seam** away from the safety's lean are
+there. The defense accepts all of that in exchange for a run defense with a spare man.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: two-high, but the corners don't match"}
+```{python}
+#| label: fig-predict-cloud
+#| fig-cap: "Second-and-7 against 11 personnel in a 2x2, ball in the middle. Two safeties deep: the free safety (FS) 13 yards deep, about 2 yards left of the ball, inside the left hash; the strong safety (SS) 12 yards deep, wide, between the right hash and the numbers. The right cornerback is squatting about 5 yards off Z with outside leverage; the left cornerback is 8 yards off X. The nickel ($) is in an apex over the left slot. Both corners and both safeties are ringed."
+pp2 = Play(spread(), nickel({"MIKE": (4.5, 2.4), "WILL": (4.5, -2.2), "NB": (5.0, -7.0), "LCB": (8.0, -16.3),
+                             "RCB": (5.0, 16.4), "FS": (13.0, -2.0), "SS": (12.0, 11.0)}), los=LOS, to_go=None)
+pp2.highlight("FS", "SS", "LCB", "RCB")
+fld = draw(pp2, lateral=(-23, 23), window=(-7.5, 18.5))
+plt.show()
+```
+
+**The shell says two-high. What else could it be, which corner gives it away, and what will you
+check one second after the snap?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Probably Cover 3 cloud to the right, with Cover 6 as the other possibility.** In a true Cover 2 both
+corners usually squat in the flats; here only the right one does, and the left one is off at 8 yards
+in a deep-third alignment. A squatting corner with a safety deep over him on one side and an off
+corner on the other is the cloud picture: at the snap, the right corner plays the flat, the strong
+safety runs to the deep right third behind him, and the free safety rotates to the middle. The free
+safety's alignment helps: he's inside the hash, almost over the ball, while the strong safety is wide
+over the squatting corner. Two Cover 2 safeties would be balanced, each on or outside his hash. A
+safety cheated toward the middle is already halfway to the deep middle third.
+
+The same pre-snap picture also fits **[Cover 6](../../appendices/glossary.qmd#gl-cover-6)**,
+quarters on one half and Cover 2 on the other, which
+[Quarters and the Two-High Match Family](06-05-quarters-and-match.qmd) builds; its quarters side
+also has a corner off the ball, so here it would be quarters on the left and Cover 2 on the right. **One second after the snap, look at the free safety.** If he
+runs to the middle of the field, it's three deep: cloud. If he stays on the left and reads the slot
+receiver, it's two deep: Cover 6. Either way, the right side looks the same, which is the point of
+the disguise. Against cloud, the place to attack is the deep right third, where a safety has to run
+with Z.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: two seconds after the snap"}
+```{python}
+#| label: fig-predict-flood
+#| fig-cap: "A Cover 3 sky play against a flood to the right, 2.2 seconds after the snap (simulated). Faint lines are where each player has been. Z is running a go route with the right cornerback over him; Y, from the slot, has pushed upfield and is breaking toward the sideline at about 12 yards (a sail route); the back (R) is running to the right flat. The strong safety (SS, ringed) is the curl-flat defender on that side; the Mike (M) has widened from his hook toward the curl. On the left, X and H run to hold the nickel ($), the Will and the free safety."
+def flood_play():
+    p = Play(spread(rb_w=1.5), nickel(C3_PRE | {"SS": (6.5, 7.5)}), los=LOS, to_go=10)
+    protect(p)
+    p.dropback(3.0)
+    p.route("Z", [(-0.7, 15.0), (8.0, 15.8), (30.0, 17.0)], absolute=True)
+    p.route("Y", [(-1.5, 9.0), (10.0, 9.8), (13.6, 15.2), (14.6, 20.5)], absolute=True)
+    p.route("RB", [(-5.0, 1.5), (-3.4, 5.0), (1.6, 11.0), (3.0, 17.0)], absolute=True, speed=6.0)
+    p.route("X", [(-0.7, -15.0), (12.0, -15.6), (10.6, -14.6)], absolute=True)
+    p.route("H", [(-1.5, -9.0), (6.0, -8.0), (26.0, -6.6)], absolute=True)
+    p.drop("RCB", (24.0, 17.4), speed=6.2)
+    p.drop("LCB", (18.0, -16.8), speed=5.0)
+    p.drop("FS", (18.0, 0.4), speed=3.0)
+    p.drop("SS", (9.8, 13.0), speed=4.4)
+    p.drop("NB", (10.5, -11.8), speed=4.4)
+    p.drop("WILL", (9.0, -4.4), speed=4.0)
+    p.drop("MIKE", (9.5, 7.5), speed=4.0)
+    return p
+
+fp = flood_play()
+fig, ax = plt.subplots(figsize=(6.5, 4.6))
+fld = moment(ax, fp, 2.25, (-24.5, 24.5), (-9.0, 26.0), rings=("SS",))
+ruler(fld, fp)
+plt.show()
+```
+
+**Who's the quarterback's read, what has that defender done, and where does the ball go?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The read is the strong safety, the curl-flat defender, and he has sunk under the sail route, so the
+ball goes to the back in the flat.** This is the flood: three receivers at three depths on the right
+(the go, the sail, the flat) against two defenders, the corner and the curl-flat defender. The corner
+did his job, staying on top of Z's go route, which leaves the safety alone with two receivers. He's
+at about 10 yards, wide, in the window where the sail will arrive, so the back, running to the flat
+underneath him with nobody within 7 yards, is the throw. Had the safety jumped down toward the flat,
+the sail behind him would have been open instead. (Notice the Mike in the frame, too: with #2 going outside and the back heading for the flat, he has widened from his hook toward the curl, as he's taught, and he still can't reach the flat in time.)
+
+If this were Cover 3 match, the picture would differ only a little: with #2 (Y) releasing vertically
+the safety would have carried him at first, and when Y broke out to the sail he'd stay with him, while
+the Mike, who matches the back (#3), would have a long way to run to the flat. The flat would still be
+the throw. Flood beats both versions for the same reason. There are only so
+many defenders on one side of the field.
+:::
+:::
+
+## Takeaways
+
+- **Cover 3 is three deep and four under.** The corners take the outside thirds and a safety the
+  middle; two curl-flat defenders and two hook defenders take the underneath areas; four rush. It
+  guards the whole deep field with only three players, which is why it's the NFL's most common zone.
+- **Its bargain is the eighth man.** Bringing the second safety down gives the defense an extra run
+  defender (and its force or alley player) while still playing three deep. The price is the seams,
+  the soft spots in front of the corners, and an underneath defender with two zones.
+- **Sky, buzz and cloud are three ways to arrive at the same coverage.** Sky sends a safety to the
+  curl-flat, buzz sends him inside to the hook-curl while an outside defender takes the flat, and cloud
+  puts the corner in the flat with a safety over him. Each fits a different player to the job and leaks
+  a different pre-snap tell.
+- **The curl-flat defender is the key, and the match version changed his job.** In spot-drop he guards
+  a place and lets the seam go by; as a seam-flat defender in Cover 3 match he carries #2 up the seam
+  first, which turns four verticals from an unsolvable count into four-on-four.
+- **Seattle made it an identity.** Carroll's 2010s Seahawks showed one picture (a single high safety,
+  pressed corners) and played Cover 3 or its man twin Cover 1 behind it, with a rangy free safety, a
+  box strong safety and long corners who pressed and carried receivers into their thirds. They led
+  the league in scoring defense four years running and sent coordinators across the league;
+  Bradley's defenses still topped the Cover 3 charts years later.
+- **Recognise it by counting.** One high safety, corners off and turned in, a safety near the box
+  before the snap; three deep defenders one second after it, two of them the corners (count before
+  the match carries, and don't mistake Tampa 2's running Mike for a third deep defender).
+
+## Connections
+
+**Builds on:** [Coverage Fundamentals](06-01-coverage-fundamentals.qmd) (the zone map, deep thirds,
+spot-drop versus pattern matching, reading the shell) and the concepts drawn against Cover 3 from
+the offense's side in [The Quick Game](../04-the-passing-game/04-03-quick-game.qmd) and
+[Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd). The eight-man front connects
+to the box counts of [A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd).
+
+**Sets up:** [Cover 2 and Tampa 2](06-04-cover-2-and-tampa-2.qmd) (the two-deep alternative, and the
+squat corner that cloud borrows), [Quarters and the Two-High Match Family](06-05-quarters-and-match.qmd)
+(match rules with four deep), and [Disguise, Rotation, and Split-Field Coverage](06-06-disguise-rotation-and-split-field.qmd)
+(sky, buzz and robber rotations launched from two-high shells). The three-deep, three-under
+fire zone in [Zone Blitzes, Fire Zones, and Simulated Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd)
+is Cover 3 with a fifth rusher and seam-flat droppers. [Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd)
+builds the run defense the down safety joins, and [What Beats What](../08-the-chess-match/08-01-concepts-versus-coverages.qmd)
+pairs every passing concept with the coverages it beats, Cover 3 first among them.
+
+::: {.callout-note title="Go deeper"}
+- Pete Carroll with Yogi Roth and Kristoffer A. Garin, *Win Forever* (2010): Carroll's philosophy of competition and
+  doing things better than they have ever been done, in the coach's own words.
+- Cameron Soran, "The Complete Guide to Nick Saban Coverages at Alabama," Throw Deep Publishing
+  (2021), for how a pattern-matching Cover 3 and its trips checks are taught.
+- Chris B. Brown, *The Art of Smart Football* (2015) and the Smart Football archive, for clear
+  essays on Cover 3, pattern matching and four verticals.
+- Cody Alexander's MatchQuarters newsletter and his books on match coverage, for the modern
+  coaching language (seam-flat, carry, wall) used in this chapter.
+- Coaches' clinic videos on "Cover 3 rotations" (sky, buzz, cloud) and Seattle's press technique are
+  widely available; watching a defensive backs coach teach step-kick for five minutes explains Sherman
+  better than any paragraph.
+:::
+
+[^downs]: Course calculation from nflverse `load_pbp()` and `load_participation()`: regular-season plays with `qb_dropback == 1` and a charted `defense_coverage_type`, 2018–2022 (Next Gen Stats charting, about 89,700 dropbacks). Share labelled COVER_3: first down 38.4%; third down with 4–6 to go 19.0%; snaps inside the opponent's 20 19.0%, elsewhere 34.2%. The FTN labels used from 2023 classify far fewer plays as Cover 3 (see Coverage Fundamentals), so these figures are kept within one source. Share labelled COVER_1 or COVER_0: third-and-4–6 53.5%, inside the 20 51.0%, elsewhere 27.9% (first down 24.3%). The early-down chart uses first and second downs between the 20-yard lines; "plays of 20+ yards" counts `yards_gained >= 20` on all dropbacks, including sacks and incompletions as non-explosive. Cover 1 on those plays: 59.8% completions, 12.4% gains of 20+.
+
+[^box]: Same data and filters as the early-down chart (first and second down between the 20s, 2018–2022), split by the offense's personnel from `offense_personnel`. With two or fewer wide receivers, `defenders_in_box` was 8 or more on 23.6% of Cover 3 dropbacks (n = 7,245), 30.2% of Cover 1, 5.2% of Cover 2 and 1.2% of quarters; with three or more receivers it was 1.1% for Cover 3. Box counts are charted on dropbacks only, so this measures the box the defense showed on passing plays, not on runs.
+
+[^saban]: Cameron Soran, "The Complete Guide to Nick Saban Coverages at Alabama," Throw Deep Publishing (Feb. 24, 2021): https://throwdeeppublishing.com/blogs/news/nick-saban-s-alabama-pass-coverages (a pattern-matching form of Cover 3 that "prior to his association with Belichick with the Browns in the early 1990s simply did not exist"). Saban was Cleveland's defensive coordinator under Belichick from 1991 to 1994 (Eleven Warriors, Mar. 23, 2020, and Saban's Wikipedia coaching record).
+
+[^ripliz]: Cameron Soran, "The Complete Guide to Nick Saban Coverages at Alabama," Throw Deep Publishing (Feb. 24, 2021): https://throwdeeppublishing.com/blogs/news/nick-saban-s-alabama-pass-coverages. The guide names Saban's Cover 3 family by call ("3," "3 Buzz," "6," "6 Buzz" and others), with "Rip/Liz" as the rotating safety's declaration of which side he is coming down to.
+
+[^mable]: Soran's guide (cited in the notes on Rip/Liz and on Saban). Against 3x1, "Mable" means "the safety is dropping down to the passing strength," and the weak (backside) corner's rule is "MEG: Man Everywhere he Goes," man coverage on the single receiver.
+
+[^staff]: Pro Football Reference coaching pages for Pete Carroll (https://www.pro-football-reference.com/coaches/CarrPe0.htm), Gus Bradley (https://www.pro-football-reference.com/coaches/BradGu0.htm) and Dan Quinn (https://www.pro-football-reference.com/coaches/QuinDa0.htm). Carroll was a defensive backs coach (Buffalo 1984, Minnesota 1985–1989), defensive coordinator (Jets 1990–1993, 49ers 1995–1996) and head coach of the New York Jets (1994), New England Patriots (1997–1999) and USC (2001–2009) before Seattle (2010–2023); Bradley was Seattle's defensive coordinator 2009–2012 (hired Jan. 2009 under Jim Mora); Quinn was Seattle's assistant head coach and defensive line coach 2009–2010, Florida's defensive coordinator 2011–2012, and Seattle's defensive coordinator 2013–2014. PFR blocks automated checks; the dates were confirmed against the coaches' Wikipedia career tables.
+
+[^winforever]: Pete Carroll with Yogi Roth and Kristoffer A. Garin, *Win Forever: Live, Work, and Play Like a Champion* (Portfolio, 2010; credits per Penguin Random House: https://www.penguinrandomhouse.com/books/306479/win-forever-by-pete-carroll-with-yogi-roth-and-kristoffer-a-garin). The book's core is defining a personal philosophy, with "do things better than they have ever been done before" at the base of Carroll's "Win Forever" pyramid; the link from that philosophy to a small, repeated defensive menu is this chapter's reading.
+
+[^draft]: Pro Football Reference draft and player pages: Earl Thomas (2010, round 1, 14th overall), Kam Chancellor (2010, round 5), Richard Sherman (2011, round 5), Byron Maxwell (2011, round 6); Brandon Browner (listed 6-4) signed with Seattle in 2011 after five seasons (2006–2010) with the CFL's Calgary Stampeders. Chancellor listed 6-3, 225 lb; Sherman 6-3 (Wikipedia player pages, which mirror the league listings; spot-check PFR before print). On step-kick: Sheil Kapadia, "Step-kick is one secret to Seahawks' success on defense," ESPN (Oct. 8, 2015): https://www.espn.com/blog/seattle-seahawks/post/_/id/14964/step-kick-is-one-secret-to-seahawks-success-on-defense (Carroll traced the technique to watching Hall of Famer Willie Brown teach it, "probably back in 1981 or '82," and has taught it for more than 30 years).
+
+[^points]: Pro Football Reference team pages, Seattle Seahawks 2012–2015 (fewest points allowed in the league each season: https://www.pro-football-reference.com/teams/sea/2015.htm and the 2012–2014 pages); Associated Press, "Seahawks extend streak with fewest points allowed to four years" (Jan. 2016, via Fox Sports: https://www.foxnews.com/sports/seahawks-extend-streak-with-fewest-points-allowed-to-four-years): 15.3, 14.4, 15.9 and 17.3 points per game, the first team of the Super Bowl era to do it and the second ever, after the 1953–57 Cleveland Browns (five straight).
+
+[^c3share]: Course calculation from nflverse participation data (FTN charting), regular-season dropbacks with a coverage label, 2025: COVER_3 27.7%, COVER_2 22.9%, COVER_1 22.4%. In the Next Gen Stats labels for 2018–2022, Cover 3 was the most common label in four of the five seasons (Cover 1 edged it in 2019); in FTN's 2023 and 2024 labels Cover 1 led. Treat the labels as estimates (see Coverage Fundamentals).
+
+[^tree]: Pro Football Reference coaching pages for Bradley and Quinn cited above: Bradley, Jacksonville head coach 2013–2016, Chargers defensive coordinator 2017–2020, Raiders 2021, Colts 2022–2024; Quinn, Atlanta head coach 2015–2020 (Super Bowl LI, a 34–28 overtime loss to New England, Feb. 5, 2017), Dallas defensive coordinator 2021–2023, Washington head coach from 2024 and still in 2026. Bradley was fired by the Colts on Jan. 6, 2025, spent 2025 as the 49ers' assistant head coach, and was hired as Tennessee's defensive coordinator under Saleh on Feb. 4, 2026 (Titans.com: https://www.tennesseetitans.com/news/titans-hire-gus-bradley-as-defensive-coordinator). Status checked against Wikipedia, Oct. 2026.
+
+[^carroll]: Course fact sheet (planning/FACTS-current.md, checked Oct. 2026): Raiders 2025, Pete Carroll fired after one season (3–14); Super Bowl LX, Feb. 8, 2026, Seahawks 29, Patriots 13, Seattle head coach Mike Macdonald. Seattle's two-high rate from Week 14 through Super Bowl LX (54.8%, highest of any playoff team): NFL.com Next Gen Stats, "The coverage that turned the Seahawks into Super Bowl winners": https://www.nfl.com/news/the-coverage-that-turned-the-seahawks-into-super-bowl-winners-and-is-taking-the-nfl-by-storm. Carroll's Seattle tenure (2010–2023): Pro Football Reference coaching page cited above.
+
+[^verts]: The run-and-shoot (Glenn "Tiger" Ellison, popularised by Mouse Davis at Portland State from 1975) and LaVell Edwards's BYU passing game (head coach 1972–2000; 1984 national title) were the college laboratories for the four-receiver vertical passing game: "Run and shoot offense," https://en.wikipedia.org/wiki/Run_and_shoot_offense; College Football Hall of Fame, LaVell Edwards: https://cfbhall.com/inductees/lavell-edwards-2004.
+
+[^match]: Matty F. Brown, "Analysis: Kam Chancellor, Super Bowl XLVIII, and How Seahawks Play Cover 3," SI All Seahawks (May 30, 2021): https://www.si.com/nfl/seahawks/onsi/gm-report/analysis-kam-chancellor-super-bowl-xlviii-and-how-seahawks-play-cover-3 ("Seattle uses its high safety ... and leans him 60-40 in his middle deep 1/3 to one seam. The down safety ... matches the second seam route from his underneath zone"); Matty Brown, "Soft Sky: How Pete Carroll defends four verts from Middle of the Field Close," USA Football (Mar. 29, 2019): https://blogs.usafootball.com/blog/7141/soft-sky-how-pete-carroll-defends-four-verts-from-middle-of-the-field-close (the corners press in "read 1/3" technique and run with a vertical release). The precise rules changed by opponent and season; this is a summary of the common thread.
+
+[^saleh]: Robert Saleh's career (Seattle defensive quality control 2011–2013, Jacksonville linebackers coach 2014–2016, 49ers defensive coordinator 2017–2020 and again in 2025, Titans head coach 2026): Wikipedia and the Titans' Bradley announcement cited in the note on the tree. Nick Wagoner, "In copycat league, 49ers hope to replicate Seahawks' defensive success," ESPN (Sept. 15, 2017): https://www.espn.com/blog/san-francisco-49ers/post/_/id/27264/in-copycat-league-49ers-hope-to-replicate-seattles-defensive-success; Grant Cohn, "How the 49ers Defense will Change in 2020," SI (May 25, 2020): https://www.si.com/nfl/49ers/news/how-the-49ers-defense-will-change-in-2020 (2017–18: "Cover 3 to stop the pass"; 2019: coverages "varied and disguised"). In the nflverse count used in this chapter, the 2018 49ers played Cover 3 on 51% of charted dropbacks (eighth-highest of 160 team-seasons, 2018–2022) and the 2020 49ers on 28%.
+
+[^durkin]: Dan Durkin, "Durkin's Playbook: Simplicity In Seattle Lets D Flourish," CBS Chicago (Aug. 21, 2014): https://www.cbsnews.com/chicago/news/durkins-playbook-simplicity-in-seattle-lets-d-flourish/ ("At its core, the Seahawks run Cover-1 (man free) and Cover-3," with "man principles on the perimeter" and corners in press). NFL.com's Chris Wesseling called it Seattle's "press man, Cover Three defense" (cited in Coverage Fundamentals).
+
+[^xlviii]: Matty F. Brown, "Analysis: Kam Chancellor, Super Bowl XLVIII, and How Seahawks Play Cover 3," SI All Seahawks (May 30, 2021), cited in the note on Seattle's match rules, which breaks down this snap (the buzz call, Maxwell pressed in "read 1/3" technique, Thomas in the post) and quotes Chancellor's account from The Players' Tribune, "What Got You There": https://www.theplayerstribune.com/posts/what-got-you-there-kam-chancellor ("It was early in the third quarter. We were up 29-0 and the Broncos came out in 11 personnel ... They were in twins right with Wes Welker in the slot. I was lined up on the opposite side over the tight end"; "I stayed with the tight end up the seam, keeping one eye on Peyton [Manning] in the backfield ... I peeled off and got to him just in time to punch the ball out for the pass breakup"). Super Bowl XLVIII was played Feb. 2, 2014 (Seattle 43, Denver 8).
+
+[^colts]: Course calculation, same data as the chart: Colts Cover 3 share 38.2% (2018), 26.5% (2019), 36.6% (2020), 29.2% (2021), 41.0% (2022). Matt Eberflus was the Colts' defensive coordinator from 2018 to 2021 before becoming the Chicago Bears' head coach in 2022: "Matt Eberflus," Wikipedia: https://en.wikipedia.org/wiki/Matt_Eberflus. The league's rising split-safety rate is in FACTS-current §10 and Coverage Fundamentals.
