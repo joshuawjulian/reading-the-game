@@ -1,0 +1,1350 @@
+---
+title: "How to Watch a Broadcast Like You Mean It"
+subtitle: "What the TV camera hides, what the replays and the All-22 give back, the five-second read before every snap, your first tells, and the prediction log you'll keep for the rest of the course."
+description: "How a football broadcast is built and what it leaves out; the sideline, end-zone and skycam angles; All-22 coaches film; reading the scorebug in five seconds; win probability and Next Gen Stats as glossed numbers; the 'watch one thing' strategy; a starter catalogue of tells (stance, the back's depth and offset, receiver splits, safety depth); and a prediction log, on paper and in ten lines of pandas, scored against what the situation alone would get you."
+glossary:
+  "Sideline camera": "The broadcast's main camera, high on one side of the field near midfield. It follows the ball with a fairly tight shot, which is good for the ball and the faces and poor for the safeties and the receivers away from the ball."
+  "End-zone camera": "A camera behind one end zone, looking straight down the field. It shows the blocking, the gaps between linemen and the running lanes better than any other angle; coaches film includes a high version of it."
+  "Skycam": "A camera hung from cables above the field that can fly anywhere over it, usually just behind the offense. It shows roughly the quarterback's view of the defense: the coverage, the safeties and the routes."
+  "All-22": "Game film shot from high above the sideline and zoomed out so that all 22 players stay in the frame for the whole play, with no cut-aways. The standard view for studying a game."
+  "Coaches film": "The video a team's staff studies: every snap shown twice, once from the high wide sideline angle (the All-22) and once from a high end-zone angle, with no replays, close-ups or graphics. Fans can buy access to it."
+  "Tell": "A detail before the snap that leaks what a player or team is about to do, such as a lineman's stance or a safety's depth. A clue that shifts the odds, never a guarantee."
+  "Stance (two-point / three-point)": "How a player stands just before the snap. In a two-point stance he is upright, with only his feet on the ground; in a three-point stance one hand is also on the ground (a four-point stance puts both hands down)."
+  "Heavy hand": {def: "A three-point stance with a lot of the lineman's weight leaning on his down hand (shoulders forward, knuckles pressing white). It usually means he is about to fire forward to run-block; a light hand, with the weight back on the heels, suggests he is about to step back into a pass set.", aliases: ["Heavy stance"]}
+  "Prediction log": "Your running record of pre-snap calls: for each snap, the situation, your guess (run or pass, later more), how confident you were, the main clue, and what actually happened. Scored to see whether your reading is getting better."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import os
+import textwrap
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from matplotlib.lines import Line2D
+from matplotlib.path import Path as MPath
+from matplotlib.patches import (FancyBboxPatch, FancyArrowPatch, Rectangle, Circle, Ellipse, Polygon,
+                                PathPatch, RegularPolygon)
+from IPython.display import HTML, Markdown, display
+
+from gridiron import Play, Player, Field, offense, defense, routes as r, style, draw_marker
+from gridiron.animate import draw_frame
+
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+LOOK = "#0f7a55"          # darker step of the aqua highlight: "look here" marks and their text
+MASK = "#d5d4cc"          # the grey for "not on your screen"
+FIELD_W = 160 / 3
+
+
+def blank(ax):
+    ax.set_axis_off()
+    ax.grid(False)
+
+
+def html_video(anim):
+    """Embed a matplotlib animation in the HTML build (mp4 if ffmpeg exists, else a JS player)."""
+    import shutil
+    if shutil.which("ffmpeg"):
+        html = anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+    else:
+        html = anim.to_jshtml(default_mode="once")
+    plt.close(anim._fig)
+    display(HTML(html))
+
+
+def label(fld, play, text, at, fs=7.5, ha="center", color=style.INK, z=14, bold=False):
+    """A boxed label at (d, w) yards, drawn above any shading."""
+    x, y = fld.xy(*play.to_abs(*at))
+    fld.ax.text(x, y, text, ha=ha, va="center", fontsize=fs, color=color, zorder=z, linespacing=1.15,
+                fontweight="bold" if bold else "normal",
+                bbox=dict(boxstyle="round,pad=0.25", fc=style.SURFACE, ec=style.BASELINE, lw=0.6))
+
+
+def pointer(fld, play, text, text_at, to, fs=7.0, ha="center"):
+    """A labelled arrow from a text box to a spot on the field (both in (d, w) yards)."""
+    tx, ty = fld.xy(*play.to_abs(*text_at))
+    px, py = fld.xy(*play.to_abs(*to))
+    fld.ax.annotate(text, xy=(px, py), xytext=(tx, ty), ha=ha, va="center", fontsize=fs, color=style.INK,
+                    zorder=14, linespacing=1.15,
+                    arrowprops=dict(arrowstyle="-|>", color=style.INK_2, lw=0.9, shrinkB=6),
+                    bbox=dict(boxstyle="round,pad=0.25", fc=style.SURFACE, ec=style.BASELINE, lw=0.6))
+
+
+def badge(ax, x, y, n, color=LOOK, r=1.15, fs=7.5):
+    """A numbered circle (plot coordinates), used for 'look here, in this order'."""
+    ax.add_patch(Circle((x, y), r, fc=color, ec="white", lw=0.8, zorder=15))
+    ax.text(x, y, str(n), ha="center", va="center", fontsize=fs, color="white", fontweight="bold", zorder=16)
+
+
+def look(fld, play, center, size, n=None, badge_at=None):
+    """A dashed 'look here' ellipse around (d, w) with an optional numbered badge."""
+    cx, cy = fld.xy(*play.to_abs(*center))
+    fld.ax.add_patch(Ellipse((cx, cy), size[1], size[0], fc=LOOK, alpha=0.12, ec="none", zorder=5))
+    fld.ax.add_patch(Ellipse((cx, cy), size[1], size[0], fc="none", ec=LOOK, lw=1.5, zorder=5))
+    if n is not None:
+        bd, bw = badge_at if badge_at is not None else (center[0] + size[0] / 2, center[1] - size[1] / 2)
+        bx, by = fld.xy(*play.to_abs(bd, bw))
+        badge(fld.ax, bx, by, n)
+
+
+# --- the broadcast camera's footprint on the field ---------------------------------------------
+# The main camera sits high on one sideline near the 50; here, the offense's LEFT sideline (the
+# left edge of every diagram). Seen from above, what it shows is a trapezoid: narrow on the near
+# side, wider on the far side, because the far side is farther from the lens.
+TV_WIDE = (8.5, 11.0, 12.0, 13.0)   # half-length along the field at the near / far edge; near / far reach
+TV_TIGHT = (6.0, 7.5, 6.5, 7.5)
+
+
+def tv_footprint(cd, cw, along_near, along_far, near_off, far_off):
+    """(d, w) corners of the camera's footprint centred on (cd, cw). Near side = offense's left (w < 0)."""
+    return [(cd - along_near, cw - near_off), (cd + along_near, cw - near_off),
+            (cd + along_far, cw + far_off), (cd - along_far, cw + far_off)]
+
+
+def _clip(poly, x0, x1, y0, y1):
+    """Clip a convex polygon (BDB x, y) to a rectangle (Sutherland-Hodgman)."""
+    def clip(pts, inside, inter):
+        out = []
+        for i in range(len(pts)):
+            cur, prev = pts[i], pts[i - 1]
+            if inside(cur):
+                if not inside(prev):
+                    out.append(inter(prev, cur))
+                out.append(cur)
+            elif inside(prev):
+                out.append(inter(prev, cur))
+        return out
+    ix = lambda v: (lambda p, q: (v, p[1] + (q[1] - p[1]) * (v - p[0]) / (q[0] - p[0])))  # noqa: E731
+    iy = lambda v: (lambda p, q: (p[0] + (q[0] - p[0]) * (v - p[1]) / (q[1] - p[1]), v))  # noqa: E731
+    pts = [tuple(p) for p in poly]
+    for inside, inter in [(lambda p: p[0] >= x0, ix(x0)), (lambda p: p[0] <= x1, ix(x1)),
+                          (lambda p: p[1] >= y0, iy(y0)), (lambda p: p[1] <= y1, iy(y1))]:
+        pts = clip(pts, inside, inter)
+        if not pts:
+            break
+    return pts
+
+
+def _signed_area(v):
+    v = np.asarray(v)
+    return 0.5 * np.sum(v[:, 0] * np.roll(v[:, 1], -1) - np.roll(v[:, 0], -1) * v[:, 1])
+
+
+def shade_outside(fld, play, poly_dw, alpha=0.78, outline=True, ls="-"):
+    """Grey out everything in the field window except the camera footprint. Returns the artists."""
+    xs, ys = play.to_abs(np.array([p[0] for p in poly_dw]), np.array([p[1] for p in poly_dw]))
+    poly = _clip(list(zip(xs, ys)), fld.x0, fld.x1, fld.y0, fld.y1)
+    inner = [tuple(map(float, fld.xy(x, y))) for x, y in poly]
+    outer = [tuple(map(float, fld.xy(x, y))) for x, y in
+             [(fld.x0, fld.y0), (fld.x1, fld.y0), (fld.x1, fld.y1), (fld.x0, fld.y1)]]
+    if _signed_area(outer) < 0:
+        outer = outer[::-1]
+    if _signed_area(inner) > 0:
+        inner = inner[::-1]
+    verts = outer + [outer[0]] + inner + [inner[0]]
+    codes = ([MPath.MOVETO] + [MPath.LINETO] * 3 + [MPath.CLOSEPOLY]
+             + [MPath.MOVETO] + [MPath.LINETO] * (len(inner) - 1) + [MPath.CLOSEPOLY])
+    arts = [fld.ax.add_patch(PathPatch(MPath(verts, codes), fc=MASK, ec="none", alpha=alpha, zorder=12))]
+    if outline:
+        arts.append(fld.ax.add_patch(Polygon(inner, closed=True, fill=False, ec=style.INK, lw=1.5, ls=ls,
+                                             zorder=13)))
+    return arts
+
+
+# --- the chapter's one play: a deep shot down the far sideline --------------------------------
+def base_play(to_go=10):
+    """Gun 2x2, 11 personnel, against a nickel defense with two deep safeties."""
+    off = offense("gun_2x2")
+    dfn = defense("nickel", "two_high", off)
+    adj = {"FS": dict(d=13.0, w=-9.5), "SS": dict(d=13.0, w=9.5)}
+    dfn = [p.moved(**adj[p.key]) if p.key in adj else p for p in dfn]
+    return Play(off, dfn, los=35, to_go=to_go)
+
+
+def shot_play():
+    """Z runs a go route down the far (offense right) sideline; the ball goes to him at 2.5 s."""
+    p = base_play()
+    p.route("X", r.go(24)); p.route("H", r.seam(18)); p.route("Y", r.curl(11)); p.route("Z", r.go(33))
+    p.dropback(2.5)
+    for k, dw in [("LT", -0.6), ("LG", -0.2), ("C", 0.0), ("RG", 0.2), ("RT", 0.6)]:
+        p.block(k, pts=[(-1.6, dw)])
+    p.block("RB", pts=[(0.6, 1.8)])
+    for k in ("WDE", "WDT", "SDT", "SDE"):
+        p.rush(k, pts=[(-1.4, 0.0)], speed=1.8)
+    p.drop("MIKE", (8.0, 3.0)); p.drop("WILL", (8.0, -4.5)); p.drop("NB", (10.0, 10.5))
+    p.path("LCB", [(19.0, -15.5)], speed=6.4, absolute=True)
+    p.path("RCB", [(30.0, 16.6)], speed=7.0, absolute=True)
+    p.drop("FS", (19.0, -6.0), speed=4.0); p.drop("SS", (27.0, 12.0), speed=6.0)
+    p.pass_to("Z", t=2.5)
+    return p
+
+
+def catch_time(p, key, t_throw):
+    for t in np.arange(t_throw, t_throw + 4.0, 0.02):
+        if np.linalg.norm(p.ball_position(t) - p.position(key, t)) < 0.35:
+            return float(t)
+    return t_throw + 1.5
+
+
+def tv_at(p, t, t_throw, t_catch, pre=(1.5, 0.0)):
+    """Where the broadcast camera is pointed at time t: wide on the formation until the throw,
+    then panning with the ball and tightening until it is on the receiver at the catch."""
+    b = p.ball_position(t)
+    s = float(np.clip((t - t_throw) / (t_catch - t_throw), 0, 1))
+    s = 1 - (1 - s) ** 2          # the operator reacts fast, then settles on the catch
+    cd = (1 - s) * pre[0] + s * (b[0] + 2.0 * (1 - s))
+    cw = (1 - s) * pre[1] + s * b[1]
+    ext = [(1 - s) * a + s * c for a, c in zip(TV_WIDE, TV_TIGHT)]
+    return tv_footprint(cd, cw, *ext)
+
+
+def tracking_with_id(p):
+    trk = p.to_tracking()
+    trk["_id"] = trk["displayName"]
+    return trk
+
+
+def frame_at(trk, t):
+    times = trk.groupby("frameId")["time"].first()
+    return int((times - t).abs().idxmin())
+```
+
+Third-and-6, early in the fourth quarter. The broadcast shows you the quarterback barking at
+his line, cuts to a tight shot of the center's hands, and the ball is snapped. For two seconds
+you watch linemen shove each other. Then the camera whips upfield and a receiver who was not on
+your screen a moment ago catches the ball thirty yards downfield, with a safety you never saw
+arriving a step too late. The analyst says, "The safety bit on the play fake, and that's the
+easiest throw he'll make all day." Which safety? Bit on what? You were watching the whole time,
+and you didn't see any of it. That is not your fault. A broadcast is built to show you the ball,
+and most of what decides a play happens away from it. This chapter is about watching around
+the broadcast: what the camera leaves out, where the other angles come in, what to read in the
+few seconds before the snap, and how to keep score of your own guesses so that, by the end of
+this course, you can tell whether you are actually getting better at reading the game.
+
+**You'll be able to…**
+
+- Say what the main TV camera hides (usually the safeties and the outside receivers) and which
+  replay angle (end zone, skycam, the wide All-22) gives back each missing piece.
+- Use the pause before each snap to read down, distance, field position, score, clock and
+  timeouts from the scorebug in under five seconds, and turn them into a run-or-pass lean.
+- Pick *one thing* to watch on each snap and on each replay, chosen by the situation, instead
+  of following the ball.
+- Read the win-probability bar and the Next Gen Stats numbers a broadcast puts on screen as
+  plain-English estimates (the models behind them come later).
+- Spot four starter tells (the linemen's stance, the running back's depth and offset, receiver
+  splits, safety depth) and treat each as a clue that shifts the odds, not a promise.
+- Keep a prediction log on paper or in ten lines of pandas, score it, and compare it with what
+  the down and distance alone would have earned you.
+
+## The camera is built for the ball
+
+Almost everything you have ever seen of an NFL game came through one camera. The
+[**sideline camera**](../../appendices/glossary.qmd#gl-sideline-camera) is the broadcast's main
+camera: it sits high on one side of the stadium, usually near the 50-yard line on the
+press-box side, and it follows the ball. Before the snap the director frames the formation
+fairly tightly, so the quarterback, the linemen and the players near them fill the screen. At
+the snap the operator keeps the ball in the middle of the picture, and when the ball is thrown
+he swings with it.
+
+That is the right choice for television. The ball is the story, the faces are the drama, and
+a tight shot reads well on a phone. The cost is everything else. Here is roughly what a
+typical pre-snap shot covers, drawn from above:
+
+```{python}
+#| label: fig-tv-frame
+#| fig-cap: "What a typical pre-snap TV shot shows, drawn from above. The broadcast camera is high on the left sideline (the offense's left), so the area it sees on the ground is a trapezoid: narrow on the near side, wider on the far side. Everything shaded grey is off your screen at the snap. In this ordinary formation that is six of the 22 players, and they are the six that decide most passes: both safeties, both outside receivers and the two cornerbacks covering them. The dashed outline is what the All-22 camera keeps in view for the entire play: everyone. (Illustrative; directors frame shots differently, and some go wider.)"
+p = base_play()
+fld = p.draw(lateral="full", window=(-9.5, 19.5), title=False)
+shade_outside(fld, p, tv_footprint(1.5, 0.0, *TV_WIDE))
+# the All-22 frame: everything, every snap
+a22 = [(-8.6, -25.6), (18.6, -25.6), (18.6, 25.6), (-8.6, 25.6)]
+xs, ys = p.to_abs(np.array([q[0] for q in a22]), np.array([q[1] for q in a22]))
+fld.ax.add_patch(Polygon([tuple(map(float, fld.xy(x, y))) for x, y in zip(xs, ys)], closed=True, fill=False,
+                         ec=LOOK, lw=1.6, ls=(0, (5, 3)), zorder=13))
+label(fld, p, "TV shot at the snap", (8.0, 0.0), fs=8, bold=True)
+label(fld, p, "All-22 frame (dashed): the whole play", (17.0, -14.0), fs=7.5, color=LOOK)
+label(fld, p, "off screen:\nboth safeties", (16.4, 4.0), fs=7.5)
+label(fld, p, "off screen:\nreceiver + corner", (4.0, -20.6), fs=7.5)
+label(fld, p, "off screen:\nreceiver + corner", (4.0, 20.6), fs=7.5)
+label(fld, p, "◄ camera: high on this sideline", (-7.4, -18.6), fs=6.8, color=style.INK_2)
+plt.show()
+```
+
+Count what made the screen: the five linemen, the quarterback, the running back, the two inside
+receivers, the four defensive linemen, two linebackers and the slot defender. Sixteen players.
+The six you can't see are the two **safeties** (the deepest defenders, usually 10 to 15 yards
+off the ball; see [The Twenty-Two](01-03-the-twenty-two.qmd)), the two wide receivers split
+out near the sidelines, and the two **cornerbacks** covering them. If you want to know whether
+a pass will work, those are exactly the six you most want to see. The safeties tell you how the
+defense is covering the deep part of the field; the outside receivers and corners are where
+most long throws go.
+
+It gets worse after the snap, because the camera chases the ball. Watch the same thing play out
+over four seconds:
+
+```{python}
+#| label: fig-camera-follows
+#| fig-cap: "The camera follows the ball (simulated play; the grey is what is off your screen). Before the snap and for the first two seconds the shot stays on the formation, so you see the pass protection and the rush but not the two deep safeties drifting back or the receiver on the far sideline running past his cornerback. When the ball is thrown the camera pans with it and tightens on the catch: by then you can see three players, and the other nineteen, including the safety who was supposed to be there, are gone. The replays exist to show you the grey."
+shot = shot_play()
+T_THROW = 2.5
+T_CATCH = catch_time(shot, "Z", T_THROW)
+trk = tracking_with_id(shot)
+WIN = (-9.5, 38.0)
+
+
+def camera_panel(ax, t, title=None, fs_title=8.5):
+    fld = Field(ax=ax, orient="vertical", los=shot.los, window=WIN, to_go=shot.to_go)
+    fid = frame_at(trk, t)
+    cur = trk[trk.frameId == fid]
+    arts = draw_frame(fld, cur, trk[trk.frameId <= fid], fld.pts_per_yard())
+    arts += shade_outside(fld, shot, tv_at(shot, t, T_THROW, T_CATCH))
+    if title:
+        ax.set_title(title, fontsize=fs_title, color=style.INK, loc="left")
+    return fld, arts
+
+
+if PDF:
+    moments = [(-1.0, "1  Before the snap: the formation"), (1.4, "2  Protection and rush (+1.4 s)"),
+               (T_THROW + 0.55 * (T_CATCH - T_THROW), "3  Ball in the air: camera pans"), (T_CATCH + 0.1, "4  The catch: 3 of 22 on screen")]
+    fig, axes = plt.subplots(2, 2, figsize=(6.5, 5.9))
+    for ax, (t, ttl) in zip(axes.flat, moments):
+        camera_panel(ax, t, ttl)
+    fig.tight_layout(h_pad=0.8, w_pad=0.6)
+    plt.show()
+else:
+    fld = Field(orient="vertical", los=shot.los, window=WIN, to_go=shot.to_go, width_in=6.0)
+    ppy = fld.pts_per_yard()
+    clock = fld.ax.text(0.01, 0.99, "", transform=fld.ax.transAxes, ha="left", va="top", fontsize=9,
+                        color=style.INK, zorder=20,
+                        bbox=dict(boxstyle="round,pad=0.25", fc=style.SURFACE, ec=style.BASELINE, lw=0.6))
+    state = {"arts": []}
+    frames = sorted(trk.frameId.unique())
+    times = trk.groupby("frameId")["time"].first()
+    frames = [f for f in frames if times[f] >= -1.2 and times[f] <= T_CATCH + 0.8]
+
+    def update(fid):
+        for a in state["arts"]:
+            a.remove()
+        t = float(times[fid])
+        cur = trk[trk.frameId == fid]
+        arts = draw_frame(fld, cur, trk[trk.frameId <= fid], ppy)
+        arts += shade_outside(fld, shot, tv_at(shot, t, T_THROW, T_CATCH))
+        state["arts"] = arts
+        clock.set_text("snap" if abs(t) < 0.05 else f"{t:+.1f}s")
+        return arts + [clock]
+
+    anim = animation.FuncAnimation(fld.fig, update, frames=frames, interval=100, blit=False)
+    html_video(anim)
+```
+
+This is why the analyst in the opening could see what you couldn't. He had a monitor with a
+wider angle, or he had already seen the replay. On the live shot, the defense's whole back half
+is a rumor until the ball arrives.
+
+::: {.callout-important title="Why it exists: a picture made for the ball"}
+Why don't networks just show the wide shot? Because the broadcast is made for a much larger
+audience than the people who want to study coverage. A wide shot makes the players tiny, and
+the things most viewers care about (who has the ball, the hit, the catch, the celebration) get
+lost in it. So the main camera trades *context* for *clarity*: it shows you the ball clearly
+and the structure of the play hardly at all. The good news is that the broadcast also shows the
+same play three or four more times, from other angles, a few seconds later. The skill is to use
+those replays on purpose.
+:::
+
+## The other angles: replays, the end zone and the skycam
+
+Between plays, the director cuts to replays. On an ordinary play you might get one; on a big
+play you'll typically get a short sequence, and each angle answers a different question:
+
+1. **Live, from the sideline camera.** The ball, framed tightly.
+2. **A tight replay on the key player**, often from a handheld camera at field level: the catch,
+   the hit, the run. Great for drama, useless for structure.
+3. **The end zone.** The [**end-zone camera**](../../appendices/glossary.qmd#gl-end-zone-camera)
+   sits behind one end zone and looks straight down the field. It is the best angle there is for
+   the line: which linemen moved forward and which backward, where the gaps opened, which
+   defender the running back cut off. Coaches film includes a high version of it.
+4. **The skycam.** The [**skycam**](../../appendices/glossary.qmd#gl-skycam) is a camera hung
+   from cables above the field that can fly anywhere over it. On replays it usually sits a
+   few yards behind the offense, roughly where the quarterback's eyes are, and shows the
+   defense the way he saw it: where the safeties went at the snap, who dropped into coverage,
+   which receiver came open.
+5. **Super slow motion** on the catch or the tackle, especially if a review is possible.
+
+Directors vary the order and the mix, and some games use the skycam as a live angle for a few
+plays. But the logic is constant: the live shot follows the ball, and the replays fill in the
+rest, if you know which question each one answers.
+
+| Angle | Best for | Watch this |
+|:---|:---|:---|
+| Sideline (live) | The ball; the pass rush; who has the ball at the end | The pocket, the run's first few yards |
+| Tight / handheld | Catches, hits, the runner's feet | Hands and feet on close calls |
+| End zone | The line, gaps and running lanes | Did the linemen go forward (run) or back (pass)? Where did the hole open? |
+| Skycam | Coverage and the quarterback's view | The two safeties' first steps; who was open, and when |
+| All-22 (wide) | Everything, all at once | Any player you didn't watch the first time |
+
+: Which angle answers which question. The first four come with the broadcast; the last comes with coaches film. {#tbl-angles}
+
+The skycam has a nice history of being too early. It was invented by Garrett Brown, the
+cameraman-engineer who had already invented the Steadicam, and first used at an NFL preseason
+game between the Chargers and the 49ers in San Diego in 1984. It then mostly gathered dust: it
+was expensive, and directors weren't sure what to do with it. It became a regular part of
+football broadcasts only after the XFL leaned on it heavily in 2001.[^skycam] That story repeats
+across broadcast technology. The yellow first-down line that every viewer now takes for granted
+was first shown on ESPN's broadcast of a Bengals–Ravens game on September 27, 1998, after one
+network agreed to pay for it.[^yellow] (On the field there is no yellow line; it is painted
+onto the picture by computer, which is why players walk "through" it.)
+
+::: {.callout-note title="Film room: Prime Vision on Amazon's Thursday Night Football (2022–)"}
+The closest thing to watching like a coach *live* is an alternate stream. When Amazon took over
+*Thursday Night Football* in 2022 it added a second feed, *Prime Vision with Next Gen Stats*,
+which switches to a higher camera during each play and draws the receivers' routes as they
+run.[^primevision] In 2023 it added "Defensive Alerts," which uses the players' pre-snap
+movement to mark the defenders most likely to rush the quarterback, a computer doing the
+blitz-spotting you will learn to do by eye in
+[A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd).[^alerts]
+Later seasons added features such as coverage identification, also computed from player
+tracking (the data source is explained below).
+
+**What to notice** if you try it: how much more of the defense you can see during the play,
+and how often the defenders it marks as likely rushers are *not* the ones who rush. The model
+is reading the same kind of clues you are about to learn, and it is right more often than not,
+not every time. Alternate streams come and go by season and by network; if one is offered for
+a game you're watching, it is worth a quarter of your time.
+:::
+
+## All-22: the coaches' view
+
+Coaches don't study the broadcast. They study
+[**coaches film**](../../appendices/glossary.qmd#gl-coaches-film): every snap shown twice, once
+from a high, wide sideline camera and once from a high end-zone camera, with no replays, no
+close-ups and no graphics. The sideline half of it is the
+[**All-22**](../../appendices/glossary.qmd#gl-all-22), named for the one thing it promises: the
+camera is zoomed out far enough that all 22 players stay in the frame from the snap until the
+whistle. It looks dull on first viewing (tiny players, no drama), and it is the single most
+useful football picture there is.
+
+For decades it was available only to teams and a few media analysts. In 2012 the NFL began
+selling coaches film to fans, both the "All-22" and the "High End Zone" views, through its
+Game Rewind service.[^all22] Today it comes with the league's NFL+ Premium subscription, for
+every game back to the 2022 season.[^nflplus] <!-- VERIFY: NFL+ Premium still includes All-22 coaches film for the 2026 season, and the price/tier name has not changed. -->
+Some teams' own sites and several film-breakdown writers post All-22 clips too. You don't
+need it for this chapter, but if you ever want to settle a question the broadcast can't
+answer ("was the receiver open?"), that is where you go.
+[Film Study: All-22, Charting a Game, and Scoring Yourself](../15-capstone/15-02-film-study-and-charting.qmd)
+builds a full film-study routine around it.
+
+::: {.callout-note title="Madden vs. real life"}
+Here is an odd fact: *Madden* gives you a better view of football than the TV does. The
+game's default camera sits high behind the offense and shows all eleven defenders, which is
+closer to the skycam or the All-22 than to anything on a broadcast. That is part of why a
+game-literate viewer can find real broadcasts confusing: in *Madden* you always know where the
+safeties are, and on television you almost never do until the replay. If you want the *Madden*
+picture of a real play, you need coaches film or the skycam replay.
+:::
+
+::: {.callout-caution title="Common misconception"}
+"If I watch closely enough, I'll see the play." On the live broadcast, mostly you won't, and
+nobody else watching it does either. The pros who seem to see everything live have usually
+seen the replay, the All-22 or the wider monitor in the booth. Your aim on the live shot is
+narrower: read the situation and the formation before the snap, watch one thing during the
+play, and use the replays for the rest.
+:::
+
+## The pre-snap pause: five things in five seconds
+
+Every play has a pause. The offense breaks the huddle (or turns to look at the sideline, if it
+doesn't huddle; see [What a Play Really Is](01-04-what-a-play-really-is.qmd)), walks to the
+line, and gets set. From the moment they are set to the snap there are usually a few seconds,
+during which the broadcast shows the formation and the scorebug. That pause is the most
+valuable time you have as a viewer, because it is the last moment you can make a guess that
+counts. Spend the first part of it on the scorebug.
+
+```{python}
+#| label: fig-scorebug
+#| fig-cap: "An illustrative scorebug (every network's design differs, and not all show field position). Read it in a fixed order: (1) down and distance, (2) where the ball is, (3) the score, (4) the clock, (5) the timeouts. Here the home team has the ball, trails by 3 with 2:41 left in the game, and faces third-and-6 at the opponent's 34 with one timeout. Below it, the win-probability bar some broadcasts add: a model's estimate, not a verdict."
+fig, ax = plt.subplots(figsize=(6.5, 2.55))
+blank(ax); ax.set_xlim(0, 100); ax.set_ylim(0, 36)
+DARK = "#2c2c2a"
+y0, h = 17.5, 7.0
+
+
+def chip(x, w, txt, fc=DARK, color="white", fs=10, bold=True, dx=0.0):
+    ax.add_patch(Rectangle((x, y0), w, h, fc=fc, ec="white", lw=1.2, zorder=2))
+    ax.text(x + w / 2 + dx, y0 + h / 2, txt, ha="center", va="center", fontsize=fs, color=color,
+            fontweight="bold" if bold else "normal", zorder=3)
+
+
+chip(1, 10, "AWAY", fs=8.5); chip(11, 5.5, "20", fs=11)
+chip(17, 10, "HOME", fs=8.0, dx=1.0); chip(27, 5.5, "17", fs=11)
+ax.add_patch(Ellipse((18.4, y0 + h / 2), 1.4, 0.9, fc=style.BALL, ec="white", lw=0.6, zorder=4))  # possession
+chip(34, 15, "4th · 2:41", fc="#3d3d3a", fs=8.5)
+chip(49.5, 14, "3rd & 6", fc=style.LINE_TO_GAIN, color=style.INK, fs=10.5)
+chip(64, 22, "BALL ON AWY 34", fc="#3d3d3a", fs=7.5)
+chip(86.5, 9, ":18", fc="#3d3d3a", fs=9)
+# timeouts: three bars under each team name, used ones faded
+for x_team, left in ((2.0, 2), (18.0, 1)):
+    for i in range(3):
+        ax.add_patch(Rectangle((x_team + i * 2.9, y0 - 2.2), 2.2, 1.1, fc=style.LINE_TO_GAIN if i < left else "#bdbcb5",
+                               ec="none", zorder=3))
+# numbered reading order
+marks = [(1, 52.0, "down &\ndistance"), (2, 67.5, "field\nposition"), (3, 15.5, "score"),
+         (4, 37.0, "quarter\n& clock")]
+for n, x, txt in marks:
+    badge(ax, x, y0 + h + 3.4, n, color=style.OFFENSE_DARK, r=1.45, fs=8)
+    ax.text(x + 2.3, y0 + h + 3.4, txt, ha="left", va="center", fontsize=6.6, color=style.INK_2, linespacing=1.0)
+ax.text(91.0, y0 + h + 3.4, "play\nclock", ha="center", va="center", fontsize=6.6, color=style.INK_2, linespacing=1.0)
+badge(ax, 3.0, y0 - 5.2, 5, color=style.OFFENSE_DARK, r=1.45, fs=8)
+ax.text(5.3, y0 - 5.2, "timeouts left", ha="left", va="center", fontsize=6.6, color=style.INK_2)
+ax.text(19.5, y0 - 5.2, "(ball = has possession)", ha="left", va="center", fontsize=6.4, color=style.INK_2)
+# win probability bar
+wp_home = 0.41
+ax.add_patch(Rectangle((20, 2.4), 60 * wp_home, 3.4, fc=style.OFFENSE, ec="none", zorder=2))
+ax.add_patch(Rectangle((20 + 60 * wp_home, 2.4), 60 * (1 - wp_home), 3.4, fc=style.DEFENSE, ec="none", zorder=2))
+ax.text(19, 4.1, "HOME 41%", ha="right", va="center", fontsize=7.5, color=style.INK, fontweight="bold")
+ax.text(81, 4.1, "59% AWAY", ha="left", va="center", fontsize=7.5, color=style.INK, fontweight="bold")
+ax.text(50, 8.6, "win probability (a model's estimate)", ha="center", va="center", fontsize=6.8,
+        color=style.INK_2, style="italic")
+plt.show()
+```
+
+Read it in the same order every time, and ask one question of each item:
+
+1. **Down and distance** ([Downs, Distance, and Field Position](01-02-downs-distance-and-field-position.qmd)):
+   *How many yards do they need, and how many tries do they have?* Bucket it: short (1–3
+   yards), medium (4–6), long (7 or more). This is the single biggest input to a run-or-pass
+   guess. In the 2025 regular season, teams passed on about nine in ten third-and-medium snaps
+   and on fewer than one in four third-and-1s.[^situational]
+2. **Field position:** *Where are they?* Backed up near their own goal line, offenses play it
+   safe; inside the opponent's 20 (the [red zone](01-02-downs-distance-and-field-position.qmd))
+   the field shrinks and the playbook changes; around the opponent's 35 a field goal becomes
+   possible, which changes what fourth down means.
+3. **Score:** *Who needs what?* A team behind by two scores late has to pass. A team ahead
+   wants to run and keep the clock moving.
+4. **Clock:** *How much time, and is it running?* (The clock rules are in
+   [The Game in Fifteen Minutes](01-01-the-game-in-fifteen-minutes.qmd).) Inside the last two
+   minutes of a half, everything tilts toward passes and the sideline. In 2025, teams trailing
+   by one score in the last two minutes of the fourth quarter passed on 87% of snaps.[^late]
+5. **Timeouts:** *Can they stop the clock?* A trailing team with no timeouts can't afford a run
+   that ends in bounds; a team with three can.
+
+Put it together for the example. Third-and-6 is medium on third down, a passing down almost
+every time. The ball is at the opponent's 34, so a long field goal (about 52 yards) is the
+fallback if the pass fails, which makes a short, safe completion attractive. Down three with
+2:41 left and one timeout, they need points, but they don't need a touchdown, and they can't
+waste a down. Your lean: **pass**, probably short to medium, to someone near the first-down
+marker. That took longer to write than it should take to think. With a few weeks of practice
+it becomes a glance.
+
+### Glossed numbers: the win-probability bar and Next Gen Stats
+
+Broadcasts now put model outputs on screen. You don't need the models yet, but you do need to
+know what the numbers *mean*, so here is a plain-English reading of the common ones. Each is
+built properly later.
+
+- **Win probability** (the bar under the scorebug above). An estimate of how often teams in
+  exactly this situation (score, time left, field position, down and distance, timeouts) have
+  gone on to win, based on many past seasons of games. "41%" means "teams in this spot win
+  about four times in ten." It is not a judgment about these two teams, and it swings on
+  every big play because the situation swings. The models are built in
+  [Win Probability and Decision Analysis](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd).
+- **Next Gen Stats overlays.** Every player wears small radio chips in his shoulder pads, and
+  receivers around the stadium record where each one is about ten times a second.[^ngs] The
+  league turns those positions into numbers that broadcasts quote:
+  - **Speed** ("he hit 21.4 miles per hour"): the ball carrier's top speed on the play. Fun,
+    and mostly about the open field he had, not just how fast he is.
+  - **Completion probability** ("a 23% throw"): how often a pass with this distance, this
+    receiver separation and this pressure is completed, judged from thousands of past throws.
+    A low number on a completion means a hard throw and catch; a high number on an
+    incompletion means an easy one missed.
+  - **Separation**: the gap, in yards, between the receiver and the nearest defender, usually
+    when the ball arrives. Three yards is open by NFL standards; one yard is tight.
+  - **Time to throw**: seconds from the snap to the throw. The typical NFL pass is out in about
+    two and a half seconds,[^ttt] which is why everything you want to see before the throw has
+    to happen fast.
+  - **Expected rushing yards**: how far an average runner would have gained from the spot where
+    the runner took the handoff, given where the blockers and defenders were; the difference is
+    [rush yards over expected](../13-analytics-and-data/13-02-expected-points-and-success-rate.qmd).
+
+  How tracking data is collected, what it can and can't measure, and how to work with it
+  yourself is in [Tracking Data and the Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd).
+
+::: {.callout-caution title="Common misconception"}
+"The bar said 90% and they lost, so the model was wrong." A 90% estimate is supposed to be
+wrong about one time in ten. The fair test of a probability is whether, across many games
+where it said 90%, the team won about 90% of them. That idea, called calibration, is how you
+will score your own predictions at the end of the course.
+:::
+
+## Watch one thing
+
+The scorebug gives you a lean. The next question is where to put your eyes, because you can't
+watch 22 players at once, and if you try you'll end up watching the ball like everyone else.
+The fix is a simple rule: **before each snap, pick one thing to watch, and watch only that
+until the play is over.** Choose it by the situation (your lean), and change it on each replay.
+
+```{python}
+#| label: fig-where-to-look
+#| fig-cap: "Where to look, phase by phase, on the same pass play as before. Green ovals and numbers are the order to look in. Before the snap: (1) the backfield (how deep the quarterback and back are, and which side the back is on), (2) the two safeties' depth. In the first second: (3) the linemen's first step (back = pass, forward = run) and (4) the safeties' first steps. With the ball in the air the camera does the work, so take one last look at (5) the catch point and who is closing on it. On the replays, take one group per replay: (6) the line, (7) the safeties, (8) the receiver who didn't get the ball."
+T1 = 0.8
+fig, axes = plt.subplots(2, 2, figsize=(6.5, 5.9))
+phases = [(-1.0, "Before the snap"), (T1, "First second (+0.8 s)"), (T_THROW + 0.6, "Ball in the air"),
+          (T_CATCH + 0.4, "On the replays")]
+for ax, (t, ttl) in zip(axes.flat, phases):
+    fld = Field(ax=ax, orient="vertical", los=shot.los, window=WIN, to_go=shot.to_go)
+    fid = frame_at(trk, t)
+    draw_frame(fld, trk[trk.frameId == fid], trk[trk.frameId <= fid], fld.pts_per_yard())
+    ax.set_title(ttl, fontsize=8.5, color=style.INK, loc="left")
+    pos = lambda k: shot.position(k, t)  # noqa: E731
+    if ttl.startswith("Before"):
+        look(fld, shot, (-5.0, -0.7), (4.0, 6.0), 1, badge_at=(-5.6, -5.3))
+        look(fld, shot, (13.0, -9.5), (4.2, 5.0), 2, badge_at=(16.2, -12.6))
+        look(fld, shot, (13.0, 9.5), (4.2, 5.0), 2, badge_at=(16.2, 12.6))
+    elif ttl.startswith("First"):
+        look(fld, shot, (-1.6, 0.0), (3.2, 10.5), 3, badge_at=(-4.4, 6.4))
+        for k, bw in (("FS", -12.8), ("SS", 12.8)):
+            d, w = pos(k)
+            look(fld, shot, (d, w), (4.4, 5.0), 4, badge_at=(d + 3.0, bw))
+    elif ttl.startswith("Ball"):
+        cd, cw = shot.position("Z", T_CATCH)
+        look(fld, shot, (cd - 1.0, cw - 1.6), (10.0, 8.0), 5, badge_at=(cd + 4.4, cw - 6.6))
+    else:
+        look(fld, shot, (-1.6, 0.0), (3.4, 11.0), 6, badge_at=(-4.6, 6.6))
+        for k in ("FS", "SS"):
+            d, w = pos(k)
+            look(fld, shot, (d, w), (4.4, 5.0), 7 if k == "FS" else None, badge_at=(d + 3.2, w - 3.2))
+        d, w = pos("X")
+        look(fld, shot, (d - 0.5, w + 0.6), (6.0, 6.0), 8, badge_at=(d + 3.6, w + 3.8))
+fig.tight_layout(h_pad=0.8, w_pad=0.6)
+plt.show()
+```
+
+Here is how to choose your one thing:
+
+| Your lean before the snap | Watch this one thing | Why it pays |
+|:---|:---|:---|
+| **Pass** (third-and-long, trailing late, shotgun with no back) | The two safeties, from the snap | Where they go in the first second tells you the coverage and where the ball can go deep |
+| **Run** (short yardage, ahead late, heavy formation) | One guard: forward or back, and which way | Linemen firing forward is a run; the guard's direction tells you where |
+| **Short yardage / goal line** | The line of scrimmage itself: who moves forward | These plays are won by a yard of push, and the push shows up before the ball carrier does |
+| **No idea** (first-and-10 in the middle of the field) | The offensive line's first step | It answers run or pass in under a second, which is the question you couldn't answer |
+| **Replays** | A different group each time: line, then safeties, then the receiver who wasn't thrown to | Each replay angle is built for one of them (@tbl-angles) |
+
+: Picking your one thing. {#tbl-one-thing}
+
+Why does narrowing your eyes help you see more? Because a football play is several smaller
+contests happening at once (the line against the rush, the receivers against their defenders,
+the quarterback against the safeties), and each one is readable only if you follow it from the
+start. A glance at the safeties after the ball is thrown tells you where they ended up; watching
+them from the snap tells you what they were *doing*, and that is what explains the play. The
+broadcast will show you the ball whether you watch it or not.
+
+## Tells: clues you can see before the snap
+
+Players can't hide everything. A lineman about to fire forward stands a little differently
+from one about to step back; a running back who needs a running start lines up deeper; a
+defense that wants an extra man near the line has to put him there before the snap. Any such
+detail that leaks what's coming is a [**tell**](../../appendices/glossary.qmd#gl-tell): a clue
+that shifts the odds, never a guarantee. Coaches hunt for their opponents' tells all week, and
+spend just as long hunting for their own, so they can break them (it's called self-scouting;
+see [Constraint Theory and Sequencing](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd)).
+That arms race is why every tell in this section comes with a "usually."
+
+Here are four to start your catalogue. The full catalogue, with linebackers, cornerbacks and
+the tight end, is in [Watching Live](../15-capstone/15-01-watching-live.qmd).
+
+```{python}
+#| label: fig-tells-card
+#| fig-cap: "Tells starter card: four clues to check before the snap, each a lean, not a law. Stance: a lineman's weight on his hand usually means run, weight on his heels usually means pass. Backfield: in the 2025 regular season, offenses passed on 79% of snaps from the shotgun and about 30% from under center or the pistol (FTN charting via nflverse). Splits: where a receiver lines up, relative to the painted numbers, hints at his job. Safety depth: two safeties deep vs one deep with one walked down changes how many defenders are near the line."
+fig, axes = plt.subplots(2, 2, figsize=(6.5, 6.0))
+for ax in axes.flat:
+    blank(ax)
+
+
+def ppy_of(ax, span):
+    fig.canvas.draw_idle()
+    return ax.get_window_extent().width / span * 72 / fig.dpi
+
+
+# ---- A. stance (side view, facing right toward the line of scrimmage)
+ax = axes[0, 0]
+ax.set_xlim(0, 30); ax.set_ylim(-4.5, 13.5); ax.set_aspect("equal")
+ax.set_title("A  Stance", fontsize=9, loc="left", color=style.INK, fontweight="bold")
+ax.plot([0.5, 29.5], [2, 2], color=style.BASELINE, lw=1.2)
+LW = 2.6
+
+
+def stick(x0, pts, head, hand_heavy=None, col=style.OFFENSE):
+    (fb, ff, kb, kf, hip, sh, hand) = pts
+    for a, b in ((fb, kb), (kb, hip), (ff, kf), (kf, hip), (hip, sh), (sh, hand)):
+        ax.plot([x0 + a[0], x0 + b[0]], [a[1], b[1]], color=col, lw=LW, solid_capstyle="round")
+    ax.add_patch(Circle((x0 + head[0], head[1]), 0.85, fc=col, ec="none"))
+    if hand_heavy:
+        ax.add_patch(Circle((x0 + hand[0], hand[1]), 0.45, fc=style.DEFENSE_DARK, ec="none", zorder=5))
+
+
+# two-point: upright crouch, hands up and ready
+stick(4.0, [(-1.2, 2), (1.0, 2), (-0.5, 4.3), (1.5, 4.4), (0.0, 6.5), (1.3, 9.5), (2.2, 7.7)], (1.7, 10.8))
+ax.plot([4.0 + 2.2, 4.0 + 3.1], [7.7, 8.4], color=style.OFFENSE, lw=LW, solid_capstyle="round")
+# light three-point: hips up and back, back flat, the hand barely touching
+stick(14.0, [(-2.4, 2), (0.0, 2), (-1.6, 4.3), (0.8, 4.2), (-1.9, 6.7), (1.8, 7.5), (2.0, 2.15)], (2.9, 8.3))
+ax.annotate("", xy=(10.6, 10.2), xytext=(14.2, 10.2), arrowprops=dict(arrowstyle="-|>", color=style.INK_2, lw=1.2))
+# heavy three-point: shoulders out over the hand, weight forward
+stick(24.0, [(-2.3, 2), (0.1, 2), (-1.5, 4.0), (0.8, 3.8), (-1.5, 5.9), (2.6, 5.4), (1.9, 2.15)], (3.5, 5.9),
+      hand_heavy=True)
+ax.annotate("", xy=(29.2, 10.2), xytext=(25.6, 10.2), arrowprops=dict(arrowstyle="-|>", color=style.INK_2, lw=1.2))
+for x, t in ((4.5, "two-point\nupright"), (14.3, "three-point,\nlight hand:\nweight back\n→ pass set?"),
+             (24.6, "three-point,\nheavy hand:\nweight forward\n→ run block?")):
+    ax.text(x, 1.2, t, ha="center", va="top", fontsize=6.4, color=style.INK_2, linespacing=1.1)
+
+# ---- B. backfield depth and offset
+ax = axes[0, 1]
+ax.set_xlim(0, 30); ax.set_ylim(-14, 3.5); ax.set_aspect("equal")
+ax.set_title("B  The back's depth and offset", fontsize=9, loc="left", color=style.INK, fontweight="bold")
+ppb = ppy_of(ax, 30)
+for x0, qb_d, rb, name, rate in ((5, -4.0, (1.5, -4.0), "shotgun", "79% pass"),
+                                 (15, -2.9, (0.0, -5.9), "pistol", "29% pass"),
+                                 (25, -1.6, (0.0, -5.9), "under center", "31% pass")):
+    ax.plot([x0 - 4.3, x0 + 4.3], [0.4, 0.4], color=style.OFFENSE_DARK, lw=1.0, alpha=0.7)
+    for dx in (-2.6, -1.3, 0.0, 1.3, 2.6):
+        draw_marker(ax, x0 + dx, -0.3, "off", "", ppb, r=0.55)
+    draw_marker(ax, x0, qb_d, "off", "Q", ppb, r=0.6)
+    draw_marker(ax, x0 + rb[0], rb[1], "off", "R", ppb, r=0.6)
+    ax.text(x0, -8.0, name, ha="center", va="center", fontsize=7.4, color=style.INK, fontweight="bold")
+    ax.text(x0, -9.6, rate, ha="center", va="center", fontsize=7.0, color=style.INK_2)
+ax.text(15, -12.6, "2025 regular season, all downs. Shotgun runs often send the\nback across the QB's face: "
+        "offset right, run usually goes left.", ha="center", va="center", fontsize=6.0, color=style.INK_2,
+        linespacing=1.15)
+
+# ---- C. receiver splits (offense's right side, ball in the middle of the field)
+ax = axes[1, 0]
+ax.set_xlim(-3.4, 28.5); ax.set_ylim(-9, 6); ax.set_aspect("equal")
+ax.set_title("C  Receiver splits", fontsize=9, loc="left", color=style.INK, fontweight="bold")
+ppc = ppy_of(ax, 31.9)
+ax.add_patch(Rectangle((-3.4, -9), 31.07, 15, fc=style.TURF, ec="none", zorder=0))
+ax.plot([26.67, 26.67], [-9, 6], color=style.INK_2, lw=1.4)               # sideline
+ax.plot([-3.4, 26.67], [0.2, 0.2], color=style.OFFENSE_DARK, lw=1.0, alpha=0.7)
+ax.text(14.7, 3.8, "30", ha="center", va="center", fontsize=11, color=style.MUTED, alpha=0.6, fontweight="bold")
+for x in (3.1,):
+    for yy in (-6, -3, 3):
+        ax.plot([x - 0.3, x + 0.3], [yy, yy], color=style.BASELINE, lw=0.8)
+ax.text(3.1, 4.9, "hash", ha="center", va="center", fontsize=6.0, color=style.INK_2, style="italic")
+ax.text(14.7, 5.3, "numbers", ha="center", va="center", fontsize=6.0, color=style.INK_2, style="italic")
+ax.text(25.8, -7.6, "sideline", ha="right", va="center", fontsize=6.0, color=style.INK_2, style="italic")
+for dx in (-1.6, 0.0, 1.6):
+    draw_marker(ax, dx, -0.5, "off", "", ppc, r=0.55)
+ax.text(0.0, -2.2, "line", ha="center", va="center", fontsize=6.0, color=style.INK_2, style="italic")
+for x, lab in ((7.6, "reduced"), (14.7, "normal"), (21.3, "wide")):
+    draw_marker(ax, x, -0.5, "off", "Z", ppc, r=0.62)
+    ax.text(x, -2.2, lab, ha="center", va="center", fontsize=7.0, color=style.INK, fontweight="bold")
+ax.text(7.6, -4.6, "crack block,\ncrossing route\nor room outside", ha="center", va="center", fontsize=5.9,
+        color=style.INK_2, linespacing=1.1)
+ax.text(14.7, -4.6, "the default:\ntells little", ha="center", va="center", fontsize=5.9, color=style.INK_2,
+        linespacing=1.1)
+ax.text(21.3, -4.6, "isolated: deep\nor quick outside,\nor clearing space", ha="center", va="center", fontsize=5.9,
+        color=style.INK_2, linespacing=1.1)
+
+# ---- D. safety depth
+ax = axes[1, 1]
+ax.set_xlim(-1, 41); ax.set_ylim(-3.5, 17.5); ax.set_aspect("equal")
+ax.set_title("D  Safety depth", fontsize=9, loc="left", color=style.INK, fontweight="bold")
+ppd = ppy_of(ax, 42)
+for x0, saf, name in ((10, [(-6.5, 13.0), (6.5, 13.0)], "two deep\n(two-high)"),
+                      (30, [(0.0, 13.0), (5.0, 7.5)], "one deep, one down\n(one-high)")):
+    ax.plot([x0 - 9.5, x0 + 9.5], [0, 0], color=style.OFFENSE_DARK, lw=1.0, alpha=0.7)
+    for dd in (5, 10, 15):
+        ax.plot([x0 - 9.5, x0 + 9.5], [dd, dd], color=style.BASELINE, lw=0.5)
+    for dx in (-3.6, -1.2, 1.2, 3.6):
+        draw_marker(ax, x0 + dx, 1.0, "def", "", ppd, r=0.6)
+    for dx in (-2.0, 2.0):
+        draw_marker(ax, x0 + dx, 4.5, "def", "", ppd, r=0.6)
+    for sx, sd in saf:
+        draw_marker(ax, x0 + sx, sd, "def", "S", ppd, r=0.75)
+    ax.text(x0, -2.2, name, ha="center", va="center", fontsize=6.6, color=style.INK, fontweight="bold",
+            linespacing=1.05)
+for dd in (5, 10, 15):
+    ax.text(-0.6, dd, f"{dd}", ha="left", va="center", fontsize=5.8, color=style.INK_2)
+ax.annotate("walked down:\nan extra man\nnear the line", xy=(35.6, 7.9), xytext=(37.6, 13.6), fontsize=5.8,
+            color=style.INK_2, ha="center", va="center", linespacing=1.1,
+            arrowprops=dict(arrowstyle="-|>", color=style.INK_2, lw=0.8, shrinkB=5))
+fig.tight_layout(h_pad=1.2, w_pad=0.8)
+plt.show()
+```
+
+### Stance: where the weight is
+
+A player's [**stance**](../../appendices/glossary.qmd#gl-stance-two-point-three-point) is how he
+stands just before the snap. In a **two-point stance** he is upright, with only his two feet on
+the ground; in a **three-point stance** one hand is also down (a four-point stance, both hands
+down, shows up at the goal line). Linemen on both sides mostly use three-point stances, because
+a hand on the ground lets you start low and drive forward. Many offensive linemen in
+shotgun-heavy offenses stand up in a two-point stance, especially on obvious passing downs,
+because a pass blocker's first step is backward and an upright start makes that quicker.
+
+The tell is in the hand. A lineman with a [**heavy hand**](../../appendices/glossary.qmd#gl-heavy-hand)
+(also called a [**heavy stance**](../../appendices/glossary.qmd#gl-heavy-stance)) has his
+shoulders out over his down hand and a lot of his weight on it; sometimes you can see his
+knuckles whiten. He is coiled to go forward, which usually means a run block. A lineman whose
+hand barely touches the grass, hips back and weight on his heels, is ready to step back into a
+pass set ([Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd)). Defensive
+linemen give the same tell in reverse: a rusher sitting back on his heels may be about to drop
+into coverage or play the run, not charge.
+
+Why does a professional give this away? Because physics doesn't negotiate. A 320-pound man
+can't explode forward from his heels or backward from his fingertips, and a tenth of a second
+lost at the snap is a lost block. Good coaches teach a "balanced" stance that looks the same for
+run and pass, and the best linemen manage it, but under pressure (third-and-1, a loud stadium)
+the weight creeps to where the job is. The end-zone replay is the best angle for checking
+yourself; on the live shot you'll mostly catch it on the close-up of the line before the snap.
+
+### The running back: depth and offset
+
+Where the running back lines up is a clue to both *whether* the play is a run and *which way*
+it goes. Three common setups:
+
+- **Shotgun with the back beside the quarterback.** The quarterback stands about five yards
+  behind the center (the [shotgun](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd))
+  and the back stands next to him, *offset* to one side. This is mostly a passing look: in the
+  2025 regular season offenses threw on 79% of shotgun snaps.[^qbloc] When they do run from it,
+  the most common runs send the back across the quarterback's face, so a back offset to the
+  quarterback's right usually runs to the left ([Zone Running](../03-the-run-game/03-02-zone-running.qmd)
+  shows why).
+- **Pistol.** The quarterback is about four yards back with the back directly behind him, six
+  or seven yards deep ([pistol](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)).
+  The back's central spot hides the direction of the run, and the depth gives him a running
+  start; teams ran on about 70% of pistol snaps in 2025.
+- **Under center.** The quarterback takes the snap directly from the center
+  ([under center](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)),
+  and the back is usually six to seven yards deep. Also mostly a run look (about 69% runs in
+  2025), but this is the alignment the play fake is built for, as the film room below shows.
+
+Depth matters within each. A back who creeps closer than usual may be about to block or run a
+quick route; one who sets deeper than usual wants room to read the blocks before he picks a hole.
+
+### Receiver splits: how far out they stand
+
+A receiver's [split](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd) is
+how far from the ball (or the nearest lineman) he lines up. The painted numbers are a handy
+ruler: most outside receivers line up near them. Departures from that default carry information,
+because a receiver chooses his split to make his job easier:
+
+- A **reduced split** (well inside the numbers) puts him close to the formation. That suits a
+  crack block (blocking a linebacker or safety from the outside on a run toward him), a route
+  that crosses the field (the trip across is shorter), or, the other way around, a route that
+  breaks *outside* and needs room to the sideline.
+- A **wide split** (outside the numbers, near the sideline) isolates him. That often means a
+  quick throw to him or a deep route along the sideline, or it simply means his job is to drag
+  his defender out of the way.
+
+Splits are a weaker clue than stance or the backfield, since a reduced split can mean three
+different things. They mainly tell you *where* to look after the snap. Remember too that the
+ball's position on the hash marks ([The Game in Fifteen Minutes](01-01-the-game-in-fifteen-minutes.qmd))
+changes what "normal" looks like: on the short side of the field, everything is squeezed.
+
+### Safety depth: one high or two
+
+Find the safeties before every snap; if they are off the screen, look at the top of the frame
+and wait for the skycam replay. Their depth is the defense's biggest tell, because the safeties
+are the defense's flexible pieces. Two safeties deep, each 12 to 15 yards off the ball on his own
+side, is a [two-high](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)
+picture: the deep field is protected on both sides, and there are fewer defenders near the line
+to stop a run. One safety in the deep middle with the other walked down to seven or eight
+yards is a [one-high](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)
+picture: the defense has added a man near the line (in the
+[box](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd), the area between and
+just outside the offensive tackles), which helps against the run and makes extra pass rushers
+possible. A safety who walks down *late*, with only a few seconds on the play clock, is worth
+noting in particular: he has either seen something he wants to stop or he is trying to fool the
+quarterback. Defenses disguise this on purpose, and
+[Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)
+teaches how to see through it.
+
+### How strong is each clue?
+
+Stance and safety depth aren't in public data, but the quarterback's and back's alignment is,
+because charting services record it on every snap. That lets us see how much one clue is worth,
+team by team:
+
+```{python}
+#| label: fig-alignment-tell
+#| fig-cap: "How often offenses passed from each quarterback alignment, 2025 regular season (each dot is one team; pistol shows teams with 40 or more pistol snaps). The alignment is a strong clue on average, about 79% pass from the shotgun against about 30% from under center or the pistol, but teams differ a lot: Washington passed on 15% of its under-center snaps, the Rams on 40%. Source: nflverse play-by-play joined to FTN charting; runs and dropbacks only."
+from gridiron.data import pbp, nfl
+
+PCOLS = ["season_type", "game_id", "play_id", "posteam", "play_type", "down", "ydstogo", "pass",
+         "half_seconds_remaining", "score_differential", "qtr"]
+
+
+def plays_with_alignment(season):
+    d = pbp([season], columns=PCOLS)
+    d = d[(d.season_type == "REG") & d.play_type.isin(["pass", "run"]) & d.down.notna()].copy()
+    f = nfl().load_ftn_charting([season]).to_pandas()
+    f = f[["nflverse_game_id", "nflverse_play_id", "qb_location", "n_offense_backfield", "is_play_action"]]
+    f = f.rename(columns={"nflverse_game_id": "game_id", "nflverse_play_id": "play_id"})
+    f["play_id"] = f.play_id.astype(float)
+    return d.merge(f, on=["game_id", "play_id"], how="left")
+
+
+p25 = plays_with_alignment(2025)
+ALIGN = [("U", "Under center"), ("P", "Pistol"), ("S", "Shotgun")]
+fig, ax = plt.subplots(figsize=(6.5, 2.7))
+rng = np.random.default_rng(6)
+for i, (code, name) in enumerate(ALIGN):
+    sub = p25[p25.qb_location == code]
+    team = sub.groupby("posteam")["pass"].agg(["mean", "size"])
+    team = team[team["size"] >= 40]
+    jitter = rng.uniform(-0.17, 0.17, len(team))
+    ax.scatter(team["mean"], i + jitter, s=18, color=style.MUTED, alpha=0.55, lw=0, zorder=2)
+    lg = sub["pass"].mean()
+    ax.plot([lg, lg], [i - 0.32, i + 0.32], color=style.OFFENSE_DARK, lw=2.4, zorder=3)
+    ax.text(lg, i + 0.42, f"{lg:.0%}", ha="center", va="bottom", fontsize=7.5, color=style.OFFENSE_DARK,
+            fontweight="bold")
+    if code == "U":
+        for tm, dy, ha in (("LA", -0.30, "left"), ("WAS", -0.30, "right")):
+            v = team.loc[tm, "mean"]
+            ax.scatter([v], [i], s=34, color=style.THIRD if tm == "LA" else style.DEFENSE, zorder=4, lw=0)
+            ax.text(v + (0.012 if ha == "left" else -0.012), i + dy, "Rams" if tm == "LA" else "Washington",
+                    ha=ha, va="center", fontsize=7, color=style.INK)
+ax.set_yticks(range(len(ALIGN)), [n for _, n in ALIGN])
+ax.set_ylim(-0.6, 2.75)
+ax.set_xlim(0, 1)
+ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+ax.set_xlabel("share of snaps that were dropbacks (pass)")
+ax.grid(axis="y", visible=False)
+ax.legend(handles=[Line2D([], [], marker="o", ls="", color=style.MUTED, ms=5, label="one team"),
+                   Line2D([], [], color=style.OFFENSE_DARK, lw=2.4, label="league")],
+          loc="lower right", fontsize=7, ncol=2)
+plt.show()
+```
+
+::: {.callout-note title="Film room: Rams 2025 — when the tell is the bait"}
+Sean McVay's Rams lined up under center on 59% of their 2025 snaps, more than any other team,
+and threw from under center 40% of the time, also the most.[^rams] That is not an accident. An
+under-center offense that runs well trains the defense to read "under center" as "run"; then
+it fakes the handoff and throws behind the linebackers who stepped up to stop it. That is
+[play-action](../04-the-passing-game/04-05-play-action-boots-screens.qmd), the pass designed to
+look like a run, and it is the reason the tell exists *and* the reason it's unreliable.
+League-wide in 2025, about 82% of passes thrown from under center used a play fake, against
+about 10% from the shotgun. (Matthew Stafford, the Rams' quarterback, was the league's MVP
+that season.[^mvp])
+
+**What to notice:** when an under-center team is having a good day running, the play fake is
+coming. Watch the safeties on the snap after a big run. If one of them takes a step forward at
+the fake, that is the "bit on the play-action" moment from the opening of this chapter, and the
+skycam replay will show you the receiver running into the space he left.
+:::
+
+::: {.callout-caution title="Common misconception"}
+"Under center means run." On average, yes: in 2025 about seven in ten. But the 30% that are
+passes are the most dangerous ones, because they are built to exploit exactly that belief. Every
+tell in this chapter works the same way. A clue that is never wrong would be fixed by the
+coaches within a week; the ones that survive are the ones that are right *usually*, and the
+offense chooses when to make them wrong. So log your guess with a confidence, not a certainty.
+:::
+
+## The prediction log
+
+You now have a lean from the scorebug and a few clues from the formation. The habit that turns
+those into a skill is writing them down. A [**prediction log**](../../appendices/glossary.qmd#gl-prediction-log)
+is your running record of pre-snap calls: for each snap, the situation, your guess, how sure
+you were, the clue you leaned on, and what happened. You started a rough version in
+[Downs, Distance, and Field Position](01-02-downs-distance-and-field-position.qmd), guessing run
+or pass from the down and distance alone and keeping a tally. That tally was your baseline.
+This is the formal log you'll keep for the rest of the course.
+
+Why write it down rather than just watch and nod? Three reasons.
+
+1. **Memory flatters you.** After the play, the clue that pointed the right way seems obvious,
+   and the guess you got wrong quietly disappears. On paper, it doesn't.
+2. **It tells you which clues work.** If you note the clue behind each call, after a few games
+   you can see whether "heavy hands" is making you right or wrong, for you, on the teams you
+   watch.
+3. **It makes improvement visible.** Reading a game gets better slowly. A number that moves from
+   62% to 70% over a season is the only reliable way to know it's happening.
+
+Here is the paper version. A notebook page with these columns is all you need:
+
+```{python}
+#| label: fig-log-template
+#| fig-cap: "A paper prediction log, with six snaps filled in as an example. One line per snap. 'Call' is run (R) or pass (P); 'Conf.' is how sure you were (50% is a coin flip); 'Clue' is the one thing that decided it. Fill in 'Result' after the play, then tick or cross. The confidence column will matter later, when your log is scored as probabilities rather than hits and misses."
+COLS = [("#", 3.5), ("Qtr  clock", 9.5), ("Down & dist", 10.5), ("Ball on", 8.5), ("Score", 7.5),
+        ("Call", 5.5), ("Conf.", 6.0), ("Main clue", 23.0), ("Result", 7.0), ("✓/✗", 5.5)]
+ROWS = [("1", "1st 12:40", "1st & 10", "own 25", "0–0", "R", "55%", "under center, 2 TEs", "R", "✓"),
+        ("2", "1st 12:02", "2nd & 7", "own 28", "0–0", "P", "70%", "shotgun on 2nd & long", "P", "✓"),
+        ("3", "1st 11:20", "3rd & 2", "own 33", "0–0", "R", "60%", "heavy hands on the right", "P", "✗"),
+        ("4", "1st 10:41", "1st & 10", "own 42", "0–0", "P", "75%", "shotgun, no back", "P", "✓"),
+        ("5", "1st 9:58", "2nd & 3", "own 49", "0–0", "R", "65%", "under center, back at 7", "R", "✓"),
+        ("6", "1st 9:20", "1st & 10", "opp 44", "0–0", "R", "50%", "nothing: coin flip", "P", "✗")]
+fig, ax = plt.subplots(figsize=(6.5, 3.4))
+blank(ax)
+W = sum(w for _, w in COLS)
+ax.set_xlim(0, W); ax.set_ylim(0, 14.2)
+ax.add_patch(Rectangle((0, 0), W, 14.2, fc="#fbfaf4", ec=style.BASELINE, lw=1.0))
+ax.text(1.0, 13.3, "PREDICTION LOG   ·   Game: ____________   ·   Watching: offense of ________",
+        fontsize=7.8, fontweight="bold", color=style.INK, va="center")
+x = 0
+for name, w in COLS:
+    ax.add_patch(Rectangle((x, 11.2), w, 1.3, fc=style.OFFENSE_TINT, ec=style.BASELINE, lw=0.6))
+    ax.text(x + w / 2, 11.85, name, ha="center", va="center", fontsize=6.6, fontweight="bold", color=style.INK)
+    x += w
+for j in range(9):
+    y = 11.2 - (j + 1) * 1.15
+    x = 0
+    for (name, w), k in zip(COLS, range(len(COLS))):
+        ax.add_patch(Rectangle((x, y), w, 1.15, fc="white", ec=style.GRID, lw=0.6))
+        if j < len(ROWS):
+            v = ROWS[j][k]
+            col = style.INK
+            if name == "✓/✗":
+                col = style.THIRD if v == "✓" else style.DEFENSE_DARK
+            ax.text(x + w / 2 if name != "Main clue" else x + 0.6, y + 0.58, v,
+                    ha="center" if name != "Main clue" else "left", va="center", fontsize=6.6, color=col,
+                    style="italic" if name not in ("#", "✓/✗") else "normal",
+                    fontweight="bold" if name == "✓/✗" else "normal")
+        x += w
+ax.text(1.0, 0.45, "Score so far: 4 of 6 = 67%.   Baseline from 'down & distance only' (your 01-02 tally): ____%",
+        fontsize=7, color=style.INK, va="center")
+plt.show()
+```
+
+And here is the same log in pandas, for when you've typed a game's worth into a spreadsheet and
+saved it as a CSV. It's ten lines, and it answers the three questions above: how often you were
+right, how that compares to the simplest possible guesser, and which clues earned their keep.
+
+```{python}
+#| echo: false
+# A made-up half of football to run the code on (illustrative, not real games).
+# 34 snaps: (clue, snaps, right) chosen so the output reads like a typical first game.
+PLAN = [("situation", 13, 8), ("alignment", 12, 10), ("stance", 5, 3), ("safeties", 4, 2)]
+rows, k = [], 0
+for clue, n_c, n_hit in PLAN:
+    for i in range(n_c):
+        result = "P" if (k * 7) % 10 < 6 else "R"
+        hit = i < n_hit
+        rows.append(dict(down=[1, 2, 1, 3, 2, 1][k % 6], call=result if hit else ("R" if result == "P" else "P"),
+                         conf=[0.55, 0.6, 0.7, 0.65, 0.8, 0.75][k % 6], clue=clue, result=result))
+        k += 1
+sample = pd.DataFrame(rows).sample(frac=1, random_state=3).reset_index(drop=True)
+sample.insert(0, "snap", range(1, len(sample) + 1))
+import tempfile
+_cwd, _tmp = os.getcwd(), tempfile.mkdtemp()
+sample.to_csv(os.path.join(_tmp, "prediction_log_game1.csv"), index=False)
+os.chdir(_tmp)   # so the cell below reads the file the way you would; changed back right after
+```
+
+```{python}
+#| echo: true
+#| code-fold: false
+import pandas as pd
+
+log = pd.read_csv("prediction_log_game1.csv")     # one row per snap you called
+log["hit"] = log["call"] == log["result"]           # True when your call was right
+
+print(f"You: {log.hit.mean():.0%} right on {len(log)} snaps")
+print(f"'Always guess pass' would have scored {(log.result == 'P').mean():.0%}")
+print(log.groupby("down").hit.mean().round(2))       # where you read well
+print(log.groupby("clue").hit.agg(["mean", "size"]).round(2))  # which clues earn their keep
+```
+
+```{python}
+#| echo: false
+os.chdir(_cwd)
+```
+
+The second line of output is the honest comparison. Guessing "pass" every single snap is
+right about 60% of the time in today's NFL, so a 60% log hasn't shown any reading at all.
+How much better can you do, and where does the improvement come from? Here is what simple
+rules would have scored over the 2025 season:
+
+```{python}
+#| label: fig-bar-to-beat
+#| fig-cap: "The bar to beat. Accuracy of simple run-or-pass guessers on every 2025 regular-season run and dropback (32,813 snaps). Each rule was learned from the 2024 season (for every combination of its inputs it guesses whichever was more common in 2024) and then scored on 2025, the way your own guesses are made before the fact. The situation on the scorebug gets you from 60% to about 68%; one glance at the quarterback's alignment adds about seven points more. Source: nflverse play-by-play and FTN charting."
+p24 = plays_with_alignment(2024)
+
+
+def prep(d):
+    d = d.copy()
+    d["dist"] = pd.cut(d.ydstogo, [0, 3, 6, 99], labels=["1-3", "4-6", "7+"])
+    d["late"] = (d.half_seconds_remaining <= 120).astype(int)
+    d["score"] = pd.cut(d.score_differential, [-99, -9, -1, 0, 8, 99], labels=["d9+", "d1-8", "tie", "u1-8", "u9+"])
+    d["q4"] = (d.qtr >= 4).astype(int)
+    return d
+
+
+train, test = prep(p24), prep(p25)
+
+
+def accuracy(keys):
+    if not keys:
+        return float((test["pass"] == 1).mean())
+    rule = train.groupby(keys, observed=True)["pass"].mean().rename("p_pass").reset_index()
+    m = test.merge(rule, on=keys, how="left")
+    guess = (m.p_pass.fillna(train["pass"].mean()) >= 0.5).astype(int)
+    return float((guess == m["pass"]).mean())
+
+
+LADDER = [("Always guess pass", []),
+          ("Down & distance only (like your 01-02 tally)", ["down", "dist"]),
+          ("+ score, quarter and clock", ["down", "dist", "score", "late", "q4"]),
+          ("+ the quarterback's alignment", ["down", "dist", "score", "late", "q4", "qb_location"])]
+vals = [accuracy(k) for _, k in LADDER]
+fig, ax = plt.subplots(figsize=(6.5, 2.5))
+ys = np.arange(len(LADDER))[::-1]
+cols = [style.MUTED, style.OFFENSE, style.OFFENSE, style.THIRD]
+ax.barh(ys, vals, color=cols, height=0.58, zorder=2)
+for y, v in zip(ys, vals):
+    ax.text(v + 0.006, y, f"{v:.0%}", va="center", ha="left", fontsize=8.5, color=style.INK, fontweight="bold")
+ax.axvline(0.5, color=style.INK_2, lw=1.0, ls=(0, (3, 2)), zorder=3)
+ax.text(0.505, ys[0] + 0.45, "coin flip", fontsize=7, color=style.INK_2, ha="left", va="center")
+ax.set_yticks(ys, [n for n, _ in LADDER], fontsize=8)
+ax.set_xlim(0.4, 0.82)
+ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+ax.set_xlabel("share of 2025 snaps called correctly (run vs pass)")
+ax.grid(axis="y", visible=False)
+plt.show()
+```
+
+Three lessons hide in that chart.[^ladder] First, **down and distance alone barely beat
+"always pass."** That's because first-and-10, the most common situation by far, is close to a
+coin flip (about 50% pass in 2025), so a rule built only on the scorebug guesses "pass" there
+and gets half of them wrong. Second, the **score and the clock add more than the down does**:
+late in a half, and when a team is behind, the run-pass mix swings hard. Third, **one glance at the formation
+is worth almost as much as everything on the scorebug combined.** The coaches know this too; it is
+why the best offenses work so hard to run and pass from the same looks.
+
+So the targets for your own log are clear. If you are under 60%, you're doing worse than a
+guesser who never looks up. Around 65–68%, you're reading the scorebug well. Above 70%, the
+formation and the tells are working for you. Most people start in the low 60s.
+
+::: {.callout-note title="Go deeper: why the confidence column?"}
+"Right or wrong" throws away information. A 55% call that misses and a 90% call that misses are
+very different mistakes, and a good reader knows the difference before the snap. That's why the
+log has a confidence column even though we score only hits and misses for now. When you reach
+[Watching Live](../15-capstone/15-01-watching-live.qmd) you'll attach a confidence to every call,
+and [Film Study: All-22, Charting a Game, and Scoring Yourself](../15-capstone/15-02-film-study-and-charting.qmd)
+scores the season's log the way forecasters are scored: whether your 70% calls come true about
+70% of the time. Start filling it in now; it costs one number per snap.
+:::
+
+What should you log beyond run or pass? For now, nothing. One prediction per snap, made before
+the snap, is plenty, and the discipline of making it *before* is the whole point. As the course
+goes on, each chapter's drill adds a column: which side the run goes, which receiver gets the
+ball, whether the safeties will rotate, whether the defense will blitz. By the end your log will
+be a full pre-snap read.
+
+::: {.callout-tip title="Watch for it on Sunday: prediction log, game 1"}
+For one half of one game, on every offensive snap of one team:
+
+- **During the pause**, read the scorebug in order (down and distance, field position, score,
+  clock, timeouts), glance at the quarterback's and back's alignment (and any motion, the
+  movement you counted in [The Pre-Snap Phase](01-05-the-pre-snap-phase.qmd)), and say "run" or "pass"
+  out loud *before the snap*, with a rough confidence (55%, 70%, 85%).
+- **Write the line**: quarter and clock, down and distance, your call, confidence, and the one
+  clue that decided it (the situation, the alignment, a stance, the safeties).
+- **After the play**, record what happened. Count scrambles and sacks as passes (the play was
+  a pass when it was called). Skip penalties that wipe out the play and kneel-downs.
+- **On the replays**, pick one thing (@tbl-one-thing) and check one clue you used: was the hand
+  really heavy? Where did the safety go?
+- **At halftime**, score it. Compare it with your down-and-distance tally from
+  [Downs, Distance, and Field Position](01-02-downs-distance-and-field-position.qmd) and with the
+  bar to beat above. Keep the sheet; the course will come back to it.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: third-and-1"}
+```{python}
+#| label: fig-predict-short
+#| fig-cap: "Third-and-1 at the opponent's 38, second quarter, tied 7–7. The offense comes out under center with two tight ends and a fullback (U and Y are the tight ends, F the fullback, T the tailback, seven yards deep). On the close-up before the snap, the linemen's down hands are heavy. The defense has crowded the line: nine defenders within five yards of the ball, a cornerback on the lone wide receiver and one safety deep."
+off = offense("i_form_22")
+dfn = defense("4-3_over", "single_high", off)
+adj = {"MIKE": dict(d=3.5), "WILL": dict(d=3.5), "SAM": dict(d=3.0), "SS": dict(d=5.0, w=7.0),
+       "WDE": dict(w=-5.7), "LCB": dict(d=4.0, w=-7.4), "RCB": dict(d=6.0), "FS": dict(d=11.0)}
+dfn = [p.moved(**adj[p.key]) if p.key in adj else p for p in dfn]
+q1 = Play(off, dfn, los=72, to_go=1)
+q1.highlight("RB", color=style.THIRD)
+fld = q1.draw(lateral=(-18.5, 18.5), window=(-9.5, 13.5), title=False)
+pointer(fld, q1, "heavy hands\nall along the line", (-3.6, -10.5), (-0.8, -3.4))
+pointer(fld, q1, "tailback at\n7 yards", (-7.4, 6.2), (-7.0, 0.8))
+plt.show()
+```
+
+**Run or pass? How confident are you, and what is the one thing to watch at the snap?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Run, with high confidence, about 80–85%.** Every clue agrees. Third-and-1 is the most
+run-heavy situation in football: in 2025, teams ran on about three in four third-and-1s, and
+from under center they ran on about 84%.[^short] Two tight ends and a fullback add blockers;
+the heavy hands say the line is coiled to go forward; the tailback's depth gives him a running
+start. The defense agrees with you, which is why nine defenders are crowded near the line.
+
+**Your one thing:** the line of scrimmage, from the end-zone angle if you get it on the
+replay. Whose linemen move forward first and farther? On short yardage that yard of push
+decides the play before the ball carrier arrives.
+
+**Why not 100%?** Because this is exactly the picture play-action is built for. With nine
+defenders charging the line and one safety deep, a fake handoff and a pass to a tight end
+sneaking out behind the linebackers is the classic counterpunch. A good log line here is
+"R, 85%, everything." If it turns out to be a play fake, that is not a bad prediction; it is
+the 15%.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: the safety who walks down"}
+```{python}
+#| label: fig-predict-safety
+#| fig-cap: "First-and-10 near midfield, shotgun with the back beside the quarterback. The defense first shows two deep safeties at 13 yards (the outlined ghost). With about eight seconds on the play clock, the safety on the offense's right walks down to eight yards, just outside the right tackle (dashed arrow)."
+q2 = base_play(to_go=10)
+q2.los = 58.0
+q2.players["SS"] = q2.players["SS"].moved(d=8.0, w=5.0)      # where he is now
+q2.highlight("SS", color=style.THIRD)
+fld = q2.draw(lateral=(-19, 19), window=(-8.5, 17.5), title=False)
+(gx, gy), (nx, ny) = [tuple(map(float, fld.xy(*q2.to_abs(d, w)))) for d, w in ((13.0, 9.5), (8.0, 5.0))]
+fld.ax.add_patch(RegularPolygon((gx, gy), 4, radius=0.75 * 1.25, orientation=np.pi / 4,
+                                fc="none", ec=style.DEFENSE, lw=1.2, ls=(0, (2, 1.5)), zorder=8))
+fld.ax.text(gx, gy, "SS", ha="center", va="center", fontsize=6, color=style.DEFENSE_DARK, alpha=0.7, zorder=8)
+fld.ax.add_patch(FancyArrowPatch((gx, gy), (nx, ny), arrowstyle="-|>", mutation_scale=11, color=style.DEFENSE,
+                                 lw=1.4, ls=(0, (3, 2)), shrinkA=8, shrinkB=12, zorder=7))
+pointer(fld, q2, "showed two deep,\nthen walks down late", (16.0, 12.5), (13.6, 9.8))
+plt.show()
+```
+
+**What changed, what does it suggest, and on a broadcast, how would you even know?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**What changed:** the defense went from two safeties deep to one, and put an extra defender
+next to the box. That is a one-high picture now, with seven defenders near the line between
+the slot receivers instead of six.
+
+**What it suggests:** either the defense expects a run and wants another body to stop it, or
+it plans to send an extra pass rusher or play man-to-man coverage underneath. Either way, the
+deep part of the field now has only one safety, in the middle. The offense may respond: a
+quarterback who sees this can change the play at the line
+([The Pre-Snap Phase](01-05-the-pre-snap-phase.qmd)). And because he waited until the play
+clock was low, the defender may be bluffing: some safeties walk down and then race back at the
+snap, which is the disguise game of
+[Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd).
+
+**How you'd know:** on most broadcasts you'd see this only if the safety walks into the top of
+the frame, which is one more reason to keep an eye on the top edge of the screen during the
+pause. If you miss it live, the skycam replay will show the safeties' starting spots and their
+first steps. For your log this should *lower* your confidence in a pass on first down, not
+flip it: a defense that adds a man near the line is often inviting the throw.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: which clue wins?"}
+```{python}
+#| label: fig-predict-clues
+#| fig-cap: "Second-and-6 at the offense's own 40, third quarter, ahead 14–10. Shotgun with three receivers to the right and the back offset to the quarterback's left. On the left, the lone receiver (X) has a reduced split, about four yards outside the left tackle instead of out near the numbers. The linemen are in two-point stances. Two safeties deep."
+off = offense("gun_trips")
+off = [p.moved(w=-7.8) if p.key == "X" else p for p in off]
+dfn = defense("nickel", "two_high", off)
+q3 = Play(off, dfn, los=50, to_go=6)
+q3.highlight("X", "RB", color=style.THIRD)
+fld = q3.draw(lateral=(-19, 23), window=(-8.5, 16.5), title=False)
+pointer(fld, q3, "X: reduced split", (-5.2, -13.0), (-0.7, -8.6))
+pointer(fld, q3, "back offset\nto QB's left", (-6.6, -6.6), (-5.0, -2.3))
+plt.show()
+```
+
+**Four clues: second-and-6, shotgun, the back's offset, X's reduced split. Run or pass, and what
+does each clue tell you?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Pass, about 75%.** Weigh the clues in order of strength, broad ones first:
+
+1. **Second-and-6** on its own is a coin flip: about 52% pass in 2025 for second-and-medium.
+2. **Shotgun** moves it a long way. In 2025, teams passed on 76% of their shotgun snaps on
+   second-and-5 to -7. That is your call. (The two-point stances agree, but standing linemen are
+   common in the shotgun, so they add little.)
+3. **The back's offset** doesn't change run-or-pass much. It tells you *which way* a run would
+   likely go (from the left, across the quarterback's face, to the right, toward the three
+   receivers) and which side he would protect on a pass.
+4. **X's reduced split** tells you about *X*, not about the whole play. Alone on the backside,
+   in tight, he is set up for a route that breaks inside (a slant or a dig across the middle),
+   or for a block if the run comes his way.
+
+So: "P, 75%, shotgun on 2nd & medium." Then pick your one thing: X and the cornerback over
+him, from the snap. If X breaks inside and the ball goes there, the reduced split was the tell.
+If the ball goes elsewhere, check on the replay whether X was open anyway. That is how small
+clues become reliable ones: by checking them, snap after snap, in your log.
+:::
+:::
+
+## Takeaways
+
+- **The broadcast is built for the ball.** The main sideline camera keeps the formation tight
+  before the snap and chases the ball after it, so the safeties, the outside receivers and most
+  of the coverage are off your screen when it matters. Replays exist to give them back: the end
+  zone shows the line, the skycam shows the coverage, and the All-22 shows everyone.
+- **Use the pause.** Read the scorebug in a fixed order (down and distance, field position,
+  score, clock, timeouts) and turn it into a lean before the snap.
+- **Watch one thing per snap and per replay**, chosen by your lean: the safeties when you
+  expect a pass, a guard when you expect a run, a different group on each replay.
+- **Tells are clues, not promises.** Stance, the back's depth and offset, receiver splits and
+  safety depth all shift the odds, and the quarterback's alignment shifts them the most. The
+  offense knows its tells too, and play-action lives on breaking them.
+- **Keep a prediction log**, and score it against the bar: "always pass" gets about 60%, the
+  scorebug about 68%, the scorebug plus the formation about 75%.
+
+## Connections
+
+**Builds on:** [The Pre-Snap Phase](01-05-the-pre-snap-phase.qmd) (the motion, shifts and
+checks you'll now see during the pause), [What a Play Really Is](01-04-what-a-play-really-is.qmd)
+(the forty seconds that the pause sits at the end of), and
+[Downs, Distance, and Field Position](01-02-downs-distance-and-field-position.qmd) (your
+baseline tally and the situation buckets).
+
+**Sets up:** [Personnel: Who's on the Field Before Anything Else](../02-personnel-and-formations/02-01-personnel-groupings.qmd)
+adds the first column to your pre-snap read: who came onto the field. The rest of Part 2 adds
+formations and a first look at defense, and every later chapter adds a drill to the log.
+Further on: [Win Probability and Decision Analysis](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd)
+and [Tracking Data and the Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd)
+build the numbers glossed here; [Watching Live](../15-capstone/15-01-watching-live.qmd)
+completes the tells catalogue and the pre-snap checklist; and
+[Film Study: All-22, Charting a Game, and Scoring Yourself](../15-capstone/15-02-film-study-and-charting.qmd)
+turns the All-22 into a study routine and scores your season's log.
+
+::: {.callout-note title="Go deeper"}
+- Pat Kirwan, *Take Your Eye Off the Ball* (2010; 2nd ed. 2015): the classic book on exactly
+  this chapter's idea, by a former NFL coach and scout, with good sections on what to watch
+  before the snap.
+- Ron Jaworski with Greg Cosell and David Plaut, *The Games That Changed the Game* (2010):
+  seven landmark games, explained by two people who spent careers watching coaches film.
+- Chris B. Brown, *The Art of Smart Football* (2015): short essays on why plays are built the
+  way they are, which tells you what to look for.
+- NFL Next Gen Stats (nextgenstats.nfl.com): the league's own site for the tracking numbers
+  broadcasts quote, with weekly leaderboards.
+:::
+
+[^skycam]: Sports Broadcasting Hall of Fame, "Garrett Brown" (inventor of the Steadicam and Skycam): https://www.sportsbroadcastinghalloffame.org/inductees/garrett-brown/ ; "Skycam," *Wikipedia* (first public use in fall 1984 at an NFL preseason game in San Diego between the Chargers and 49ers, televised by CBS; little used until the XFL in 2001): https://en.wikipedia.org/wiki/Skycam <!-- VERIFY: the 1984 Chargers-49ers preseason debut and the CBS telecast against a primary source (e.g., a contemporary newspaper report). -->
+
+[^yellow]: *Sports Illustrated*, "The story behind football's innovative yellow first down line" (July 18, 2013): https://www.si.com/nfl/2013/07/18/nfl-birth-yellow-line ; "1st & Ten (graphics system)," *Wikipedia* (first aired by Sportvision on ESPN's Bengals–Ravens broadcast, September 27, 1998): https://en.wikipedia.org/wiki/1st_%26_Ten_(graphics_system)
+
+[^all22]: Buffalo Bills, "Watch film like a coach with Game Rewind" (July 30, 2012), on NFL.com's Game Rewind and Game Pass adding coaches film with the "All-22" and "High End Zone" views for every 2012 game: https://www.buffalobills.com/news/watch-film-like-a-coach-with-game-rewind-7721721 ; *SportsBusiness Daily* (June 18, 2012): https://www.sportsbusinessdaily.com/Daily/Issues/2012/06/18/Media/NFL-22.aspx
+
+[^nflplus]: NFL.com, "Launch of NFL Pro highlights third season of NFL+" (2024): NFL+ Premium includes "All-22 Coaches Film for every NFL game dating back to the 2022 season": https://www.nfl.com/news/launch-of-nfl-pro-highlights-third-season-of-nfl
+
+[^primevision]: *Sportico*, "Amazon adds 'Prime Vision' feed to Thursday Night Football" (2022): https://www.sportico.com/business/media/2022/amazon-prime-vision-thursday-night-football-feed-1234691348/ ; *The Ringer* (Dec. 14, 2023), on the alternate broadcast's higher in-play camera and live route tracing: https://www.theringer.com/nfl/2023/12/14/24000808/amazon-prime-vision-alternate-nfl-broadcast-staying-power-revolution
+
+[^alerts]: *Philadelphia Inquirer*, "Thursday Night Football will use artificial intelligence" (Sept. 13, 2023), on Defensive Alerts identifying likely pass rushers from pre-snap movement: https://www.inquirer.com/eagles/thursday-night-football-artifical-intelligence-eagles-vikings-20230913.html ; Amazon, "Prime Video's Thursday Night Football AI features" (feature list including Defensive Alerts, Coverage ID, Pressure Alert and Prime Targets): https://aboutamazon.com/news/entertainment/thursday-night-football-amazon-prime-video-ai-features
+
+[^ngs]: NFL Football Operations, "NFL Next Gen Stats": RFID tags in each player's shoulder pads and 20–30 receivers in each stadium record location, speed and acceleration ten times a second: https://operations.nfl.com/gameday/technology/nfl-next-gen-stats/ ; Kevin Seifert, ESPN, "Inside Slant: NFL Next Gen Stats opens new doors" (Dec. 11, 2014), on the 2014 trial in 17 stadiums: https://www.espn.com/blog/nflnation/post/_/id/153569/inside-slant-nfl-next-gen-stats-opens-new-doors
+
+[^ttt]: Course calculation from nflverse participation data (`time_to_throw`, FTN-sourced), 2025 regular season and playoffs: the median time to throw on dropbacks with a recorded time was 2.5 seconds (see also [What a Play Really Is](01-04-what-a-play-really-is.qmd)).
+
+[^situational]: Course calculation from nflverse play-by-play, 2025 regular season, runs and dropbacks (passes, sacks and scrambles counted as passes): third-and-4 to -6, 91% pass (1,652 snaps); third-and-1, 23% pass (853 snaps).
+
+[^late]: Course calculation from nflverse play-by-play, 2025 regular season: snaps in the last two minutes of the fourth quarter by teams trailing by 1 to 8 points, 87% pass (692 snaps).
+
+[^qbloc]: Course calculation from nflverse play-by-play joined to FTN charting (`qb_location`), 2025 regular season, runs and dropbacks: shotgun 78.5% pass (20,104 snaps), under center 31.1% (11,035), pistol 29.3% (1,618).
+
+[^rams]: Course calculation from nflverse play-by-play joined to FTN charting, 2025 regular season: the Rams' under-center share (59%) and under-center pass rate (40%) were the league's highest; Washington's under-center pass rate (15%) was the lowest. Play-action (`is_play_action`) was used on 82% of under-center dropbacks and 10% of shotgun dropbacks league-wide.
+
+[^mvp]: NFL.com, "List of NFL Honors award winners from the 2025 NFL season": https://amp.nfl.com/news/list-of-nfl-honors-award-winners-from-2025-nfl-season
+
+[^short]: Course calculation from nflverse play-by-play joined to FTN charting, 2025 regular season: third-and-1, 23% pass overall (853 snaps) and 16% pass from under center (525 snaps).
+
+[^ladder]: Course calculation; the code is in the figure's folded cell. Snaps: 2024 and 2025 regular-season runs and dropbacks with a down recorded (nflverse play-by-play), joined to FTN charting for the quarterback's alignment. Distance buckets 1–3, 4–6 and 7+ yards; score buckets trailing by 9+, trailing by 1–8, tied, leading by 1–8, leading by 9+; "clock" = the last two minutes of either half; "quarter" = fourth quarter or overtime. First-and-10 was 50% pass in 2025 (12,809 snaps); second-and-4 to -6 was 52% (2,623 snaps); second-and-5 to -7 from the shotgun was 76% (1,547 snaps).

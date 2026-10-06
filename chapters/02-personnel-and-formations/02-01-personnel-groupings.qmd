@@ -1,0 +1,1338 @@
+---
+title: "Personnel: Who's on the Field Before Anything Else"
+subtitle: "Two digits, said before the huddle breaks, that tell you who the offense brought, what the defense will send back, and how the odds of a run or a pass have already moved."
+description: "How to decode personnel groupings (11, 12, 21, 13, 22, 10, 20, 00 and jumbo), why personnel is the first clue of every pre-snap read, how and why the defense matches the offense's substitutions, what ten seasons of data say about personnel and run/pass, and how the league's personnel mix rose, peaked and shifted between 2016 and 2025."
+glossary:
+  "Personnel grouping": "The mix of running backs, tight ends and wide receivers an offense has on the field for a play, written as two digits: running backs first, tight ends second, so '12' means one back and two tight ends (and therefore two wide receivers)."
+  "11 personnel": "One running back, one tight end and three wide receivers. The NFL's most common grouping, used on roughly 60% of plays in 2016-2025."
+  "12 personnel": "One running back, two tight ends and two wide receivers. The NFL's second most common grouping and close to a coin flip between run and pass."
+  "13 personnel": "One running back, three tight ends and one wide receiver. A heavy grouping for short yardage and the running game."
+  "21 personnel": "Two running backs (usually a fullback and a tailback), one tight end and two wide receivers. The classic I-formation grouping."
+  "22 personnel": "Two running backs, two tight ends and one wide receiver. One of the heaviest common groupings, used mostly to run."
+  "10 personnel": "One running back, no tight end and four wide receivers. A spread grouping that is rare in the NFL and common in college."
+  "Substitution matching": "The defense changing its players in answer to the offense's personnel: more defensive backs against more receivers, more linebackers and linemen against more tight ends and backs. NFL rules protect it: when the offense substitutes, the defense must get a chance to respond before the snap."
+  "Heavy personnel": "Any grouping with fewer than three wide receivers, so more tight ends, backs or linemen on the field. 12, 21, 13 and 22 are the common ones; some people keep the word for the very biggest groupings (13, 22, jumbo)."
+  "Jumbo (six offensive linemen)": "A grouping with a sixth offensive lineman on the field, usually standing where a tight end would. He is ineligible to catch a pass unless he reports to the referee as eligible before the play."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared helpers for this chapter's diagrams)"
+import os
+import re
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from matplotlib.lines import Line2D
+from matplotlib.patches import Circle, FancyBboxPatch, Rectangle
+from IPython.display import HTML, display
+
+from gridiron import Play, Player, Field, defense, routes as r, style, draw_marker
+from gridiron.field import FIELD_WIDTH
+from gridiron.formations import LINE_D, OFF_BALL, TE_W, WING_W, OL_SPLIT
+
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+RB_RING = style.THIRD          # aqua ring: a running back (tailback or fullback)
+TE_RING = style.LINE_TO_GAIN   # gold ring: a tight end
+OL_RING = "#4a3aa7"            # purple ring: a sixth offensive lineman
+UC, GUN, PISTOL, FB_D, TB_D = -1.9, -5.0, -3.5, -4.5, -7.0   # QB and back depths (yards)
+
+
+def line5():
+    """The five offensive linemen; only the center is lettered."""
+    return [Player(k, k, "off", LINE_D, w, label=("C" if k == "C" else ""))
+            for k, w in [("LT", -2 * OL_SPLIT), ("LG", -OL_SPLIT), ("C", 0.0),
+                         ("RG", OL_SPLIT), ("RT", 2 * OL_SPLIT)]]
+
+
+def P(key, pos, d, w, label=None):
+    """One offensive skill player at (d, w): d = yards from the ball (negative = backfield),
+    w = yards to the offense's right."""
+    return Player(key, pos, "off", d, w, label=label or key)
+
+
+def D(key, pos, d, w, label=None):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def ring_by_body(p, skip=()):
+    """Ring every back (aqua) and tight end (gold): count the rings and you have the personnel."""
+    for k, pl in p.players.items():
+        if k in skip or pl.side != "off":
+            continue
+        if pl.pos in ("RB", "FB"):
+            p.highlight(k, color=RB_RING)
+        elif pl.pos == "TE":
+            p.highlight(k, color=TE_RING)
+    return p
+
+
+def body_count(players):
+    off = [q for q in players if q.side == "off"]
+    rb = sum(q.pos in ("RB", "FB") for q in off)
+    te = sum(q.pos == "TE" for q in off)
+    wr = sum(q.pos == "WR" for q in off)
+    return rb, te, wr
+
+
+def card_title(ax, code, players):
+    rb, te, wr = body_count(players)
+    ax.text(0.0, 1.03, f"{code} personnel", transform=ax.transAxes, ha="left", va="bottom",
+            fontsize=10, fontweight="bold", color=style.INK)
+    ax.text(1.0, 1.03, f"{rb} RB · {te} TE · {wr} WR", transform=ax.transAxes, ha="right",
+            va="bottom", fontsize=8, color=style.INK_2)
+
+
+def ring_legend(fig, extra=(), y=0.0, ncol=4):
+    h = [Line2D([], [], marker="o", ls="", ms=9, markerfacecolor=style.OFFENSE, markeredgecolor=RB_RING,
+                markeredgewidth=2.2, label="running back (R, F)"),
+         Line2D([], [], marker="o", ls="", ms=9, markerfacecolor=style.OFFENSE, markeredgecolor=TE_RING,
+                markeredgewidth=2.2, label="tight end"),
+         Line2D([], [], marker="o", ls="", ms=9, markerfacecolor=style.OFFENSE, markeredgecolor="white",
+                label="no ring: wide receiver, QB (Q), line")]
+    h += list(extra)
+    fig.legend(handles=h, loc="lower center", bbox_to_anchor=(0.5, y), ncol=ncol, fontsize=7.5,
+               frameon=False, handletextpad=0.3, columnspacing=1.2)
+
+
+def html_video(anim):
+    """Embed a matplotlib animation in the HTML build (mp4 if ffmpeg exists, else a JS player)."""
+    import shutil
+    if shutil.which("ffmpeg"):
+        html = anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+    else:
+        html = anim.to_jshtml(default_mode="once")
+    plt.close(anim._fig)
+    display(HTML(html))
+
+
+# --- The personnel "card deck": one neutral, legal alignment per grouping (strength to the right).
+# Every card has seven men on the line: the five linemen plus the two players at the ends.
+CARDS = {
+    "11": [P("QB", "QB", UC, 0, "Q"), P("RB", "RB", TB_D, 0, "R"), P("Y", "TE", LINE_D, TE_W),
+           P("X", "WR", LINE_D, -12.5), P("H", "WR", OFF_BALL, -7.5), P("Z", "WR", OFF_BALL, 12.5)],
+    "12": [P("QB", "QB", UC, 0, "Q"), P("RB", "RB", TB_D, 0, "R"), P("Y", "TE", LINE_D, TE_W),
+           P("U", "TE", LINE_D, -TE_W), P("X", "WR", OFF_BALL, -12.5), P("Z", "WR", OFF_BALL, 12.5)],
+    "21": [P("QB", "QB", UC, 0, "Q"), P("FB", "FB", FB_D, 0, "F"), P("RB", "RB", TB_D, 0, "R"),
+           P("Y", "TE", LINE_D, TE_W), P("X", "WR", LINE_D, -12.5), P("Z", "WR", OFF_BALL, 12.5)],
+    "13": [P("QB", "QB", UC, 0, "Q"), P("RB", "RB", TB_D, 0, "R"), P("Y", "TE", LINE_D, TE_W),
+           P("U", "TE", LINE_D, -TE_W), P("H", "TE", -1.7, 7.3), P("X", "WR", OFF_BALL, -12.5)],
+    "10": [P("QB", "QB", GUN, 0, "Q"), P("RB", "RB", GUN, -2.2, "R"), P("X", "WR", LINE_D, -12.5),
+           P("H", "WR", OFF_BALL, -7.5), P("Y", "WR", OFF_BALL, 7.5), P("Z", "WR", LINE_D, 12.5)],
+    "20": [P("QB", "QB", GUN, 0, "Q"), P("RB", "RB", GUN, -2.2, "R"), P("FB", "RB", GUN, 2.2, "F"),
+           P("X", "WR", LINE_D, -12.5), P("H", "WR", OFF_BALL, 7.5), P("Z", "WR", LINE_D, 12.5)],
+    "22": [P("QB", "QB", UC, 0, "Q"), P("FB", "FB", FB_D, 0, "F"), P("RB", "RB", TB_D, 0, "R"),
+           P("Y", "TE", LINE_D, TE_W), P("U", "TE", LINE_D, -TE_W), P("Z", "WR", OFF_BALL, 12.5)],
+    "00": [P("QB", "QB", GUN, 0, "Q"), P("X", "WR", LINE_D, -13.0), P("H", "WR", OFF_BALL, -8.0),
+           P("Y", "WR", OFF_BALL, 5.8), P("F", "WR", OFF_BALL, 9.5), P("Z", "WR", LINE_D, 13.2)],
+}
+
+
+def hide_yard_numbers(ax):
+    """Drop the faint painted field numbers (they sit where the receivers stand in these zoomed cards)."""
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() is not None and abs(t.get_alpha() - 0.55) < 1e-6:
+            t.remove()
+
+
+def card_deck(codes):
+    fig, axes = plt.subplots(2, 2, figsize=(6.6, 4.0))
+    for ax, code in zip(axes.flat, codes):
+        players = line5() + CARDS[code]
+        p = ring_by_body(Play(players, None, los=35, to_go=None))
+        p.draw(ax=ax, lateral=(-15.5, 15.5), window=(-9.5, 2.6), title=False)
+        hide_yard_numbers(ax)
+        card_title(ax, code, players)
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.93, bottom=0.11, hspace=0.42, wspace=0.05)
+    ring_legend(fig, ncol=3)
+    return fig
+```
+
+Third-and-1 at midfield, early in the fourth quarter. The previous play has barely been whistled
+dead when the broadcast cuts wide: two wide receivers jog toward their own sideline, and two
+bigger men, a tight end and a fullback, run the other way to join the huddle. Across the field,
+the defense reacts within a couple of seconds. A cornerback sprints off, a 245-pound linebacker
+sprints on, and someone near the defensive bench is shouting a single word. The ball hasn't been
+snapped, the offense hasn't even lined up, and the analyst says "they've gone to 22 personnel."
+He's right, and both teams have already made a move. This chapter is about that move: who the
+offense chooses to put on the field, how the defense answers, why the order matters, and how
+much those two digits tell you about what's coming.
+
+**You'll be able to…**
+
+- Decode any two-digit personnel label (11, 12, 21, 13, 22, 10, 20, 00) into running backs,
+  tight ends and wide receivers, and recognize jumbo (a sixth lineman).
+- Count the personnel yourself between plays, by watching who runs on and off.
+- Explain why personnel is the first pre-snap clue and how it forces the defense's substitutions.
+- Explain the substitution rules that give the defense the right to match, and how offenses use
+  or deny that right.
+- Read the league's personnel trends from 2016 to 2025, including the 2025 shift toward bigger
+  groupings.
+- Turn personnel into a first run/pass guess with real numbers, and say why it is only a first
+  guess.
+
+## Eleven players, but only five that change
+
+Start with a puzzle. An offense has eleven players on the field, and the label for who they are
+has only two digits. How can two digits describe eleven people?
+
+Because six of the eleven almost never change. Every normal offensive snap has a
+[quarterback](../01-foundations/01-03-the-twenty-two.qmd) and five
+[offensive linemen](../01-foundations/01-03-the-twenty-two.qmd) (the center, two guards and two
+tackles, the big men who block and, by rule, can't catch a forward pass). Those six are the
+fixed core. The other five spots are the variables, and they can be filled by three kinds of
+player that [The Twenty-Two](../01-foundations/01-03-the-twenty-two.qmd) introduced as the
+[skill positions](../01-foundations/01-03-the-twenty-two.qmd):
+
+- **Running backs.** Players who line up behind the line, mostly to carry the ball or block. The
+  **tailback** (or halfback) is the runner; the **fullback** is a bigger back who mostly blocks
+  for him. Both count as running backs here.
+- **Tight ends.** Big, versatile players, usually 245 to 265 pounds, who often line up right
+  next to a tackle. They block like small linemen *and* catch passes.
+- **Wide receivers.** Usually the lightest and fastest on the offense, lined up wide, mainly to
+  catch passes.
+
+Every way of filling those five spots is a [**personnel
+grouping**](../../appendices/glossary.qmd#gl-personnel-grouping): the mix of running backs, tight
+ends and wide receivers on the field for a play. Coaches, scouts, broadcasters and the data all
+write it the same way, as two digits:
+
+> **First digit = running backs. Second digit = tight ends. Wide receivers = 5 − backs − tight ends.**
+
+So "one-one," usually just said "eleven," means one back and one tight end, which leaves three
+wide receivers. "Twelve" (one-two) is one back and two tight ends, so two receivers. "Twenty-one"
+is two backs, one tight end and two receivers. You never need a third digit, because the
+receivers are whatever is left over.
+
+::: {.callout-caution title="Common misconception"}
+**The digits are not jersey numbers, and "11 personnel" does not mean "the eleven players."** It
+is a count of body types: one running back, one tight end. Say it "eleven" or "one-one," but
+read it as two separate digits. The same goes for the defense's labels, which work differently
+(a "4-2-5" defense means four linemen, two linebackers, five defensive backs); we'll get to those
+below.
+:::
+
+Why count only backs and tight ends? Because those are the two body types that change what the
+offense can do *and* what the defense must fear. A tight end is a blocker who can run routes; a
+fullback is a blocker who can carry the ball or catch it out of the backfield. Each one you add
+makes the offense bigger and better at running the ball, and takes away a wide receiver, the
+player most dangerous in the open field. The two digits are, in effect, a dial between "big" and
+"fast."
+
+::: {.callout-note title="Madden vs. real life"}
+In *Madden* you pick a formation from a menu and the right players appear in it, as if by magic.
+The computer's defense swaps its own players instantly. In the NFL, personnel is a separate
+decision made **before** the formation and the play, and it takes real people running real
+yards. A coach on the sideline shouts or signals the grouping ("Twelve! Twelve!"), and the
+players in that package (each one knows which groupings he belongs to) run on while the players
+leaving run off. The defense has to *see* all that, decide, and send its own substitutes. It
+takes several seconds of the [forty-second play
+clock](../01-foundations/01-04-what-a-play-really-is.qmd), it happens in plain view, and it is
+the first thing you can read.
+:::
+
+## Reading the deck: the eight groupings you'll meet
+
+Here are the eight groupings the chapter asks you to know, each drawn in an ordinary, legal
+alignment. Don't worry yet about the names of the alignments. Those are
+[formations](02-02-formation-rules-and-vocabulary.qmd), the next chapter's job. For now, count
+the rings: an aqua ring is a running back, a gold ring is a tight end, and anyone with no ring
+(apart from the quarterback and the linemen) is a wide receiver.
+
+```{python}
+#| label: fig-deck-everyday
+#| fig-cap: "The four everyday groupings. Count the rings: aqua = running backs (R is the tailback, F the fullback), gold = tight ends; unringed players outside the line are wide receivers (X, Z, H). In 13 personnel the third tight end stands just outside and behind the right tight end (a 'wing') and wears the letter H: the letters name spots in the formation, not body types, which is why the ring, not the letter, tells you what he is. Seven men are on the line in every card: the five linemen (only the center, C, is lettered) plus the two players at the ends."
+card_deck(["11", "12", "21", "13"])
+plt.show()
+```
+
+The letters on the receivers are the names most playbooks use for their *spots*: **X** is the
+receiver on the line on one side (the "split end"), **Z** the receiver off the line on the
+other side (the "flanker"), **Y** usually the tight end, **H** or **F** a "move" player who can
+be a slot receiver, a second tight end or a fullback depending on the grouping. The letters
+belong to [Formation Rules and the Language of
+Alignment](02-02-formation-rules-and-vocabulary.qmd), which explains them properly. In this
+chapter they're just name tags; the rings do the counting.
+
+[**11 personnel**](../../appendices/glossary.qmd#gl-11-personnel) **(1 RB, 1 TE, 3 WR)** is the
+NFL's default: it was on the field for about six plays in ten every season from 2016 to
+2025. Its appeal is that it can do almost anything. Three wide receivers stretch the defense
+across the field; the one tight end can stay in to block or run a route; the one back can run,
+block a blitzer or catch. Because the offense can run or pass from it with almost equal ease,
+it gives the defense very little to go on. It also forces the defense to answer with a fifth
+defensive back, which we'll see is the whole substitution game in miniature.
+
+[**12 personnel**](../../appendices/glossary.qmd#gl-12-personnel) **(1 RB, 2 TE, 2 WR)** swaps the
+third receiver for a second tight end. Now the offense can line up with a blocker next
+to *both* tackles and run either way, or split one of the tight ends out like a receiver and
+throw. It is the league's second most common grouping and, as the data below shows, the closest
+thing football has to a coin flip.
+
+[**21 personnel**](../../appendices/glossary.qmd#gl-21-personnel) **(2 RB, 1 TE, 2 WR)** adds a
+fullback, the old-fashioned lead blocker. This is the grouping of the classic
+I-formation (fullback directly in front of the tailback), and some coaches still call it
+"Regular," a reminder that it was once the standard.<!-- VERIFY: "Regular" as a common staff name for 21 personnel; widely repeated in coaching material, but naming varies by staff. --> A good fullback
+gives the offense an extra blocker who starts moving before the defense knows where the play is
+going.
+
+[**13 personnel**](../../appendices/glossary.qmd#gl-13-personnel) **(1 RB, 3 TE, 1 WR)** is three
+tight ends and just one receiver. It is mostly a short-yardage and running grouping,
+though as you'll see in the film room, one team in 2025 turned it into a weapon for both.
+
+```{python}
+#| label: fig-deck-edges
+#| fig-cap: "Four groupings at the edges. 10 and 00 personnel are spread groupings, so the quarterback is in the shotgun (about five yards behind the center) and wide receivers fill the Y and F spots that a tight end or back would fill in other groupings. 20 personnel puts two backs beside the quarterback. 22 personnel is the old power look: fullback, tailback and a tight end on each side, with one receiver."
+card_deck(["10", "20", "22", "00"])
+plt.show()
+```
+
+[**22 personnel**](../../appendices/glossary.qmd#gl-22-personnel) **(2 RB, 2 TE, 1 WR)** is the
+heavy end of the everyday menu: a fullback, a tailback and two tight ends, leaving one
+receiver. The offense is telling the defense, more or less, "we're going to run, and we're
+bringing extra people to block for it." That's useful near the goal line, on third-and-1, and
+late in a game when the offense wants to keep the clock running. It is also, for exactly that
+reason, a great place to fake a run and throw (more on that trade below).
+
+[**10 personnel**](../../appendices/glossary.qmd#gl-10-personnel) **(1 RB, 0 TE, 4 WR)** drops the
+tight end for a fourth receiver. It's everywhere in college football, where spread
+offenses grew up, but rare in the NFL (around 1% of plays in recent seasons), partly because NFL
+offenses want a tight end's blocking against much bigger pass rushers, and partly because the
+best NFL tight ends can do a receiver's job anyway.
+
+**20 personnel (2 RB, 0 TE, 3 WR)** puts two backs next to the quarterback in the shotgun with
+three receivers. It's a niche look (well under 1% of NFL plays), but a handy one: either back can
+take a handoff, block, or slip out for a pass. **00 personnel** is five wide receivers and no
+back at all, an "empty" backfield with nobody beside the quarterback. In the NFL it's so rare that
+you may not see it all season.[^share] (Empty *formations*, in which the back or tight end lines up
+wide, are common. That's a formation, not a personnel grouping, and it's the subject of
+[Spread Formations](02-04-spread-and-modern-formations.qmd).)
+
+There are a handful of other combinations, such as 01, 02, 23 and the occasional 30, but together
+they make up only a few percent of plays. If you can read the eight above, you can read
+practically every NFL snap.
+
+### Personnel is who, not where
+
+One more rule before we move on, and it's the one beginners trip over. **Personnel counts who the
+players are, not where they stand.** A tight end who lines up out wide like a receiver is still a
+tight end, so the grouping is still 12 if there are two of them. A running back who lines up in
+the slot is still a running back. A wide receiver standing in the backfield is still a receiver.
+
+That's not pedantry. It's the reason personnel matters. The defense chooses its players based on
+who comes on the field, and only *then* does the offense line up. If the offense sends in two tight
+ends, the defense will usually answer with bigger players. If the offense then spreads those tight
+ends out like receivers, the defense is left with bigger, slower players covering them. The gap
+between who is on the field (personnel) and where they line up (formation) is one of the oldest
+tricks in football, and you can't see it unless you count the personnel first.
+
+::: {.callout-caution title="Common misconception"}
+**"You can tell the position by the jersey number."** Not reliably, not any more. Before 2021,
+NFL tight ends wore numbers in the 80s (or 40s), and receivers wore 80s or 10–19. Since the
+league loosened its numbering rules in 2021 and again in 2023, tight ends, receivers and backs
+can all wear single digits and most of the same ranges
+([The Twenty-Two](../01-foundations/01-03-the-twenty-two.qmd) has the details). Today you count
+personnel by knowing *who the players are*: body type, the broadcast's graphics, and a little
+homework on the team.
+:::
+
+### Heavy personnel
+
+You'll hear broadcasters say an offense "went heavy." [**Heavy
+personnel**](../../appendices/glossary.qmd#gl-heavy-personnel) means any grouping with fewer than
+three wide receivers: the offense has taken receivers off and put tight ends, backs or linemen
+on. So 12, 21, 13 and 22 are all heavy, and some people keep the word for the very biggest ones
+(13, 22 and jumbo). Throughout this course, "heavy" means fewer than three wide receivers, which
+is also how the NFL's Next Gen Stats team measures it.
+
+Why would an offense take a fast player off the field? Three reasons, and you'll see all three in
+this chapter:
+
+1. **To block more people.** Each tight end or fullback is an extra blocker who can also be a
+   threat.
+2. **To make the defense get bigger.** The defense answers big with big, and bigger defenders are
+   slower in coverage.
+3. **To hide the play.** If the offense can run *and* pass from a heavy grouping, the defense
+   can't relax against either.
+
+## Jumbo: when a sixth lineman comes in
+
+Sometimes even three tight ends isn't big enough. In a [**jumbo**](../../appendices/glossary.qmd#gl-jumbo-six-offensive-linemen)
+grouping, the offense puts a **sixth offensive lineman** on the field, usually lined up exactly
+where a tight end would be, at the end of the line next to a tackle. He's a lineman, often 300
+pounds or more, so he blocks much better than any tight end. That's the point: on the goal line,
+on third-and-1, or when killing the clock with a lead, the offense wants raw size.
+
+```{python}
+#| label: fig-jumbo
+#| fig-cap: "Jumbo on the 2-yard line: six offensive linemen (the sixth, #68, ringed in purple, stands at the left end where a tight end would), two tight ends on the right (gold), one back (aqua) and one receiver (X). The defense answers with its own goal-line package: five linemen (E = end, T = tackle, N = nose tackle), three linebackers (S, M, W) and three defensive backs (C = cornerback, SS and FS = safeties). To be allowed to catch a pass, #68 must first report to the referee as eligible."
+off = line5() + [
+    Player("E6", "OL", "off", LINE_D, -TE_W, label="68"),
+    P("QB", "QB", UC, 0, "Q"), P("RB", "RB", -6.5, 0, "R"),
+    P("Y", "TE", LINE_D, TE_W), P("U", "TE", OFF_BALL, WING_W + 0.3),
+    P("X", "WR", OFF_BALL, -11.0),
+]
+gl = [D("LE", "DE", 1.0, -5.9), D("DLT", "DT", 1.0, -2.4), D("NT", "NT", 1.0, 0.0),
+      D("DRT", "DT", 1.0, 2.4), D("RE", "DE", 1.0, 5.9),
+      D("WILL", "WILL", 3.4, -3.4), D("MIKE", "MIKE", 3.4, 0.6), D("SAM", "SAM", 3.0, 7.4),
+      D("LCB", "CB", 1.5, -11.0), D("SS", "SS", 4.6, 10.5), D("FS", "FS", 6.5, -2.0)]
+p = Play(off, gl, los=108, to_go=2)
+ring_by_body(p)
+p.highlight("E6", color=OL_RING)
+p.note("6th lineman", at=(-3.6, -8.6))
+p.draw(lateral=(-15.5, 15.5), window=(-9.5, 9.5), title=False)
+hide_yard_numbers(plt.gca())
+plt.show()
+```
+
+There is a catch, and it is a rule, not a strategy. Linemen wear numbers in the 50–79 range, and a
+player wearing one of those numbers is **ineligible** to catch a forward pass (he can block, but
+not go out for a ball thrown past the line) unless he **reports** to the referee before the snap.
+The referee then announces it, often over the stadium microphone ("Number 68 is reporting as
+eligible"), so the defense knows. The full rules for eligibility and reporting are in [Formation
+Rules](02-02-formation-rules-and-vocabulary.qmd), which owns them; for now it's enough to know
+that a jumbo lineman is a blocker by default and a receiver only by announcement.
+
+How does the data count jumbo? Awkwardly. The play-by-play data used in this chapter labels
+players by their roster position, so a six-lineman snap with two tight ends and one back shows up
+as "12" with an extra lineman. Many scouts and coaching staffs would instead call the extra lineman
+a tight end and the grouping "13." In the charts below, jumbo plays keep the code their backs and
+tight ends give them, and they are also counted separately as **jumbo**.
+
+Jumbo is the most predictable grouping in football. In neutral situations from 2023 to 2025,
+offenses in jumbo threw on fewer than one play in three. That predictability is the cost: when the
+defense *knows* a run is coming, it can load up for it. It is also the opportunity, as the Detroit
+Lions showed, because a defense that is sure of the run is the easiest one to fool with a pass.
+
+::: {.callout-note title="Film room: Detroit Lions 2022–2024"}
+Under offensive coordinator Ben Johnson (2022–2024), the Lions made the eligible lineman a regular
+part of their offense. Backup tackle Dan Skipper, and at times starting left tackle Taylor Decker,
+lined up as an extra lineman at the end of the line and reported eligible, so the Lions could run
+behind six linemen and still, now and then, throw to one of them. In 2022 Detroit used a sixth
+lineman on about 10% of its snaps, second-most in the league.<!-- VERIFY: Skipper and Decker as the Lions' reporting-eligible linemen, 2022–2024; FACTS-current lists "Lions jumbo with an eligible tackle" as checked out. -->
+
+The most famous of those snaps didn't count. On December 30, 2023, at Dallas, Detroit scored a
+touchdown with 23 seconds left to pull within a point at 20–19 and went for two. Jared Goff threw to Decker, who
+caught it in the end zone. The officials ruled that it was Skipper, not Decker, who had reported
+eligible, so Decker was an ineligible receiver: penalty, no conversion, and the Cowboys won
+20–19.[^lionstwo] The play became a national argument about how players report, and it's the best
+illustration you'll find of why reporting matters. It also shows the logic of jumbo: the defense
+saw six linemen and expected a run; the Lions' answer was a pass to the man it least expected to
+catch one.
+
+**What to notice:** when an offense goes jumbo, watch the referee. If he turns to the press box and
+announces a number, a lineman has reported eligible, and the defense now has to account for him
+too.
+:::
+
+## The defense answers: substitution matching
+
+Personnel is a two-sided game. The offense picks its eleven first, and the defense answers with its
+own. Defensive groupings are named differently, usually by how many **defensive backs**
+([cornerbacks](../01-foundations/01-03-the-twenty-two.qmd) and
+[safeties](../01-foundations/01-03-the-twenty-two.qmd), the players whose main job is pass
+coverage) are on the field, because that number is what the defense changes most:
+
+- **Base**: four defensive backs, with seven players up front (four linemen and three
+  linebackers in a "4-3," or three and four in a "3-4"). Built to stop the run.
+- **Nickel**: five defensive backs. The fifth, called the **nickel back** or
+  [slot cornerback](../01-foundations/01-03-the-twenty-two.qmd), usually replaces a linebacker and
+  covers the receiver lined up in the slot (between the outside receiver and the line).
+- **Dime**: six defensive backs, for obvious passing downs.
+
+Those are just quick glosses. The packages themselves, where their names come from, and why
+nickel has become the NFL's real base defense are the subject of [A First Look at
+Defense](02-05-a-first-look-at-defense.qmd).
+
+The defense's choice follows a simple logic: **match bodies to bodies.** A wide receiver is fast,
+so he should be covered by a defensive back, who is also fast. A tight end or fullback is big, so a
+linebacker, who is bigger and better at taking on blocks, is a reasonable match. Add a receiver,
+add a defensive back. Add a tight end, add a linebacker. That reflex is called [**substitution
+matching**](../../appendices/glossary.qmd#gl-substitution-matching).
+
+```{python}
+#| code-summary: "Show the Python (simulated tracking for the substitution sequence)"
+# Two groups swap players between plays. gridiron's Play schedules all pre-snap movement to finish at
+# the snap, so this sequence is built as BDB-style tracking frames directly (x, y in yards, 10 frames
+# per second) and drawn with gridiron's Field and draw_marker (markers a little larger than usual,
+# because the whole width of the field has to fit in each small panel).
+LOS, BALL_Y = 50.0, FIELD_WIDTH / 2
+OFF_BENCH, DEF_BENCH = 25.6, -25.6       # the two benches are on opposite sidelines
+HUDDLE_C, HUDDLE_R = (-9.5, 0.0), 2.6
+
+# Offense in 11 personnel (singleback 2x2), then 12 personnel (two tight ends) after the swap.
+ALIGN_11 = {"LT": (LINE_D, -3.2), "LG": (LINE_D, -1.6), "C": (LINE_D, 0), "RG": (LINE_D, 1.6),
+            "RT": (LINE_D, 3.2), "QB": (UC, 0), "RB": (TB_D, 0), "Y": (LINE_D, TE_W),
+            "X": (LINE_D, -15), "H": (OFF_BALL, -9), "Z": (OFF_BALL, 15)}
+ALIGN_12 = dict(ALIGN_11, U=(LINE_D, -TE_W), X=(OFF_BALL, -15))
+ALIGN_12.pop("H")
+OFF_LABEL = {"C": "C", "QB": "Q", "RB": "R", "Y": "Y", "U": "U", "X": "X", "H": "H", "Z": "Z"}
+OFF_POS = {"RB": "RB", "Y": "TE", "U": "TE", "X": "WR", "H": "WR", "Z": "WR", "QB": "QB"}
+
+# The defense's nickel (4-2-5) against 11, and its base 4-3 against 12.
+NICKEL = {"WDE": (1.0, -4.0), "WDT": (1.0, -0.7), "SDT": (1.0, 2.35), "SDE": (1.0, 5.4),
+          "WILL": (4.5, -2.4), "MIKE": (4.5, 1.6), "NB": (5.0, -9.0),
+          "LCB": (7.0, -15), "RCB": (7.0, 15), "FS": (12.0, -8.5), "SS": (12.0, 8.5)}
+# Base keeps the same four linemen; the linebackers and safeties set the strength to U's side (left).
+BASE = {"WDE": (1.0, -4.0), "WDT": (1.0, -0.7), "SDT": (1.0, 2.35), "SDE": (1.0, 5.4),
+        "WILL": (4.5, 2.6), "MIKE": (4.5, -1.2), "SAM": (4.0, -6.6),
+        "LCB": (7.0, -15), "RCB": (7.0, 15), "FS": (12.5, 1.0), "SS": (8.0, -9.5)}
+DEF_LABEL = {"WDE": "E", "SDE": "E", "WDT": "T", "SDT": "T", "WILL": "W", "MIKE": "M", "SAM": "S",
+             "NB": "$", "LCB": "C", "RCB": "C", "FS": "FS", "SS": "SS"}
+
+# Huddle: ten players in a ring, the quarterback in the middle facing them.
+ring_keys = ["LT", "LG", "H", "C", "RG", "RT", "Y", "Z", "RB", "X"]   # H's spot faces his bench
+HUDDLE = {k: (HUDDLE_C[0] + HUDDLE_R * np.cos(a), HUDDLE_C[1] + HUDDLE_R * np.sin(a))
+          for k, a in zip(ring_keys, np.linspace(0, 2 * np.pi, 10, endpoint=False) + np.pi / 10)}
+HUDDLE["QB"] = HUDDLE_C
+
+# Keyframes: player -> [(t, d, w), ...], t = seconds since the whistle (play clock = 40 - t).
+KF = {}
+for k in ALIGN_11:                                        # everyone but H: huddle, then break to 12 spots
+    if k == "H":
+        continue
+    KF[k] = [(0, *HUDDLE[k]), (15.5, *HUDDLE[k]), (21.5, *ALIGN_12[k])]
+KF["H"] = [(0, *HUDDLE["H"]), (3.0, *HUDDLE["H"]), (8.0, -9.0, OFF_BENCH), (24, -9.0, OFF_BENCH)]
+KF["U"] = [(0, -11.5, OFF_BENCH), (3.0, -11.5, OFF_BENCH), (8.2, *HUDDLE["H"]),
+           (15.5, *HUDDLE["H"]), (21.5, *ALIGN_12["U"])]
+for k, spot in NICKEL.items():                            # defense waits in nickel, then adjusts to 12
+    if k == "NB":
+        KF[k] = [(0, *spot), (9.0, *spot), (14.0, 3.0, DEF_BENCH), (24, 3.0, DEF_BENCH)]
+    else:
+        KF[k] = [(0, *spot), (16.0, *spot), (21.5, *BASE[k])]
+KF["SAM"] = [(0, 6.0, DEF_BENCH), (9.5, 6.0, DEF_BENCH), (14.5, 4.5, -8.5), (16.0, 4.5, -8.5),
+             (21.5, *BASE["SAM"])]
+# The umpire stands over the ball while the offense substitutes, then steps back to his spot.
+UMP = [(0, 3.0, -1.5), (3.5, 3.0, -1.5), (5.0, 0.6, 0.0), (15.0, 0.6, 0.0), (17.0, 5.5, -2.5)]
+
+
+def at(kf, t):
+    ts = np.array([q[0] for q in kf])
+    return (float(np.interp(t, ts, [q[1] for q in kf])), float(np.interp(t, ts, [q[2] for q in kf])))
+
+
+def sub_tracking(t_end=24.0, dt=0.1):
+    """BDB-style tracking frames for the substitution sequence."""
+    rows = []
+    times = np.round(np.arange(0, t_end + 1e-9, dt), 2)
+    for fid, t in enumerate(times, 1):
+        for k, kf in KF.items():
+            d, w = at(kf, t)
+            side = "def" if k in DEF_LABEL else "off"
+            lab = DEF_LABEL.get(k) if side == "def" else OFF_LABEL.get(k, "")
+            rows.append(dict(frameId=fid, time=float(t), displayName=k, x=LOS + d, y=BALL_Y - w,
+                             side=side, label=lab))
+        rows.append(dict(frameId=fid, time=float(t), displayName="football", x=LOS, y=BALL_Y,
+                         side="ball", label=""))
+    df = pd.DataFrame(rows)
+    df["_id"] = df["displayName"]
+    return df
+
+
+SUBS = {"H": style.MUTED, "U": TE_RING, "NB": style.MUTED, "SAM": style.DEFENSE}
+SUB_NOTES = ["Whistle. 11 personnel in the huddle;\nthe defense is in nickel ($ = nickel back)",
+             "Offense subs: H (a receiver) jogs off,\nU (a tight end) runs on. Umpire over the ball",
+             "Defense matches: the nickel back\nruns off, S (a linebacker) runs on",
+             "Both set: 12 personnel against\na base 4-3 (four DBs, three LBs)"]
+SUB_TIMES = [1.5, 6.0, 12.5, 23.5]
+
+
+def sub_panel(ax, df, t, small=True):
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    fld = Field(ax=ax, orient="vertical", los=LOS, window=(-14.5, 14.5), to_go=None,
+                numbers=False, hashes=True)
+    cur = df[df["frameId"] == fid]
+    trails = df[(df["frameId"] <= fid) & df["displayName"].isin(list(SUBS)) & (df["time"] <= 15.5)]
+    ppy = fld.pts_per_yard()
+    for k, g in trails.groupby("displayName"):
+        px, py = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(px, py, color=style.OFFENSE if k in OFF_LABEL else style.DEFENSE, lw=0.9, alpha=0.45,
+                zorder=3)
+    for _, row in cur.iterrows():
+        x, y = fld.xy(row["x"], row["y"])
+        draw_marker(ax, float(x), float(y), row["side"], row["label"], ppy * (1.5 if small else 1.1),
+                    r=0.85 if small else 0.75)
+    for k, col in SUBS.items():                    # ring the four players who change
+        row = cur[cur["displayName"] == k].iloc[0]
+        x, y = fld.xy(row["x"], row["y"])
+        ax.add_patch(Circle((float(x), float(y)), 1.4, fc="none", ec=col, lw=1.6, zorder=7))
+    ud, uw = at(UMP, t)                            # the umpire: striped disc
+    x, y = fld.xy(LOS + ud, BALL_Y - uw)
+    ax.add_patch(Circle((float(x), float(y)), 0.75, fc="white", ec=style.INK, lw=0.9, hatch="||||",
+                        zorder=9))
+    for wy, txt in [(OFF_BENCH, "offense's bench"), (DEF_BENCH, "defense's bench")]:
+        bx, by = fld.xy(LOS + 12.9, BALL_Y - wy)
+        ax.text(float(bx), float(by), txt, fontsize=6.5 if small else 8, color=style.INK_2,
+                ha="left" if wy < 0 else "right", va="center", style="italic", zorder=6)
+    return fld
+```
+
+Watch it happen. Between plays, the offense swaps a receiver for a second tight end, and the
+defense swaps its nickel back for a linebacker:
+
+```{python}
+#| label: fig-sub-strip
+#| fig-cap: "Substitution matching, between two plays (simulated, BDB-format tracking; times are typical, not fixed). 1: the offense huddles in 11 personnel while the defense waits in nickel. 2: the offense sends a tight end (U, gold ring) on for a receiver (H, gray ring); the umpire (striped) stands over the ball so the offense can't snap yet. 3: the defense answers, its nickel back ($) off and a linebacker (S, orange ring) on. 4: 12 personnel lines up against a base 4-3. Offense: Q = quarterback, R = running back, X/Z = receivers, Y/U = tight ends. Defense: E = end, T = tackle, M/W/S = linebackers, C = cornerback, FS/SS = safeties."
+SUB_DF = sub_tracking()
+if PDF:
+    fig, axes = plt.subplots(2, 2, figsize=(6.6, 5.0))
+    for i, (ax, t) in enumerate(zip(axes.flat, SUB_TIMES)):
+        sub_panel(ax, SUB_DF, t)
+        ax.set_title(f"{i + 1}.  play clock :{40 - t:.0f}", fontsize=8.5, color=style.INK_2, loc="left")
+        ax.text(0.5, -0.02, SUB_NOTES[i], transform=ax.transAxes, ha="center", va="top", fontsize=7.3,
+                color=style.INK, linespacing=1.15)
+    fig.tight_layout(h_pad=2.4, w_pad=0.8)
+    plt.show()
+else:
+    fig, ax = plt.subplots(figsize=(6.4, 3.9))
+    tmap = SUB_DF.groupby("frameId")["time"].first()
+
+    def update(fid):
+        ax.clear()
+        t = float(tmap[fid])
+        sub_panel(ax, SUB_DF, t, small=False)
+        note = [n for tt, n in zip([0.0, 4.0, 9.5, 20.5], SUB_NOTES) if tt <= t + 1e-6][-1]
+        ax.set_title(f"play clock :{40 - t:.0f}    " + note.replace("\n", " "), fontsize=8.5,
+                     color=style.INK, loc="left")
+        return []
+
+    frames = sorted(SUB_DF["frameId"].unique())[::2]
+    anim = animation.FuncAnimation(fig, update, frames=frames, interval=200)
+    html_video(anim)
+```
+
+Notice three things.
+
+First, **the order.** The offense moved first and the defense second. The defense couldn't
+sensibly move first: if it had sent on a linebacker and the offense had then sent on a fourth
+receiver, the linebacker would have been stuck covering a receiver he can't run with.
+
+Second, **the defense had time.** The umpire, the official who normally stands among the
+defenders, walked to the ball and stood over it. That's not a courtesy; it's the rule.
+
+Third, **the defense only matched bodies.** It still has no idea whether the second tight end is
+there to block or to run a route, and the offense still hasn't chosen its formation. The defense
+has spent its answer, and the offense keeps its next two moves.
+
+### The rules that protect the match
+
+The NFL rulebook builds this sequence in. When the offense substitutes, the defense must be given a
+reasonable chance to respond. The umpire stands over the ball, and the offense isn't allowed to
+snap it until the referee judges that the defense has had that chance. That protection applies
+everywhere except the last two minutes of each half, when the clock matters more and the umpire
+doesn't hold the ball.[^subs] It exists to stop a trick: without it, an offense could run new
+players on and snap the ball before the defense could react, catching the defense with the wrong
+players or, worse, with a twelfth man still running off.
+
+The rule cuts both ways, and offenses have learned to use the other edge:
+
+- **If the offense substitutes, the defense gets to match.** That's the deal. Change personnel,
+  and you hand the defense a free look and a free answer.
+- **If the offense doesn't substitute, the defense gets no pause.** A team that keeps the same
+  eleven players and hurries to the line (the
+  [no-huddle](../01-foundations/01-04-what-a-play-really-is.qmd)) can snap as soon as it is set.
+  A defense that tries to change players then risks having twelve men on the field when the ball
+  is snapped, a five-yard penalty.
+
+So offenses that want to keep a defense in the wrong grouping do it by *not* changing their own.
+If the defense is in its base package against a 12-personnel offense that is throwing well, the
+offense can stay in 12, play fast, and keep those linebackers on the field. That tempo game gets
+its own chapter, [In-Game Adjustments, Tempo, and the Sideline
+Battle](../08-the-chess-match/08-04-in-game-adjustments-and-tempo.qmd).
+
+There is also a limit on bluffing. An offense can't run a player on just to bait the defense into a
+change and then pull him straight back off: a substitute who comes on and talks to his teammates
+has to stay in for at least one play.<!-- VERIFY: NFL Rule 5, Section 2 (substitutes): a substitute who enters and communicates with teammates must remain for at least one down; confirm current wording. --> The fakes, when they come, are in the formation, not in the substitution.
+
+::: {.callout-important title="Why it exists"}
+**Substitution matching exists because offenses get to choose first.** Football makes the offense
+commit to its *bodies* first, while the play clock is running and everyone can see. In exchange,
+the offense gets the last word on the *formation* and the *play*. The defense gets the last word on
+bodies, and the rules guarantee it the time to use it. That trade decides how every pre-snap
+contest starts: the offense picks personnel hoping the defense's best answer to *who* is the wrong
+answer to *where* and *what*.
+:::
+
+### What defenses actually do
+
+Here is how NFL defenses answered each grouping in 2025, counting the defensive backs on the field
+for every regular-season run and pass:
+
+```{python}
+#| code-summary: "Show the Python (load ten seasons of play-by-play and participation data)"
+#| output: false
+from gridiron.data import nfl, pbp
+
+SEASONS = list(range(2016, 2026))
+part = nfl().load_participation(SEASONS).to_pandas()
+COLS = ["season", "season_type", "game_id", "play_id", "posteam", "down", "play_type", "pass",
+        "wp", "half_seconds_remaining", "shotgun"]
+plays = pbp(SEASONS, columns=COLS)
+plays = plays[(plays.season_type == "REG") & plays.play_type.isin(["pass", "run"]) & plays.down.notna()]
+df = plays.merge(part, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"])
+
+
+def count(s, positions):
+    """Sum the counts for some positions in a personnel string. Two formats exist:
+    2016-2022 (NGS) '1 RB, 2 TE, 2 WR' (linemen listed only when there are six or more), and
+    2023-2025 (FTN) '1 C, 2 G, 1 QB, 1 RB, 2 T, 2 TE, 2 WR' (every player by roster position)."""
+    if not isinstance(s, str):
+        return np.nan
+    return sum(int(n) for n, pos in re.findall(r"(\d+)\s+([A-Z]+)", s) if pos in positions)
+
+
+op = df["offense_personnel"]
+df["rb"] = op.map(lambda s: count(s, {"RB", "FB"}))       # fullbacks count as backs
+df["te"] = op.map(lambda s: count(s, {"TE"}))
+df["wr"] = op.map(lambda s: count(s, {"WR"}))
+df["ol"] = op.map(lambda s: count(s, {"OL", "C", "G", "T"}))
+df.loc[(df.season <= 2022) & (df.ol == 0), "ol"] = 5      # the NGS strings omit a normal five
+df["db"] = df["defense_personnel"].map(lambda s: count(s, {"DB", "CB", "S", "FS", "SS"}))
+df = df[df.rb.notna() & df.te.notna()].copy()
+df["pers"] = df.rb.astype(int).astype(str) + df.te.astype(int).astype(str)
+df["jumbo"] = df.ol >= 6
+
+# "Neutral": 1st and 2nd down, win probability 20-80%, outside the last two minutes of each half.
+neutral = df[df.down.isin([1, 2]) & df.wp.between(0.2, 0.8) & (df.half_seconds_remaining > 120)]
+print(f"{len(df):,} regular-season runs and passes with personnel, 2016-2025")
+```
+
+```{python}
+#| label: fig-def-match
+#| fig-cap: "How defenses matched each offensive grouping in 2025 (regular-season runs and passes; nflverse participation data, FTN-charted). Against three or four receivers (11, 10), defenses played nickel or dime almost every time. Against two tight ends or two backs (12, 21), they went to their base defense about 60% of the time; against the heaviest groupings (13, 22), about 80%, sometimes with only three defensive backs (goal-line packages)."
+s = df[(df.season == 2025) & df.db.between(2, 8)].copy()
+s["pkg"] = pd.cut(s.db, [0, 3, 4, 5, 9], labels=["3 or fewer DBs", "4 DBs (base)", "5 DBs (nickel)",
+                                                  "6+ DBs (dime)"])
+order = ["10", "11", "12", "21", "13", "22"]
+ct = (pd.crosstab(s.pers, s.pkg, normalize="index") * 100).reindex(order)
+n = s.pers.value_counts().reindex(order)
+cols = {"3 or fewer DBs": "#898781", "4 DBs (base)": style.DEFENSE, "5 DBs (nickel)": style.OFFENSE,
+        "6+ DBs (dime)": style.THIRD}
+fig, ax = plt.subplots(figsize=(6.5, 3.0))
+left = np.zeros(len(order))
+for c in ["4 DBs (base)", "5 DBs (nickel)", "6+ DBs (dime)", "3 or fewer DBs"]:
+    v = ct[c].values
+    ax.barh(range(len(order)), v, left=left, color=cols[c], label=c, height=0.66, edgecolor=style.SURFACE)
+    for i, (l, val) in enumerate(zip(left, v)):
+        if val >= 9:
+            ax.text(l + val / 2, i, f"{val:.0f}%", ha="center", va="center", fontsize=7.5,
+                    color="white" if c != "3 or fewer DBs" else style.INK)
+    left += v
+ax.set_yticks(range(len(order)), [f"{o}  (n={n[o]:,})" for o in order], fontsize=8)
+ax.invert_yaxis()
+ax.set_xlim(0, 100)
+ax.set_xlabel("share of the offense's plays (%)", fontsize=8)
+ax.grid(axis="y", visible=False)
+ax.set_title("Offensive personnel → the defense's answer, 2025", fontsize=10)
+ax.legend(ncol=4, fontsize=7, loc="upper center", bbox_to_anchor=(0.45, -0.2), frameon=False)
+plt.show()
+```
+
+The matching is strong but not mechanical. Against 11 personnel, defenses were in nickel or dime
+about 93% of the time; a base defense against three receivers is asking a linebacker to cover a
+slot receiver, and almost nobody wants that. Against 12 and 21, though, about a third of defenses
+stayed in nickel. Those are defenses making a bet: that their nickel back is good enough against
+the run to survive a second tight end, and that keeping a fifth defensive back is worth it in case
+the offense throws. The 2025 league as a whole played base on about 30% of snaps, up from a low of
+about 20% in 2023. The offenses got bigger, so the defenses got bigger too.[^ngs]
+
+## Why personnel is the first clue
+
+The pre-snap read that this course builds, play by play, runs in a fixed order: **situation →
+personnel → formation → motion → the defense's box and shell → prediction**. (The checklist is
+assembled step by step through Part 2, and [Motion and Shifts as
+Weapons](02-06-motion-and-shifts.qmd) puts it on one card.) Personnel comes right after the
+situation for a simple reason: it is the first clue you can *see*, and you can see it early.
+
+```{python}
+#| label: fig-clue-clock
+#| fig-cap: "When each pre-snap clue becomes readable during a typical huddling snap (times vary by team and tempo). The situation is known before the whistle; personnel shows as substitutes run on, usually with half a minute or more left on the play clock; the formation appears only when the huddle breaks; motion, the defense's box and its safeties come last, and the defense works to disguise them."
+clues = [("Situation (down, distance, score, clock)", 40, 0, style.MUTED),
+         ("Personnel (who runs on and off)", 37, 0, style.OFFENSE),
+         ("Formation (where they line up)", 17, 0, style.OFFENSE_DARK),
+         ("Motion and shifts", 7, 0, style.THIRD),
+         ("Defense's box and safeties (often disguised)", 5, 0, style.DEFENSE)]
+fig, ax = plt.subplots(figsize=(6.5, 2.6))
+for i, (name, start, end, col) in enumerate(clues):
+    ax.barh(i, start - end, left=end, color=col, height=0.55, alpha=0.9)
+ax.set_xlim(41, -0.5)           # the play clock counts down, left to right
+ax.set_xticks([40, 30, 20, 15, 10, 5, 0], [":40", ":30", ":20", ":15", ":10", ":05", "snap"], fontsize=8)
+ax.set_yticks(range(len(clues)), [c[0] for c in clues], fontsize=8)
+ax.tick_params(axis="y", length=0)
+ax.invert_yaxis()
+ax.axvline(40, color=style.BASELINE, lw=0.8)
+ax.text(40, -0.75, "whistle", ha="center", fontsize=7, color=style.INK_2)
+ax.axvline(15, color=style.BASELINE, lw=0.8, ls=(0, (3, 2)))
+ax.text(15, -0.75, "radio cuts out", ha="center", fontsize=7, color=style.INK_2)
+ax.set_xlabel("play clock", fontsize=8)
+ax.grid(axis="y", visible=False)
+ax.spines["left"].set_visible(False)
+plt.show()
+```
+
+Personnel does three jobs at once.
+
+**It narrows the menu.** An offense in 22 personnel can't throw to four receivers, because it
+doesn't have four. An offense in 11 can't line up in a two-tight-end power formation, because it
+has only one tight end. Every grouping rules out a large part of the playbook before anyone lines
+up, and rules in a few favorites. If you know a team, you often know which of its formations go
+with which grouping ([Classic Formations](02-03-classic-formations.qmd) and
+[Spread Formations](02-04-spread-and-modern-formations.qmd) pair them up).
+
+**It moves the run/pass odds.** You'll see the numbers in a moment. They're real but modest for
+the common groupings, and large for the heavy ones.
+
+**It sets up the matchups.** This is the deepest of the three, and the one coaches spend the most
+time on. Because the defense matches personnel and the offense then picks the formation, every
+grouping is a bet about what the defense will do with its answer. Twelve personnel shows it best:
+
+```{python}
+#| label: fig-dilemma
+#| fig-cap: "The two-tight-end dilemma. Left: the defense answered 12 personnel with nickel, so the offense lines up tight and runs at the smallest defender, its tight end (Y) blocking the nickel back ($), roughly a 250-pound player against a 195-pound one. Right: the defense answered with its base 4-3, so the offense splits both tight ends out like receivers; a linebacker (S) has to cover a tight end in open space, and the tight end runs straight up the field (a 'seam' route). Gold rings = tight ends."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.95))
+
+# Left: 12 personnel, tight, against nickel. Run at the nickel back.
+off = line5() + [P("QB", "QB", UC, 0, "Q"), P("RB", "RB", TB_D, 0, "R"), P("Y", "TE", LINE_D, TE_W),
+                 P("U", "TE", LINE_D, -TE_W), P("X", "WR", OFF_BALL, -10.5), P("Z", "WR", OFF_BALL, 10.5)]
+nick = [D("WDE", "DE", 1.0, -5.6, "E"), D("WDT", "DT", 1.0, -0.7, "T"), D("SDT", "DT", 1.0, 2.35, "T"),
+        D("SDE", "DE", 1.0, 4.0, "E"), D("WILL", "WILL", 4.5, -2.0), D("MIKE", "MIKE", 4.5, 1.6),
+        D("NB", "NB", 3.4, 5.9, "$"), D("LCB", "CB", 6.5, -10.5), D("RCB", "CB", 7.0, 11.5),
+        D("FS", "FS", 12.0, -6.0), D("SS", "SS", 12.0, 6.0)]
+a = Play(off, nick, los=35, to_go=10)     # the right end is inside the tight end, over the RT
+a.block("Y", target="NB")                 # the tight end seals the nickel back inside
+a.block("RT", target="SDE")
+a.run("RB", [(3.5, 4.5), (6.4, 7.6), (9.8, 9.4), (12.0, 9.8)], delay=0.5)   # bounce outside the seal
+a.highlight("Y", "U", color=TE_RING)
+a.highlight("NB", color=style.DEFENSE)
+a.note("TE blocks the nickel", at=(8.2, 1.0))
+a.draw(ax=axes[0], lateral=(-17, 17), window=(-9.0, 14.5), title=False)
+hide_yard_numbers(axes[0])
+axes[0].set_title("Defense in nickel: run at it", fontsize=9.5, loc="left", color=style.INK)
+
+# Right: the same 12 personnel spread out against base. Throw at the linebacker.
+off = line5() + [P("QB", "QB", GUN, 0, "Q"), P("RB", "RB", GUN, -2.2, "R"),
+                 P("X", "WR", LINE_D, -15), P("U", "TE", OFF_BALL, -8.5),
+                 P("Y", "TE", OFF_BALL, 8.5), P("Z", "WR", LINE_D, 15)]
+base = defense("4-3_over", "two_high", off)
+fix = {"SAM": dict(d=4.5, w=8.0), "WILL": dict(d=4.5, w=-7.5), "MIKE": dict(d=5.0, w=0.4),
+       "LCB": dict(d=6.5), "RCB": dict(d=6.5), "FS": dict(d=12.5, w=-7.5), "SS": dict(d=12.5, w=7.5)}
+base = [q.moved(**fix[q.key]) if q.key in fix else q for q in base]
+b = Play(off, base, los=35, to_go=10)
+b.route("Y", r.seam(10.5))
+b.highlight("Y", "U", color=TE_RING)
+b.highlight("SAM", color=style.DEFENSE)
+b.note("LB on a TE in space", at=(8.3, 1.0))
+b.draw(ax=axes[1], lateral=(-17, 17), window=(-9.0, 14.5), title=False)
+hide_yard_numbers(axes[1])
+axes[1].set_title("Defense in base: throw at it", fontsize=9.5, loc="left", color=style.INK)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+That's the bind. If the defense answers two tight ends with nickel, it has a 195-pound defensive
+back near the line of scrimmage, and the offense can run straight at him with a 250-pound tight
+end blocking. If it answers with base, it has three linebackers on the field, and the offense can
+spread the tight ends out and make a linebacker cover one of them down the field. The better the
+tight ends are at *both* jobs, the worse the defense's choice gets. That's why great two-way tight
+ends are so valuable, and it's a big part of why 12 personnel has grown: an offense with two of
+them can pick whichever mismatch the defense hands it, after the defense has made its choice.
+
+The same logic runs the other way for the defense. A defense with a safety who can tackle like a
+linebacker, or a linebacker who can cover like a safety, doesn't have to choose: it can stay in
+one grouping against everything and take the matchup game away. That's the story of the "big
+nickel" and the hybrid defender, told in [A First Look at
+Defense](02-05-a-first-look-at-defense.qmd).
+
+## Personnel and run/pass: what the numbers say
+
+So how much does personnel tell you about run or pass? Here is every grouping with at least 300
+plays in the three most recent seasons, counting only **neutral situations**: first and second
+down, outside the last two minutes of each half, with neither team far ahead or behind (win
+probability between 20% and 80%). Think of neutral as "not late, not lopsided." In those
+situations, the offense's choice reflects its plan rather than the scoreboard; [Tendencies: PROE,
+Personnel, Motion, and Coverage](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd)
+defines it formally and builds on it.
+
+```{python}
+#| label: fig-pass-rate
+#| fig-cap: "Pass rate by personnel in neutral situations (1st and 2nd down, win probability 20–80%, outside the last two minutes of each half), 2023–2025 regular seasons, groupings with at least 300 plays. A pass is any dropback, including sacks and scrambles. Jumbo plays (six or more offensive linemen) are also counted in the grouping their backs and tight ends give them. The dashed line is the league rate in the same situations."
+s = neutral[neutral.season.isin([2023, 2024, 2025])]
+g = s.groupby("pers")["pass"].agg(["mean", "size"])
+g = g[g["size"] >= 300]
+j = s[s.jumbo]["pass"].agg(["mean", "size"])
+g.loc["jumbo"] = [j["mean"], j["size"]]
+g = g.sort_values("mean")
+league = s["pass"].mean()
+fig, ax = plt.subplots(figsize=(6.5, 3.2))
+colors = [style.DEFENSE if k == "jumbo" else style.OFFENSE for k in g.index]
+ax.barh(range(len(g)), g["mean"] * 100, color=colors, height=0.62)
+for i, (k, row) in enumerate(g.iterrows()):
+    ax.text(row["mean"] * 100 + 1, i, f"{row['mean'] * 100:.0f}%", va="center", fontsize=8, color=style.INK)
+ax.axvline(league * 100, color=style.INK_2, lw=1, ls=(0, (4, 3)))
+ax.text(league * 100 + 0.8, 0, f"all plays\n{league * 100:.0f}%", fontsize=7.5, color=style.INK_2,
+        va="center", ha="left")
+ax.set_yticks(range(len(g)), [f"{k}  (n={int(row['size']):,})" for k, row in g.iterrows()], fontsize=8)
+ax.set_xlim(0, 75)
+ax.set_xlabel("share of plays that were dropbacks (%)", fontsize=8)
+ax.grid(axis="y", visible=False)
+ax.set_title("Pass rate by personnel, neutral situations, 2023–2025", fontsize=10)
+plt.show()
+```
+
+Three things jump out.
+
+**The common groupings are weak clues.** In neutral situations, offenses passed on about 56% of
+plays from 11 personnel and about 49% from 12. That's a nudge, not a signal. If you predicted "pass"
+every time you saw 11 and "run" every time you saw 12, you'd be right a bit more than half the time.
+That's deliberate: the groupings an offense uses most are the ones it has built to do both. A team
+whose 11 personnel was 80% pass would be giving away the game. Even four receivers (10
+personnel) was only about 55% pass: spreading the defense out also thins the number of defenders
+near the ball, which makes running easier.
+
+**The heavy groupings are strong clues.** From 22 personnel, offenses passed only about 36% of the
+time, and from jumbo about 30%. When an offense brings in its biggest people, it usually means it.
+Those are also the groupings where the rare pass is most dangerous, because the defense has loaded
+up for the run. That's the logic behind
+[play-action](../04-the-passing-game/04-05-play-action-boots-screens.qmd) (faking a handoff before
+throwing), which works best exactly where the run is most expected.
+
+**Personnel predicts the formation as well as the play.** From 11 personnel, offenses lined up in
+the shotgun on about 70% of plays; from 13, only about 30%. Heavy personnel usually means the
+quarterback under center, close to the ball. You can use that as a check on your count: if you
+counted three tight ends and the quarterback is five yards deep in the shotgun, count again, or
+expect something unusual.
+
+```{python}
+#| echo: false
+#| output: false
+_gun = neutral[neutral.season.isin([2023, 2024, 2025])].groupby("pers")["shotgun"].mean()
+assert 0.65 < _gun["11"] < 0.78 and 0.2 < _gun["13"] < 0.4, _gun[["11", "13"]]
+```
+
+::: {.callout-caution title="Common misconception"}
+**"Heavy personnel means run."** Usually, yes, but "usually" is the whole game. Look at 12
+personnel: two tight ends, and the offense still threw on about half of neutral plays. The tight
+end is the reason. A grouping full of players who can block *and* catch is a grouping that hides its
+intentions, and that is precisely why offenses have moved toward it. The personnel tells you what's
+*possible* and shifts the odds. The formation, the motion and the defense's answer tell you more,
+and the next five chapters add those clues one at a time.
+:::
+
+## A decade of personnel: the rise, and the turn, of 11
+
+Here's how the league's mix of groupings moved from 2016 to 2025.
+
+```{python}
+#| label: fig-trend
+#| fig-cap: "Share of NFL regular-season runs and passes by offensive personnel, 2016–2025 (course calculation from nflverse participation data). 11 personnel held at roughly 60% for a decade and fell to 58.8% in 2025, its lowest in the period; 12 personnel rose to 24.4%, its highest. The data source changes after 2022 (Next Gen Stats through 2022, FTN charting from 2023), marked by the dotted line; the personnel counts agree across the break."
+share = (pd.crosstab(df.season, df.pers, normalize="index") * 100)
+lines = {"11": style.OFFENSE, "12": style.DEFENSE, "21": style.THIRD, "13": "#eda100"}
+fig, ax = plt.subplots(figsize=(6.5, 3.6))
+other = 100 - share[list(lines)].sum(axis=1)
+ends = {k: share.loc[2025, k] for k in lines}
+ends["all other"] = other.loc[2025]
+# end-of-line labels, nudged apart so close values (13, 21, other) don't collide
+ys = dict(sorted(ends.items(), key=lambda kv: kv[1]))
+pos, last = {}, -99.0
+for k, v in ys.items():
+    pos[k] = max(v, last + 3.6)
+    last = pos[k]
+for k, col in lines.items():
+    ax.plot(share.index, share[k], color=col, lw=2.2, marker="o", ms=3.5)
+ax.plot(other.index, other, color=style.MUTED, lw=1.4, ls=(0, (3, 2)))
+for k, v in ends.items():
+    ax.text(2025.3, pos[k], f"{k}: {v:.1f}%", va="center", fontsize=8,
+            color=style.INK if k in lines else style.INK_2)
+ax.axvline(2022.5, color=style.BASELINE, lw=1, ls=(0, (1, 2)))
+ax.text(2022.55, 46, "source change\n(NGS → FTN)", fontsize=7, color=style.INK_2, va="center", ha="left")
+ax.set_xlim(2015.6, 2027.6)
+ax.set_xticks(range(2016, 2026), [str(y) for y in range(2016, 2026)], fontsize=8)
+ax.set_ylim(0, 70)
+ax.set_ylabel("share of plays (%)", fontsize=8)
+ax.set_title("Personnel share by season", fontsize=10)
+plt.show()
+```
+
+For most of the decade the story is stability: 11 personnel on about 60% of plays, 12 on about
+20%, 21 on about 8%, everything else sharing the rest. The rise of 11 had happened earlier, over
+the 2000s and early 2010s, as the NFL passed more, as college spread offenses supplied receivers
+and quarterbacks used to three-receiver sets, and as defenses answered with more defensive backs.
+By the late 2010s, three receivers was simply what an offense looked like. Sean McVay's Rams, who
+used 11 personnel on almost every snap in 2018 (see the film room below), were the extreme case
+of a league-wide habit.
+
+Then 2025 moved. Eleven personnel fell to 58.8%, its lowest share of the decade, and 12 rose to
+24.4%, its highest. Thirteen personnel jumped from 3.7% to 5.1%. Next Gen Stats, measuring it its
+own way, found offenses with fewer than three wide receivers on 41.7% of 2025 plays, the first season
+at or above 38% since it began tracking in 2016, and the share kept climbing as the season went on.[^ngs2]
+
+Why? The short version is an arms race. Through the late 2010s and early 2020s, defenses got
+smaller and deeper to stop the pass: more nickel and dime, and more two-deep safety looks (the
+two-high shells introduced in [A First Look at Defense](02-05-a-first-look-at-defense.qmd)). A
+defense with two safeties deep and a fifth defensive back on the field has fewer big bodies near
+the line, a "light box." Offenses answered by getting bigger and running at it, often with the
+quarterback back under center. And as you saw above, defenses then answered *that* by playing more
+base in 2025. Each side's move invites the other's. [The Modern
+Era](../11-history/11-05-the-modern-era.qmd) tells the whole arms race, and [Working with nflverse
+Data in Python](../13-analytics-and-data/13-01-nflverse-in-python.qmd) shows you how to rebuild
+these charts yourself.
+
+::: {.callout-note title="Go deeper: where the numbers come from"}
+Every chart in this chapter is a course calculation from the nflverse **participation** data
+(`load_participation()`), which lists the personnel on each play, joined to nflverse
+play-by-play.[^data] Two cautions if you reproduce them. First, the source changes between 2022
+and 2023: Next Gen Stats supplied 2016–2022 and FTN Data supplies 2023 onward, and the personnel
+strings change format ("1 RB, 2 TE, 2 WR" before, every player by position after), so the code
+normalizes them before counting. Second, the participation file for a season arrives only after the
+season ends, so 2026 numbers won't exist until early 2027. Published series from other providers
+(Next Gen Stats, Sharp Football, PFF) count slightly differently; never put two providers' numbers on
+one axis.
+:::
+
+## Film room
+
+Five teams, five ways of using personnel. Each shows a different idea from this chapter.
+
+```{python}
+#| label: fig-fingerprints
+#| fig-cap: "Personnel fingerprints: each team's share of regular-season runs and passes by grouping, with the 2025 league for comparison (course calculation from nflverse participation data). The 2018 Rams lived in 11; the 2019 49ers led the league in 21; the 2019 Ravens used 22 personnel more than five times as often as the league; the 2024 Eagles leaned on 12; the 2025 Rams split their snaps between 11 and 13, and the 2025 Seahawks were one of the heaviest offenses in football."
+teams = [("LA", 2018, "Rams 2018"), ("SF", 2019, "49ers 2019"), ("BAL", 2019, "Ravens 2019"),
+         ("PHI", 2024, "Eagles 2024"), ("LA", 2025, "Rams 2025"), ("SEA", 2025, "Seahawks 2025"),
+         (None, 2025, "League 2025")]
+groups = ["11", "12", "21", "13", "22"]
+gcol = {"11": style.OFFENSE, "12": style.DEFENSE, "21": style.THIRD, "13": "#eda100", "22": "#e87ba4",
+        "other": "#c3c2b7"}
+rows = []
+for tm, yr, name in teams:
+    t = df[(df.season == yr) & ((df.posteam == tm) if tm else True)]
+    vc = t.pers.value_counts(normalize=True) * 100
+    row = {k: vc.get(k, 0.0) for k in groups}
+    row["other"] = 100 - sum(row.values())
+    rows.append((name, row))
+fig, ax = plt.subplots(figsize=(6.5, 3.4))
+for i, (name, row) in enumerate(rows):
+    left = 0
+    for k in groups + ["other"]:
+        v = row[k]
+        ax.barh(i, v, left=left, color=gcol[k], height=0.66, edgecolor=style.SURFACE,
+                label=k if i == 0 else None)
+        if v >= 7:
+            ax.text(left + v / 2, i, f"{v:.0f}", ha="center", va="center", fontsize=7.5,
+                    color="white" if k not in ("other", "13") else style.INK)
+        left += v
+ax.set_yticks(range(len(rows)), [n for n, _ in rows], fontsize=8)
+ax.invert_yaxis()
+ax.set_xlim(0, 100)
+ax.set_xlabel("share of the team's plays (%)", fontsize=8)
+ax.grid(axis="y", visible=False)
+ax.legend(ncol=6, fontsize=7.5, loc="upper center", bbox_to_anchor=(0.45, -0.2), frameon=False,
+          title=None, handlelength=1.2)
+ax.set_title("Personnel fingerprints", fontsize=10)
+plt.show()
+```
+
+::: {.callout-note title="Film room: Los Angeles Rams 2017–2019"}
+When the Rams hired Sean McVay in January 2017, he was 30, the youngest head coach in modern NFL
+history.[^mcvay] His offense became famous for using one grouping, 11 personnel, almost all the time:
+about 81% of plays in 2017, 93% in 2018 and 73% in 2019, against a league norm of about 60%.
+
+Why would a coach give up the personnel game entirely? Because he was playing a different one. If
+the offense never substitutes, the defense never gets a reason to, so it sits in nickel all day,
+and it never gets the free look that a substitution brings. Every play starts from the same
+personnel, so the defense can't learn anything from it, and McVay put his variety into formation,
+motion and play-action instead. The run/pass split shows it: in neutral situations in 2018 the Rams
+passed on 56% of their 11-personnel plays, almost exactly the league rate. The grouping told the
+defense nothing. That's the opposite strategy to the rest of this film room, and it worked:
+the 2018 Rams reached Super Bowl LIII.
+
+**What to notice:** an offense that never substitutes isn't being lazy. It's denying the defense
+the first clue.
+:::
+
+::: {.callout-note title="Film room: San Francisco 49ers, 21 personnel and Kyle Juszczyk"}
+Kyle Shanahan's 49ers have been the league's leading 21-personnel team for most of his tenure: first
+in the league in 21 personnel in 2017, 2018, 2019, 2021, 2024 and 2025, and second in the other
+seasons from 2017 to 2025, typically around a third of their plays, against a league share of about
+8%. The player who makes it work is fullback Kyle Juszczyk, who signed in March 2017 on a contract
+that made him, at the time, the highest-paid fullback in the league.[^juice]<!-- VERIFY: Juszczyk on the 49ers roster through the 2025 season (reported release and re-signing in March 2025). -->
+
+The point of 21 isn't nostalgia for the I-formation. Juszczyk can block a linebacker on a run, line
+up in the slot, or split out wide like a receiver. When he lines up wide, the defense that matched
+21 personnel with its base package has a linebacker or a safety following a fullback across the
+field, and one fewer defender near the ball. Two backs on the field also give the offense two
+running threats for every play-action fake.
+
+**What to notice:** when the 49ers come out with a fullback, find him after the huddle breaks. Where
+he lines up tells you which matchup they're hunting.
+:::
+
+::: {.callout-note title="Film room: Baltimore Ravens 2019"}
+The 2019 Ravens, with Lamar Jackson at quarterback (that season's unanimous MVP) and Greg Roman as
+offensive coordinator, set the NFL record for team rushing yards in a season, 3,296.[^ravens] They did
+it big. Baltimore used 22 personnel on about 16% of its plays, more than five times the league's 3%,
+with tight ends Mark Andrews, Hayden Hurst and Nick Boyle and the two-way lineman/fullback Patrick
+Ricard.
+
+The surprise is in the tendencies. In neutral situations, the Ravens *ran* on about 64% of their
+11-personnel plays, where the league passed 56% of the time, and *passed* on about 63% of their
+12-personnel plays, where the league passed 49%. With a quarterback who was the most dangerous runner
+on the field, three receivers didn't mean "pass," and two tight ends didn't mean "run." Defenses that
+leaned on league-average tendencies were guessing wrong.
+
+**What to notice:** league tendencies are where you start. A good scouting report, like your own
+prediction log, adjusts them team by team ([The Ravens' Option Run
+Game](../12-case-studies/12-05-ravens-lamar-run-game.qmd) has the full case).
+:::
+
+::: {.callout-note title="Film room: Philadelphia Eagles 2024"}
+The 2024 Eagles signed Saquon Barkley, who ran for 2,005 yards, the ninth 2,000-yard season in NFL
+history, and won Super Bowl LIX, 40–22 over Kansas City.[^barkley] Their personnel was the vehicle:
+12 personnel on about a third of their plays (the league was at 23.5%), with tight end Dallas
+Goedert and a second tight end next to the best offensive line in football.
+
+In neutral situations the Eagles passed on only 32% of their 12-personnel plays, against 48% for the
+league. Twelve personnel was their running grouping, and everyone knew it. They ran anyway, because
+two tight ends and that line made the run work even when the defense expected it.
+
+**What to notice:** a tendency the defense knows about is still a tendency the defense has to stop.
+Predictability costs less when you're good enough at the thing you're predicted to do
+([The Eagles: Trenches, RPOs, and the Tush Push](../12-case-studies/12-06-eagles-trenches-and-tush-push.qmd)).
+:::
+
+::: {.callout-note title="Film room: the 2025 turn, Rams and Seahawks"}
+Two NFC West teams show where personnel went in 2025. McVay's Rams, the 11-personnel team of 2018,
+used **13 personnel** on about 31% of their plays, far more than any other team (the next was 13%),
+and rarely used 12 (about 9%): most of the time they lined up either with three receivers or with three tight ends.
+Matthew Stafford won the MVP throwing from both.[^rams25] And the champion Seattle Seahawks, under
+offensive coordinator Klint Kubiak in 2025, used fewer than three wide receivers on about 55% of
+their snaps, fifth-most in the league, on the way to beating New England 29–13 in Super Bowl LX.
+
+**What to notice:** the 2025 extremes were *binary* teams. The Rams' choice between 11 and 13 forced
+defenses into a hard substitution decision on every snap; if the defense guessed nickel and the
+three tight ends came on, it was small against a very big offense.
+:::
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it: call the personnel"}
+- **Between plays, watch the sidelines, not the replay.** When the broadcast shows a wide shot, count
+  who jogs off and who runs on. Two receivers off and a tight end and a fullback on is a change from
+  11 to 22.
+- **Count backs, then tight ends, and say the number out loud.** Backs stand behind or beside the
+  quarterback; tight ends are the big players at the end of the line or just behind it. Receivers
+  are what's left: 5 minus the other two.
+- **Look for a sixth lineman.** A 300-pounder standing where a tight end usually stands means jumbo.
+  Listen for the referee's "reporting as eligible."
+- **Then watch the defense.** Did a defensive back run off or a linebacker run on? Base, nickel or
+  dime? If the offense substituted and the defense *didn't*, the defense is making a bet.
+- **Make your first guess from the chart.** 11 leans slightly pass, 12 is a coin flip, 21 and 13 lean
+  run, 22 and jumbo are strong run. Adjust for down and distance and for what you know about the team.
+- **Write it down.** Add a "personnel" column to your [prediction
+  log](../01-foundations/01-06-how-to-watch-a-broadcast.qmd): grouping, your guess, the result. After a
+  half, compare your hit rate on the heavy groupings with your hit rate on 11.
+- **No-huddle?** If the offense hurries to the line with the same players, the defense couldn't
+  match. Ask whether it's stuck in the wrong grouping.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: count it"}
+First-and-10 at your own 30. The offense has substituted and is lined up. Before the game you checked
+the roster: **#87, #81 and #88 are tight ends, #26 is a running back, #11 is a wide receiver.** (The
+quarterback is Q; the linemen are unlabeled.)
+
+```{python}
+#| label: fig-predict-count
+#| fig-cap: "Drill 1: who is on the field? Players are labeled by jersey number, as you'd see them on TV. #81 stands far out on the left, at the end of the line; #88 is a yard off the line just outside the left tackle; #87 is next to the right tackle; #11 is wide on the right; #26 is behind the quarterback."
+off = line5() + [P("QB", "QB", PISTOL, 0, "Q"), P("RB", "RB", TB_D, 0, "26"),
+                 P("Y", "TE", LINE_D, TE_W, "87"), P("U", "TE", LINE_D, -15.0, "81"),
+                 P("H", "TE", OFF_BALL, -WING_W - 0.4, "88"), P("X", "WR", OFF_BALL, 15.0, "11")]
+q = Play(off, None, los=40, to_go=10)
+q.draw(lateral=(-19.5, 19.5), window=(-9.5, 3.5), title=False)
+hide_yard_numbers(plt.gca())
+plt.show()
+```
+
+**What's the personnel, which defensive package should you expect, and does the grouping lean run or
+pass?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**13 personnel.** One back (#26) and three tight ends (#87, #81 and #88), so one wide receiver
+(#11). It doesn't matter that #81 is standing out wide where a receiver usually lines up: personnel
+counts who the players are, not where they stand.
+
+**The defense:** against 13 personnel in 2025, defenses played their base package (four defensive
+backs) about 80% of the time, and went to nickel only about 14%. Expect linebackers.
+
+**Run or pass:** on neutral downs, 13 personnel leaned run, with passes on about 45% of plays. But
+look at what this formation does to a base defense: #81 is a tight end lined up like a receiver, so
+the defense has to cover him with someone. If it's a linebacker, that's a mismatch the offense
+created on purpose, the same bind as the two-tight-end dilemma. A team that lines up its heavy
+personnel this wide is often hunting for a pass; one that keeps everyone tight is usually running.
+Personnel gives you the first guess; the formation sharpens it, which is where the next chapters go.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: the fullback goes wide"}
+First-and-10 at midfield. The offense came on with a fullback (F), a tailback (R), one tight end and
+two receivers. The defense answered with its base 4-3. Then the offense lined up like this:
+
+```{python}
+#| label: fig-predict-fb
+#| fig-cap: "Drill 2: the fullback (F, aqua ring) has split out wide on the right, outside receiver Z. The defense is in its base 4-3: E = end, T = tackle, S/M/W = linebackers, C = cornerback, FS/SS = safeties. Gold ring = tight end."
+off = line5() + [P("QB", "QB", GUN, 0, "Q"), P("RB", "RB", GUN, -2.2, "R"), P("Y", "TE", LINE_D, TE_W),
+                 P("X", "WR", LINE_D, -15), P("Z", "WR", OFF_BALL, 9.5), P("FB", "FB", OFF_BALL, 15.5, "F")]
+dfn = defense("4-3_over", "two_high", off)
+fix = {"SAM": dict(d=4.5, w=9.0), "RCB": dict(d=6.0, w=15.5), "LCB": dict(d=6.5),
+       "SS": dict(d=11.0, w=9.5), "FS": dict(d=12.0, w=-7.0), "MIKE": dict(d=4.5, w=1.2),
+       "WILL": dict(d=4.5, w=-2.6)}
+dfn = [q2.moved(**fix[q2.key]) if q2.key in fix else q2 for q2 in dfn]
+q = Play(off, dfn, los=60, to_go=10)
+ring_by_body(q)
+q.draw(lateral=(-19, 19), window=(-7.5, 14), title=False)
+hide_yard_numbers(plt.gca())
+plt.show()
+```
+
+**What's the personnel? Who has the advantage now, and what is the offense hoping for?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Still 21 personnel**: two backs, one tight end, two receivers, even though the fullback is standing
+where a receiver would. The defense matched those *bodies* with its base package, and then the
+offense moved the bodies.
+
+**Who has the advantage:** the offense. Look where the defense's players have had to go. A cornerback
+went out with the fullback, so the Sam linebacker (S) has had to walk out over the slot receiver (Z):
+a bigger, slower player than a nickel back, now covering a receiver. If the defense swaps those two
+(corner on Z, linebacker on the fullback), it has a linebacker 15 yards from the ball instead. Either
+way, a linebacker has left the area near the ball.
+
+**What the offense is hoping for:** whichever of two good options the defense leaves. With a
+linebacker on Z, a quick throw to Z. With that linebacker gone from the middle, a run: there are only
+six defenders near the line (four linemen and the two remaining linebackers) against six blockers (five
+linemen and the tight end), a fair fight for the tailback. This is the 49ers' 21-personnel idea in one
+picture: the defense answered *who*, and the offense answered *where*.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: no substitution"}
+Third-and-7 at the opponent's 45. On first and second down the offense ran twice from 12 personnel (two
+tight ends) and the defense matched with its base 4-3 both times. Now the offense doesn't substitute.
+It hurries to the line with the same eleven players and lines up like this:
+
+```{python}
+#| label: fig-predict-tempo
+#| fig-cap: "Drill 3: 12 personnel in no-huddle, with both tight ends (gold rings) standing off the line on the right, inside receiver Z, three players to that side. The defense is still in its base 4-3 from the last two plays; S, M and W are its linebackers."
+off = line5() + [P("QB", "QB", GUN, 0, "Q"), P("RB", "RB", GUN, -2.2, "R"), P("X", "WR", LINE_D, -15),
+                 P("Y", "TE", OFF_BALL, 5.6), P("U", "TE", OFF_BALL, 9.8), P("Z", "WR", LINE_D, 15)]
+dfn = defense("4-3_over", "two_high", off)
+fix = {"SAM": dict(d=4.5, w=7.6), "MIKE": dict(d=5.0, w=2.0), "WILL": dict(d=4.8, w=-3.4),
+       "SS": dict(d=10.0, w=10.0), "FS": dict(d=13.0, w=-2.0), "LCB": dict(d=6.5), "RCB": dict(d=6.5)}
+dfn = [q2.moved(**fix[q2.key]) if q2.key in fix else q2 for q2 in dfn]
+q = Play(off, dfn, los=65, to_go=7)
+ring_by_body(q)
+q.draw(lateral=(-19, 19), window=(-7.5, 15), title=False)
+hide_yard_numbers(plt.gca())
+plt.show()
+```
+
+**Why didn't the defense change players, and what does the offense probably want here?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The defense didn't change because it couldn't, safely.** The offense kept the same personnel, so the
+umpire had no reason to stand over the ball and give the defense time. A defense that starts running a
+linebacker off and a defensive back on while the offense is set risks being caught with twelve men on
+the field at the snap: a five-yard penalty, which on third-and-7 is a gift. So it's stuck with three
+linebackers.
+
+**What the offense wants:** a pass, probably to a tight end. Third-and-7 is a passing down for any
+personnel, and the offense has spent two plays teaching the defense that this grouping means run, which
+kept the defense in base. Now both tight ends are flexed out with Z, and the defense has linebackers
+covering them away from the ball. That's the payoff the substitution rule allows: the defense is
+protected when the offense *changes* personnel, not when it keeps it.
+
+If the defense saw this coming, its best answer was earlier: substituting into nickel on third down
+*before* the offense hurried to the line, and living with the risk of a run against a lighter defense.
+:::
+:::
+
+## Takeaways
+
+- **Personnel is two digits: running backs, then tight ends.** Wide receivers are 5 minus the two. The
+  quarterback and five linemen are fixed, so the code describes the five spots that change. Jumbo
+  means a sixth lineman.
+- **Personnel counts who is on the field, not where they stand.** A tight end split wide is still a tight
+  end, and the gap between personnel and formation is where offenses create mismatches.
+- **The offense commits first, and the defense matches.** Add receivers and the defense adds defensive
+  backs; add tight ends or backs and it adds linebackers. The rules guarantee the defense time to respond
+  whenever the offense substitutes, and give it none when the offense doesn't.
+- **Personnel shifts the odds; it rarely settles them.** In neutral situations, 11 personnel was about
+  56% pass and 12 about 49%; only the heaviest groupings (22, jumbo) are strong run signals, which is
+  exactly where play-action does its damage.
+- **The league's mix moves with the defense.** 11 personnel held near 60% for a decade, then fell to a
+  decade low in 2025 as offenses went bigger against lighter defenses, and defenses answered with more
+  base.
+
+## Connections
+
+**Builds on:** [The Twenty-Two](../01-foundations/01-03-the-twenty-two.qmd) (who the running backs,
+tight ends and receivers are, and why each body type does its job),
+[What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd) (the forty seconds in which
+personnel goes on first and the play call follows), and [How to Watch a Broadcast Like You Mean
+It](../01-foundations/01-06-how-to-watch-a-broadcast.qmd) (your prediction log, which now gets a
+personnel column).
+
+**Sets up:** [Formation Rules and the Language of Alignment](02-02-formation-rules-and-vocabulary.qmd)
+(the seven-on-the-line rule, the X/Y/Z/H letters and reporting eligible), [Classic
+Formations](02-03-classic-formations.qmd) and [Spread Formations](02-04-spread-and-modern-formations.qmd)
+(which formations go with which personnel), [A First Look at Defense](02-05-a-first-look-at-defense.qmd)
+(base, nickel and dime properly), and [Motion and Shifts as Weapons](02-06-motion-and-shifts.qmd) (the
+next clue after formation). Further on: [Red Zone, Goal Line, and Short
+Yardage](../10-situational-football/10-03-red-zone-goal-line-and-short-yardage.qmd) (heavy personnel
+where it matters most), [In-Game Adjustments, Tempo, and the Sideline
+Battle](../08-the-chess-match/08-04-in-game-adjustments-and-tempo.qmd) (tempo against the substitution
+rule), [Tendencies: PROE, Personnel, Motion, and
+Coverage](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd) (neutral situations and
+team tendency reports), and [Building a Roster](../14-the-business-of-scheme/14-01-building-a-roster.qmd)
+(why the personnel you want decides the players you pay).
+
+**Case studies:** [the Shanahan tree](../12-case-studies/12-03-shanahan-wide-zone-tree.qmd),
+[the Ravens with Lamar Jackson](../12-case-studies/12-05-ravens-lamar-run-game.qmd),
+[the Eagles' trenches](../12-case-studies/12-06-eagles-trenches-and-tush-push.qmd) and
+[the Lions under Ben Johnson](../12-case-studies/12-07-lions-ben-johnson-and-campbell.qmd).
+
+::: {.callout-note title="Go deeper"}
+- The nflverse participation data dictionary, for the personnel fields and their caveats:
+  <https://nflreadr.nflverse.com/articles/dictionary_participation.html>.
+- Sharp Football Analysis publishes team personnel usage and success rates by grouping each season
+  (<https://www.sharpfootballstats.com>); note that its counts differ slightly from nflverse's.
+- Pat Kirwan, *Take Your Eye Off the Ball* (2010; 2nd ed. 2015): a former NFL coach and scout teaches
+  fans to read personnel and formations before the snap.
+- Chris B. Brown, *The Art of Smart Football* (2015): essays on how offenses build mismatches out of
+  personnel and formation.
+:::
+
+[^share]: Course calculation from nflverse participation data, regular-season runs and passes: 10 personnel was 0.5–2.9% of plays each season from 2016 to 2025 (0.8% in 2025), 20 personnel 0.5–1.5%, and 00 personnel 0.2% or less.
+
+[^lionstwo]: Detroit at Dallas, Dec. 30, 2023 (Week 17), Cowboys 20, Lions 19. After the game referee Brad Allen said in a pool report that No. 70 (Skipper), not No. 68 (Decker), had reported as eligible; see "2023 Detroit Lions season," Wikipedia: https://en.wikipedia.org/wiki/2023_Detroit_Lions_season and the contemporary NFL.com and ESPN game coverage. <!-- VERIFY: the 23 seconds left on the clock, and cite the NFL.com or ESPN pool-report story directly. --> Detroit's sixth-lineman share by season is a course calculation from nflverse participation data (9.8% of runs and passes in 2022, second to Cleveland; 5.1% in 2023; 6.4% in 2024).
+
+[^subs]: NFL Rulebook, Rule 5, Section 2 (substitutes): when the offense substitutes outside the last two minutes of a half, the umpire stands over the ball until the referee judges the defense has had a reasonable chance to respond: https://operations.nfl.com/the-rules/nfl-rulebook/ ; Football Zebras, "NFL officials instructed on new procedures for substitution tactics" (Oct. 2, 2025): https://www.footballzebras.com/2025/10/nfl-officials-instructed-on-new-procedures-for-substitution-tactics/
+
+[^ngs]: The 2025 percentages in the chart are a course calculation from nflverse participation data (defensive backs counted from `defense_personnel`). The league-wide base rates are from NFL Next Gen Stats: base defense on 29.7% of snaps in 2025, up from a low of 20.5% in 2023 (James Reber, NFL.com, "NFL trend watch: heavy personnel could shape Super Bowl LX showdown between Patriots and Seahawks"): https://www.nfl.com/news/nfl-trend-watch-heavy-personnel-could-shape-super-bowl-lx-showdown-between-patriots-and-seahawks . The nflverse count gives a similar path (21.7% base in 2023, 30.8% in 2025).
+
+[^ngs2]: James Reber, NFL.com, same article: fewer than three wide receivers on 41.7% of 2025 plays, the first season at or above 38% since NGS began tracking in 2016, rising from 38.8% in Weeks 1–9 to 44.5% from Week 10 on. The 11, 12 and 13 shares are a course calculation from nflverse participation data (see the next note); the course's own count of fewer-than-three-receiver plays in 2025 also comes to 41.7%.
+
+[^data]: nflverse, `load_participation()` data dictionary: https://nflreadr.nflverse.com/articles/dictionary_participation.html ; Next Gen Stats supplies 2016–2022 and FTN Data (CC-BY-SA 4.0) 2023 onward. Method for every chart: regular-season plays with `play_type` of pass or run and a recorded down; backs = RB + FB; jumbo = six or more offensive linemen (OL, or C + G + T from 2023). Pass = any dropback, including sacks and scrambles. Data downloaded through the course's `gridiron.data` cache.
+
+[^mcvay]: "Sean McVay," Wikipedia (hired by the Rams on Jan. 12, 2017, at 30, the youngest head coach in modern NFL history): https://en.wikipedia.org/wiki/Sean_McVay <!-- VERIFY: confirm the hire date and the "youngest in modern NFL history" wording against a Rams or NFL.com release. --> . Rams personnel shares and the 2018 neutral pass rate (56% from 11 personnel, league 56%) are course calculations from nflverse data. The Rams lost Super Bowl LIII to New England, 13–3.
+
+[^juice]: Kyle Juszczyk signed with San Francisco as a free agent in March 2017 on a four-year, $21 million contract, the largest for a fullback at the time: https://en.wikipedia.org/wiki/Kyle_Juszczyk <!-- VERIFY: contract figure and "highest-paid fullback" wording against an ESPN or 49ers.com report. --> . The 49ers' 21-personnel ranks (first in 2017, 2018, 2019, 2021, 2024 and 2025; second in 2020, 2022 and 2023, behind New England in 2020 and Miami in 2022–2023) are a course calculation from nflverse participation data.
+
+[^ravens]: Pro Football Reference, 2019 Baltimore Ravens (14–2; 3,296 rushing yards, an NFL single-season team record): https://www.pro-football-reference.com/teams/rav/2019.htm ; Jackson was the unanimous 2019 MVP: "2019 Baltimore Ravens season," Wikipedia: https://en.wikipedia.org/wiki/2019_Baltimore_Ravens_season . The Ravens' personnel shares and neutral-situation pass rates (11 personnel 36% pass, 12 personnel 63%; league 56% and 49%) are course calculations from nflverse data.
+
+[^barkley]: Pro Football Reference, Saquon Barkley (2,005 rushing yards in 2024): https://www.pro-football-reference.com/players/B/BarkSa00.htm ; Super Bowl LIX result from the course fact sheet (Eagles 40, Chiefs 22; Feb. 9, 2025). Eagles personnel shares and neutral pass rates (12 personnel 32% pass; league 48%) are course calculations from nflverse data. <!-- VERIFY: "ninth 2,000-yard season in NFL history" — Barkley was widely reported as the ninth player to reach 2,000. -->
+
+[^rams25]: Course calculation from nflverse participation data, 2025 regular season: Rams 11 personnel 59.7%, 13 personnel 31.3%, 12 personnel 8.9% (next-highest 13-personnel team: Pittsburgh, 13.4%); Seahawks fewer than three wide receivers on 55.2% of plays. Stafford's MVP and the Super Bowl LX result (Seahawks 29, Patriots 13) and Seattle's 2025 offensive coordinator (Klint Kubiak) are from the course fact sheet (AP awards, Feb. 5, 2026; Super Bowl LX, Feb. 8, 2026).

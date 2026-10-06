@@ -1,0 +1,1331 @@
+---
+title: "The Pre-Snap Phase"
+subtitle: "Shifts, motion, cadence and audibles: what both teams do in the last fifteen seconds before the ball moves, and why every bit of it is a fight over information."
+description: "Set, shift and motion and the rules that govern them; cadence, hard counts and silent counts; the four pre-snap fouls (false start, offside, encroachment, neutral zone infraction); audibles, checks, kill calls and check-with-me systems; naming the Mike; how defenses move, show and bluff before the snap; and what each side is trying to learn."
+glossary:
+  Set: "The moment, required before every snap, when all eleven offensive players are stationary at the same time. NFL rules require that they hold it for at least one full second."
+  Shift: "Two or more offensive players changing position or stance at the same time before the snap. After the last shift, all eleven must be set for at least one full second before the ball is snapped."
+  Motion: "One offensive player moving before the snap. At the snap only one player may be moving, he must be a backfield player (not on the line), and he may move parallel to or away from the line of scrimmage, never toward it."
+  "False start": "An offensive foul: after the ball is ready for play, a set offensive player moves in a way that imitates the start of the play (for example a lineman lifting his hand off the ground). The whistle blows at once; five yards."
+  Offside: "Being in or beyond the neutral zone when the ball is snapped. For the defense it is usually a live-ball foul: the play goes on and the offense can take the result or the five yards."
+  Encroachment: "A defensive foul: before the snap, a defender enters the neutral zone and touches an offensive player or the ball. The whistle blows at once; five yards."
+  "Neutral zone infraction": "A defensive foul: before the snap, a defender moves into the neutral zone and either makes a nearby offensive player flinch or has a free path to the quarterback. The whistle blows at once; five yards."
+  "Illegal motion": "An offensive foul: at the snap, a player is moving toward the line, more than one player is moving, or a player on the line is in motion. Five yards. (Failing to reset for a full second after a shift is the closely related illegal shift.)"
+  Cadence: {def: "The words and rhythm the quarterback uses at the line, and the agreed signal on which the center snaps the ball. The offense knows when the ball will move; the defense has to react to it.", aliases: ["Snap count"]}
+  "Hard count": "A cadence with a sudden change in volume or rhythm, meant to make defenders think the ball is about to be snapped and jump offside. Often there is no intention of snapping the ball at all."
+  "Silent count": "A snap signal that uses no sound: the quarterback gives a visual cue, the center (often after a tap from a guard) lifts his head, and the line counts the beats in their heads. Used when the crowd is too loud to hear the quarterback."
+  Audible: "Changing the play at the line of scrimmage by voice or hand signal after seeing how the defense has lined up."
+  Check: "A pre-planned change built into a call: 'if the defense shows this, we switch to that.' Offenses and defenses both use them."
+  "Kill call": "A system in which two plays are called in the huddle. At the line the quarterback either runs the first or 'kills' it ('Kill, kill!') to run the second, usually choosing by how many defenders are near the line."
+  "Check-with-me": "A system in which the play is not final in the huddle. The quarterback picks it at the line from a short menu after reading the defense."
+  "Dummy call": "A word or signal shouted at the line that means nothing, used to confuse defenders who are listening for the real calls. Defenses use them too."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+import logging
+import os
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle, Ellipse, Circle, RegularPolygon, FancyArrowPatch
+from IPython.display import HTML, display
+
+from gridiron import Play, Player, offense, defense, routes as r, style, frame_strip
+from gridiron.animate import animate
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+GOOD, BAD = style.THIRD, style.DEFENSE_DARK
+
+
+def dashed_motion(p, key, to, head=0.5):
+    """Pre-snap motion to the spot `to` (absolute d, w), drawn dashed with a short solid head.
+    (gridiron draws the last part of a path's final segment solid, so one long segment would
+    look like a route.)"""
+    d0, w0 = p._cur(key)
+    dd, dw = to[0] - d0, to[1] - w0
+    f = max(0.0, 1 - head / float(np.hypot(dd, dw)))
+    p.motion(key, pts=[(dd * f, dw * f), (dd, dw)])
+
+
+def schedule(p, plan):
+    """Re-time pre-snap movement. plan = {key: (t_start, t_end)}, seconds before the snap.
+
+    gridiron runs every pre-snap motion so that it ends exactly at the snap. A shift has to
+    finish early, and then everyone holds the one-second set, so this stretches each listed
+    player's pre-snap path into his window and holds him still until the snap. (Implemented
+    here rather than in gridiron; call it after every action has been added.)"""
+    kf, t0, t1 = p._compile()
+    for key, (a, b) in plan.items():
+        arr = kf[key]
+        pre, post = arr[arr[:, 0] <= 1e-9], arr[arr[:, 0] > 1e-9]
+        T0, T1 = pre[0, 0], pre[-1, 0]
+        new = pre.copy()
+        new[:, 0] = a + (pre[:, 0] - T0) / ((T1 - T0) or 1.0) * (b - a)
+        rows = [new] + ([np.array([[0.0, *new[-1, 1:]]])] if b < 0 else []) + [post]
+        kf[key] = np.vstack(rows)
+    p._compiled = (kf, min(float(f[0, 0]) for f in kf.values()), t1)
+    return p
+
+
+def strip_labels(fig, labels, loc=(0.03, 0.04)):
+    """A short caption in the bottom-left of each frame-strip panel (behind the offense,
+    where the field is usually empty)."""
+    for ax, lab in zip(fig.axes, labels):
+        if lab:
+            ax.text(*loc, lab, transform=ax.transAxes, ha="left", va="bottom", fontsize=7.2, color=style.INK,
+                    zorder=20, linespacing=1.15,
+                    bbox=dict(boxstyle="round,pad=0.25", fc=style.SURFACE, ec=style.BASELINE, lw=0.6))
+
+
+def labelled_animation(p, times, labeler):
+    """Like gridiron.show_animation, plus a caption that changes with the phase of the play.
+    `labeler(t)` returns the caption at t seconds from the snap. PDF: a labelled frame strip."""
+    if PDF:
+        fig = frame_strip(p, times=times, to_go=p.to_go)
+        strip_labels(fig, [labeler(t) for t in times])
+        plt.show()
+        return
+    df = p.to_tracking()
+    tmap = df.groupby("frameId")["time"].first()
+    anim = animate(df, to_go=p.to_go)
+    ax = anim._fig.axes[0]
+    cap = ax.text(0.01, 0.02, "", transform=ax.transAxes, ha="left", va="bottom", fontsize=9, color=style.INK,
+                  zorder=21, bbox=dict(boxstyle="round,pad=0.3", fc=style.SURFACE, ec=style.THIRD, lw=1.0))
+    base = anim._func
+
+    def upd(fid, *a):
+        out = base(fid, *a)
+        cap.set_text(labeler(float(tmap.get(fid, 0.0))))
+        return out
+    anim._func = upd
+    if shutil.which("ffmpeg"):
+        html = anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+    else:
+        html = anim.to_jshtml(default_mode="once")
+    plt.close(anim._fig)
+    display(HTML(html))
+
+
+def P_of(fld, p):
+    """(d, w) in the play's frame -> plot coordinates on this field."""
+    return lambda d, w: tuple(float(v) for v in fld.xy(*p.to_abs(d, w)))
+
+
+def tag(ax, xy, text, ec=style.BASELINE, fs=6.6, lw=0.6):
+    ax.text(*xy, text, fontsize=fs, color=style.INK, ha="center", va="center", zorder=12, linespacing=1.15,
+            bbox=dict(boxstyle="round,pad=0.22", fc=style.SURFACE, ec=ec, lw=lw))
+
+
+def callout(ax, P, text, at, to, fs=6.6, ec=style.BASELINE):
+    """A label at `at` with a thin leader line to `to` (both (d, w))."""
+    ax.annotate(text, xy=P(*to), xytext=P(*at), fontsize=fs, color=style.INK, ha="center", va="center", zorder=12,
+                linespacing=1.15, bbox=dict(boxstyle="round,pad=0.22", fc=style.SURFACE, ec=ec, lw=0.6),
+                arrowprops=dict(arrowstyle="-", color=style.INK_2, lw=0.7, shrinkA=0, shrinkB=4))
+
+
+def drop_numbers(ax):
+    """Remove the painted yard numbers (in a tight zoom they sit outside the field)."""
+    for t in list(ax.texts):
+        if t.get_text().isdigit():
+            t.remove()
+
+
+def ghost(ax, P, d, w, side, to=None, rad=0.75):
+    """A dashed outline where a player WAS, with an arrow to where he is now (`to`=(d, w))."""
+    x, y = P(d, w)
+    col = style.OFFENSE if side == "off" else style.DEFENSE
+    if side == "off":
+        pat = Circle((x, y), rad, fc="none", ec=col, lw=1.0, ls=(0, (2, 1.5)), zorder=7)
+    else:
+        pat = RegularPolygon((x, y), 4, radius=rad * 1.25, orientation=np.pi / 4, fc="none", ec=col, lw=1.0,
+                             ls=(0, (2, 1.5)), zorder=7)
+    ax.add_patch(pat)
+    if to is not None:
+        ax.add_patch(FancyArrowPatch((x, y), P(*to), arrowstyle="-|>", mutation_scale=9, color=col, lw=1.2,
+                                     shrinkA=7, shrinkB=7, zorder=9))
+```
+
+Second-and-7. The offense breaks the huddle and walks to the line, and for a few seconds
+nothing happens. Then the tight end jogs from the right side of the formation to the left,
+two receivers step into new spots at the same moment, and everyone freezes. A receiver starts
+trotting across the formation. On the other side a safety who was fifteen yards deep creeps
+down toward the line, and a linebacker walks up and stands nose to nose with the center. The
+quarterback points at the linebacker, shouts a number, then barks "Kill! Kill!" and a word
+that sounds like a city. Two seconds later the right tackle flinches and a yellow flag flies.
+None of that is filler. Every movement in those fifteen seconds is one side asking the other
+a question, or trying not to answer one. This chapter names every piece of it and explains
+why each exists.
+
+**You'll be able to…**
+
+- Say whether a pre-snap movement is a **shift** or **motion**, and spot the illegal ones
+  (two men moving at the snap, a man moving toward the line, no one-second set after a shift).
+- Explain **cadence**, **hard counts** and **silent counts**, and tell the four pre-snap
+  fouls apart: **false start**, **offside**, **encroachment**, **neutral zone infraction**.
+- Tell an **audible**, a **check**, a **kill call** and a **check-with-me** system apart, and
+  guess when a quarterback is changing the play.
+- Explain why the quarterback or center points at a linebacker before the snap.
+- Recognise the defense's own pre-snap moves (a front shifting, a safety walking down, a
+  linebacker showing blitz) and say what each might mean, including that it might be a bluff.
+- List what each side is trying to learn before the ball moves.
+
+## Fifteen seconds of questions
+
+In [What a Play Really Is](01-04-what-a-play-really-is.qmd) we followed the play call from the
+coach's sheet to the huddle, and stopped where the radio goes dead: **15 seconds** left on the
+play clock. From that moment no coach can talk to any player, and the players are on their
+own until the [snap](../../appendices/glossary.qmd#gl-snap). Most huddling offenses spend
+about ten of those seconds at the line before snapping it.
+
+Why not snap the ball the instant everyone is lined up? Because both teams know something the
+other wants to know. The offense knows its play and exactly when the ball will be snapped.
+The defense knows its coverage, whether anyone extra is coming after the quarterback, and how
+it will adjust to what the offense shows. Neither side can see the other's call. The seconds
+before the snap are the only time each side can *look* at the other before committing, so
+both use them, the offense to make the defense show its hand and the defense to hide it.
+
+The tools come in four families, and the rest of the chapter takes them one at a time:
+
+1. **Movement** (set, shift, motion), and the rules that keep it fair.
+2. **Sound** (cadence, hard counts, silent counts), and the fouls it draws.
+3. **Changing the play** (audibles, checks, kill calls, check-with-me), plus naming the Mike
+   linebacker so that everyone blocks the same men.
+4. **The defense's reply**: shifting, walking safeties down, showing blitz, and bluffing.
+
+## Set: why everyone has to freeze
+
+Every snap starts from stillness. After the huddle breaks and the players reach their spots,
+all eleven offensive players must be stationary at the same moment, and they have to stay
+that way for at least **one full second**. That moment is called the
+[**set**](../../appendices/glossary.qmd#gl-set): the moment when all eleven offensive players
+are still at the same time.[^ruleset] Linemen who have put a hand on the ground are now locked
+in place. If one lifts or moves that hand, it's a foul (more below).
+
+Why insist on stillness? The answer is about a hundred years old. In the 1910s and 1920s,
+offenses discovered that a backfield moving just before the snap had a running start at the
+defense. The most famous version was **Knute Rockne**'s at Notre Dame: his backs lined up in a
+T, then hopped together into a "box" to one side just as the ball was snapped, so the play
+started with four men already in motion and the defense reacting a beat late.[^rockne] It
+worked so well that the rule makers went after it. The college rules committee's report for
+1927 said that after a shift "the players should remain stationary in their new positions for a
+period of approximately one second," and raised the penalty for an illegal shift from five
+yards to fifteen.[^rules1927] The one-second set in today's NFL rulebook is that same
+principle: **you may move as much as you like before the snap, but the play has to start from
+a standstill**, so the offense's knowledge of the snap count gives it a head start of a
+fraction of a second, not a running start.
+
+The set also does a quieter job: it gives the officials (and the defense) one stable picture
+to check. With everyone still, the officials can count seven players on the line and confirm
+that only the end men on the line and the backs are eligible to catch a pass (the rules of a
+legal formation are in
+[Formation Rules and the Language of Alignment](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)).
+The defense gets the same picture, which is why so much of the offense's pre-snap work is
+about changing it.
+
+## Shift: changing the picture
+
+A [**shift**](../../appendices/glossary.qmd#gl-shift) is two or more offensive players
+changing position (or stance) at the same time before the snap. The rulebook's definition even
+counts the whole offense walking up to the line out of the huddle as a shift. An offense may
+shift as many times as it likes. The one rule that matters: **after the last shift, all eleven
+must be set together for at least one full second** before the snap. Snap it sooner and it's an
+illegal shift, five yards.[^rulesshift]
+
+Here is a typical one. The offense breaks the huddle with its tight end attached to the right
+side of the line. Then, at the same moment, the tight end (Y) runs behind the line to the left
+side, the receiver on the left (X) steps back off the line, and the receiver on the right (Z)
+steps up onto it. Three players moved together, so it's a shift. The formation that results is
+the mirror image of the one the defense first lined up against.
+
+```{python}
+#| label: fig-shift
+#| fig-cap: "A shift and the one-second set (simulated, in Big Data Bowl tracking coordinates). The offense lines up with the tight end (Y) on the right. Then Y runs behind the line to the left while X steps off the line and Z steps onto it: three players at once, so it's a shift, and the formation flips. The defense has to flip with it: the linemen slide over, and the linebackers and the strong safety cross to the new side. The offense is set again well before the snap and holds it for over a second, as the rules require. The defense is still moving when the offense is already set. Faint trails show where each player came from."
+def shift_play():
+    off = offense("singleback")
+    off = [q.moved(d=-1.5, w=-10.0) if q.key == "H" else q for q in off]      # slot receiver off the ball
+    after = {"Y": (-0.7, -4.8), "X": (-1.5, -15.0), "Z": (-0.7, 15.0)}
+    off_after = [q.moved(d=after[q.key][0], w=after[q.key][1]) if q.key in after else q for q in off]
+    d0 = defense("4-3_over", "single_high", off)                    # strength called to the tight end
+    d1 = {q.key: q for q in defense("4-3_over", "single_high", off_after)}
+    p = Play(off, d0, los=40, to_go=10)
+    p.motion("Y", pts=[(-1.9, -1.0), (-1.9, -9.0), (0.0, -9.6)])   # behind the line, then up beside the LT
+    p.motion("X", to=after["X"])
+    p.motion("Z", to=after["Z"])
+    plan = {"Y": (-3.8, -2.2), "X": (-3.4, -2.6), "Z": (-3.4, -2.6)}
+    # the defense re-sets to the new strength. Linemen each slide to the nearest new spot (left to
+    # right, so nobody crosses); linebackers and the strong safety keep their roles and cross over,
+    # the Sam looping in front of the others.
+    dl = sorted([q for q in d0 if q.pos in ("DE", "DT")], key=lambda q: q.w)
+    dl_to = sorted([d1[q.key] for q in dl], key=lambda q: q.w)
+    targets = {q.key: (t.d, t.w) for q, t in zip(dl, dl_to)}
+    targets.update({k: (d1[k].d, d1[k].w) for k in ("MIKE", "WILL", "SS")})
+    for k, to in targets.items():
+        if k == "SS":
+            p.motion(k, to=to)
+        else:
+            dashed_motion(p, k, to, head=0.3)
+    sam, sam_to = p.players["SAM"], d1["SAM"]
+    p.motion("SAM", pts=[(-1.4, -2.0), (-1.4, sam_to.w - sam.w + 2.0), (sam_to.d - sam.d, sam_to.w - sam.w)])
+    for k in list(targets) + ["SAM"]:
+        plan[k] = (-2.9, -0.9)
+    plan["WILL"] = (-3.0, -1.5)                                     # the Will crosses first, clear of the Mike
+    p.run("RB", [(-0.5, -3.0), (4.0, -6.5)])                        # after the snap: the run goes to the new strength
+    p.handoff("RB", t=0.6)
+    return schedule(p, plan)
+
+
+def shift_phase(t):
+    if t < -3.8:
+        return "set: tight end on the right"
+    if t < -2.2:
+        return "shift: Y, X and Z move together"
+    if t < -0.9:
+        return "offense set again; defense still flipping"
+    if t < -1e-6:
+        return "everyone set: at least 1 full second"
+    return "snap"
+
+
+labelled_animation(shift_play(), [-4.2, -2.6, -1.4, 0.0], shift_phase)
+```
+
+Why would an offense go to the trouble? Watch what the defense had to do. Defenses set their
+front toward the offense's **strength**, usually the side with the tight end (how teams decide
+which side is the strength is in
+[Formation Rules and the Language of Alignment](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)).
+When the tight end moved, the strength moved, and the defense had to re-declare: linemen
+slid over, linebackers crossed, the strong safety walked to the other side. A shift buys the offense
+four things:
+
+- **A late picture.** The defense has to make its adjustment in the two or three seconds
+  before the snap instead of the ten seconds it had. Rushed adjustments are where mistakes
+  happen: two defenders take the same man, one gap is left empty.
+- **Information.** *How* the defense adjusts is a clue. If the linebackers flip but the
+  safeties don't, that tells the quarterback something about the coverage. If one cornerback
+  runs across the field with a receiver, that's a different clue (we'll get to motion in a
+  moment).
+- **A matchup.** Shifting the tight end can put him across from a smaller defender, or move
+  the strength toward the side of the field the play is aimed at.
+- **A disguise of its own.** The formation the defense studied all week, with its tendencies
+  ("from this look they run left 70% of the time"), may not be the formation the play is run
+  from.
+
+What does it cost? Time, mostly: a shift spends three or four seconds of the play clock and a
+full second of standing still. It asks every player who moves to know his job from two
+alignments. And it gives the defense a few seconds of its own to adjust. Teams that shift a
+lot accept those costs because the information is worth more.
+
+## Motion: one man moving at the snap
+
+[**Motion**](../../appendices/glossary.qmd#gl-motion) is one offensive player moving before the
+snap. Unlike a shift, motion can still be going on when the ball is snapped, which is what
+makes it useful. But the rules are strict about who may move and how:[^rulesmotion]
+
+- **Only one player** may be moving at the snap. Everyone else must be still.
+- He must be a **backfield player**, not one of the seven on the line. (A receiver on the
+  line can slide along it, but he has to stop before the snap.)
+- He may move **parallel to or away from** the line of scrimmage, never toward it.
+- Players can go in motion one after another, as long as the first one has *stopped* before
+  the next one starts. If two are moving at the same time, that's a shift, and everyone has to
+  reset for a full second.
+
+Breaking any of these is [**illegal motion**](../../appendices/glossary.qmd#gl-illegal-motion),
+five yards (or an illegal shift, if the problem was two men moving or no one-second set). Here
+are the cases side by side.
+
+```{python}
+#| label: fig-legal-motion
+#| fig-cap: "Legal and illegal motion at the snap, offense only. Dashed lines are pre-snap movement; each panel shows the moment of the snap. Legal: one backfield player still moving across the formation, or drifting back and away from the line, or two players moving one after the other with the first stopped before the second starts. Flags: a man angling toward the line at the snap, two men moving at once, and a receiver who is on the line (X) going in motion."
+LAT_M, WIN_M = (-17.5, 17.5), (-7.5, 4.5)
+
+
+def m_parallel(p):
+    dashed_motion(p, "H", (-1.5, -5.6))
+    return True, "one man, moving parallel", ("H still moving at the snap: fine", (2.6, -6.0))
+
+
+def m_away(p):
+    dashed_motion(p, "RB", (-6.5, -8.5))
+    return True, "one man, moving away", ("R drifting back and out: fine", (2.6, -6.0))
+
+
+def m_forward(p):
+    p.players["H"] = p.players["H"].moved(d=-4.0)
+    dashed_motion(p, "H", (-1.8, -6.0))
+    return False, "moving toward the line", ("H angling forward at the snap", (2.6, -6.0))
+
+
+def m_two(p):
+    dashed_motion(p, "H", (-1.5, -5.6))
+    dashed_motion(p, "Y", (-1.5, 5.6))
+    return False, "two men moving at the snap", ("H and Y both still moving", (2.6, 0.0))
+
+
+def m_online(p):
+    dashed_motion(p, "X", (-0.7, -11.6))
+    return False, "a man on the line in motion", ("X is on the line: only a back may move", (2.6, -4.0))
+
+
+def m_sequence(p):
+    p.motion("H", to=(-1.5, -5.6))
+    p.motion("Y", to=(-1.5, 5.6))
+    return True, "one at a time", ("H stops (1), then Y goes (2)", (2.6, 0.0))
+
+
+fig, axes = plt.subplots(3, 2, figsize=(6.5, 4.4))
+for ax, fn in zip(axes.flat, [m_parallel, m_away, m_forward, m_two, m_online, m_sequence]):
+    p = Play(offense("gun_2x2"), None, los=45, to_go=None)
+    legal, txt, (note, at) = fn(p)
+    fld = p.draw(ax=ax, title=False, lateral=LAT_M, window=WIN_M)
+    P = P_of(fld, p)
+    tag(ax, P(*at), note)
+    ax.set_title(f"{'LEGAL' if legal else 'FLAG'}  ·  {txt}", loc="left", fontsize=8.3,
+                 color=GOOD if legal else BAD, fontweight="bold", pad=2)
+    if fn is m_sequence:
+        for n, at in (("1", (-2.6, -7.3)), ("2", (-2.6, 7.3))):
+            ax.text(*P(*at), n, fontsize=7, fontweight="bold", color=style.OFFENSE_DARK, ha="center", va="center")
+fig.tight_layout(h_pad=0.5, w_pad=0.8)
+plt.show()
+```
+
+::: {.callout-caution title="Common misconception"}
+"He was running full speed at the snap, so that must be illegal." It isn't. Speed doesn't
+matter; direction does. A receiver sprinting across the formation parallel to the line, the
+**jet motion** you'll see many times a game (it gets its own treatment in
+[Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)),
+is perfectly legal as long as he isn't angling toward the line when the ball is snapped. He
+turns upfield a split second *after* the snap. The opposite mistake is common too: a
+receiver who simply takes one step forward from a set position on the line hasn't gone "in
+motion"; he has committed a false start.
+:::
+
+### Why motion exists
+
+Motion is the single most-used pre-snap tool in today's NFL, and it does three jobs.
+
+**It asks the defense a question.** When a receiver runs across the formation, someone on the
+defense has to deal with him. If one defender runs across with him, step for step, that is a
+strong hint the defense is playing
+[man coverage](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd), with each
+defender assigned to follow one receiver. If nobody follows and the defenders just shuffle
+their spacing, that hints at
+[zone coverage](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd), with each
+defender guarding an area. Neither hint is a guarantee (defenses know you're watching, and
+some deliberately respond to motion in a way that lies), and the full reading guide is in
+[Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd).
+But the quarterback now knows more than he did, and he can change the play if he doesn't like
+the answer.
+
+**It gives a player a running start.** A man moving at the snap is already at speed when the
+play begins. That makes him hard to jam at the line, lets him reach the edge of the defense
+faster on a run to the outside, and lets him arrive as a blocker with momentum. Timing the
+motion so the player is at a particular spot exactly at the snap is a growing art of its own
+(teams and analysts call it
+[motion at the snap](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)).
+
+**It changes the formation late.** Just as with a shift, a man in motion can move the
+formation's strength, create a crowd of receivers on one side, or put a receiver next to the
+ball where he can block. The defense has to adjust in the last second or two.
+
+The trade-offs: motion takes time off the play clock; the man in motion can sometimes tip
+the play (if he always goes in motion before a run to his side, a good defense notices); and
+he must time it, because arriving early means stopping and waiting, and arriving late means
+the quarterback holds the snap and the defense gets more time to sort itself out.
+
+### A short history: from the T to everyone
+
+Motion is old. Clark Shaughnessy's version of the **T formation** with a man in motion, run by
+George Halas's Chicago Bears, beat Washington **73–0** in the 1940 NFL Championship Game, and
+the T with a man in motion spread through football within a decade.[^tform] For most of the
+next seventy years, though, motion was a sometimes thing: a tool for certain plays, not a
+habit.
+
+That changed fast. According to Pro Football Focus, NFL offenses used a shift or motion on
+**38.4%** of plays in 2016 and **63.9%** in 2025, a record, and every team except the Giants
+moved before at least half its snaps in 2025.[^pffmotion] (Different charting services define motion differently, so
+the exact numbers depend on the source; the direction doesn't.) The reasons are the three
+jobs above. Defenses have become better at disguising coverage, so offenses need ways to make
+them reveal it, and the Shanahan and McVay offenses showed how much a running start adds to
+both runs and passes. You'll see the full story in
+[Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd).
+
+Here is a surprising consequence. All that extra movement barely shows up in the penalty
+counts. The rules are simple and the motions are rehearsed hundreds of times in practice.
+
+```{python}
+#| label: data-presnap
+#| include: false
+from gridiron.data import pbp
+
+PB_COLS = ["season", "season_type", "game_id", "home_team", "away_team", "posteam", "defteam", "play_type",
+           "penalty_type", "penalty_team", "down", "ydstogo"]
+pb = pbp(range(2016, 2026), columns=PB_COLS)
+pb = pb[pb.season_type == "REG"].copy()
+GAMES = pb.groupby("season").game_id.nunique()
+DEF_JUMP = ["Defensive Offside", "Neutral Zone Infraction", "Encroachment"]
+SNAP_TYPES = ["run", "pass", "no_play", "punt", "field_goal", "qb_kneel", "qb_spike"]
+snaps = pb[pb.play_type.isin(SNAP_TYPES) & pb.down.notna()].copy()
+```
+
+```{python}
+#| label: fig-presnap-fouls
+#| fig-cap: "Pre-snap fouls per team per game, NFL regular seasons 2016–2025 (accepted penalties only). False starts are the most common pre-snap foul and drifted up in 2024–25; defensive jumps (offside, encroachment, neutral zone infractions) became rarer. Illegal shifts and illegal motion stayed rare even as motion use climbed from about 38% to 64% of plays (PFF's series). Source: nflverse play-by-play; motion shares from PFF."
+def per_team_game(types):
+    x = pb[pb.penalty_type.isin(types)]
+    return x.groupby("season").size().reindex(GAMES.index, fill_value=0) / GAMES / 2
+
+
+SERIES = {"False starts (offense)": (per_team_game(["False Start"]), style.OFFENSE),
+          "Offside, encroachment, neutral zone (defense)": (per_team_game(DEF_JUMP), style.DEFENSE),
+          "Illegal shift or illegal motion (offense)": (per_team_game(["Illegal Shift", "Illegal Motion"]), style.THIRD)}
+fig, ax = plt.subplots(figsize=(6.5, 3.1))
+for lab, (s, c) in SERIES.items():
+    ax.plot(s.index, s.values, color=c, lw=2, marker="o", ms=3.5, label=lab)
+mo = SERIES["Illegal shift or illegal motion (offense)"][0]
+for yr, pct, xt in [(2016, 38, 2016.1), (2025, 64, 2023.0)]:
+    ax.annotate(f"motion or shift on ~{pct}% of plays (PFF)" if yr == 2016 else f"~{pct}% of plays",
+                xy=(yr, mo[yr]), xytext=(xt, 0.40), fontsize=6.8, color=style.INK_2,
+                arrowprops=dict(arrowstyle="-", color=style.MUTED, lw=0.6))
+ax.set_ylim(0, 1.45)
+ax.set_ylabel("Fouls per team per game", fontsize=8)
+ax.set_xticks(range(2016, 2026))
+ax.tick_params(labelsize=7.5)
+ax.grid(axis="x", visible=False)
+ax.legend(fontsize=7.2, loc="upper left")
+plt.show()
+```
+
+A typical team commits an illegal shift or illegal motion about once every eight to ten
+games.[^fouldata] False starts, by contrast, happen about once a game per team. Those come from
+the second family of pre-snap tools: sound.
+
+## Cadence: the offense's one sure advantage
+
+In a football play, one team knows exactly when it will start and the other doesn't. The
+[**cadence**](../../appendices/glossary.qmd#gl-cadence), also called the
+[**snap count**](../../appendices/glossary.qmd#gl-snap-count), is the set of words the
+quarterback calls at the line and the agreed signal on which the center snaps the ball.
+
+A traditional cadence from under center sounds something like "*Blue 80! Blue 80! Set… HUT!*".
+Some of those words may carry information (a protection change, an alert to a receiver), and
+some are just rhythm. The huddle told the offense *which* "hut" the ball comes on: "on one"
+means the first, "on two" the second, and so on. Many teams also use a "first sound" count, in
+which the ball is snapped on the very first word, to catch a defense that isn't ready. From
+the shotgun, where the quarterback is five yards back, many teams use a clap or a foot lift
+instead of a word.
+
+Why does this matter so much? Because blocking is a race measured in tenths of a second. An
+offensive lineman who knows the ball moves on the second "hut" can start his first step the
+instant it does. The defensive lineman across from him has to see (or hear) the snap and then
+react. That small head start is one of the few edges the offense gets for free on every play,
+and it's why offensive linemen block better than you'd expect when they're outweighed.
+
+### The hard count
+
+A team that owns the timing can also abuse it. A
+[**hard count**](../../appendices/glossary.qmd#gl-hard-count) is a cadence with a sudden change
+of volume or rhythm, a "HUT!" barked much louder and sharper than the others, meant to make a
+defender think the ball is about to move. Sometimes the offense has no intention of snapping
+it at all.
+
+If a defender jumps, one of three fouls follows, all five yards against the defense (they're
+defined precisely in the next section), and on a short-yardage down five yards is often a
+[first down](../../appendices/glossary.qmd#gl-first-down). If nobody jumps, the offense either
+snaps it on a later count or, on fourth down, lets the
+[play clock](01-01-the-game-in-fifteen-minutes.qmd) run out. That's the deliberate
+five-yard [delay of game](../../appendices/glossary.qmd#gl-delay-of-game) before a punt, which
+[What a Play Really Is](01-04-what-a-play-really-is.qmd) showed is common on fourth down.
+
+There are limits. The rulebook says any *obvious* attempt by the quarterback to draw the
+defense offside is itself a false start, which means no jerking his head or thrusting his
+hands to imitate the snap.[^rulesfs] A good hard count works through the voice alone: rhythm,
+volume, a word that sounds like the snap word. And it is a double-edged weapon: **the hard
+count fools your own linemen too.** A lineman who lurches on the loud "hut" has just false
+started, and the five yards go the other way. That trade shows up clearly in the data.
+
+```{python}
+#| label: fig-fouls-by-situation
+#| fig-cap: "Pre-snap fouls per 100 snaps by down and distance, NFL regular seasons 2016–2025. On third down and on fourth-and-short, when the snap count matters most and offenses lean on hard counts, defenses jump about twice as often as on early downs. But offenses false start about twice as often too, and in every situation the offense commits more pre-snap fouls than it draws. Snaps include runs, passes, punts, field goals and penalty-only plays. Source: nflverse play-by-play, accepted penalties."
+s = snaps.copy()
+s["jump"] = s.penalty_type.isin(DEF_JUMP) & (s.penalty_team == s.defteam)
+s["fs"] = (s.penalty_type == "False Start") & (s.penalty_team == s.posteam)
+ORDER = ["1st & 2nd down", "3rd & 1–2", "3rd & 3+", "4th & 1–2", "4th & 3+"]
+s["bucket"] = np.select([s.down <= 2, (s.down == 3) & (s.ydstogo <= 2), s.down == 3,
+                         (s.down == 4) & (s.ydstogo <= 2)], ORDER[:4], ORDER[4])
+g = s.groupby("bucket")[["fs", "jump"]].mean().reindex(ORDER) * 100
+fig, ax = plt.subplots(figsize=(6.5, 2.9))
+y = np.arange(len(ORDER))
+ax.barh(y - 0.19, g.fs, height=0.36, color=style.OFFENSE, label="False starts by the offense", zorder=3)
+ax.barh(y + 0.19, g.jump, height=0.36, color=style.DEFENSE, label="Defense jumps (offside, encroachment, NZI)",
+        zorder=3)
+for yi, (a, b) in enumerate(zip(g.fs, g.jump)):
+    ax.text(a + 0.04, yi - 0.19, f"{a:.1f}", va="center", fontsize=7, color=style.INK)
+    ax.text(b + 0.04, yi + 0.19, f"{b:.1f}", va="center", fontsize=7, color=style.INK)
+ax.set_yticks(y, ORDER, fontsize=7.5)
+ax.invert_yaxis()
+ax.set_xlabel("Fouls per 100 snaps", fontsize=8)
+ax.set_xlim(0, max(g.fs.max(), g.jump.max()) * 1.18)
+ax.tick_params(axis="x", labelsize=7.5)
+ax.grid(axis="y", visible=False)
+ax.legend(fontsize=7, loc="lower right")
+plt.show()
+```
+
+The defense's answer is discipline. Defensive linemen are coached to move on the *ball*, not
+the voice: watch the center's hands, or the ball itself, and ignore everything the
+quarterback says. The defense also may not play the same game back. A defender who makes
+sudden, jerky movements near the line to trick a lineman into flinching is flagged for delay
+of game, and defenders using words or signals meant to disrupt the offense at the snap (for
+example, shouting a fake snap count) draw a 15-yard unsportsmanlike-conduct penalty.[^rulesdef]
+So the cadence is the offense's weapon alone.
+
+### The silent count
+
+What happens when the quarterback can't be heard? In a loud stadium, the offensive tackles,
+farthest from the quarterback, may not hear a shouted "hut" at all. Teams answer with a
+[**silent count**](../../appendices/glossary.qmd#gl-silent-count): a snap signal with no sound.
+Systems vary, but a common one goes like this. The quarterback, ready for the ball, gives a
+visual cue (he lifts a foot, or claps, or taps a guard). The guard taps the center's leg. The
+center, who has been looking back between his legs, lifts his head, and every lineman, watching
+the center's head out of the corner of his eye, counts the agreed number of beats silently.
+The ball comes up on the count. When the Cowboys found their own stadium too loud against
+Houston in 2014, right guard Zack Martin tapped center Travis Frederick's leg when Tony Romo
+called for the snap.[^romo]
+
+The trade-off is that a silent count is predictable. It runs on a fixed beat, so defensive
+linemen can time it, and the offense loses its hard count. That is precisely what a road crowd
+is for: the home fans shout while the visiting offense is at the line to take its cadence
+away.
+
+You'd expect that to cost road offenses a lot of false starts. Does it?
+
+```{python}
+#| label: fig-home-road
+#| fig-cap: "False starts at home and on the road. Left: all NFL offenses, per 1,000 snaps, regular seasons 2016–2025. Road offenses false start no more often than home offenses; the lines cross back and forth. Right: the Eagles' offense, per game. In eight of ten seasons the Eagles false started more at home than on the road, and one of the two exceptions was 2020, when most games were played without fans. Source: nflverse play-by-play, accepted penalties."
+fs = pb[(pb.penalty_type == "False Start") & (pb.penalty_team == pb.posteam)].copy()
+fs["road"] = fs.penalty_team == fs.away_team
+sn = snaps.assign(road=snaps.posteam == snaps.away_team)
+league = (fs.groupby(["season", "road"]).size() / sn.groupby(["season", "road"]).size() * 1000).unstack()
+phi_fs = fs[fs.penalty_team == "PHI"].groupby(["season", "road"]).size().unstack()
+phi_g = (pb[pb.home_team.eq("PHI") | pb.away_team.eq("PHI")].assign(road=lambda z: z.away_team.eq("PHI"))
+         .groupby(["season", "road"]).game_id.nunique().unstack())
+phi = phi_fs / phi_g
+fig, axes = plt.subplots(1, 2, figsize=(6.5, 2.9))
+for ax, dat, ttl, yl in [(axes[0], league, "All 32 offenses", "False starts per 1,000 snaps"),
+                         (axes[1], phi, "Eagles' offense", "False starts per game")]:
+    ax.axvspan(2019.5, 2020.5, color=style.GRID, alpha=0.7, lw=0)
+    ax.plot(dat.index, dat[False], color=style.OFFENSE, lw=2, marker="o", ms=3.5, label="at home")
+    ax.plot(dat.index, dat[True], color=style.DEFENSE, lw=2, marker="o", ms=3.5, label="on the road")
+    ax.set_title(ttl, fontsize=9)
+    ax.set_ylabel(yl, fontsize=7.5)
+    ax.set_ylim(0, float(np.nanmax(dat.values)) * 1.25)
+    ax.set_xticks(range(2016, 2026, 3))
+    ax.tick_params(labelsize=7.2)
+    ax.grid(axis="x", visible=False)
+    ax.text(2020, ax.get_ylim()[1] * 0.97, "2020:\nfew fans", ha="center", va="top", fontsize=6.4, color=style.INK_2)
+axes[0].legend(fontsize=7, loc="lower left")
+fig.tight_layout()
+plt.show()
+```
+
+Across the league, road offenses false start almost exactly as often as home offenses: over
+these ten seasons there were slightly *fewer* road false starts than home ones.[^homeroad] The
+silent count works. It costs the road offense its hard count and some of its pre-snap
+communication, but not, on average, a pile of penalties.
+
+::: {.callout-note title="Film room: Eagles 2023 — the silent count at home"}
+The right-hand panel is the strange part. Philadelphia's fans are among the loudest in the
+league, and in December 2023 the *Philadelphia Inquirer* pointed out that 15 of the Eagles'
+22 false starts that season had come at Lincoln Financial Field. Left tackle Jordan Mailata
+said the team used a silent count "a fair bit" even at home, because the crowd kept roaring
+while the Eagles' own offense was at the line, and when asked if he wished he could hear the
+cadence, he answered: "One hundred percent." Jalen Hurts put it more gently: "It kind of gets
+loud for the offense. It's supposed to get loud for the defense."[^eagles]
+
+What to notice: the silent count isn't a "road" tool. It's a *noise* tool, and some home
+offenses need it too. The data back the story up over a decade, not just one season. The one
+year the pattern clearly broke was 2020, when crowds were mostly absent.
+:::
+
+## The four pre-snap fouls
+
+Now we can define the fouls precisely. All four are about the
+**neutral zone**: the strip of ground as long as the ball, running sideline to sideline, that
+separates the two teams before the snap. When the ball is snapped, nobody but the center may
+be in it (his hand is on the ball, so he is partly in it by definition).[^rulesnz]
+
+```{python}
+#| label: fig-neutral-zone
+#| fig-cap: "The four pre-snap fouls, close up at the line of scrimmage. The shaded strip is the neutral zone, the length of the ball (drawn about twice as deep as real life so it's visible). Dashed outlines show where a player was; the ringed player is the one to watch. A false start is the offense's foul. Offside is a defender in the neutral zone at the moment of the snap. Encroachment is a defender crossing it and touching someone before the snap. A neutral zone infraction is a defender's jump that makes a blocker flinch (or gives the defender a free run at the quarterback); the flinch is charged to the defense."
+NZ = 0.55                      # neutral zone depth as drawn (a real ball is about a foot long)
+OL_D, DL_D = -1.15, NZ + 0.95
+OL = [("LT", -3.2), ("LG", -1.6), ("C", 0.0), ("RG", 1.6), ("RT", 3.2)]
+DL = [("LE", -4.6), ("LDT", -1.0), ("RDT", 2.3), ("RE", 4.6)]
+
+
+def line_play(moved_off={}, moved_def={}):
+    off = [Player(k, k, "off", *moved_off.get(k, (OL_D, w)), label="C" if k == "C" else "") for k, w in OL]
+    off.append(Player("QB", "QB", "off", -2.4, 0, label="Q"))
+    dfn = [Player(k, "DE" if k[1] == "E" else "DT", "def", *moved_def.get(k, (DL_D, w)),
+                  label="E" if k[1] == "E" else "T") for k, w in DL]
+    return Play(off, dfn, los=52, to_go=None)
+
+
+def neutral_zone(ax, P):
+    (x0, y0), (x1, y1) = P(0, -7.6), P(NZ, 7.6)
+    ax.add_patch(Rectangle((min(x0, x1), min(y0, y1)), abs(x1 - x0), abs(y1 - y0), fc=style.LINE_TO_GAIN,
+                           alpha=0.28, lw=0, zorder=1.6))
+    bx, by = P(NZ / 2, 0)
+    ax.add_patch(Ellipse((bx, by), 0.42, NZ * 0.95, fc=style.BALL, ec="white", lw=0.6, zorder=9))
+
+
+FOULS = [
+    ("False start (offense)", "A set lineman moves before the snap.\nWhistle; 5 yards against the offense.",
+     dict(moved_off={"RG": (-0.45, 1.6)}), [("off", (OL_D, 1.6), (-0.45, 1.6))], ("RG",),
+     [("guard flinches\nforward", (-3.6, 4.0), (-0.6, 2.1))]),
+    ("Offside (defense)", "In the neutral zone when the ball is snapped.\nPlay goes on; the offense can decline it.",
+     dict(moved_def={"RE": (NZ * 0.5, 4.6)}), [("def", (DL_D, 4.6), (NZ * 0.5, 4.6))], ("RE",),
+     [("still in the neutral\nzone at the snap", (3.4, 5.0), (0.6, 4.9))]),
+    ("Encroachment (defense)", "Crosses and touches a player before the snap.\nWhistle; 5 yards against the defense.",
+     dict(moved_def={"RDT": (NZ * 0.2, 1.75)}), [("def", (DL_D, 2.3), (NZ * 0.2, 1.75))], ("RDT",),
+     [("contact", (3.5, -0.6), (0.2, 1.4))]),
+    ("Neutral zone infraction (defense)", "A defender's jump makes a nearby blocker flinch.\nWhistle; 5 yards against the defense.",
+     dict(moved_def={"RE": (NZ * 0.5, 4.4)}, moved_off={"RT": (-2.0, 3.4)}),
+     [("def", (DL_D, 4.6), (NZ * 0.5, 4.4)), ("off", (OL_D, 3.2), (-2.0, 3.4))], ("RE", "RT"),
+     [("tackle flinches back:\nnot his foul", (-4.0, 2.5), (-2.4, 3.1))]),
+]
+fig, axes = plt.subplots(2, 2, figsize=(6.5, 4.9))
+for i, (ax, (ttl, sub, mv, ghosts, rings, notes)) in enumerate(zip(axes.flat, FOULS)):
+    p = line_play(**mv)
+    p.highlight(*rings, color=style.THIRD)
+    fld = p.draw(ax=ax, title=False, lateral=(-7.5, 7.5), window=(-5.6, 4.6))
+    P = P_of(fld, p)
+    neutral_zone(ax, P)
+    drop_numbers(ax)
+    for side, a, b in ghosts:
+        ghost(ax, P, *a, side, to=b)
+    for t, at, to in notes:
+        callout(ax, P, t, at, to)
+    if i == 0:
+        callout(ax, P, "neutral zone\n(drawn ~2x)", (3.3, -4.6), (NZ * 0.6, -5.6))
+    ax.set_title(ttl, loc="left", fontsize=8.6, color=style.INK, fontweight="bold", pad=22)
+    ax.text(0.0, 1.01, sub, transform=ax.transAxes, fontsize=6.6, color=style.INK_2, va="bottom", ha="left",
+            linespacing=1.1)
+fig.tight_layout(h_pad=1.0, w_pad=1.0)
+plt.show()
+```
+
+- A [**false start**](../../appendices/glossary.qmd#gl-false-start) is the offense's foul. Once
+  the ball is ready for play, a set offensive player may not move in a way that imitates the
+  start of the play. For an interior lineman (tackle to tackle) who has put a hand down, the
+  rule is absolute: if he moves the hand or shifts his position, it's a false start, quick or
+  slow. The officials blow the whistle at once, nothing happens, and the offense loses five
+  yards.
+- [**Offside**](../../appendices/glossary.qmd#gl-offside) means being in or beyond the neutral
+  zone at the moment the ball is snapped. A defender can lean, step into the zone, and even get
+  back out without penalty, as long as he is back when the ball moves, touches no one and
+  causes no flinch. If he is still there at the snap, the flag flies but **the play goes on**.
+- [**Encroachment**](../../appendices/glossary.qmd#gl-encroachment) is a defender crossing into
+  the neutral zone before the snap and touching an offensive player or the ball. Whistle, five
+  yards.
+- A [**neutral zone infraction**](../../appendices/glossary.qmd#gl-neutral-zone-infraction)
+  (NZI) is a defender moving into the neutral zone before the snap and either making an
+  offensive player near him react (a lineman protecting himself from the coming hit), or getting
+  past the line with a free path to the quarterback or kicker. Whistle, five yards, and the
+  flinching lineman is not penalized; the rules treat his reaction as the defender's fault.
+
+Why the different treatments? Each rule protects something. The **false start** rule protects
+the defense from being *tricked by movement*: the defense may react to the ball, not to a
+lineman pretending to be the ball. The **encroachment** and **NZI** rules stop the play before
+something dangerous or unfair happens, a defender already in the backfield, or a lineman
+already flinching. And the **offside** rule lets the play continue because stopping it would
+reward the defense: the jumping defender might have ruined a good play, so the offense gets to
+choose.
+
+That choice has a name. When a defender is flagged for offside and the play goes on, the
+offense is playing with house money: if the play works, it keeps the result; if it fails (an
+incompletion, a sack, even an interception), it takes the five yards instead. Fans and
+broadcasters call this a
+[free play](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd),
+and the smartest quarterbacks know exactly what to do with one.
+
+::: {.callout-note title="Film room: Packers 2008–2022 — Aaron Rodgers and the free play"}
+No quarterback of his era was more associated with the hard count than Aaron Rodgers. His
+cadence varied constantly: different rhythms, a sudden bark, and on the road a silent count
+mixed in. In 2017 ESPN found that since he became the starter in 2008, Rodgers had thrown
+**12 regular-season touchdown passes on free plays**, three times as many as any other quarterback, at an
+average of more than thirty yards each.[^rodgers] The second half of the trick was
+preparation. When Rodgers caught the defense with twelve men on the field, he shouted a
+one-word code that told every receiver the next snap was free and to attack deep. "It's one
+word," he said; "we all line up and know what to do." When a defender jumped at the snap
+there was no time for a code, so the receivers had to recognize the flag and the free shot
+themselves. In 2020, when most
+stadiums were empty, he predicted that quiet stadiums would be "an advantage for guys like
+myself who have cadence that can be rhythmic enough to draw people offside."[^packers2020]
+
+What to notice: the free play is a *plan*, not luck. The offense rehearses it. And the defense
+learns too. Over Rodgers' last seven Green Bay seasons (2016–2022), the Packers drew accepted
+offside, encroachment and neutral-zone fouls *less* often than the median team, about 0.43 a
+game against 0.61 for the league as a whole.[^gbdata] One reading is that opponents who had studied
+the film stayed disciplined, which still helps the offense: a defensive line that waits for
+the ball gets off the ball a fraction later. Another is that the count misses free plays the
+Packers converted and so declined (see the note). Either way, a reputation changes how the
+defense plays.
+:::
+
+## Changing the play at the line
+
+The third family of tools is the one fans notice most: the quarterback pointing, shouting and
+changing what the offense is about to do. Here the vocabulary is genuinely muddled, because
+every team uses its own words. The book uses four terms, from most freedom to least.
+
+- An [**audible**](../../appendices/glossary.qmd#gl-audible) is changing the play at the line
+  by voice or hand signal, after seeing the defense. It's the general term.
+- A [**check**](../../appendices/glossary.qmd#gl-check) is a change that was planned in
+  advance and built into the call: "if they show this, we switch to that." The quarterback
+  isn't inventing anything; he is applying a rule. Defenses use checks constantly too: "if the
+  offense lines up with three receivers on one side, check to this coverage."
+- A [**kill call**](../../appendices/glossary.qmd#gl-kill-call) is a specific system: two plays
+  are called in the huddle. At the line the quarterback runs the first, or shouts "Kill, kill!"
+  (or the team's own word) and runs the second.[^kill]
+- A [**check-with-me**](../../appendices/glossary.qmd#gl-check-with-me) system goes furthest:
+  the play isn't final in the huddle at all. The quarterback chooses it at the line from a short
+  menu, after reading the defense.
+
+### Kill calls and counting the box
+
+The kill call is the most common of these in today's NFL, and it is usually a choice between
+a run and a pass. The quarterback decides by counting.
+
+```{python}
+#| label: fig-kill-call
+#| fig-cap: "A kill call. In the huddle the offense called two plays: a run (call 1) and a quick pass (call 2). At the line the quarterback counts the defenders in the box, the area near the ball (shaded), and compares that with his six blockers (five linemen and the tight end). Left: two deep safeties and six in the box, so the run has a blocker for every defender: keep it. Right: a safety walks down and makes it seven against six, so one defender will be unblocked on a run. 'Kill, kill': the offense throws quickly to receivers with fewer defenders around them."
+BOX_W, BOX_D = 6.6, 6.5
+LAT_K, WIN_K = (-17, 17), (-8.5, 15)
+
+
+def kill_play(loaded):
+    off = offense("singleback")
+    off = [q.moved(d=-1.5, w=-9.5) if q.key == "H" else q for q in off]
+    dfn = defense("nickel", "single_high" if loaded else "two_high", off)
+    dfn = [q.moved(d=5.0, w=-10.0) if q.key == "NB" else q for q in dfn]      # nickel back out over the slot
+    if loaded:
+        dfn = [q.moved(d=6.0, w=5.8) if q.key == "SS" else q for q in dfn]
+    else:
+        dfn = [q.moved(d=12.5) if q.key in ("FS", "SS") else q for q in dfn]
+    return Play(off, dfn, los=40, to_go=7)
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.5, 4.5))
+for ax, loaded in zip(axes, (False, True)):
+    p = kill_play(loaded)
+    if not loaded:
+        p.run("RB", [(1.6, -1.0), (9.3, -2.6)])
+        p.handoff("RB", t=0.7)
+        for k, dw in [("LT", -0.5), ("LG", -0.4), ("C", -0.6), ("RG", -0.4), ("RT", -0.4), ("Y", -0.4)]:
+            p.block(k, pts=[(1.2, dw)])
+    else:
+        p.dropback(1.5)
+        p.route("X", r.hitch(4)); p.route("H", r.quick_out(3, 4.5))
+        p.route("Z", r.slant(1.5, 7)); p.route("Y", r.flat(1.5, 6))
+    box = [k for k, q in p.players.items() if q.side == "def" and abs(q.w) <= BOX_W and 0 < q.d <= BOX_D]
+    p.highlight(*box, color=style.DEFENSE)
+    fld = p.draw(ax=ax, title=False, lateral=LAT_K, window=WIN_K)
+    P = P_of(fld, p)
+    (x0, y0), (x1, y1) = P(0.2, -BOX_W), P(BOX_D, BOX_W)
+    ax.add_patch(Rectangle((min(x0, x1), min(y0, y1)), abs(x1 - x0), abs(y1 - y0), fc=style.DEFENSE, alpha=0.07,
+                           ec=style.DEFENSE, lw=0.9, ls=(0, (4, 2)), zorder=1.7))
+    if not loaded:
+        tag(ax, P(9.5, 0), f"{len(box)} in the box v 6 blockers\nkeep the run (call 1)", ec=style.THIRD, lw=1.0, fs=7)
+        ax.set_title("Two deep safeties: run it", loc="left", fontsize=9, fontweight="bold", color=style.INK)
+    else:
+        tag(ax, P(9.5, -2), f"{len(box)} in the box v 6 blockers\n'Kill, kill': throw (call 2)", ec=style.THIRD,
+            lw=1.0, fs=7)
+        callout(ax, P, "safety walks\ndown", (10.2, 11.0), (6.6, 6.2))
+        ax.set_title("One deep, safety down: kill it", loc="left", fontsize=9, fontweight="bold", color=style.INK)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+The [box](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) is the area close to the ball, roughly between the tight ends and within five or
+six yards of the line, where defenders can get to a run quickly (the box and how to count it
+are taught properly in Part 2).
+The logic is arithmetic. On a run, the offense has a fixed number of blockers: here the five
+linemen and the tight end, six. The quarterback hands off and blocks no one; the ball carrier
+blocks no one. If the defense has six in the box, every defender can be blocked. If it has
+seven, one is free to make the tackle. Unless the play was designed for that (some runs leave
+one defender unblocked on purpose, as you'll see in
+[Option Football](../03-the-run-game/03-04-option-football.qmd)), the run is in trouble. But
+if the defense has put seven near the line, there are fewer defenders left to cover receivers,
+so the pass called alongside it should have room.
+
+That is the whole idea of the kill call: **the offense calls a play that's good against one
+defense and a play that's good against the other, and lets the quarterback pick after he sees
+which one he got.** It halves the chance of running the wrong play into the wrong defense.
+
+What does it cost? The kill call has to be communicated to ten men at the line, sometimes over
+a crowd, and every player has to remember two assignments. If one lineman doesn't hear "kill,"
+he blocks for the run while everyone else blocks for the pass. It also can't help with
+anything the offense didn't plan: if the defense shows a third look, the quarterback still has
+only two options. And the defense knows about kill calls too. A safety can walk down at
+:07 on the play clock, wait for the quarterback to kill the run, then back up at the snap, and
+the offense has handed the defense the play it wanted. The cat-and-mouse over *when* to show
+is the subject of [Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd).
+
+::: {.callout-note title="Madden vs. real life"}
+In *Madden*, an audible is a button press: pick any of five preset plays, instantly, and all
+ten teammates know it. In the NFL an audible is a message shouted to ten people in a noisy
+stadium, from a menu the coaches chose for this game, against a play clock that is still
+running, and its cost when someone misses it is a sack or a fumble. That's why most NFL
+"audibles" aren't free choices at all. They are kill calls and checks: two plays the coaches
+already paired, or a rule the coaches already wrote. The quarterback's job is to recognize the
+defense and apply the plan, not to invent a play.
+:::
+
+### Check-with-me, and how much freedom a quarterback gets
+
+Some quarterbacks have been given much more than a kill call. The extreme is the
+**check-with-me** offense, in which the huddle gives the formation and perhaps a starting play,
+and the quarterback picks the real play at the line from a menu of answers to whatever
+defense he sees.
+
+The best-known example is Peyton Manning's Indianapolis Colts, coordinated by Tom Moore.
+Manning walked to the line, studied the defense (often with the play clock running down
+toward zero), and chose. Former coach Mike Ditka, describing the system in 2004, said "a lot
+of it is 'check with me at the line of scrimmage.' Believe me, nobody could run this offense
+but him."[^moore] That last sentence is the point. A check-with-me offense moves the decision
+from the coach (who has the week's film and a view from the booth) to the quarterback (who
+has the live picture), and that only makes sense if the quarterback reads defenses as well as
+the coach would. It also needs a large shared vocabulary, so that the receivers and linemen
+can apply the change, and lots of play clock.
+
+At the other end are offenses that give the quarterback almost no say. The 49ers' Brock Purdy
+explained in 2024 that in Kyle Shanahan's offense, if the defense shows something like an
+all-out blitz, "we usually have an answer built into the play," and that he isn't expected to
+"randomly make up an audible. There's nothing like that."[^purdy] In that system the call
+already contains its own checks and post-snap reads (the "rules, not paths" idea from
+[What a Play Really Is](01-04-what-a-play-really-is.qmd)), so the quarterback's freedom lives
+*after* the snap rather than before it.
+
+Neither approach is simply better. A check-with-me system squeezes extra value out of a rare
+quarterback but is fragile without him; a built-in-answers system is easier to teach and to
+install every week, but depends on the coach having anticipated what the defense will do.
+Most teams sit in between, with kill calls on most plays and a few checks.
+
+### Dummy calls
+
+A defense listens to all of this. If "Alamo" meant "the run is killed, we're throwing to the
+left" last week, this week's opponent has studied the film. So offenses mix in
+[**dummy calls**](../../appendices/glossary.qmd#gl-dummy-call): words that mean nothing. A
+quarterback may shout "Kill, kill!" and then run the first play anyway, or give a dozen
+signals of which only one matters, or use a code that changes from series to series (a word
+is live only when the quarterback says it first, for instance). Defenses do the same: a
+linebacker may yell out a coverage check he has no intention of playing, purely so the
+quarterback hears it. Peyton Manning's famous "Omaha," covered in
+[What a Play Really Is](01-04-what-a-play-really-is.qmd), was partly a real call and partly
+theatre, and the theatre was the point.
+
+## Naming the Mike: everyone blocks the same men
+
+One more thing the quarterback (or center) shouts has nothing to do with changing the play.
+Before almost every pass, and many runs, someone on the offense points at a linebacker and
+calls out his number: "54's the Mike!"
+
+```{python}
+#| label: fig-mike-id
+#| fig-cap: "Naming the Mike. Left: the quarterback points at a linebacker and declares him the 'Mike', the reference point the protection counts from. With that call made, the five linemen know they block the four down linemen and the Mike, and the back knows he has the other linebacker (the Will). Right: after the call, the Mike walks up into the gap between the center and guard (the A-gap). The protection was set against the old picture, so the quarterback must re-declare, or the back must recognize the change on the fly."
+LAT_ID, WIN_ID = (-16.5, 16.5), (-7.5, 14.5)
+fig, axes = plt.subplots(1, 2, figsize=(6.5, 4.0))
+for ax, late in zip(axes, (False, True)):
+    off = offense("gun_2x2")
+    p = Play(off, defense("nickel", "two_high", off), los=40, to_go=10)
+    if not late:
+        for b, d in [("LT", "WDE"), ("LG", "WDT"), ("RG", "SDT"), ("RT", "SDE"), ("C", "MIKE"), ("RB", "WILL")]:
+            p.block(b, target=d)
+        p.read("MIKE")
+    else:
+        dashed_motion(p, "MIKE", (1.3, 0.85))
+    p.highlight("MIKE", color=style.THIRD)
+    fld = p.draw(ax=ax, title=False, lateral=LAT_ID, window=WIN_ID)
+    P = P_of(fld, p)
+    drop_numbers(ax)
+    if not late:
+        callout(ax, P, "QB points:\n\"54's the Mike!\"", (-4.6, 8.0), (-4.0, 0.6), ec=style.THIRD)
+        tag(ax, P(7.7, -3.0), "line takes the 4 linemen + M;\nthe back takes W")
+        ax.set_title("1  Name the Mike; everyone counts from him", loc="left", fontsize=8.4, fontweight="bold",
+                     color=style.INK)
+    else:
+        callout(ax, P, "M walks up into\nthe A-gap late", (8.6, 7.0), (5.0, 2.6), ec=style.THIRD)
+        tag(ax, P(-5.2, 8.0), "re-ID, or the back\nmust find him")
+        ax.set_title("2  The defense moves after the call", loc="left", fontsize=8.4, fontweight="bold",
+                     color=style.INK)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+The protection call in the huddle says *how* the offense will block, something like "the
+line takes the four linemen and one linebacker, the back takes the other." But which linebacker
+is "the one"? On the TV screen that seems obvious; at the line, with defenders moving, it
+isn't. If the center thinks the Mike is number 54 and the guard thinks it's 52, both may block
+the same man and leave a free rusher. So one player makes the call, usually the quarterback or
+the center, and everyone counts from the man he names. The named linebacker is often, but not
+always, the real middle linebacker; the "Mike" here is a *protection* label, and the offense
+can name any defender if it suits the scheme. The details (who makes the call, how linemen
+count from it, and how protections adjust) are in
+[Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd), where it is called
+[Mike identification](../04-the-passing-game/04-02-pass-protection.qmd).
+
+The right-hand panel shows why defenses love to move late. Once the offense has made its call,
+a linebacker walking up into the
+[A-gap](../03-the-run-game/03-01-run-game-language.qmd) (the gap on either side of the center)
+changes the arithmetic, and the offense has to recognize it and re-declare before the snap. A
+defense that shows two linebackers standing in both A-gaps, threatening to rush either, is
+playing a pressure look you'll meet in
+[Blitz and Man Pressure](../07-pressure/07-02-blitz-and-man-pressure.qmd).
+
+## The defense moves too
+
+So far the offense has done most of the moving. But the defense is never standing still for
+long, and its rules are much looser. Defenders may move as much as they like before the snap,
+any number of them, in any direction. They just have to be out of the neutral zone when the
+ball is snapped, touch no one, cause no flinch, and not try to imitate the snap.
+
+A defense uses that freedom for two opposite purposes: to **adjust** to what the offense
+showed, and to **hide** what it is really going to do. Three moves are worth learning to see.
+
+**The front shifts.** Defensive linemen slide one gap over, or the whole front flips its
+strength, just before the snap (you saw a defense flip after the offense's shift earlier). Done
+late, it leaves the offensive line with a split second to re-sort its blocks.
+
+**A safety walks down.** A safety who was twelve or fifteen yards deep strolls toward the line
+during the cadence. That can mean he's adding himself to the box against the run, that the
+defense is turning a two-deep look into a one-deep one (the
+[two-high and single-high](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)
+shells are introduced in Part 2), or that he's coming after the quarterback. Or it can mean
+nothing: he may be timing it to back out again at the snap.
+
+**Linebackers show blitz.** A linebacker creeps up to the line, or stands in a gap, as if he's
+going to rush the quarterback. A
+[blitz](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) means rushing more
+than the usual four players, and the threat of one forces the offense to keep extra players in
+to block. Showing it is cheap; the linebacker can always back out.
+
+```{python}
+#| label: fig-defense-moves
+#| fig-cap: "The defense moves before the snap (simulated, in Big Data Bowl tracking coordinates). The defense starts with two deep safeties and its linebackers at normal depth. During the cadence the strong safety (SS) walks down and the Mike linebacker (M) creeps up into the gap beside the center. At the snap it looks like a blitz. Then M drops back into coverage and only the four linemen rush. The show was a bluff that made the offense prepare for a blitz that never came. Faint trails show each player's movement."
+def show_and_bail():
+    off = offense("gun_2x2")
+    p = Play(off, defense("nickel", "two_high", off), los=40, to_go=10)
+    p.motion("SS", to=(6.5, 6.8))
+    p.motion("MIKE", to=(1.3, 0.85))
+    p.dropback(2.0)
+    for k, dw in [("LT", -0.6), ("LG", -0.2), ("C", 0.0), ("RG", 0.2), ("RT", 0.6)]:
+        p.block(k, pts=[(-1.4, dw)])
+    p.block("RB", pts=[(1.0, 1.0)])
+    p.route("X", r.hitch(6)); p.route("Z", r.hitch(6)); p.route("H", r.slant(2, 6)); p.route("Y", r.slant(2, 6))
+    for k in ("WDE", "WDT", "SDT", "SDE"):
+        p.rush(k, speed=3.0)
+    p.drop("MIKE", (5.5, 1.0))
+    p.drop("FS", (13.0, 0.0)); p.drop("SS", (8.0, 8.0)); p.drop("WILL", (6.0, -4.0)); p.drop("NB", (6.0, 10.5))
+    p.drop("LCB", (10.0, -15.0)); p.drop("RCB", (10.0, 15.0))
+    return schedule(p, {"SS": (-3.0, -0.6), "MIKE": (-2.2, -0.5)})
+
+
+def bluff_phase(t):
+    if t < -3.0:
+        return "two deep safeties; M off the ball"
+    if t < -0.5:
+        return "SS walks down; M creeps\ninto the A-gap"
+    if t < 0.4:
+        return "snap: it looks like a blitz"
+    return "M drops out, four rush:\nit was a bluff"
+
+
+labelled_animation(show_and_bail(), [-3.4, -1.2, 0.0, 1.1], bluff_phase)
+```
+
+Why bother bluffing? Because every pre-snap look forces an offensive decision. If the
+offense believes the blitz, the quarterback may kill a good play, keep a receiver in to block,
+or throw the ball before the route is ready. If it doesn't believe it and the blitz is real,
+someone gets hit. The defense wins either way if the offense guesses wrong, and the offense
+can't always tell. Pressures that show one thing and do another are a whole chapter later
+([Zone Blitz, Simulated Pressure, and Creepers](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd)),
+and so are coverages that disguise themselves
+([Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)).
+
+The defense also has a hard limit on how long it can keep secrets: physics. A safety who
+needs to cover the deep middle at the snap can't be standing five yards from the line a second
+before it. A linebacker who is really blitzing tends to creep forward with his weight on his
+toes; one who's bluffing tends to stand flat-footed, looking back at the receivers. Reading
+those small differences is a skill the rest of this book keeps sharpening.
+
+## What each side is trying to learn
+
+Put it all together and the pre-snap phase is a two-way interrogation. Each side wants
+specific answers, and each tool exists to get or hide one of them.
+
+| The offense wants to know… | …and asks with | The defense wants to know… | …and asks with |
+|---|---|---|---|
+| Man or zone coverage? | Motion: does a defender follow? | Run or pass? | Personnel, formation, backfield depth |
+| How many deep safeties? | A long look, shifts, late snaps | Where's the strength, and which way is the play going? | Watching shifts and motion |
+| How many in the box? | Counting, then a kill call | When will the ball be snapped? | Watching the ball, timing a silent count |
+| Is a blitz coming, and from where? | Naming the Mike, reading depth and weight | What's the protection, and who's the extra blocker? | Listening to the line calls; moving after them |
+| Did the defense get its adjustment right? | Late shifts and tempo | Did the offense change the play? | Listening for kills, checks and dummies |
+
+: The pre-snap contest. Each side has questions; each tool in this chapter is a way to ask one or to avoid answering one. {#tbl-presnap-questions}
+
+Two patterns run through the table. First, **the offense's tools force the defense to commit
+early** (shift, motion, then make the defense show its adjustment) **while the defense's tools
+delay commitment** (show one thing, move late, rotate at the snap). Second, **timing is the
+real battlefield.** Whoever moves last has the advantage, which is why offenses snap with the
+play clock at :02 after a late motion, why defenses rotate at the snap, and why the next
+decade of the pre-snap game (motion *at* the snap, late rotation, tempo that denies the
+defense time to disguise) is about the last second, not the last fifteen.
+
+::: {.callout-tip title="Watch for it on Sunday: count the movement"}
+For one offensive drive, ignore the ball until the snap. Instead, from the moment the huddle
+breaks, count:
+
+- **Offensive movers.** How many offensive players change position before the snap? Was it a
+  **shift** (two or more at once, then everyone freezes) or **motion** (one player, maybe still
+  moving at the snap)? Write it down: "S" for shift, "M" for motion, "0" for nothing.
+- **Defensive followers.** When a player went in motion, did any defender move *with* him,
+  step for step across the formation? Write "F" if someone followed, "–" if nobody did. You're
+  collecting the clue that
+  [Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)
+  will teach you to read.
+- **Defensive movers.** Did a safety walk down? Did a linebacker creep into a gap? Did he
+  stay there at the snap, or back out?
+- **The voice.** Is the quarterback talking a lot (checks, kills) or barely at all? On third
+  or fourth and short, listen for a hard count, and watch whether the defensive linemen move
+  on the voice or the ball.
+
+After the drive, look at your tally. Most NFL offenses will move someone before at least half
+their snaps. Did this one, and did the defense ever give itself away?
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: a quick snap after a shift"}
+```{python}
+#| label: fig-predict-shift
+#| fig-cap: "Second-and-4, second quarter, game clock running. The offense breaks the huddle in one formation. Then H and Y (dashed paths) move to new spots at the same moment, and both stop. Half a second after they stop, the center snaps the ball, and the offense gains six yards."
+off = offense("gun_2x2")
+q = Play(off, defense("nickel", "two_high", off), los=52, to_go=4)
+dashed_motion(q, "H", (-1.5, -5.4))
+dashed_motion(q, "Y", (-1.5, 6.4))
+q.highlight("H", "Y", color=style.THIRD)
+fld = q.draw(lateral=(-17.5, 17.5), window=(-7.5, 15.5), title=False)
+P = P_of(fld, q)
+tag(fld.ax, P(-5.5, 9.0), "both stop; snap\n0.5 s later", ec=style.THIRD, lw=1.0, fs=7.5)
+plt.show()
+```
+
+**Is there a flag? If so, what is it, and what happens to the six-yard gain?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Yes: an illegal shift, five yards.** Two players moved at the same time, so it was a shift,
+and after a shift all eleven offensive players must be set *together for at least one full
+second* before the snap. Half a second isn't enough.
+
+The foul doesn't stop the play, though. An illegal shift is called when the ball is snapped,
+so the six-yard play happens; the defense then chooses whether to accept the penalty (taking
+the offense back five yards from the previous spot and replaying the down) or decline it and
+keep the result. Here the defense accepts: second-and-9 is much better for it than a first
+down.
+
+Two footnotes for the rules-minded. If only one player had moved and he was still moving
+parallel to the line at the snap, everything would have been legal; that's ordinary motion.
+And inside the last two minutes of a half with the game clock running, this same mistake is
+treated as a **false start** instead, which kills the play at once and can bring a
+[10-second runoff](../10-situational-football/10-04-clock-and-game-management.qmd) of the game
+clock. The rule stops a hurrying offense from using sloppy shifts to stop the clock.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: the safety at :07"}
+```{python}
+#| label: fig-predict-kill
+#| fig-cap: "First-and-10. The huddle call was a run to the left with a kill to a quick pass. The offense lines up against two deep safeties and six defenders in the box. Then, with :07 on the play clock, the strong safety (SS, ringed) starts walking down toward the line."
+off = offense("singleback")
+off = [q_.moved(d=-1.5, w=-9.5) if q_.key == "H" else q_ for q_ in off]
+dfn = defense("nickel", "two_high", off)
+dfn = [q_.moved(d=5.0, w=-10.0) if q_.key == "NB" else q_ for q_ in dfn]
+dfn = [q_.moved(d=12.5) if q_.key in ("FS", "SS") else q_ for q_ in dfn]
+q = Play(off, dfn, los=35, to_go=10)
+dashed_motion(q, "SS", (7.0, 6.0))
+q.highlight("SS", color=style.THIRD)
+fld = q.draw(lateral=(-17, 17), window=(-8.5, 16.5), title=False)
+P = P_of(fld, q)
+tag(fld.ax, P(-5.5, 9.5), "play clock :07", ec=style.LINE_TO_GAIN, lw=1.2, fs=7.5)
+plt.show()
+```
+
+**Does the quarterback keep the run or kill it? What's the risk either way?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Most quarterbacks kill it, and throw.** If the safety arrives in the box, the defense has
+seven near the line against six blockers: one defender will be free on the run. The quick
+pass is the answer the coaches paired with the run for exactly this picture, and with only one
+deep safety left, the receivers outside have fewer defenders around them.
+
+The risk is that it's a bluff. A safety walking down at :07 has plenty of time to back out
+again, and a smart defense times the walk so the quarterback has to decide *before* the safety
+commits. If the quarterback kills to the pass and the safety retreats at the snap, the
+offense is now throwing into a two-deep coverage with a run-friendly six-man box it chose not
+to attack. That's why many quarterbacks wait as long as the clock allows before making the
+call, why some offenses snap the ball quickly to deny the defense the time to walk down, and
+why defenses work so hard to make the walk and the retreat look the same. The full
+cat-and-mouse is in
+[Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd).
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: fourth-and-1, and a heave"}
+```{python}
+#| label: fig-predict-free
+#| fig-cap: "Fourth-and-1 at the opponent's 45. The quarterback's cadence draws the right defensive end (ringed) into the neutral zone, and he is still there when the center snaps the ball; an official throws a flag. Before anyone can block, the quarterback launches a deep throw to Z, who is covered by two defenders."
+off = offense("singleback")
+dfn = defense("4-3_over", "single_high", off)
+dfn = [q_.moved(d=0.15, w=6.3) if q_.key == "SDE" else q_ for q_ in dfn]   # a wide end, jumping
+q = Play(off, dfn, los=65, to_go=1)
+q.dropback(3.0)
+q.block("RB", pts=[(2.2, 2.6)])
+q.route("Z", r.go(24))
+q.route("X", r.go(14))
+q.drop("RCB", (22.0, 15.5), speed=6.5)
+q.drop("FS", (22.0, 11.5), speed=6.0)
+q.pass_to("Z", t=1.6)
+q.highlight("SDE", color=style.THIRD)
+fld = q.draw(lateral=(-17.5, 19.5), window=(-8.5, 28.5), title=False)
+P = P_of(fld, q)
+callout(fld.ax, P, "flag: offside\nat the snap", (-5.0, 10.5), (0.4, 5.0), ec=style.THIRD)
+plt.show()
+```
+
+**Is the quarterback being reckless? What does the offense get, whatever happens to the throw?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**He's being smart: it's a free play.** The end was offside at the snap, which is a live-ball
+foul, so the play continues. Whatever happens, the offense gets to choose:
+
+- If Z catches it (or draws pass interference), the offense keeps the big play and declines
+  the five yards.
+- If the pass falls incomplete, or is **intercepted**, the offense accepts the penalty
+  instead. Five yards on fourth-and-1 is a **first down**, and the ball goes back to the
+  offense as if the throw never happened.
+
+So the throw can't hurt, and a deep shot into double coverage has more upside than any other
+play. That's why the best free-play offenses drill their receivers to turn any flag at the snap into a deep shot.
+
+Notice what would have changed the answer. If the end had kept going *past* the tackle with a
+clear path to the quarterback before the snap, or if the tackle had flinched, the officials would
+have blown the play dead at once for a neutral zone infraction. Same five yards, same first
+down, but no free shot. And if the end had stepped into the neutral zone and back out before
+the snap, touching no one and drawing no flinch, there would have been no foul at all.
+:::
+:::
+
+## Takeaways
+
+- Before every snap the offense must be **set**: all eleven still together for a full second.
+  Rule makers have insisted on it since the 1920s so that the snap count gives the offense a
+  head start, not a running start.
+- A **shift** (two or more players moving together, then a one-second set) changes the picture
+  late and forces the defense to re-declare. **Motion** (one backfield player, moving parallel
+  to or away from the line at the snap) asks the defense a question and gives the mover a
+  running start. NFL motion use climbed from under 40% to about 64% of plays from 2016 to
+  2025, yet motion fouls stayed rare.
+- The **cadence** is the offense's one guaranteed edge. A **hard count** tries to draw the
+  defense offside, at the risk of drawing a **false start** from the offense's own line; a
+  **silent count** trades that edge away to beat crowd noise, and in practice it works.
+- The four pre-snap fouls are about the **neutral zone**. False starts, encroachment and
+  neutral zone infractions stop the play; **offside** lets it continue, which is what makes a
+  free play possible.
+- **Audibles** come in degrees: a **check** applies a planned rule, a **kill call** chooses
+  between two called plays (usually by counting the box), and a **check-with-me** lets the
+  quarterback choose from a menu. **Dummy calls** protect them all.
+- The defense moves too: fronts shift, safeties walk down, linebackers show blitz, and any of it
+  can be a bluff. The whole phase is a fight over information, and whoever shows last usually
+  wins it.
+
+## Connections
+
+**Builds on:** [What a Play Really Is](01-04-what-a-play-really-is.qmd) (the play call, the
+15-second radio cut-off and the delay-of-game clock that frame this chapter) and
+[The Twenty-Two](01-03-the-twenty-two.qmd) (the positions, and who is an eligible receiver).
+
+**Sets up:** [How to Watch a Broadcast Like You Mean It](01-06-how-to-watch-a-broadcast.qmd)
+turns this chapter's "count the movement" drill into a prediction log. In Part 2,
+[Formation Rules and the Language of Alignment](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)
+covers the seven-on-the-line rules a shift must respect,
+[A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)
+teaches the box count, blitzes and safety shells you saw glossed here, and
+[Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)
+turns motion into a reading tool. Further on:
+[Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd) (Mike identification and
+who blocks the extra rusher),
+[Blitz and Man Pressure](../07-pressure/07-02-blitz-and-man-pressure.qmd) (the A-gap pressure
+look), [Zone Blitz, Simulated Pressure, and Creepers](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd)
+(defenses that show one pressure and bring another),
+[Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)
+(the defense's side of the timing battle), and
+[In-Game Adjustments, Tempo, and the Sideline Battle](../08-the-chess-match/08-04-in-game-adjustments-and-tempo.qmd)
+(snapping fast so the defense can't disguise at all).
+
+::: {.callout-note title="Go deeper"}
+- Pat Kirwan, *Take Your Eye Off the Ball* (2010; 2nd ed. 2015): the best fan's guide to the
+  pre-snap picture, written by a former NFL coach and scout.
+- Chris B. Brown, *The Art of Smart Football* (2015): includes essays on how offenses build
+  answers into their calls, and why some put the decision in the quarterback's hands.
+- The NFL rulebook, Rule 7, Section 4 ("Action at or Before the Snap"): two pages that cover
+  every rule in this chapter, at
+  [operations.nfl.com](https://operations.nfl.com/the-rules/nfl-rulebook/).
+- For seeing it live: NFL+ Premium's All-22 film shows the whole pre-snap dance, including the
+  safeties the broadcast camera cuts off.
+:::
+
+[^ruleset]: NFL, *2026 Official Playing Rules*, Rule 7, Section 4, Article 6 ("Complete stop"): "All offensive players are required to come to a complete stop and be in a set position simultaneously for at least one full second prior to the snap." Rule 7-4-2-Item 1 covers an interior lineman who takes a three-point stance and then moves. Rulebook: https://operations.nfl.com/the-rules/nfl-rulebook/
+
+[^rockne]: "Notre Dame Box," *Wikipedia*: https://en.wikipedia.org/wiki/Notre_Dame_Box (the backfield lined up in a T and shifted into a box to the left or right just before the snap); Cliff Christl, "Curly Lambeau's Notre Dame Box, 1921–25," Packers.com: https://www.packers.com/news/part-i-curly-lambeaus-notre-dame-box-1921-25 . Rockne did not invent the shift (variations predate him), but Notre Dame's was the best known. <!-- VERIFY: that Rockne's Notre Dame shift was the most famous/targeted version in the 1920s; the 1927 report does not name Notre Dame. -->
+
+[^rules1927]: "Report of the American Intercollegiate Football Rules Committee for the Year 1927," *Dartmouth Alumni Magazine* (Feb. 1928): the illegal shift was called "the most serious of these problems"; the committee required that "after the shift the players should remain stationary in their new positions for a period of approximately one second" and raised the penalty from five to fifteen yards: https://archive.dartmouthalumnimagazine.com/article/1928/2/1/report-of-the-american-intercollegiate-football-rules-committee-for-the-year-1927
+
+[^rulesshift]: NFL, *2026 Official Playing Rules*, Rule 3, Section 30 (a shift is "any simultaneous change of position or stance by two or more offensive players before the snap," including the offense's movement to the line), and Rule 7-4-7 ("Shifts": shifting any number of times is permitted, but "after the last shift, all players must come to a complete stop and be in a set position simultaneously for at least one full second"; penalty five yards).
+
+[^rulesmotion]: NFL, *2026 Official Playing Rules*, Rule 7-4-8 ("Illegal motion": "one player who is lined up in the backfield may be in motion, provided that he is moving parallel to or away from the line of scrimmage. No player is permitted to be moving toward the line of scrimmage when the ball is snapped"; a receiver on the line who moves along it must stop before the snap) and 7-4-7 (a second player may go in motion only after the first has come to a complete stop; otherwise it is another shift).
+
+[^tform]: "1940 NFL Championship Game," *Wikipedia*: https://en.wikipedia.org/wiki/1940_NFL_Championship_Game (Bears 73, Washington 0, Dec. 8, 1940, with the Bears' T formation and man in motion, refined with Clark Shaughnessy's help); *Encyclopaedia Britannica*, "T formation": https://www.britannica.com/sport/T-formation <!-- VERIFY: Britannica URL path and its wording on the man in motion. -->
+
+[^pffmotion]: Daire Carragher, "NFL pre-snap motion usage reaches new highs across the NFL," PFF (Feb. 23, 2026): shift/motion rate 38.4% (2016) to 63.9% (2025); every team but the Giants at 50% or more in 2025: https://www.pff.com/news/nfl-pre-snap-motion-usage-reaches-new-highs-across-the-nfl . FTN's charting, which counts motion differently, gives lower rates (37.6% in 2022 to 55.1% in 2025); don't mix the two series.
+
+[^fouldata]: Course calculation from nflverse play-by-play, regular seasons 2016–2025, accepted penalties (`penalty_type` "Illegal Shift" plus "Illegal Motion"): 0.06–0.14 per team per game, about one every 7 to 18 games depending on the season. False starts: 0.97–1.25 per team per game.
+
+[^rulesfs]: NFL, *2026 Official Playing Rules*, Rule 7-4-2 ("False start"), including Item 5 ("Any obvious attempt by the quarterback or other player in position to receive the snap to draw an opponent offside is a false start") and Item 4 (a shotgun quarterback thrusting his hands forward without a snap is a false start).
+
+[^rulesdef]: NFL, *2026 Official Playing Rules*, Rule 4-6-5-d (delay of game: a defender near the line "makes quick and abrupt actions that are not part of normal defensive player movement and are an obvious attempt to cause an offensive player(s) to foul (false start)") and Rule 12-3-1-i (unsportsmanlike conduct: "using acts or words by the defensive team that are designed to disconcert an offensive team at the snap"; 15 yards).
+
+[^romo]: Associated Press via ABC7, "Tony Romo forced to use silent count" (Oct. 5, 2014), Cowboys vs. Texans at AT&T Stadium: https://abc7news.com/post/tony-romo-forced-to-use-silent-count/337850/
+
+[^homeroad]: Course calculation from nflverse play-by-play, regular seasons 2016–2025, false starts charged to the offense (accepted): 2,969 by home offenses and 2,886 by road offenses. Per 1,000 snaps (runs, passes, punts, field goals, kneels, spikes and penalty-only plays), the two rates were within about 1.6 of each other in every season. Eagles: 121 home and 84 road false starts over the same seasons.
+
+[^eagles]: Marcus Hayes, "Eagles to fans at the Linc: Shut up (when we're on offense)," *Philadelphia Inquirer* (Dec. 28, 2023): https://www.inquirer.com/eagles/eagles-fans-lincoln-financial-field-20231228.html . The season totals in the article (15 home and 7 road false starts) were counted before the last two weeks; nflverse gives 15 and 8 for the full 2023 regular season.
+
+[^rulesnz]: NFL, *2026 Official Playing Rules*, Rule 3, Section 18, Article 2 (the neutral zone is "the space between the forward and backward points of the ball … and extends to the sidelines"), Rule 3-19 (offside), and Rule 7-4-3 to 7-4-5 (encroachment; neutral zone infraction, including the free path to the quarterback and a nearby offensive player's reaction; offside). Encroachment and neutral zone infractions are dead-ball fouls ("Officials are to blow their whistles immediately"); offside at the snap is not, which is what allows the free play.
+
+[^rodgers]: Rob Demovsky, "Say the code word: Aaron Rodgers keeps burning teams on free plays," ESPN (Sept. 14, 2017): 12 free-play touchdown passes since 2008, three times any other quarterback, averaging 30.8 yards, and the one-word code: https://www.espn.com/blog/green-bay-packers/post/_/id/40719/say-the-code-word-aaron-rodgers-keeps-burning-teams-on-free-plays
+
+[^packers2020]: Mike Spofford, "Aaron Rodgers maximizing on his mastery at the line," Packers.com (Sept. 28, 2020): https://www.packers.com/news/aaron-rodgers-maximizing-on-his-mastery-at-the-line
+
+[^gbdata]: Course calculation from nflverse play-by-play, regular seasons 2016–2022: accepted defensive offside, encroachment and neutral zone infraction penalties per game with Green Bay on offense (0.43) and for all offenses (0.61). Caveat: when an offense *declines* an offside penalty because its free play worked, the penalty isn't recorded as accepted, so a team that converts many free plays draws fewer accepted fouls than it really drew.
+
+[^kill]: Integrated Scouting/ITP Glossary, "Kill Call": https://scoutingacademy.com/itp-glossary-kill-call/
+
+[^moore]: Associated Press via *The Spokesman-Review*, "Moore power" (Oct. 3, 2004), quoting Mike Ditka on the Colts' offense under coordinator Tom Moore: https://www.spokesman.com/stories/2004/oct/03/moore-power
+
+[^purdy]: Grant Cohn, "49ers QB Brock Purdy says he's not allowed to audible," *Sports Illustrated* (Oct. 25, 2024): https://www.si.com/nfl/49ers/news/49ers-qb-brock-purdy-says-he-s-not-allowed-to-audible-01jb219jrd44
