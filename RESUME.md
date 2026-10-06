@@ -25,3 +25,11 @@
   label everything `feedback` plus a type (`fact-check`, `clarity`, `diagram`, `topic-request`).
 - Triage: `gh issue list -R joshuawjulian/reading-the-game -l feedback` and
   `gh api graphql` for discussion comments. Fix, then close with a link to the commit.
+
+## If the Claude session restarts (everything background dies with it)
+1. Resume each chapter workflow with the SAME args and `resumeFromRunId` (finished agent steps replay from cache):
+   script `~/.claude/projects/-home-julian-dev-course/<session>/workflows/scripts/write-book-*.js`, run IDs above;
+   args = `{chapters: _pdfbuild/fullrun-args.json chapters[k::3]}` for k = 0, 1, 2 (in that run-ID order).
+2. `docker start rtg` if needed, then start the publisher (do NOT `pkill -f publish_live.sh` from the same
+   command line; it matches itself): `scripts/publish_live.sh >> /tmp/rtg-publish.log 2>&1` in the background.
+3. Re-create the 30-min check-in cron (session-only).
