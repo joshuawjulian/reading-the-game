@@ -8,9 +8,10 @@
 - DONE: pilot chapters 01-04, 03-02, 06-06, 13-02 (19/29/25/42 pp), published. Review logs in planning/reviews/.
   Known: the chapters run long (7.8k-13.8k words vs the 3-7k target); links to unwritten chapters warn until they exist.
 - The user approved the pilots ("THIS IS EXCELLENT"): keep the depth, push straight live.
-- IN PROGRESS: full run of the remaining 69 chapters as 4 parallel workflows (4-CPU machine caps each at 2
-  agents): wf_03047e4c-a8e, wf_291d3479-a6c, wf_50588891-55c, wf_a7f01e7d-e5f (round-robin chunks; script
-  write-book-*.js). Live publishing: scripts/publish_live.sh (batches of 3 chapters, progress page every 5 min). The revise stage writes planning/reviews/<id>.done; an auto-publish loop commits and
+- IN PROGRESS: full run of the remaining 69 chapters as 12 parallel workflows (the 4-CPU machine caps each at
+  2 agents), round-robin chunks of 5-6 chapters: wf_7ae27f97-9ee wf_a85db7a7-aa0 wf_fccf346d-cf1 wf_fdb01c56-e56
+  wf_b9d86fc3-dc9 wf_c85d98e5-c87 wf_433977a0-9f4 wf_b667d8f5-90f wf_6f4e1be0-c4d wf_691711c4-da9
+  wf_3eaf6523-45a wf_8c5785cf-550 (script write-book-*.js). Live publishing: scripts/publish_live.sh (batches of 3 chapters, progress page every 5 min). The revise stage writes planning/reviews/<id>.done; an auto-publish loop commits and
   pushes chapters that have a .done marker every 20 minutes. To RESUME after an interruption, rerun the
   workflow with resumeFromRunId, or run it fresh with only the chapters that lack a .done marker.
 - AFTER: atlas appendices A-G, whole-book gap audit, link/glossary check.
