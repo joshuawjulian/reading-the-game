@@ -1,0 +1,1446 @@
+---
+title: "Offensive Systems and Play-Calling Languages"
+subtitle: "Why one offense needs twenty words to call a play and another needs one, how a system is taught, and how to tell whose offense you are watching."
+description: "What an offensive system is (a language, a core menu of plays and the rules that adjust them); how the major families name their plays (Air Coryell's digit system, the West Coast offense's receiver-by-receiver calls, Erhardt-Perkins concept words, the run-and-shoot's choice routes, the Air Raid's one-word calls, the Shanahan/McVay long call, the spread option's named reads); why the naming matters for installation, tempo and in-game adjustment; how a system is installed in layers (base plays, tags, weekly packages); the 2025 data fingerprints of seven offenses; and the watching checklist after Part 4."
+glossary:
+  "Offensive system": "An offense's whole way of operating: its play-calling language, its core menu of runs and passes, the rules that adjust those plays to the defense, and the way all of it is taught. Coaches carry their system from team to team."
+  "West Coast offense": {def: "The family of offenses descended from Bill Walsh's 1979–1988 San Francisco 49ers: timed short and intermediate passing that stretches the defense sideways, and long play calls that spell out the formation, the protection and many receivers' routes one by one.", aliases: ["WCO"]}
+  "Air Coryell": "The vertical passing offense of Don Coryell's San Diego Chargers (1978–1986) and its descendants, best known for calling the receivers' routes with numbers from a route tree (the digit system)."
+  "Digit system (route numbering)": "Calling pass routes by their numbers in the route tree, one digit per receiver in a fixed order (classically the X receiver, the tight end, then Z), so '896' sends three receivers on an 8, a 9 and a 6. Other players get their routes by name."
+  "Erhardt-Perkins": "A play-calling system named after Ron Erhardt and Ray Perkins, assistants on the 1970s New England Patriots, in which one word names a whole route combination that every receiver can run from any spot; associated with Bill Parcells's Giants and Bill Belichick's Patriots."
+  "Run-and-shoot": "A four-receiver passing offense (two wide receivers, two slot receivers, one back, no tight end) built on a handful of plays in which most routes are chosen after the snap from what the coverage does. Popularized by Mouse Davis and June Jones."
+  "Air Raid": "The shotgun passing offense of Hal Mumme and Mike Leach (Iowa Wesleyan, Valdosta State, Kentucky, Texas Tech): a small menu of pass concepts such as mesh and Y-cross, called with one word or a hand signal, often without a huddle, and practised endlessly."
+  "Concept-based terminology": "A play-calling language in which one word names a whole route combination (a concept) rather than each receiver's route, so the call stays short and the concept can be run from any formation. Erhardt-Perkins is the best-known example."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import os
+import logging
+import textwrap
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import FancyBboxPatch, FancyArrowPatch, Rectangle, Patch
+from matplotlib.lines import Line2D
+
+from gridiron import Play, Player, routes as r, style
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+READ_GREEN = "#0f7a55"
+LINE_D, OFF_BALL, GUN, UC = -0.7, -1.5, -5.0, -1.9
+OL = ("LT", "LG", "C", "RG", "RT")
+
+
+# ---------------------------------------------------------------- players
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=key if label is None else label)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line5():
+    """The five offensive linemen, 1.6 yards apart (only the center is lettered)."""
+    return [O(k, k, LINE_D, w, "C" if k == "C" else "") for k, w in
+            (("LT", -3.2), ("LG", -1.6), ("C", 0.0), ("RG", 1.6), ("RT", 3.2))]
+
+
+def trips_right():
+    """Gun Trips Right, 11 personnel: X alone on the left (on the line); the tight end Y attached on
+    the right (on the line); H and Z a step off the ball. Seven on the line."""
+    return line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.6, "R"),
+                      O("X", "WR", LINE_D, -15.0), O("Y", "TE", LINE_D, 4.8),
+                      O("H", "WR", OFF_BALL, 10.0), O("Z", "WR", OFF_BALL, 17.0)]
+
+
+def set_line(p, depth=1.2):
+    for k in OL:
+        p.block(k, pts=[(-depth, 0.0)])
+
+
+# ---------------------------------------------------------------- drawing helpers
+def P_(fld, p, d, w):
+    return tuple(float(v) for v in fld.xy(*p.to_abs(d, w)))
+
+
+def clean(ax):
+    """Drop the painted yard numbers (they sit where receivers stand); clip all text to the window."""
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, ax=None, **kw):
+    fld = p.draw(ax=ax, title=False, **kw)
+    clean(fld.ax)
+    return fld
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fs=7.0, ha="center", weight="normal", ec="none", style_=None):
+    x, y = P_(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fs, color=color, ha=ha, va="center", zorder=13, fontweight=weight,
+                linespacing=1.15, style=style_ or "normal",
+                bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec=ec, lw=0.7, alpha=0.92))
+
+
+def branch(fld, p, pts, color=style.OFFENSE, lw=1.4, dash=(0, (1, 1.6)), arrow=True, alpha=1.0):
+    """A dotted path through absolute (d, w) points: a route's other branch."""
+    xy = [P_(fld, p, *q) for q in pts]
+    xs, ys = zip(*xy)
+    fld.ax.plot(xs, ys, color=color, lw=lw, ls=dash, zorder=4.5, alpha=alpha, solid_capstyle="round")
+    if arrow:
+        fld.ax.add_patch(FancyArrowPatch(xy[-2], xy[-1], arrowstyle="-|>", mutation_scale=9, color=color,
+                                         lw=lw, alpha=alpha, zorder=4.5))
+
+
+def dashed_motion(p, key, to, head=0.5):
+    """Pre-snap motion to the absolute spot `to`, split so it draws dashed end to end."""
+    pl = p.players[key]
+    dd, dw = to[0] - pl.d, to[1] - pl.w
+    f = max(0.0, 1 - head / float(np.hypot(dd, dw)))
+    p.motion(key, pts=[(dd * f, dw * f), (dd, dw)])
+
+
+def blank(ax):
+    ax.set_axis_off()
+    ax.grid(False)
+
+
+def box(ax, x, y, w, h, text, fc=style.SURFACE, ec=style.BASELINE, lw=1.0, fs=8, bold=False,
+        color=style.INK, sub=None, sub_fs=6.8, ha="center"):
+    ax.add_patch(FancyBboxPatch((x - w / 2, y - h / 2), w, h, boxstyle="round,pad=0.02,rounding_size=1.0",
+                                fc=fc, ec=ec, lw=lw, zorder=3))
+    tx = x if ha == "center" else x - w / 2 + 1.2
+    if sub:
+        ax.text(tx, y + h / 2 - 2.0, text, ha=ha, va="top", fontsize=fs, color=color,
+                fontweight="bold" if bold else "normal", zorder=4)
+        ax.text(tx, y + h / 2 - 2.0 - fs * 0.42, sub, ha=ha, va="top", fontsize=sub_fs, color=style.INK_2,
+                zorder=4, linespacing=1.3)
+    else:
+        ax.text(tx, y, text, ha=ha, va="center", fontsize=fs, color=color, fontweight="bold" if bold else "normal",
+                zorder=4, linespacing=1.2)
+
+
+def arrow(ax, p0, p1, color=style.INK_2, lw=1.3, rad=0.0, ls="-"):
+    ax.add_patch(FancyArrowPatch(p0, p1, arrowstyle="-|>", mutation_scale=11, color=color, lw=lw, ls=ls,
+                                 shrinkA=2, shrinkB=2, connectionstyle=f"arc3,rad={rad}", zorder=2))
+```
+
+Picture two broadcasts on the same Sunday. On the first, a microphone catches the 49ers' play
+call coming in, something like the one Kyle Shanahan once recited for reporters: "Y Short to
+Strong Right Clamp Ace, H2 Y Bingo X Comeback… with Roll Right Z Shallow on Two." On the other
+channel, the New England quarterback walks to the line
+without a huddle, points at a linebacker and shouts what sounds like a single word. Both offenses
+are about to run a pass play with three or four receivers working together, and both will
+probably gain about the same yardage. So why does one coach need twenty words and the other one?
+The answer isn't style. Each offense speaks a language built to solve a particular problem:
+how to teach a playbook to fifty-odd players, how fast to get the call to the field, and how
+easily to change one piece of a play in the middle of a game. This chapter is about those
+languages, the **systems** they belong to, and how you can tell, from your couch, which one you're
+watching.
+
+**You'll be able to…**
+
+- Hear or read a play call and say which family's language it is in: Air Coryell's numbers, the
+  West Coast offense's receiver-by-receiver words, an Erhardt-Perkins concept word, a run-and-shoot
+  read, an Air Raid one-word call, or a Shanahan/McVay sentence.
+- Explain what each way of naming plays buys and costs for **installation** (how fast players learn
+  it), **tempo** (how fast the call reaches the field) and **in-game adjustment** (how easily the
+  coach can change one piece).
+- Describe how a system is installed in layers: base plays in camp, tags that make new plays out of
+  old words, and the weekly packages chosen for one opponent.
+- Name the film and data fingerprints of the main offensive families (under-center rate, motion,
+  empty sets, no-huddle, RPOs, quarterback runs) and guess a team's family from them.
+- Run the watching checklist as it stands after Part 4, with the run, pass and system clues added.
+
+::: {.callout-note title="You'll need"}
+- **The quarterback's process** from [Quarterback Play](04-07-quarterback-play.qmd): the
+  progression (which receiver he looks at first, second, third), and the idea that a play is
+  designed around what he can see and read in about three seconds.
+- **How a call is built** from [What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd):
+  formation, motion, protection, concept, tags, and the radio that cuts off at 15 seconds.
+- **The route tree and option routes** from [Passing Fundamentals](04-01-passing-fundamentals.qmd):
+  1 flat, 2 slant, 3 comeback, 4 curl, 5 out, 6 dig, 7 corner, 8 post, 9 go, and routes that
+  change after the snap.
+- **Pass concepts** from [Dropback Concepts](04-04-dropback-concepts.qmd): routes that work as a
+  unit (flood, smash, mesh, Y-cross, four verticals).
+:::
+
+## What an offensive system is
+
+When a broadcaster says a team "runs the West Coast offense" or "is an Air Raid team," he isn't
+talking about one play or one formation. He means an
+[**offensive system**](../../appendices/glossary.qmd#gl-offensive-system): the offense's whole way
+of operating. A system has four layers, and it helps to keep them apart, because the names for
+systems blur them together.
+
+1. **A language.** The words for formations, motions, protections, runs and pass routes, and the
+   grammar that strings them into a [play call](../../appendices/glossary.qmd#gl-play-call). This
+   is the team's [verbiage](../../appendices/glossary.qmd#gl-verbiage).
+2. **A core menu.** The handful of runs and the couple of dozen pass concepts the offense is built
+   on, the plays it will still be running in December.
+3. **Rules.** How each play adjusts to what the defense does: which blocker takes which rusher,
+   which routes become other routes against man coverage, whom the quarterback reads.
+4. **A teaching method.** The order in which all of this is
+   [installed](../../appendices/glossary.qmd#gl-install), how it's drilled, and what the players
+   are tested on.
+
+Why does an offense need a system at all, rather than a big list of plays? Do the arithmetic. An
+NFL team has 53 players and perhaps 25 who touch the offense in a given week. It runs about 60
+offensive plays per game (60.6 runs and passes per team per game in the 2025 regular
+season),[^snaps] and it has forty seconds between them, fifteen of which the coach can't use
+([What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd)). A list of a few
+hundred unrelated plays would be impossible to learn and impossible to call quickly. A system turns
+the list into a *language*: a small vocabulary that combines into many plays, so a player learns
+words once and the coach builds new sentences every week.
+
+::: {.callout-important title="Why it exists"}
+A system is how a coach makes a large playbook small. Players don't memorize three hundred plays;
+they memorize perhaps a hundred words and a grammar, and the plays fall out of the combinations.
+The price is that the language has to be learned before anything else works, and a team that
+changes systems, or keeps changing coordinators, pays that price again.
+:::
+
+The language layer is the one this chapter is mostly about, because it's where the families differ
+most, and because it shapes the other three. The families also differ in *what they like to run*
+(the West Coast's short timing throws, Air Coryell's deep ones, the Air Raid's crossing routes), and
+we'll note that where it matters, but where these systems came from is a story for
+[1978 and the Passing Revolution](../11-history/11-02-the-1978-liberation.qmd) and
+[The College Laboratory](../11-history/11-03-the-college-laboratory.qmd), and their greatest
+teams get case studies in Part 12.
+
+::: {.callout-note title="Madden vs. real life"}
+In *Madden*, a playbook is a menu: "Gun Trips TE — Flood" is a card you select, and if you want a
+different play you scroll to a different card. A real playbook is closer to a grammar book. The
+name *is* the instruction: each word tells some of the eleven players what to do, so a coach can
+say a play nobody has ever run ("Flood, but the tight end runs a wheel instead of the flat") and
+every player knows his job without a new diagram. That's why real play calls sound like gibberish
+on the sideline mic: you're hearing a sentence in a language you haven't learned yet.
+:::
+
+## Three ways to say the same play
+
+The clearest way to see what a play-calling language does is to say one play three ways. Here is a
+classic three-receiver pattern to the right side of a trips formation: the outside receiver runs
+straight up the field, the middle receiver runs about eight yards and breaks flat toward the
+sideline, and the innermost receiver runs straight to the flat. It's a three-level stretch of the
+defenders near that sideline, the family [Dropback Concepts](04-04-dropback-concepts.qmd) calls
+[flood](../../appendices/glossary.qmd#gl-flood): a deep defender has to stay with the vertical
+route, and the defender under him can't cover both the eight-yard out and the flat. On the left,
+the lone receiver runs a dig across the middle on the backside.
+
+```{python}
+#| label: fig-three-names
+#| fig-cap: "One play, three languages. Top: the routes from Gun Trips Right, with the five linemen and the back blocking ('60' stands for the protection in all three calls). Bottom: what each family says, and which receiver hears which word, column by column under the players. Air Coryell gives X, Y and Z a route-tree number each, in that fixed order, and names H's route separately. The West Coast style names every receiver's route. Erhardt-Perkins says one word, 'Ghost', for the whole three-man pattern and leaves the backside to a rule or a second word. The calls are illustrative, written in each family's style rather than quoted from a playbook."
+p = Play(trips_right(), None, los=35, to_go=None)
+set_line(p)
+p.block("RB", pts=[(0.8, -1.2)])
+p.dropback(2.0)
+p.route("X", r.dig(12.7, 10.0))
+p.route("Y", r.flat(1.5, 8.0))
+p.route("H", r.out(9.5, 5.5))
+p.route("Z", r.go(21.5))
+
+W_IN = 6.5
+LAT, WIN = (-19.5, 22.5), (-7.0, 23.0)
+span_w, span_d = (LAT[1] - LAT[0]) + 1.0, (WIN[1] - WIN[0]) + 1.0
+h_field = W_IN * span_d / span_w
+h_tab = 2.35
+fig = plt.figure(figsize=(W_IN, h_field + h_tab))
+ax_f = fig.add_axes([0, h_tab / (h_field + h_tab), 1, h_field / (h_field + h_tab)])
+fld = draw(p, ax=ax_f, lateral=LAT, window=WIN)
+say(fld, p, 20.6, 12.4, "vertical", fs=7)
+say(fld, p, 9.7, 13.2, "8-yard out", fs=7)
+say(fld, p, 2.6, 14.0, "flat", fs=7)
+say(fld, p, 14.0, -10.0, "dig (backside)", fs=7)
+say(fld, p, -5.6, 8.0, "'60': five linemen\nand the back block", fs=6.5)
+
+ax_t = fig.add_axes([0, 0, 1, h_tab / (h_field + h_tab)])
+ax_t.set_xlim(ax_f.get_xlim())
+ax_t.set_ylim(0, h_tab / W_IN * span_w)
+blank(ax_t)
+col = {k: P_(fld, p, 0, w)[0] for k, w in (("X", -14.4), ("Y", 4.8), ("H", 10.0), ("Z", 17.0))}
+cw = {"X": 9.2, "Y": 4.9, "H": 4.9, "Z": 5.4}
+x_left = P_(fld, p, 0, -19.0)[0]
+top = h_tab / W_IN * span_w
+ROWS = [
+    ("AIR CORYELL", "\u201cTrips Right 60, 619, H Out\u201d", style.SERIES[0],
+     {"X": ("6", "dig"), "Y": ("1", "flat"), "H": ("H Out", "a tag"), "Z": ("9", "go")}),
+    ("WEST COAST", "\u201cTrips Right 60, Z Go, H Out, Y Flat, X Dig\u201d", style.SERIES[1],
+     {"X": ("X Dig", None), "Y": ("Y Flat", None), "H": ("H Out", None), "Z": ("Z Go", None)}),
+    ("ERHARDT-PERKINS", "\u201cTrips Right 60 Ghost\u201d", style.SERIES[2],
+     {"X": ("backside rule", "or a second word"), "YHZ": ("Ghost", "one word: vertical, 8-yard out, flat")}),
+]
+row_h = top / 3.0
+for i, (name, call, c, cells) in enumerate(ROWS):
+    y_top = top - i * row_h
+    ax_t.text(x_left, y_top - 1.0, name, fontsize=7.6, fontweight="bold", color=style.INK, va="center")
+    ax_t.text(x_left + 12.2, y_top - 1.0, call, fontsize=7.6, color=style.INK, va="center", family="DejaVu Sans Mono")
+    yc = y_top - 3.25
+    for k, (main, sub) in cells.items():
+        if k == "YHZ":
+            x0, x1 = col["Y"] - cw["Y"] / 2, col["Z"] + cw["Z"] / 2
+        else:
+            x0, x1 = col[k] - cw[k] / 2, col[k] + cw[k] / 2
+        ax_t.add_patch(FancyBboxPatch((x0 + 0.15, yc - 1.15), x1 - x0 - 0.3, 2.3,
+                                      boxstyle="round,pad=0,rounding_size=0.5", fc=c, alpha=0.16, ec="none"))
+        ax_t.add_patch(FancyBboxPatch((x0 + 0.15, yc - 1.15), x1 - x0 - 0.3, 2.3,
+                                      boxstyle="round,pad=0,rounding_size=0.5", fc="none", ec=c, lw=1.0))
+        if sub:
+            ax_t.text((x0 + x1) / 2, yc + 0.45, main, ha="center", va="center", fontsize=7.6, fontweight="bold",
+                      color=style.INK)
+            ax_t.text((x0 + x1) / 2, yc - 0.6, sub, ha="center", va="center", fontsize=6.0, color=style.INK_2)
+        else:
+            ax_t.text((x0 + x1) / 2, yc, main, ha="center", va="center", fontsize=7.6, fontweight="bold",
+                      color=style.INK)
+plt.show()
+```
+
+Nothing about the play changes from row to row. The same four receivers run the same four routes.
+What changes is **what a word stands for**, and that one design decision ripples through
+everything else.
+
+### Air Coryell: a number for every route
+
+[**Air Coryell**](../../appendices/glossary.qmd#gl-air-coryell) is named after Don Coryell, whose
+San Diego Chargers of 1978–1986 threw the ball downfield more aggressively than anyone of their era
+(the Chargers led the NFL in passing yards six seasons running, 1978–1983).[^coryell] Coryell was a
+former college coach at San Diego State who believed a defense should have to cover every blade of
+grass, and his language was built to make any combination of routes callable in a breath. Its core
+is the [**digit system**](../../appendices/glossary.qmd#gl-digit-system-route-numbering): each
+pass-catcher's route is its number in the [route tree](../../appendices/glossary.qmd#gl-route-tree)
+you learned in [Passing Fundamentals](04-01-passing-fundamentals.qmd), and the call lists the
+numbers in a fixed order. In the classic version the order is the split end (X), the tight end (Y)
+and the flanker (Z), so "896" sends X on an 8 (a post), Y on a 9 (a go up the seam) and Z on a 6 (a
+dig).[^digits] Backs and slot receivers, who aren't covered by the three digits, get their routes
+by name: "H Out," "F Swing."
+
+In our figure, "619" means X runs the dig (6), Y the flat (1), Z the go (9), and "H Out" tags the
+slot. Notice what the call doesn't say: nothing in "619" tells anyone that the Y, H and Z routes
+belong together, or that the quarterback should read the defender under the out. The quarterback
+has to know that this particular combination is a flood, and what flood's read is.
+
+**What it buys.** Huge reach from tiny vocabulary: with ten route numbers and three receivers, the
+language can express a thousand route combinations without a single new word, and a play-caller
+can invent a new pattern on the sideline by saying three digits. The numbers also travel well: "a
+9 route" means a go almost everywhere.
+
+**What it costs.** The digits describe routes, not *how routes work together*, so the teaching of
+reads has to happen separately. Chris Brown, the football writer whose essays on play-calling
+languages are the standard reference, put the problem sharply: the route tree gives coaches
+"flexibility where they don't need it and not enough where they do."[^brownwcory] Most of those
+thousand combinations are bad plays, and the call has no built-in way to say "run this pattern from
+a different formation" or "adjust this route against man." The digit order also ties a route to a
+*letter*, so if the coach wants a different player on the 9 he has to move players around or
+add words.
+
+The Coryell family tree runs through his assistants and their assistants (Joe Gibbs, Ernie
+Zampese, Norv Turner, Mike Martz), and through every team that kept their numbering.[^coryelltree]
+Today pure Coryell calls are rare in the NFL, but the numbers survive everywhere: in route trees, in
+coaches' shorthand ("run a 7"), and in many hybrid playbooks.
+
+### West Coast: say what every player does
+
+The [**West Coast offense**](../../appendices/glossary.qmd#gl-west-coast-offense)
+([**WCO**](../../appendices/glossary.qmd#gl-wco)) is the family descended from Bill Walsh's San
+Francisco 49ers (1979–1988), whose timed short passing game you met in
+[Passing Fundamentals](04-01-passing-fundamentals.qmd). Its descendants are the largest family
+tree in football: Walsh's assistants (Mike Holmgren, George Seifert, Dennis Green, among others),
+the next generation (Andy Reid and Jon Gruden under Holmgren; Mike Shanahan, Seifert's offensive
+coordinator; and many more), and theirs (Gary Kubiak, Kyle Shanahan, Sean McVay, Matt LaFleur…).[^wcotree] (The name itself is an accident: it was first used for
+the vertical Coryell offense out of San Diego, and only later stuck to Walsh's; the story is in
+[the 49ers case study](../12-case-studies/12-01-walsh-49ers-west-coast.qmd).)
+
+As a language, the West Coast style is **explicit**. A call names the formation, any shift or
+motion, the protection, and then a word for the pattern plus a route word for most receivers, one
+at a time: "Z Go, H Out, Y Flat, X Dig." Real WCO calls are longer than our example. Chris Brown
+quoted one, "Scatter-Two Bunch-Right-Zip-Fire 2 Jet Texas Right-F Flat X-Q," as an example of how
+these calls had "morphed into monstrosities."[^brownwco]
+
+**What it buys.** Precision. Every player hears his own job, so there's little room for a
+misunderstanding, and the play-caller can change exactly one piece ("same play, but X Comeback")
+without inventing a new name. Routes are taught as rules that adjust to the coverage, and the long
+call lets a coach specify which version of a rule applies.
+
+**What it costs.** Time and memory. A long call takes seconds to say and to repeat in the huddle,
+which makes fast tempo hard, and a rookie has to learn hundreds of words before he can play.
+Brown's other complaint is that it's "excessively clunky," and that "plays that are conceptually
+the same can have wildly different calls," because the same pattern, run from a different
+formation by different letters, is spelled with different words.
+
+::: {.callout-caution title="Common misconception"}
+"A West Coast team throws short passes." It did in 1981. Today the label mostly tells you about
+*language and lineage*: which coaches taught this staff, and which words they use. Kyle Shanahan's
+49ers and Sean McVay's Rams are West Coast descendants by language, but their offenses are built on
+the wide-zone run and play-action ([Zone Running](../03-the-run-game/03-02-zone-running.qmd);
+[Play-Action, Bootlegs, and Screens](04-05-play-action-boots-screens.qmd)); Andy Reid's Chiefs are
+West Coast descendants that also run college spread concepts and RPOs. When you hear "West Coast,"
+think "family tree," not "short passing."
+:::
+
+### Erhardt-Perkins: one word for the whole pattern
+
+[**Erhardt-Perkins**](../../appendices/glossary.qmd#gl-erhardt-perkins) is named after two assistants
+on Chuck Fairbanks's New England Patriots staff of the 1970s, Ron Erhardt and Ray Perkins, who
+built a language around **concepts** rather than routes.[^epbirth] It went with Erhardt to Bill
+Parcells's New York Giants of the 1980s, where Erhardt was the offensive coordinator, and through
+Parcells's staff to Bill Belichick, whose Patriots ran it with Tom Brady for two decades. In
+Erhardt-Perkins, one word names the whole pattern. In Brown's account, "Ghost" has "the outermost
+receiver, whoever it is, run a vertical route, one inside receiver run to a depth of roughly eight yards before
+breaking flat to the outside, and the innermost receiver run immediately to the flat": exactly our
+play.[^ghost] Another word, "Tosser," means double slants. And because each word covers one side of
+the formation, a call can be two words, "Ghost-Tosser," one concept to each side.
+
+This is [**concept-based terminology**](../../appendices/glossary.qmd#gl-concept-based-terminology):
+a language in which a word names a [pass concept](../../appendices/glossary.qmd#gl-pass-concept)
+instead of a route. Erhardt-Perkins is its best-known form, and today almost every NFL playbook uses
+concept words for at least part of the passing game. The trick that makes it work is that the
+concept's jobs are assigned **by position in the formation, not by letter**. "Outermost," "inside,"
+"innermost" are counted from the sideline in, the same #1, #2, #3 numbering of receivers you learned
+in [Spread and Modern Formations](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd).
+So Ghost doesn't care who lines up where.
+
+```{python}
+#| label: fig-ghost-anywhere
+#| fig-cap: "The same word from three formations. In each panel 'Ghost' means #1 (the outermost receiver) runs the vertical, #2 the eight-yard out and #3 (the innermost) the flat, counted from the sideline in. Left: trips with the tight end attached, as before. Middle: a tight bunch, where the routes cross. Right: an empty formation (no back behind the quarterback), where the running back has split out and runs the flat. Only the three-receiver side is drawn. Three formations and different players, but nobody has to learn a new play."
+def ghost_panel(ax, roster, roles, title, sub, depth8=8.0):
+    p = Play(line5() + roster, None, los=35, to_go=None)
+    o, m, i = (p.players[k] for k in roles)
+    p.route(roles[0], r.go(21.5 - o.d))
+    p.route(roles[1], r.out(depth8 - m.d, 15.6 - m.w))
+    p.route(roles[2], r.path((0.8, 2.5), (2.2 - i.d, 12.6 - i.w)))
+    fld = draw(p, ax=ax, lateral=(-4.0, 21.5), window=(-6.5, 23.0))
+    ax.set_title(title, fontsize=8.5, loc="left", fontweight="bold", color=style.INK)
+    ax.text(0.5, -0.02, sub, transform=ax.transAxes, ha="center", va="top", fontsize=7, color=style.INK)
+    for tag, (dd, ww) in zip(("#1", "#2", "#3"), ((19.0, o.w - 2.2), (10.0, 14.2), (4.0, 12.4))):
+        say(fld, p, dd, ww, tag, fs=6.6, color=style.INK, weight="bold")
+    return fld
+
+
+fig, axes = plt.subplots(1, 3, figsize=(6.5, 3.05))
+ghost_panel(axes[0], [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.6, "R"), O("X", "WR", LINE_D, -15.0),
+                      O("Y", "TE", LINE_D, 4.8), O("H", "WR", OFF_BALL, 10.0), O("Z", "WR", OFF_BALL, 17.0)],
+            ("Z", "H", "Y"), "Trips, tight end", "#1 Z · #2 H · #3 Y")
+ghost_panel(axes[1], [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.6, "R"), O("X", "WR", LINE_D, -16.0),
+                      O("H", "WR", LINE_D, 8.0), O("Y", "TE", OFF_BALL, 6.6), O("Z", "WR", OFF_BALL, 9.6)],
+            ("Z", "H", "Y"), "Bunch", "#1 Z · #2 H · #3 Y")
+ghost_panel(axes[2], [O("QB", "QB", GUN, 0.0, "Q"), O("X", "WR", LINE_D, -16.0), O("H", "WR", OFF_BALL, -9.0),
+                      O("Z", "WR", LINE_D, 17.0), O("Y", "TE", OFF_BALL, 11.0), O("RB", "RB", OFF_BALL, 5.5, "R")],
+            ("Z", "Y", "RB"), "Empty", "#1 Z · #2 Y · #3 R")
+fig.tight_layout(w_pad=0.4)
+plt.show()
+```
+
+Charlie Weis, Belichick's offensive coordinator for Brady's first three Super Bowl wins, explained
+the payoff in Brown's piece: "You can cut down on the plays and get different looks from your
+formations and who's in them. It's easier for the players to learn."[^weis] A receiver learns
+Ghost once, as a set of three jobs, and he can be any of the three. The coach can put his best
+receiver at #2 one week and #1 the next, and the call doesn't change.
+
+**What it buys.** Short calls, which is why New England could run a no-huddle offense with one- and
+two-word calls when it wanted to. Easy learning, because the vocabulary is small and every word
+means a whole picture. And flexibility of *personnel*: the same concept from 11, 12 or 21
+personnel, from trips, bunch or empty, so a defense can't key on the formation.
+
+**What it costs.** Expressiveness. Ghost is Ghost; if the coach wants the #3 receiver to run a
+wheel instead of the flat, he needs a tag ("Ghost, Y Wheel") or a new word, and every new word has
+to be taught. The details a West Coast call spells out (who blocks, which receiver is the hot
+route) have to be settled by rules before the game, so the system leans on smart, experienced
+players. That's one reason the Patriots were famous for valuing players who could learn many
+positions.
+
+### The hybrid in every playbook
+
+Look back at the call from [What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd):
+"Gun Trips Right Zip 60 Stick X Dig." "Stick" is a concept word in the Erhardt-Perkins manner; "X
+Dig" names one receiver's route in the West Coast manner; and plenty of teams that use both still
+number their routes Coryell-style in meetings. Very few NFL playbooks are pure. The families matter
+because they tell you what a staff reaches for *first*: to spell out jobs, to name concepts, or to
+number routes. That instinct shapes how the offense installs, how fast it can play, and how it
+adjusts.
+
+## Long calls on purpose: the Shanahan and McVay dialect
+
+If concept words are so efficient, why do the most copied offenses of the last decade, Kyle
+Shanahan's and Sean McVay's, use some of the longest calls in football? Look at the call from the
+start of the chapter, which Shanahan recited in 2020 when asked for one of his longest.[^kyle] Here
+it is beside some shorter ones.
+
+```{python}
+#| label: fig-call-length
+#| fig-cap: "How long is a play call? Each chip is one word or tight group of words, coloured by its job (where a team hasn't said publicly what a word means, it is grey). Shanahan's call (2020, as he recited it; one word was inaudible) spells out the formation, the shift, three receivers' routes, the quarterback's launch point and the snap count. The Chiefs' famous Super Bowl LIV call is four words, one of them the route. Erhardt-Perkins and Air Raid calls are a formation plus one or two concept words; Air Raid teams often replace even those with a hand signal. The readings of the Shanahan words follow a 2025 breakdown of the 49ers' call order and are interpretations, not the team's definitions."
+CATS = {
+    "form": ("formation & pre-snap movement", style.SERIES[0]),
+    "route": ("one receiver's route", style.SERIES[1]),
+    "concept": ("a whole pattern (concept)", style.SERIES[2]),
+    "qb": ("QB launch point / protection", style.SERIES[3]),
+    "snap": ("snap count", style.SERIES[4]),
+    "unk": ("meaning not public", style.MUTED),
+}
+CALLS = [
+    ("49ers, Kyle Shanahan (recited 2020)", "19+ words",
+     [("Y Short to", "form"), ("Strong Right", "form"), ("Clamp", "form"), ("Ace,", "unk"), ("H2", "unk"),
+      ("Y Bingo", "route"), ("X Comeback", "route"), ("[inaudible]", "unk"), ("with Roll Right", "qb"),
+      ("Z Shallow", "route"), ("on Two", "snap")]),
+    ("Chiefs, Super Bowl LIV (2020)", "4 words",
+     [("2-3 Jet", "unk"), ("Chip", "unk"), ("Wasp", "route")]),
+    ("Patriots style, Erhardt-Perkins", "formation + 1-2",
+     [("[formation]", "form"), ("Ghost", "concept"), ("Tosser", "concept")]),
+    ("Air Raid", "formation + 1, or a signal",
+     [("[formation]", "form"), ("Mesh", "concept")]),
+]
+fig, ax = plt.subplots(figsize=(6.5, 3.35))
+blank(ax)
+ax.set_xlim(0, 100)
+ax.set_ylim(0, 50)
+CH = 0.98  # data units per character at this font size
+
+
+def chip(x, y, text, cat):
+    lab, c = CATS[cat]
+    w = len(text) * CH + 2.4
+    ax.add_patch(FancyBboxPatch((x, y - 1.7), w, 3.4, boxstyle="round,pad=0,rounding_size=0.9", fc=c,
+                                alpha=0.17 if cat != "unk" else 0.12, ec="none", zorder=2))
+    ax.add_patch(FancyBboxPatch((x, y - 1.7), w, 3.4, boxstyle="round,pad=0,rounding_size=0.9", fc="none",
+                                ec=c, lw=1.0, zorder=3))
+    ax.text(x + w / 2, y, text, ha="center", va="center", fontsize=7.4, color=style.INK, zorder=4,
+            style="italic" if text.startswith("[") else "normal")
+    return w
+
+
+y = 46.5
+for name, count, words in CALLS:
+    ax.text(0.5, y, name, fontsize=7.8, fontweight="bold", color=style.INK, va="center")
+    ax.text(99.5, y, count, fontsize=7.4, color=style.INK_2, va="center", ha="right")
+    y -= 4.4
+    x = 2.0
+    for text, cat in words:
+        w = len(text) * CH + 2.4
+        if x + w > 99:
+            y -= 4.4
+            x = 2.0
+        x += chip(x, y, text, cat) + 0.9
+    y -= 5.2
+handles = [Patch(fc=c, alpha=0.3, ec=c, label=lab) for lab, c in CATS.values()]
+ax.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, -0.04), ncol=3, fontsize=6.8, frameon=False,
+          handlelength=1.4, columnspacing=1.0)
+plt.show()
+```
+
+The call follows a strict order, the same one the West Coast family has always used: first any
+shift or motion and the formation ("Y Short to Strong Right": "Y Short" is one of the tight end's
+motions, and the formation's strength goes to the right), then a formation variation ("Clamp,"
+which by one 2025 breakdown puts the tight end just off the tackle's hip), then the protection or
+run piece, then the pass concept and the receivers' routes ("Y Bingo X Comeback… Z Shallow"), a
+launch point for the quarterback ("Roll Right," which in West Coast usage normally means he rolls
+out to his right instead of dropping straight back), and finally the snap count ("on Two").[^order]
+The 49ers have never published their dictionary, so these readings are informed guesses, and
+nobody outside the building has decoded "Ace," "H2" or "Bingo."
+
+Why keep calls that long? Three reasons, and each says something about how these offenses think.
+
+**First, the call makes every play look like every other play.** The Shanahan offense is built on
+the idea that a run, the play-action pass off that run, and a bootleg off that play-action should
+look identical for the first second, with the same formation, the same motion, the same first steps
+by the line. That works best when the *call* is built the same way too: the first half of the
+sentence (formation, motion, the run's blocking) is shared, and only the last words differ. The
+language mirrors the design. [Case Study: The Shanahan Tree](../12-case-studies/12-03-shanahan-wide-zone-tree.qmd)
+calls the result "the illusion of complexity": a defense sees dozens of plays, but they're built from
+a few shared pieces.
+
+**Second, spelling out every job removes doubt.** These offenses ask a great deal of the receivers'
+and tight ends' blocking, of exact landmarks and of timing with the quarterback's feet. A word for
+each player's job means nobody has to translate a concept into his own assignment under the play
+clock.
+
+**Third, the coach wants the call spoken, not read.** Shanahan has been notably cool on wristbands,
+because he wants the quarterback to say the whole call aloud in the huddle and the players to hear
+it.[^wristband] The cost is tempo: these offenses huddle on nearly every snap (the 49ers and Rams
+skipped the huddle on under 6% of neutral-situation plays in 2025; see the fingerprint chart below),
+and the quarterback needs the radio time to hear the call.
+
+McVay's version adds a twist on the [15-second radio cutoff](../01-foundations/01-04-what-a-play-really-is.qmd).
+The Rams often huddle quickly and get to the line with time left on the radio, so McVay
+can look at the defense's alignment and talk to his quarterback until the cutoff. In 2017 Jared Goff
+described it: "Sometimes he talks all the way up until 15 seconds, sometimes he talks for five
+seconds, sometimes he talks for 10 seconds — it all varies."[^mcvay] The long call in the huddle
+sets the play; the last words before the cutoff fine-tune it.
+
+::: {.callout-note title="Film room: Kansas City Chiefs, Super Bowl LIV (February 2, 2020)"}
+Andy Reid's Chiefs are a West Coast family that took in everything from college spread concepts to
+shovel passes, and their language shows it: long, receiver-specific calls with names chosen to stick
+in the memory. The most famous came midway through the fourth quarter of Super Bowl LIV, trailing
+San Francisco 20–10 and facing third-and-15. The call was "2-3 Jet Chip Wasp," and Patrick Mahomes
+had asked for it. Tyreek Hill, aligned with Travis Kelce and Sammy Watkins on the same side, ran a
+deep route that began like a crosser toward the middle and broke back toward the sideline, and
+Mahomes threw it about 57 yards in the air for a 44-yard gain. Kansas City scored three touchdowns in the
+last seven minutes and won 31–20. Reid's explanation of the name afterwards: "We call it 'Wasp.'
+Literally put the stinger on 'em."[^wasp]
+
+What to notice: "Wasp" is one receiver's route, named for what it does, inside a West Coast-style
+sentence, and the quarterback could ask for it by name on the sideline. A vocabulary of named routes
+is what lets a player and a coach have that conversation in ten seconds, and lets the coach call
+the same route again, from another formation, the next time the defense shows the same look.
+:::
+
+## The run-and-shoot: let the routes decide
+
+The [**run-and-shoot**](../../appendices/glossary.qmd#gl-run-and-shoot) solves the naming problem
+from the opposite direction. Instead of a long call that specifies everything, it calls a handful
+of plays and lets **the receivers and quarterback decide the routes after the snap**, from what
+the coverage does. The idea began with an Ohio high-school coach, Glenn "Tiger" Ellison, in the
+late 1950s, and was turned into a passing offense by Darrel "Mouse" Davis, a famously small coach
+who made it famous as Portland State's head coach (1975–1980) and in 1984 as offensive coordinator
+of the USFL's Houston Gamblers, where Jim Kelly threw for 5,219 yards in a season. Davis's college quarterback, June
+Jones, became its other great teacher. In the NFL it was the base offense of the Detroit Lions, the
+Houston Oilers and the Atlanta Falcons for stretches between the late 1980s and the mid-1990s.[^rns]
+
+The base formation has **four wide receivers and one back, and no tight end**: two receivers wide
+and two slot receivers just outside the tackles, off the ball. A receiver often goes in motion
+before the snap, partly to read man or zone by whether a defender follows him (the same trick you
+learned in [Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)).
+The plays have one-word names (Davis and Jones's own teaching material leads with ones called Go,
+Choice, Streak and Dog), and each is less a set of routes than a set of **reads**: "go deep if you
+can beat him, hook up if you can't"; "split the two deep safeties, or break away from the
+underneath defender if there's only one."
+
+```{python}
+#| label: fig-run-and-shoot
+#| fig-cap: "The run-and-shoot's base: four receivers (two wide, two in the slots off the ball), one back, no tight end, and routes that are decided after the snap. Both panels show the same call. Left, against one deep safety: the middle of the field is closed, so the slot receivers break off at about seven yards, each away from the defender over him (the left slot outside, because the safety is inside him; the right slot inside, because the nickel back is outside him), and the outside receivers, unable to run past cornerbacks who are backing up, hook up at about twelve. Right, against two deep safeties: the middle is open, so the slots run up the seams between and past the safeties, and the outside receivers run past cornerbacks who are sitting low. Dotted grey lines are the branch not taken. Illustrative, after the run-and-shoot's published principles, not a specific team's play."
+def rns_offense():
+    return line5() + [O("QB", "QB", UC, 0.0, "Q"), O("RB", "RB", -6.5, 0.0, "R"),
+                      O("X", "WR", LINE_D, -16.0), O("H", "WR", OFF_BALL, -6.5),
+                      O("Y", "WR", OFF_BALL, 6.5, "S"), O("Z", "WR", LINE_D, 16.0)]
+
+
+def dl4():
+    return [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.8, "T"),
+            D("SDT", "DT", 1.0, 2.4, "T"), D("SDE", "DE", 1.0, 4.6, "E")]
+
+
+def rns_panel(ax, two_high):
+    if two_high:
+        dfn = dl4() + [D("MIKE", "MIKE", 4.5, 2.0, "M"), D("WILL", "WILL", 4.5, -2.0, "W"),
+                       D("NB", "NB", 4.5, 8.0, "$"), D("LCB", "CB", 4.0, -17.0, "CB"), D("RCB", "CB", 4.0, 17.0, "CB"),
+                       D("FS", "FS", 13.0, -10.0, "FS"), D("SS", "SS", 13.0, 10.0, "SS")]
+    else:
+        dfn = dl4() + [D("MIKE", "MIKE", 4.5, 1.6, "M"), D("WILL", "WILL", 4.5, -1.8, "W"),
+                       D("NB", "NB", 5.0, 8.0, "$"), D("SS", "SS", 6.0, -5.0, "SS"),
+                       D("LCB", "CB", 7.5, -17.0, "CB"), D("RCB", "CB", 7.5, 17.0, "CB"),
+                       D("FS", "FS", 13.0, 0.0, "FS")]
+    p = Play(rns_offense(), dfn, los=35, to_go=None)
+    p.dropback(4.5)
+    if two_high:
+        p.route("X", r.fade(21.0)); p.route("Z", r.fade(21.0))
+        p.route("H", r.seam(21.5)); p.route("Y", r.seam(21.5))
+    else:
+        p.route("X", r.curl(12.7)); p.route("Z", r.curl(12.7))
+        p.route("H", r.path((7.0, 0.0), (8.0, 3.8)))
+        p.route("Y", r.path((7.0, 0.0), (8.0, -3.8)))
+    fld = draw(p, ax=ax, lateral=(-20.5, 20.5), window=(-8.5, 25.0))
+    G = style.MUTED
+    if two_high:   # the one-high branches, not taken
+        for s in (-1, 1):
+            branch(fld, p, [(11.6, s * 16.0), (12.0, s * 16.0), (10.8, s * 14.6)], color=G, lw=1.2, dash=(0, (2, 1.6)))
+            branch(fld, p, [(5.5, s * 6.5), (6.5, s * 6.5 - s * 3.6)], color=G, lw=1.2, dash=(0, (2, 1.6)))
+        say(fld, p, 23.0, 0.0, "two deep: slots split them", fs=6.4, color=style.INK)
+    else:          # the two-high branches, not taken
+        for s in (-1, 1):
+            branch(fld, p, [(12.4, s * 16.0), (20.0, s * 17.0)], color=G, lw=1.2, dash=(0, (2, 1.6)))
+            branch(fld, p, [(7.0, s * 6.5), (20.0, s * 6.0)], color=G, lw=1.2, dash=(0, (2, 1.6)))
+        say(fld, p, 23.0, 0.0, "one deep: slots break under", fs=6.4, color=style.INK)
+    ax.set_title("vs two deep safeties" if two_high else "vs one deep safety", fontsize=8.5, loc="left",
+                 fontweight="bold", color=style.INK)
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.5, 3.3))
+rns_panel(axes[0], False)
+rns_panel(axes[1], True)
+h = [Line2D([], [], color=style.OFFENSE, lw=1.8, label="route run"),
+     Line2D([], [], color=style.MUTED, lw=1.2, ls=(0, (2, 1.6)), label="branch not taken")]
+fig.tight_layout(rect=(0, 0.06, 1, 1), w_pad=0.6)
+fig.legend(handles=h, loc="lower center", ncol=2, fontsize=7, frameon=False, bbox_to_anchor=(0.5, 0.0))
+plt.show()
+```
+
+**What it buys.** A tiny playbook that is nearly impossible to defend by guessing: if the defense
+plays two deep, the routes become a vertical attack; if it plays one deep, they become a short
+attack underneath. Calls are short, installation is mostly teaching reads rather than plays, and
+the offense can play fast. The run-and-shoot's single most durable gift to modern football is the
+[option route](../../appendices/glossary.qmd#gl-option-route) (often called a
+[choice route](../../appendices/glossary.qmd#gl-choice-route), the run-and-shoot's own word), which
+every NFL offense now uses somewhere.
+
+**What it costs.** Everything rides on the quarterback and receiver reading the coverage *the same
+way* at full speed; when they don't, the ball goes to a spot nobody is running to, and the
+run-and-shoot's reputation for interceptions on misreads followed it everywhere. With no tight end,
+the offense has fewer blockers against the run and the blitz, and NFL defenses of the early 1990s
+learned to attack it with pressure and big nickel and dime packages. That's why no NFL team runs the
+pure version today, while almost every team runs pieces of it.
+
+## The Air Raid: a few plays, a thousand reps
+
+The [**Air Raid**](../../appendices/glossary.qmd#gl-air-raid) took a different lesson from the same
+problem. Hal Mumme, a high-school coach in Texas in the 1980s, and Mike Leach, his assistant from
+1989 (a law-school graduate who had never played college football), built a shotgun passing offense
+at Iowa Wesleyan and Valdosta State, then took it to Kentucky in 1997; Leach later made it famous as
+Texas Tech's head coach (2000–2009).[^airraid] Its *concepts* are few and famous: the
+[mesh](../../appendices/glossary.qmd#gl-mesh), the [Y-cross](../../appendices/glossary.qmd#gl-y-cross)
+and [four verticals](../../appendices/glossary.qmd#gl-four-verticals), all drawn in
+[Dropback Concepts](04-04-dropback-concepts.qmd). Its *language* is even smaller. An AP history of
+the offense summed up the hallmarks as "one-word play calls, hand signals that take just a finger or
+two and a slim playbook."[^ap]
+
+The Air Raid's naming is a statement about practice. If the whole passing game is a dozen concepts,
+the team can rep each of them hundreds of times a season against every coverage, and the quarterback
+and receivers can learn to read each one the same way without thinking. Leach was blunt about
+guarding that: "If we adopt a new play, I've always tried to cut one that we have so we can control
+the package, practice and execute it, because execution is the most important."[^leach] Variety
+comes from the *window dressing* (formations, motions, who lines up where), never from new words.
+
+**What it buys.** Speed and mastery. One-word calls and finger signals make a no-huddle offense
+easy; a small menu means more practice reps per play than any other system; and players learn the
+whole offense quickly, which suited college rosters that turn over every year.
+
+**What it costs.** Range. A defense knows what's coming, in a general sense; the Air Raid's answer
+is that it doesn't matter if you run it well enough, which is a bet on execution. The pure version
+also had little in the way of a power run game or under-center play-action, the things an NFL
+offense leans on most in bad weather and short yardage.
+
+The Air Raid reached the NFL through people rather than as a system. Kliff Kingsbury played
+quarterback for Leach at Texas Tech, coached Patrick Mahomes there as head coach, and brought the
+language and the no-huddle to the Arizona Cardinals (head coach, 2019–2022) and the Washington
+Commanders (offensive coordinator, 2024–2025). Lincoln Riley, another Leach product, coached three
+quarterbacks who became first overall picks: Baker Mayfield and Kyler Murray at Oklahoma, Caleb
+Williams at USC.[^kingsbury]
+
+::: {.callout-note title="Film room: Washington Commanders 2024–2025"}
+Under Kingsbury as offensive coordinator, Washington went without a huddle on 63% of its
+neutral-situation snaps in 2025, more than ten times the rate of the median NFL team (see the fingerprint
+chart below); in 2024, Jayden Daniels's rookie year, it was higher still. It's the Air Raid's
+language at work in the NFL: short calls that can be signalled, a quarterback who gets to the line,
+looks, and confirms the call while the radio is still on. Washington was also the NFL's least
+under-center offense in 2025, again an Air Raid habit, and only one team gave a bigger share of its
+runs to the quarterback by design. That last one isn't an Air Raid habit at all; it's what you do with
+running quarterbacks, and Washington had two in 2025, Daniels and Marcus Mariota, who started most of
+the games Daniels missed through injury.
+
+What to notice: watch Washington's sideline between plays. With no huddle, the call comes in by
+radio and by signals at the line, and the offense often stands set for a long look before the snap,
+which means the no-huddle is buying *information*, not just speed (the point made in
+[What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd)).
+:::
+
+## The spread option: naming the read
+
+One family names its plays by the **read** at their heart. In the [spread
+option](../../appendices/glossary.qmd#gl-spread-option) that grew up in college football in the
+2000s ([The College Laboratory](../11-history/11-03-the-college-laboratory.qmd)), a call names a run
+scheme and the defender the quarterback will read, and often a pass attached to it. The
+[zone read](../../appendices/glossary.qmd#gl-zone-read) from [Option Football](../03-the-run-game/03-04-option-football.qmd)
+is the archetype: the line blocks inside zone, one defender is left unblocked on purpose, and the
+quarterback hands off or keeps depending on what that defender does. Add a receiver's route that the
+quarterback can throw instead, and the call is an
+[RPO](../../appendices/glossary.qmd#gl-rpo) ([Run-Pass Options](04-06-rpos.qmd)).
+
+As a language, this family looks like Erhardt-Perkins applied to the run game: short words, each a
+whole package, built to be signalled from the sideline so the offense can play fast. The famous
+picture boards on college sidelines grew up with it. The NFL descendants are offenses with a running
+quarterback: Baltimore's option run game with Lamar Jackson (2019–2025, the subject of
+[the Ravens case study](../12-case-studies/12-05-ravens-lamar-run-game.qmd)) and Philadelphia's
+quarterback-run offense with Jalen Hurts, which led the NFL in RPO rate in 2022 (FTN charting).
+
+**What it buys.** Numbers: reading a defender instead of blocking him gives the offense an extra
+blocker somewhere, and a call that bundles a run and a pass forces the defense to defend both on
+every snap. **What it costs.** The quarterback takes hits, and an NFL defense is fast enough to
+squeeze the reads; that's why most NFL offenses use these plays as a *package* inside another
+system rather than as a whole system.
+
+## Why the language matters
+
+Put the families side by side and the trade-offs line up along three axes: how fast players learn
+the system, how fast the call gets to the field, and how easily the coach can change one piece of a
+play once the game starts.
+
+| Family | A word names… | Typical call | Learning | Tempo | Changing one piece |
+|---|---|---|---|---|---|
+| **Air Coryell** | a route, by number | formation + digits + tags | small vocabulary; reads taught separately | quick | easy for X, Y, Z (change a digit) |
+| **West Coast** (incl. Shanahan/McVay) | each player's job | long sentence, 10–20 words | many words; precise | slow; huddle | easy: swap one route word |
+| **Erhardt-Perkins** | a whole concept | formation + 1–2 concept words | few words; any player, any spot | fast; no-huddle friendly | needs a tag or a new word |
+| **Run-and-shoot** | a play whose routes are reads | one word | few plays; many reads to master | fast | built in: routes adjust after the snap |
+| **Air Raid** | a whole concept | one word or a hand signal | tiny menu, endless reps | fastest | mostly by formation, not by word |
+| **Spread option** | a run scheme and its read (often with a pass) | one word or a signal | the reads are the curriculum | fast | built in: the read decides |
+
+**Installation.** The fewer words a system has, the faster a new player is useful. That's why
+concept-based languages spread through college football, where a quarterback might start for only
+two or three years, and why NFL teams that sign many veterans like them. A long West Coast call is
+the opposite bet: more to learn, but a player who has learned it can be told anything. Every system
+needs the same thing in the end: eleven players who agree, at full speed, on what the words mean.
+
+**Tempo.** A call that can be shouted in one word or shown with two fingers lets an offense play
+without a huddle, and the no-huddle does two things: it tires the defense, and it stops the defense
+from substituting, because the rules give the defense time to change players only when the offense
+does. Long calls usually need the huddle, or a [wristband](../../appendices/glossary.qmd#gl-wristband)
+that turns a long call into a number. The [tempo](../../appendices/glossary.qmd#gl-tempo) game,
+including the in-between [sugar huddle](../../appendices/glossary.qmd#gl-sugar-huddle), is in
+[In-Game Adjustments and Tempo](../08-the-chess-match/08-04-in-game-adjustments-and-tempo.qmd).
+
+**In-game adjustment.** Football games are full of small fixes: the defense is jumping the out, so
+run the out-and-up; the linebacker keeps carrying the tight end, so give the tight end a different
+route. A language that names routes one at a time makes those fixes trivial to *call*, because the
+coach just changes one word. A concept language needs the fix to exist in advance, as a tag
+everyone has practised. A read-based language (run-and-shoot, spread option) builds many of the
+fixes into the play itself, so the players make them after the snap without a word from the
+sideline. Each is a different answer to the same question: who adjusts, and when?
+
+**The language belongs to the head coach, usually.** One more consequence. A language takes a
+season or more to learn, so a team doesn't want to change it every time a coordinator leaves. Most
+teams therefore keep the *head coach's* language, and new coordinators learn it. That matters,
+because the NFL churns coordinators constantly: Philadelphia began 2026 with its fifth different
+offensive coordinator in five seasons, and Detroit with its third in three.[^churn] What travels
+with a coach is his language, which is why coaching trees ([Appendix E](../../appendices/appendix-e-rules-timeline-trees.qmd);
+[coaching tree](../../appendices/glossary.qmd#gl-coaching-tree)) are also family trees of
+vocabulary. When a play-caller who grew up under McVay becomes a head coach, his new team will soon
+be saying McVay's words.
+
+## Installing a system: base, tags, weekly packages
+
+How does a system get from a coach's head into fifty-three players? In layers, from the general to
+the specific, and the layers are why a team can show a defense "new" plays every week without
+anyone learning anything new.
+
+```{python}
+#| label: fig-install-map
+#| fig-cap: "How a system is installed. The base (left) is taught once, in spring practices and training camp: the formations, motions, protections, runs and pass concepts the offense is built on. Tags (middle) make new plays out of old words, so a defense sees something new while the players run what they already know. Each week (right), the staff chooses the slice of base plays and tags that fits this opponent and installs it day by day, plus a few plays new for the week; the result goes on the call sheet. The weekday schedule is typical, not fixed."
+fig, ax = plt.subplots(figsize=(6.5, 4.5))
+blank(ax)
+ax.set_xlim(0, 100)
+ax.set_ylim(0, 70)
+B, T, W = style.OFFENSE_TINT, "#e3f2ea", "#f3ead2"
+ax.text(16, 67.5, "BASE", fontsize=9, fontweight="bold", color=style.INK, ha="center")
+ax.text(16, 64.6, "taught once: spring and camp", fontsize=6.8, color=style.INK_2, ha="center")
+ax.text(50, 67.5, "TAGS", fontsize=9, fontweight="bold", color=style.INK, ha="center")
+ax.text(50, 64.6, "new plays from old words", fontsize=6.8, color=style.INK_2, ha="center")
+ax.text(86, 67.5, "WEEKLY PACKAGES", fontsize=9, fontweight="bold", color=style.INK, ha="center")
+ax.text(86, 64.6, "this opponent, this week", fontsize=6.8, color=style.INK_2, ha="center")
+base = [("Formations & motions", "trips, bunch, empty;\njet, zip, orbit"),
+        ("Protections", "five-, six- and\nseven-man"),
+        ("Runs", "inside zone, outside\nzone, power, counter"),
+        ("Pass concepts", "stick, Ghost (flood),\nsmash, mesh, dagger"),
+        ("Rules", "conversions vs man,\nhot routes, reads")]
+for i, (t, s) in enumerate(base):
+    box(ax, 16, 56 - i * 11.5, 29, 9.6, t, fc=B, ec=style.OFFENSE, bold=True, fs=7.6, sub=s, sub_fs=6.4)
+tags = [("Route tags", "\u201cGhost, Y Wheel\u201d:\none route changes"),
+        ("Formation tags", "Ghost from bunch or\nempty: new look"),
+        ("Motion tags", "\u201cJet Ghost\u201d: same play,\nnew pre-snap picture"),
+        ("Play-action tags", "\u201cBoot Ghost\u201d: a fake\nrun first, same routes"),
+        ("Protection tags", "keep the tight end in,\nslide the other way")]
+for i, (t, s) in enumerate(tags):
+    box(ax, 50, 56 - i * 11.5, 29, 9.6, t, fc=T, ec=style.THIRD, bold=True, fs=7.6, sub=s, sub_fs=6.4)
+week = [("Wed: 1st & 2nd down", "the bulk of the plan"),
+        ("Thu: 3rd down", "by distance: short,\nmedium, long"),
+        ("Fri: red zone", "goal line, short\nyardage, two-minute"),
+        ("Sat: walk-through", "the whole plan,\nhelmets off")]
+for i, (t, s) in enumerate(week):
+    box(ax, 86, 56 - i * 11.5, 26, 9.6, t, fc=W, ec=style.LINE_TO_GAIN, bold=True, fs=7.4, sub=s, sub_fs=6.4)
+box(ax, 86, 10.2, 26, 6.4, "Sunday: call sheet", fc=style.SURFACE, ec=style.INK_2, bold=True, fs=7.8)
+arrow(ax, (86, 16.0), (86, 13.6), lw=1.2)
+for yy in (56, 44.5, 33, 21.5, 10):
+    arrow(ax, (30.8, yy), (35.2, yy), color=style.BASELINE, lw=1.1)
+arrow(ax, (65.0, 33.0), (72.6, 33.0), color=style.INK_2, lw=1.6)
+ax.text(68.8, 35.6, "choose", fontsize=6.4, color=style.INK_2, ha="center")
+ax.text(80, 2.8, "+ a few plays new for the week, usually built from old words", fontsize=6.6,
+        color=style.INK_2, ha="center", style="italic")
+plt.show()
+```
+
+**The base.** In spring practices and training camp, the staff installs the system in a planned
+order, often in numbered "installs," each a slice of formations, protections, runs and pass
+concepts. Then it goes back to the start and installs it all again, so each piece is repeated
+several times before the season. This is where the language is learned. The base is deliberately
+small compared with what the team will eventually show, because everything else will be built from
+it.
+
+**Tags.** A [tag](../../appendices/glossary.qmd#gl-tag) is a word that changes one thing and leaves
+the rest alone. Tags are how a system grows without growing its vocabulary much: each base concept
+gets a few tags (a route that changes, a formation, a motion, a play-action fake), and each tag is
+practised a few times. Here are two tags on the play from the start of the chapter.
+
+```{python}
+#| label: fig-tags
+#| fig-cap: "Two tags on one base play. Left, 'Ghost, Y Wheel': a route tag. The tight end, #3, starts toward the flat as usual and then turns up the sideline (the faded line is the flat route he would normally run). A defender who has been jumping the flat route is now chasing a receiver running past him. Right, 'Boot Ghost': a play-action tag. The quarterback fakes a run to the left, then rolls out right toward the same three routes, so the defenders near the line take a step toward the fake first. Nothing else changes: the two receivers who aren't tagged run exactly what they ran on the base play."
+def tag_panel(ax, kind):
+    p = Play(trips_right(), None, los=35, to_go=None)
+    p.route("Z", r.go(21.5))
+    p.route("H", r.out(9.5, 5.5))
+    if kind == "wheel":
+        set_line(p)
+        p.block("RB", pts=[(0.8, -1.2)])
+        p.dropback(2.0)
+        p.route("Y", r.path((1.0, 3.0), (2.6, 7.0), (6.0, 8.8), (19.0, 9.4)))
+    else:
+        for k in OL:
+            p.block(k, pts=[(0.4, -1.3)])
+        p.run("RB", [(0.6, -1.8), (1.4, -5.0)])
+        p.path("QB", [(-0.4, -0.9), (-1.6, 3.5), (-1.8, 9.5)])
+        p.route("Y", r.flat(1.5, 8.0))
+    fld = draw(p, ax=ax, lateral=(-10.0, 21.0), window=(-10.0, 23.0))
+    if kind == "wheel":
+        branch(fld, p, [(-0.7, 4.8), (0.2, 8.0), (0.8, 12.8)], color=style.MUTED, lw=1.2, dash=(0, (2, 2)))
+        say(fld, p, 15.2, 10.6, "Y Wheel", fs=6.8, color=style.INK, weight="bold")
+        say(fld, p, 2.6, 15.6, "was: flat", fs=6.3)
+        ax.set_title("\u201cGhost, Y Wheel\u201d (route tag)", fontsize=8.5, loc="left", fontweight="bold",
+                     color=style.INK)
+    else:
+        say(fld, p, -7.9, -6.4, "fake run left", fs=6.3)
+        say(fld, p, -8.3, 9.0, "QB boots right", fs=6.3)
+        ax.set_title("\u201cBoot Ghost\u201d (play-action tag)", fontsize=8.5, loc="left", fontweight="bold",
+                     color=style.INK)
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.5, 3.85))
+tag_panel(axes[0], "wheel")
+tag_panel(axes[1], "boot")
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+The best tags are the ones the defense is most likely to bite on. If the defense has spent the game
+jumping the flat route, the wheel punishes it. If the linebackers are flying toward every run fake,
+the boot punishes them. That's why tags are the main tool of
+[constraint theory](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd): the base play
+works until the defense cheats against it, and the tag is the punishment for cheating.
+
+**Weekly packages.** Each week the staff studies the next opponent and builds the
+[game plan](../../appendices/glossary.qmd#gl-game-plan): the slice of base plays and tags expected to
+work against this defense, filed by situation, plus a few plays that are genuinely new for the week,
+usually new combinations of old words rather than new words. Then it installs that plan day by day.
+A common rhythm is first-and-second-down plays on Wednesday, third down on Thursday, red zone, goal
+line and the two-minute drill on Friday, and a walk-through of the whole plan on Saturday, though teams
+vary.[^installweek] By Sunday the plan has been boiled down to the
+[call sheet](../../appendices/glossary.qmd#gl-call-sheet) the play-caller holds on the sideline.
+The staff's whole week is in [The Game Plan](../08-the-chess-match/08-03-game-planning-week.qmd).
+
+Notice how the language shapes the week. An Erhardt-Perkins team can put a concept in a new formation
+for this opponent at almost no cost, because the word already works from anywhere. A West Coast team
+can write a new route combination into a call on Wednesday and have it run on Sunday, because each
+route is already a word. An Air Raid team adds almost nothing; the weekly work is choosing which
+formations and motions to dress the same concepts in. And every staff tries to make sure that what
+looks new to the defense is old to its own players.
+
+## Fingerprints: recognising a system on film
+
+You can't hear the play calls from your couch, but every system leaves marks you *can* see: where
+the quarterback lines up, how much motion there is, whether the offense huddles, how often it empties
+the backfield, how often the quarterback runs. No single mark proves anything, because almost every
+team borrows from everyone else. But together they make a fingerprint. Here are seven 2025 offenses.
+
+```{python}
+#| label: fig-fingerprint
+#| fig-cap: "Seven 2025 offenses' fingerprints, labelled with their 2025 play-callers. Each cell is the share of that team's neutral-situation runs and passes (outside the last two minutes of each half, win probability 20–80%) with that feature, and its rank among the 32 teams (1st = most); the darker the cell, the higher the rank. The bottom row is the median team. 'Motion' counts motion before or at the snap (FTN's definition); 'QB designed runs' is the share of the team's runs carried by a quarterback (a passer with 20 or more attempts), leaving out scrambles, kneel-downs and sneaks. The Shanahan-tree teams are under center and in motion but almost never run RPOs or go no-huddle; Washington is the reverse. Sources: nflverse play-by-play and FTN charting, 2025 regular season."
+from gridiron.data import nfl, pbp
+
+cols = ["game_id", "play_id", "season_type", "posteam", "play_type", "down", "no_huddle",
+        "half_seconds_remaining", "wp", "qb_kneel", "qb_scramble", "rusher_player_id", "passer_player_id",
+        "pass_attempt"]
+d = pbp([2025], columns=cols)
+d = d[(d.season_type == "REG") & d.play_type.isin(["pass", "run"]) & d.down.notna()]
+att = d[d.pass_attempt == 1].groupby("passer_player_id").size()
+qbs = set(att[att >= 20].index)
+ftn = nfl().load_ftn_charting([2025]).to_pandas()[
+    ["nflverse_game_id", "nflverse_play_id", "qb_location", "is_motion", "n_offense_backfield", "is_rpo",
+     "is_qb_sneak"]]
+m = d.merge(ftn, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "nflverse_play_id"], how="inner")
+m = m[(m.half_seconds_remaining > 120) & m.wp.between(0.2, 0.8)]
+runs = m[(m.play_type == "run") & (m.qb_kneel != 1) & (m.qb_scramble != 1) & (m.is_qb_sneak != True)]  # noqa: E712
+runs = runs.assign(qbrun=runs.rusher_player_id.isin(qbs))
+fp = pd.DataFrame({
+    "Under center": m.groupby("posteam").qb_location.apply(lambda s: (s == "U").mean()),
+    "Motion": m.groupby("posteam").is_motion.mean(),
+    "Empty backfield": m.groupby("posteam").n_offense_backfield.apply(lambda s: (s == 0).mean()),
+    "No-huddle": m.groupby("posteam").no_huddle.mean(),
+    "RPO": m.groupby("posteam").is_rpo.mean(),
+    "QB designed runs": runs.groupby("posteam").qbrun.mean(),
+})
+ranks = fp.rank(ascending=False, method="min")
+TEAMS = [("LA", "Rams (McVay)"), ("SF", "49ers (Shanahan)"), ("KC", "Chiefs (Reid)"),
+         ("NE", "Patriots (McDaniels)"), ("WAS", "Commanders (Kingsbury)"), ("BAL", "Ravens (Monken)"),
+         ("PHI", "Eagles (Patullo)")]
+ramp = style.SEQUENTIAL_BLUE
+
+
+def ordinal(n):
+    n = int(n)
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+fig, ax = plt.subplots(figsize=(6.5, 3.6))
+blank(ax)
+ncol = fp.shape[1]
+ax.set_xlim(-2.35, ncol)
+ax.set_ylim(-1.35, len(TEAMS) + 0.9)
+for j, c in enumerate(fp.columns):
+    ax.text(j + 0.5, len(TEAMS) + 0.45, c.replace(" ", "\n", 1) if len(c) > 10 else c, ha="center",
+            va="center", fontsize=7.2, fontweight="bold", color=style.INK, linespacing=1.05)
+rows = TEAMS + [("MED", "Median team")]
+for i, (tm, name) in enumerate(rows):
+    yy = len(TEAMS) - 1 - i if tm != "MED" else -0.95
+    ax.text(-0.08, yy + 0.5 if tm != "MED" else yy + 0.4, name, ha="right", va="center", fontsize=7.4,
+            color=style.INK, fontweight="bold" if tm == "MED" else "normal")
+    for j, c in enumerate(fp.columns):
+        if tm == "MED":
+            v = fp[c].median()
+            ax.add_patch(Rectangle((j + 0.04, yy + 0.04), 0.92, 0.72, fc=style.SURFACE, ec=style.BASELINE, lw=0.8))
+            ax.text(j + 0.5, yy + 0.4, f"{v:.0%}", ha="center", va="center", fontsize=7.4, color=style.INK_2)
+            continue
+        v, rk = fp.loc[tm, c], ranks.loc[tm, c]
+        level = int(np.clip(np.floor((32 - rk) / 32 * len(ramp)), 0, len(ramp) - 1))
+        fc = ramp[level]
+        tc = "white" if level >= 4 else style.INK
+        ax.add_patch(Rectangle((j + 0.04, yy + 0.04), 0.92, 0.92, fc=fc, ec=style.SURFACE, lw=1.5))
+        ax.text(j + 0.5, yy + 0.6, f"{v:.0%}", ha="center", va="center", fontsize=7.6, color=tc, fontweight="bold")
+        ax.text(j + 0.5, yy + 0.3, ordinal(rk), ha="center", va="center", fontsize=6.2, color=tc)
+plt.show()
+```
+
+Read the chart as a set of contrasts rather than labels.
+
+- **The Shanahan tree (Rams, 49ers): under center, in motion, in the huddle, no RPOs.** The Rams
+  took more snaps under center than any team in 2025, the 49ers ran more motion than anyone else on
+  the chart, and the two of them ran almost no RPOs at all. That's the fingerprint of an offense
+  built on wide zone and play-action from under center, with every play called in a huddle.
+- **Reid's Chiefs: shotgun and RPOs.** Kansas City was in the shotgun on about three snaps in four
+  and ran more RPOs than any other team. Same West Coast family as the Rams, opposite
+  fingerprint: the family tree tells you the *language*, not the plays.
+- **McDaniels's Patriots: under center more than you'd guess, and very little no-huddle in neutral
+  situations.** The 2025 Patriots won 14 games with McDaniels calling plays for Drake Maye, the
+  league MVP runner-up, and they didn't need the no-huddle Brady's Patriots sometimes lived in.[^ne25]
+  An Erhardt-Perkins offense's fingerprint is mostly its *variety* (many personnel groups and
+  formations for the same concepts), which these averages can't show.
+- **Kingsbury's Commanders: the Air Raid's no-huddle and shotgun**, plus a running quarterback.
+- **Ravens and Eagles: quarterback runs.** Both in the top six for designed quarterback runs; the Eagles also emptied the backfield often and went no-huddle more than most.
+
+The lesson is that fingerprints are clues, not proofs. Systems borrow from one another constantly
+(Miami under Mike McDaniel, a Shanahan-tree coach, was in the shotgun or pistol on about seven snaps
+in ten in 2025), and
+a quarterback's talents can override a family's habits. But if you see a team under center with a
+fullback, its receivers in tight splits and someone in motion on every snap, you can be fairly sure
+whose family tree you're watching, and you can guess the menu: wide zone, play-action, bootlegs and
+crossing routes.
+
+What the data can't capture, film can. Some further tells by family:
+
+- **Shanahan/McVay:** condensed formations (receivers aligned close to the line rather than out
+  wide), a fullback or a second tight end, jet and orbit motion, play-action bootlegs with a
+  crossing route, and receivers who block.
+- **Reid:** a bit of everything: shovel passes, screens, unusual pre-snap movement, shotgun RPOs,
+  plays seemingly invented for one opponent.
+- **Erhardt-Perkins:** the same concept from different formations and personnel groups within one
+  game (watch for a play you've seen before, from a new look); option routes from slot receivers and
+  tight ends; a quarterback who changes plays at the line.
+- **Coryell descendants:** deep outside throws off longer drops, the tight end used as a vertical
+  receiver, a "shot" mentality on early downs.
+- **Air Raid lineage:** shotgun almost always, wide splits, empty sets, the no-huddle, mesh and
+  Y-cross on third down.
+- **Spread option:** the quarterback in the shotgun or pistol, a mesh point with the back on most
+  runs, an unblocked defender at the end of the line, and passes attached to runs.
+
+## The checklist so far
+
+Part 4 ends here, and the card you started at the end of Part 2 grows by the run and pass clues
+Parts 3 and 4 taught. The new lines sit after the defensive reads, because the offense's tells (the
+back's depth, the splits, the formation's family) are clearest once everyone is set.
+
+```{python}
+#| label: fig-checklist
+#| fig-cap: "The watching checklist after Part 4. Lines 1 to 6 are the Part 2 card. Lines 7 to 9 are new: run tells from Part 3, pass and concept-family tells from Part 4, and this chapter's system fingerprint. After the snap, two new questions classify the run and the pass before you log your prediction. The card grows again after Parts 6 and 7."
+items = [
+    ("BEFORE THE SNAP", None, None, False),
+    ("1", "Situation: down, distance, field zone, clock and score", "Part 1", False),
+    ("2", "Personnel: who is on the field for each side", "02-01, 02-05", False),
+    ("3", "Formation and strength: under center, gun or pistol; 2x2 or 3x1; where is the tight end?",
+     "02-02 to 02-04", False),
+    ("4", "Motion: does a defender travel (man), bump (zone) or spin (one-high)?", "02-06", False),
+    ("5", "Box count: blockers against defenders near the line", "02-05", False),
+    ("6", "Shell: one-high or two-high? Did the motion change it?", "02-05, 02-06", False),
+    ("7", "Run tells: back's depth and offset, a fullback, tight splits, light box. Zone, gap or option?",
+     "Part 3", True),
+    ("8", "Pass tells: wide splits, empty, a bunch or stack, a corner's leverage. Quick game, dropback, "
+          "play-action or RPO?", "04-01 to 04-06", True),
+    ("9", "Whose offense? Under center + motion + condensed = Shanahan tree; gun + no-huddle + empty = "
+          "Air Raid lineage; gun + QB reads = spread option", "04-08", True),
+    ("AFTER THE SNAP", None, None, False),
+    ("10", "Run: did the line step together (zone) or did someone pull (gap)? Who was left unblocked?",
+     "Part 3", True),
+    ("11", "Pass: how fast was the ball out, which stretch, and how many reads did the QB get through?",
+     "04-01 to 04-07", True),
+    ("12", "Log it: your run/pass, man/zone and concept calls against what happened", "01-06, 02-06", False),
+]
+rows = []
+for num, text, where, new in items:
+    if text is None:
+        rows.append(("head", num, 1))
+    else:
+        lines_ = textwrap.wrap(text, 64)
+        rows.append(("item", (num, lines_, where, new), len(lines_)))
+n_lines = sum(h for _, _, h in rows) + 4
+fig, ax = plt.subplots(figsize=(6.5, 0.235 * n_lines))
+ax.set_xlim(0, 100)
+ax.set_ylim(0, n_lines)
+ax.axis("off")
+ax.add_patch(FancyBboxPatch((0.8, 0.3), 98.4, n_lines - 0.6, boxstyle="round,pad=0.2,rounding_size=0.8",
+                            fc=style.SURFACE, ec=style.BASELINE, lw=1.2))
+ax.text(3, n_lines - 1.3, "Watching checklist \u00b7 after Part 4", fontsize=11, fontweight="bold",
+        color=style.INK, va="center")
+ax.text(97, n_lines - 1.3, "new in Parts 3 and 4", fontsize=8, color=style.INK_2, ha="right", va="center",
+        bbox=dict(boxstyle="round,pad=0.3", fc=style.OFFENSE_TINT, ec="none"))
+yy = n_lines - 2.8
+for kind, payload, h in rows:
+    if kind == "head":
+        ax.text(3, yy, payload, fontsize=8, fontweight="bold", color=style.INK_2, va="center")
+        yy -= 1.0
+        continue
+    num, lines_, where, new = payload
+    top_, bottom = yy + 0.45, yy - (h - 1) - 0.45
+    if new:
+        ax.add_patch(FancyBboxPatch((2.2, bottom), 95.6, top_ - bottom, boxstyle="round,pad=0.05,rounding_size=0.4",
+                                    fc=style.OFFENSE_TINT, ec="none"))
+    ax.text(5.5, yy, num, fontsize=8.5, fontweight="bold", color=style.OFFENSE_DARK, va="center", ha="center")
+    for j, ln in enumerate(lines_):
+        ax.text(9.0, yy - j, ln, fontsize=7.8, color=style.INK, va="center")
+    ax.text(97, yy, where, fontsize=7, color=style.INK_2, va="center", ha="right")
+    yy -= h + 0.15
+plt.show()
+```
+
+Lines 7 and 8 are where Parts 3 and 4 pay off: before the snap, the backfield and the receivers'
+splits are the best hints you'll get about run or pass and about *which kind* of run or pass. Line 9
+is this chapter's: a habit of asking whose offense this is, because the answer shrinks the menu. A
+Shanahan-tree team with a fullback in the game is telling you to expect wide zone and its
+play-action; an Air Raid-lineage team in empty on third down is telling you to expect a quick
+concept or mesh. After the snap, lines 10 and 11 make you classify what you saw before you log it,
+which is how your guesses get better.
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it: fingerprint one offense"}
+Pick one team and, for one half, keep a five-column tally (U = under center, G = shotgun,
+P = pistol; condensed = receivers aligned tight to the formation) on every snap that isn't in the last two
+minutes or a blowout:
+
+| Snap | QB: U / G / P | Motion? | Condensed? | Empty? |
+|:-:|:-:|:-:|:-:|:-:|
+| 1 | | | | |
+| 2 | | | | |
+
+At halftime, count. Then guess the family:
+
+- **Lots of U, lots of motion, receivers tight to the formation, rarely empty:** the Shanahan/McVay
+  tree. Expect wide zone, play-action and boots.
+- **Almost all G, wide splits, plenty of empty, a no-huddle tempo:** Air Raid lineage. Expect quick
+  game, mesh, Y-cross, four verticals.
+- **G or P with the quarterback reading an end or linebacker on runs:** spread option. Expect zone
+  read, RPOs and quarterback runs.
+- **A bit of everything, the same pass concept from several different formations:** an
+  Erhardt-Perkins or Reid-style offense. Note which concept keeps reappearing.
+
+Then look the team up: who calls its plays in 2026, and whose staff did he come from? Write your
+guess and the answer in your prediction log ([How to Watch a Broadcast](../01-foundations/01-06-how-to-watch-a-broadcast.qmd)).
+If a sideline microphone catches a play call, count the words.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: whose offense?"}
+```{python}
+#| label: fig-predict-family-a
+#| fig-cap: "First-and-10 at midfield, early in the second quarter. The offense comes out of a huddle in 21 personnel: the quarterback under center, a fullback offset to the left, the tight end attached on the right, and both wide receivers in tight splits about nine yards from the ball. Before the snap, Z (on the right) starts in jet motion across the formation. The defense is in its base 4-3 with one deep safety."
+off = line5() + [O("QB", "QB", UC, 0.0, "Q"), O("FB", "FB", -4.5, -1.4, "F"), O("RB", "RB", -7.0, 0.0, "R"),
+                 O("Y", "TE", LINE_D, 4.8), O("X", "WR", LINE_D, -9.0), O("Z", "WR", OFF_BALL, 9.0)]
+dfn = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.8, "T"), D("SDT", "DT", 1.0, 2.4, "T"),
+       D("SDE", "DE", 1.0, 5.6, "E"), D("SAM", "SAM", 4.0, 6.4, "S"), D("MIKE", "MIKE", 4.5, 0.6, "M"),
+       D("WILL", "WILL", 4.5, -3.4, "W"), D("LCB", "CB", 6.0, -10.0, "CB"), D("RCB", "CB", 6.0, 10.4, "CB"),
+       D("SS", "SS", 8.0, 4.0, "SS"), D("FS", "FS", 13.0, -1.0, "FS")]
+p = Play(off, dfn, los=60, to_go=10)
+dashed_motion(p, "Z", (-2.8, 3.2))
+p.highlight("Z")
+fld = draw(p, lateral=(-15.5, 15.5), window=(-9.5, 16.0))
+say(fld, p, -1.6, 11.6, "jet\nmotion", fs=6.6)
+say(fld, p, -5.6, -8.6, "under center,\nfullback offset", fs=6.6)
+plt.show()
+```
+
+**Which offensive family is this most likely to be, and what two plays should you expect most?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The Shanahan/McVay tree. Expect an outside-zone (wide-zone) run, most likely toward the motion,
+or a play-action bootleg off that same run.** Count the fingerprints: under center, a huddle, a
+fullback, an attached tight end, receivers in tight splits, and jet motion. Every one of those is a
+habit of the Shanahan family (see the fingerprint chart: the Rams and 49ers led the league in
+under-center snaps and motion while hardly ever running RPOs or skipping the huddle).
+
+Why those two plays? The jet motion stretches the defense toward the right before the snap, and
+outside zone attacks the edge in that direction with the fullback leading
+([Zone Running](../03-the-run-game/03-02-zone-running.qmd)). The bootleg is the same picture with a
+fake: the line and backs flow one way, the quarterback keeps it and rolls the other way, and a
+receiver crosses the field behind linebackers who stepped up for the run
+([Play-Action, Bootlegs, and Screens](04-05-play-action-boots-screens.qmd)). The point of the long
+call in the huddle is that you, and the defense, can't tell which of the two it is until about a
+second after the snap.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: no time to change"}
+```{python}
+#| label: fig-predict-family-b
+#| fig-cap: "Second-and-8 in the second quarter. The offense hasn't huddled for the whole drive: it lines up within a few seconds of the whistle in 10 personnel (one back, four wide receivers), the quarterback in the shotgun, two receivers wide on each side. A coach on the sideline flashes two fingers. The defense, stuck in the personnel it had on the field, shows two deep safeties."
+off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, 1.6, "R"),
+                 O("X", "WR", LINE_D, -18.0), O("H", "WR", OFF_BALL, -9.5),
+                 O("Y", "WR", OFF_BALL, 9.5, "S"), O("Z", "WR", LINE_D, 18.0)]
+dfn = [D("WDE", "DE", 1.0, -4.6, "E"), D("WDT", "DT", 1.0, -0.8, "T"), D("SDT", "DT", 1.0, 2.4, "T"),
+       D("SDE", "DE", 1.0, 4.6, "E"), D("MIKE", "MIKE", 5.0, 1.6, "M"), D("WILL", "WILL", 5.0, -2.2, "W"),
+       D("NB", "NB", 5.0, 9.0, "$"), D("LCB", "CB", 6.5, -18.6, "CB"), D("RCB", "CB", 6.5, 18.6, "CB"),
+       D("FS", "FS", 13.0, -9.5, "FS"), D("SS", "SS", 13.0, 9.5, "SS")]
+p = Play(off, dfn, los=40, to_go=8)
+fld = draw(p, lateral=(-22.0, 22.0), window=(-8.5, 16.5))
+plt.show()
+```
+
+**Which family's habits are these? What kind of pass concept is most likely, and why can't the
+defense bring on an extra defensive back?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Air Raid lineage (or, in the NFL, an Air Raid-influenced play-caller in the Kingsbury mould). Expect a
+concept the offense has repped a thousand times, most likely a quick or crossing concept such as
+mesh, or four verticals, called with one word or a hand signal.** The fingerprints are the no-huddle,
+the shotgun, four wide receivers with wide splits, and a signal from the sideline instead of a long
+radio call.
+
+Against two deep safeties, the middle of the field underneath is soft: only two linebackers are left
+to cover the short middle, which is exactly what mesh attacks, with two receivers crossing a few yards
+apart ([Dropback Concepts](04-04-dropback-concepts.qmd)). Four verticals is the other natural call,
+putting four receivers against two deep safeties and making them choose.
+
+The defense can't substitute because the offense hasn't. Under the substitution rule, the defense
+gets time to change players only when the offense changes players; an offense that keeps the same
+eleven and snaps quickly leaves the defense in whatever it had on the field
+([What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd)). That's one of the main
+reasons short, signal-able calls exist.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: you heard the word"}
+```{python}
+#| label: fig-predict-ghost
+#| fig-cap: "Third-and-7. The offense lines up in an empty formation with three receivers on the left: X wide, the tight end Y flexed a few yards off the line, and the running back R split out just outside the left tackle. Z and H are on the right. A field microphone catches the quarterback calling 'Ghost! Ghost!' Assume 'Ghost' means what it means in this chapter, and that it goes to the three-receiver side."
+off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("X", "WR", LINE_D, -17.0), O("Y", "TE", OFF_BALL, -11.0),
+                 O("RB", "RB", OFF_BALL, -5.5, "R"), O("H", "WR", OFF_BALL, 9.0), O("Z", "WR", LINE_D, 16.5)]
+dfn = [D("WDE", "DE", 1.0, -5.2, "E"), D("WDT", "DT", 1.0, -0.8, "T"), D("SDT", "DT", 1.0, 2.4, "T"),
+       D("SDE", "DE", 1.0, 4.6, "E"), D("MIKE", "MIKE", 5.0, -1.6, "M"), D("WILL", "WILL", 5.0, -7.0, "W"),
+       D("NB", "NB", 5.0, 9.4, "$"), D("LCB", "CB", 7.0, -18.0, "CB"), D("RCB", "CB", 7.0, 17.5, "CB"),
+       D("SS", "SS", 7.0, -12.0, "SS"), D("FS", "FS", 13.5, 0.0, "FS")]
+p = Play(off, dfn, los=55, to_go=7)
+fld = draw(p, lateral=(-21.5, 20.5), window=(-8.0, 16.5))
+plt.show()
+```
+
+**Who runs the vertical, who runs the eight-yard out, and who runs to the flat? Which defender will
+the quarterback most likely watch?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**X (#1) runs the vertical, the tight end Y (#2) the eight-yard out, and the running back (#3) the
+flat. The quarterback watches the defender who has to choose between the out and the flat, here
+most likely the strong safety (SS), who is lined up over the tight end.**
+
+Count from the sideline in on the three-receiver side: X is outermost, so he's #1; Y is next, #2;
+the back, split out closest to the ball, is #3. Ghost gives the jobs by those numbers, not by
+letters, which is exactly why the call works from an empty set with a running back in it.
+
+The read is the flood's: the vertical pulls the deep defender on that side away (here the cornerback,
+with one deep safety in the middle), leaving the out and the flat against whoever covers that area
+underneath. If the safety widens to the flat, the out opens behind him; if he sits on the out, the
+back is open in the flat, though on third-and-7 that throw needs yards after the catch. The right
+side might run a second concept (a two-word call such as "Ghost-Tosser" would send Z and H on
+double slants), which gives the quarterback somewhere to go if the left side is taken away.
+:::
+:::
+
+## Takeaways
+
+- An **offensive system** is a language, a core menu of plays, the rules that adjust them, and a way
+  of teaching all of it. Its point is to make a big playbook small enough to learn and fast enough
+  to call.
+- The families differ in **what a word stands for**: a route by number (**Air Coryell**'s digit
+  system), each player's job (the **West Coast offense**, and its long Shanahan/McVay calls), a whole
+  pattern (**Erhardt-Perkins** and other **concept-based terminology**), or a read (the
+  **run-and-shoot**, the spread option). The **Air Raid** keeps its words few and repeats them
+  endlessly.
+- Every naming choice trades **learning** against **tempo** against **in-game adjustment**: long calls
+  are precise but slow; concept words are quick and portable but need tags for every change; read-based
+  plays adjust themselves but demand that quarterback and receiver see the same thing.
+- Systems are installed in **layers**: the base in camp, **tags** that make new plays from old words,
+  and **weekly packages** chosen for one opponent. "New" plays are usually old words in a new order.
+- Families leave **fingerprints**: under-center rate, motion, condensed splits, empty sets, no-huddle,
+  RPOs and quarterback runs. They're clues, not proofs, since every playbook is a hybrid.
+
+## Connections
+
+**Builds on:** [What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd) (the parts
+of a call, tags, installs and the radio), [Passing Fundamentals](04-01-passing-fundamentals.qmd) (the
+numbered route tree and option routes), [Dropback Concepts](04-04-dropback-concepts.qmd) (the concepts
+these languages name, including the Air Raid's mesh and Y-cross), and
+[Quarterback Play](04-07-quarterback-play.qmd) (the reads every language has to teach).
+
+**Sets up:** [Constraint Theory and Sequencing](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd)
+(tags as punishments for a defense that cheats), [The Game Plan](../08-the-chess-match/08-03-game-planning-week.qmd)
+(the staff's week from the base to the call sheet), and
+[In-Game Adjustments and Tempo](../08-the-chess-match/08-04-in-game-adjustments-and-tempo.qmd). Where
+the systems came from is in [1978 and the Passing Revolution](../11-history/11-02-the-1978-liberation.qmd)
+(Air Coryell, the West Coast offense, the run-and-shoot) and
+[The College Laboratory](../11-history/11-03-the-college-laboratory.qmd) (the Air Raid and the spread
+option); coaching trees with their 2025 and 2026 staffs are in
+[Appendix E](../../appendices/appendix-e-rules-timeline-trees.qmd).
+
+**Case studies:** [Bill Walsh's 49ers and the West Coast Offense](../12-case-studies/12-01-walsh-49ers-west-coast.qmd)
+and [The Shanahan Tree](../12-case-studies/12-03-shanahan-wide-zone-tree.qmd).
+
+::: {.callout-note title="Go deeper"}
+- Chris B. Brown, "Speak My Language," *Grantland* (2013), and *The Art of Smart Football* (2015):
+  the clearest short comparison of Coryell, West Coast and Erhardt-Perkins terminology, and essays on
+  the run-and-shoot and the Air Raid.
+- Tim Layden, *Blood, Sweat and Chalk* (2010): the coaches themselves on Air Coryell, the West Coast
+  offense, the run-and-shoot and the spread.
+- S.C. Gwynne, *The Perfect Pass* (2016): Hal Mumme, Mike Leach and the making of the Air Raid.
+- Glenn "Tiger" Ellison, *Run and Shoot Football: Offense of the Future* (1965): the original.
+- Coaches' own explanations of their call order turn up in team-site and fan-site breakdowns; the
+  49ers Hub piece cited below is a good model of how to parse a West Coast call.
+:::
+
+[^snaps]: Course calculation from nflverse play-by-play, 2025 regular season: plays with
+    `play_type` "pass" or "run" per team per game, mean 60.6 (median 61; 10th to 90th percentile,
+    50 to 71).
+
+[^coryell]: "Air Coryell," Wikipedia: https://en.wikipedia.org/wiki/Air_Coryell (the Chargers led
+    the league in passing yards from 1978 to 1983 and again in 1985); Pro Football Hall of Fame
+    biography of Don Coryell (San Diego State 1961–1972, Cardinals 1973–1977, Chargers 1978–1986):
+    https://www.profootballhof.com/players/don-coryell/
+
+[^digits]: Chris B. Brown, "Speak My Language," *Grantland* (Jan. 25, 2013), on "896" as a skinny
+    post, a seam by the tight end and a square-in:
+    https://grantland.com/features/how-terminology-erhardt-perkins-system-helped-maintain-dominance-tom-brady-patriots/ ;
+    the digit order (split end, tight end, flanker) from "Play calling system," Wikipedia:
+    https://en.wikipedia.org/wiki/Play_calling_system . Digit orders and route numbers vary by team.
+
+[^brownwcory]: Brown, "Speak My Language" (above): "The numerical route-tree system gives coaches and
+    players flexibility where they don't need it and not enough where they do."
+
+[^coryelltree]: "Air Coryell," Wikipedia (above), on the Coryell coaching lineage, including Joe
+    Gibbs, Ernie Zampese, Norv Turner and Mike Martz.
+
+[^wcotree]: "West Coast offense," Wikipedia: https://en.wikipedia.org/wiki/West_Coast_offense (Walsh's
+    coaching tree; and the origin of the name, first applied to the San Diego offense and later, to
+    Walsh's annoyance, to his own; Mike Shanahan was never on Walsh's staff, but was the 49ers'
+    offensive coordinator under Seifert, 1992–1994).
+
+[^brownwco]: Brown, "Speak My Language" (above), quoting the call "Scatter-Two Bunch-Right-Zip-Fire 2
+    Jet Texas Right-F Flat X-Q," and judging such calls "excessively clunky," since "plays that are
+    conceptually the same can have wildly different calls."
+
+[^epbirth]: Brown, "Speak My Language" (above): the system was "developed … while working for the
+    Patriots under head coach Chuck Fairbanks in the 1970s," and later used by Bill Parcells's
+    Giants; "Erhardt–Perkins offense," Wikipedia: https://en.wikipedia.org/wiki/Erhardt%E2%80%93Perkins_offense
+
+[^ghost]: Brown, "Speak My Language" (above), on "Ghost" (quoted in the text), "Tosser" (double
+    slants) and the two-sided call "Ghost/Tosser."
+
+[^weis]: Charlie Weis, quoted in Brown, "Speak My Language" (above).
+
+[^kyle]: NBC Sports Bay Area, "Kyle Shanahan's long play-call shows why 49ers' playbook is 'no joke'"
+    (June 16, 2020), with the call as Shanahan recited it when asked for one of his longest ("Y Short to Strong Right Clamp Ace, H2 Y
+    Bingo X Comeback [inaudible] with Roll Right Z Shallow on Two"):
+    https://www.nbcsportsbayarea.com/nfl/kyle-shanahans-long-play-call-shows-why-49ers-playbook-is-no-joke/1264096
+
+[^order]: Bret Rumbeck, "Anatomy of a Play: Terminology," *49ers Hub* (Dec. 12, 2025), on the order of
+    a 49ers call (shift or motion; formation and strength; formation variation such as "Clamp," which
+    puts the tight end "just off the hip of the tackle"; further motion such as "Y Short"; run or
+    protection; the play or concept; an optional second play; snap count) and on the Walsh terms that
+    survive in it. Rumbeck does not define "Roll Right," "Ace," "H2" or "Bingo"; the chapter's reading
+    of "Roll Right" is general West Coast usage:
+    https://49ershub.substack.com/p/anatomy-of-a-play-terminology
+
+[^wristband]: Nick Wagoner, "Why wristbands aren't Kyle Shanahan's favored accessory," ESPN (Aug. 5,
+    2017): https://www.espn.com/blog/nfcwest/post/_/id/126800/why-wristbands-arent-kyle-shanahans-favored-accessory
+
+[^mcvay]: Los Angeles Rams, "How does McVay communicate with Goff before the snap?" (2017), quoting
+    Goff and describing how the Rams "huddle, huddle quickly and get to the line of scrimmage, or simply
+    operate without a huddle": https://www.therams.com/news/how-does-mcvay-communicate-with-goff-before-the-snap-19873331 ;
+    ProFootballTalk, "Sean McVay downplays perception that he micromanages Jared Goff" (Nov. 29, 2017):
+    https://profootballtalk.nbcsports.com/2017/11/29/sean-mcvay-downplays-perception-that-he-micromanages-jared-goff/
+
+[^wasp]: "Jet Chip Wasp," Wikipedia: https://en.wikipedia.org/wiki/Jet_Chip_Wasp (the full call "2-3 Jet
+    Chip Wasp"; Hill aligned on the same side as Kelce and Watkins; Mahomes asking whether there was
+    time to run "Wasp"; final score 31–20); CBS Sports (third-and-15 from the Kansas City 35, trailing
+    20–10 with 7:13 left; the pass travelled 57.1 yards in the air for a 44-yard gain; Reid to NBC
+    Sports: "We call it 'Wasp.' Literally put the stinger on 'em"), "'Third-and-forever':
+    How Patrick Mahomes, Tyreek Hill ignited Chiefs' Super Bowl 2020 comeback with one play":
+    https://www.cbssports.com/nfl/news/third-and-forever-how-patrick-mahomes-tyreek-hill-ignited-chiefs-super-bowl-2020-comeback-with-one-play
+
+[^rns]: "Run and shoot offense," Wikipedia: https://en.wikipedia.org/wiki/Run_and_shoot_offense (Ellison
+    and Davis; NFL use by the Oilers 1987–1994, Lions 1989–1994 and Falcons 1991–1996; the four-receiver, one-back base; routes that change
+    with the coverage; June Jones at Hawaii); "Mouse Davis," Wikipedia: https://en.wikipedia.org/wiki/Mouse_Davis
+    (Portland State head coach 1975–1980, with June Jones his quarterback; Gamblers offensive
+    coordinator 1984; Lions offensive coordinator 1988–1990);
+    "Houston Gamblers," Wikipedia, on Jim Kelly's 5,219 passing yards in 1984:
+    https://en.wikipedia.org/wiki/Houston_Gamblers ; Keith Grabowski, "After Decades, the Inventors of
+    the Run and Shoot Share All of Their Secrets," *American Football International* (Nov. 18, 2020),
+    on Davis and Jones's course and its base plays Go, Choice, Streak and Dog, and on Ellison starting
+    the offense in 1958; Ellison's book, *Run and Shoot Football: Offense of the Future*, was published
+    by Parker Publishing in 1965:
+    https://www.americanfootballinternational.com/?p=120709
+
+[^airraid]: "Mike Leach (American football coach)," Wikipedia:
+    https://en.wikipedia.org/wiki/Mike_Leach_(American_football_coach) (J.D., Pepperdine, 1986; no college
+    playing career, he played rugby at BYU; Iowa Wesleyan from 1989, Valdosta State, Kentucky, Texas
+    Tech head coach 2000–2009); "Hal Mumme," Wikipedia: https://en.wikipedia.org/wiki/Hal_Mumme
+    (Copperas Cove High School, Texas, 1986–1988; Iowa Wesleyan 1989–1991; Valdosta State 1992–1996;
+    Kentucky head coach from 1997).
+
+[^ap]: Ralph D. Russo, "Air Raid evolution: Pioneering offense passes test of time," Associated Press
+    (Aug. 24, 2022): https://kvia.com/ap-texas/2022/08/24/air-raid-evolution-pioneering-offense-passes-test-of-time/
+
+[^leach]: FootballScoop, "For every play Mike Leach adds to his playbook, he takes one away" (July 19,
+    2022): https://footballscoop.com/news/for-every-play-mike-leach-adds-to-his-playbook-he-takes-one-away
+
+[^kingsbury]: "Kliff Kingsbury," Wikipedia: https://en.wikipedia.org/wiki/Kliff_Kingsbury (Texas Tech
+    quarterback under Leach; Texas Tech head coach 2013–2018, with Mahomes on the roster 2014–2016;
+    Arizona head coach 2019–2022; Washington offensive coordinator 2024–2025); "Lincoln Riley,"
+    Wikipedia: https://en.wikipedia.org/wiki/Lincoln_Riley (a walk-on quarterback and then student
+    assistant under Leach at Texas Tech; Mayfield and Murray at Oklahoma, Williams at USC; each the first
+    overall pick, in 2018, 2019 and 2024). Washington's no-huddle and
+    under-center rates: course calculation for the fingerprint chart (method in its caption).
+
+[^churn]: Course fact sheet (checked 2026-10-06): the Eagles' 2026 offensive coordinator, Sean
+    Mannion, is their fifth in five seasons; the Lions' Drew Petzing is their third in three. Sources:
+    Pro Football Rumors, "2026 NFL offensive/defensive coordinator search tracker":
+    https://www.profootballrumors.com/2026/02/2026-nfl-offensive-defensive-coordinator-search-tracker ;
+    ESPN, "Sources: Lions finalizing deal to hire Drew Petzing as new OC":
+    https://www.espn.com/nfl/story/_/id/47662766/sources-lions-finalizing-deal-hire-drew-petzing-new-oc
+
+[^installweek]: Matt Bowen (a former NFL safety), "An Inside Look at 'Game Week' in the NFL," *Bleacher
+    Report* (Sept. 2, 2013): first- and second-down packages Wednesday, the third-down package Thursday,
+    red zone, goal line and the two-minute drill Friday, and a walk-through of the entire game plan
+    Saturday: https://bleacherreport.com/articles/1756606-an-inside-look-at-game-week-in-the-nfl .
+    Individual staffs vary; see *The Game Plan* (chapter 08-03) for the staff's week in detail.
+
+[^ne25]: NFL.com, "List of NFL Honors award winners from 2025 NFL season": Matthew Stafford won MVP,
+    edging Drake Maye by one first-place vote; Josh McDaniels was Assistant Coach of the Year:
+    https://amp.nfl.com/news/list-of-nfl-honors-award-winners-from-2025-nfl-season . The Patriots were
+    14–3 (course fact sheet, §2).
