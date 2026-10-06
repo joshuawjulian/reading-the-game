@@ -5,9 +5,10 @@
   curriculum (73 chapters / 15 parts, planning/CURRICULUM.md, editable source in
   planning/curriculum-src/); gap audit (planning/AUDIT-curriculum.md, all 64 fixes applied);
   verified current facts (planning/FACTS-current.md).
-- IN PROGRESS: pilot chapters 01-04, 03-02, 06-06, 13-02 via the write-chapters workflow
-  (writer -> web fact-check -> beginner + coach reviews -> revise). Review logs: planning/reviews/.
-- NEXT: user reviews the pilots; then the full run of the remaining 69 chapters with the same
+- DONE: pilot chapters 01-04, 03-02, 06-06, 13-02 (19/29/25/42 pp), published. Review logs in planning/reviews/.
+  Known: the chapters run long (7.8k-13.8k words vs the 3-7k target); links to unwritten chapters warn until they exist.
+- WAITING: the user's verdict on the pilots (tone, depth/length, diagrams).
+- NEXT: then the full run of the remaining 69 chapters with the same
   workflow (script saved under the session's workflows/scripts/write-chapters-*.js; it takes
   args {chapters: [{id, path}]}, with paths from planning/chapters.yml), then a final
   whole-book gap audit, the atlas appendices, and the glossary check.
