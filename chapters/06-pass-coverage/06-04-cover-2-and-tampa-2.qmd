@@ -1,0 +1,1298 @@
+---
+title: "Cover 2 and Tampa 2"
+subtitle: "Two deep, five under: the zone that keeps everything in front of it, the cornerbacks who refuse to run, the middle linebacker who does, and the holes every offense knows by heart."
+description: "Cover 2 zone (two deep halves, five underneath) and the hard or squat cornerback; why Cover 2 exists and what it costs; its four thin spots (the hole shot, the smash corner, the deep middle and the sideline hole); Tampa 2, in which the middle linebacker runs the deep middle, from Bud Carson's 1970s Steelers to Dungy and Kiffin's Buccaneers, Dungy's Colts and Lovie Smith's Bears; 2-Man (Cover 5); when NFL defenses call each, in the charting data; and why classic Tampa 2 faded and what survived."
+glossary:
+  "Cover 2": "A two-deep zone coverage: two safeties each guard a deep half of the field, and five defenders guard the short zones underneath them, usually the two cornerbacks in the flats and three linebackers (or two linebackers and a nickel back) in the hook, curl and middle zones."
+  "Hard corner": {def: "A Cover 2 cornerback. He lines up about 5 to 7 yards off the outside receiver (or presses him) with outside leverage, jams or redirects the receiver at the snap, and then stays short to guard the flat instead of bailing to a deep zone. He is also the defense's force player against runs to his side.", aliases: ["Squat corner"]}
+  "Hole shot": "A pass thrown into the gap along the sideline behind a Cover 2 cornerback, who is guarding the flat, and in front of the deep-half safety, who has to come from near the hash: usually a fade or go route caught 18 to 25 yards downfield, on time, before the safety gets there."
+  "Tampa 2": "A Cover 2 variation in which the middle linebacker, instead of sitting in the short middle, turns and runs down the middle of the field at the snap and carries any receiver who goes up the seam, closing the gap between the two deep safeties. Built and named by Tony Dungy and Monte Kiffin's Tampa Bay Buccaneers (1996–2008), from roots in Bud Carson's 1970s Steelers."
+  "2-Man": {def: "A coverage with two deep safeties, each guarding a deep half, and five defenders playing man-to-man underneath them, usually in trail technique with inside leverage because their help is over the top. Usually rushes four.", aliases: ["Cover 5"]}
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+import os
+import logging
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch, FancyArrowPatch, Ellipse
+from matplotlib.lines import Line2D
+
+from gridiron import Play, offense, defense, routes as r, show_animation, style, draw_marker
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+FIELD_W = 160 / 3
+HALF = FIELD_W / 2          # 26.7 yards from the middle of the field to either sideline
+
+
+# ---------------------------------------------------------------- alignments used all chapter
+def c2_shell(off, corner_d=5.5, corner_out=1.3, safety_d=13.0, safety_w=9.5, press=False):
+    """Nickel (4-2-5) two-high shell against `off`. Corners squat 5-7 yards off, a step outside
+    the widest receiver on each side (outside leverage); safeties deep and between the hash and
+    the numbers; the Will and the nickel ($) split the difference between the tackles and the
+    slots; the Mike sits over the ball. press=True walks the corners up to a yard off."""
+    wide = [p for p in off if p.pos in ("WR", "TE") and abs(p.w) > 6]
+    wl = min(p.w for p in wide if p.w < 0)
+    wr = max(p.w for p in wide if p.w > 0)
+    cd = 1.2 if press else corner_d
+    moves = {"LCB": (cd, wl - corner_out), "RCB": (cd, wr + corner_out),
+             "NB": (5.0, 7.0), "WILL": (5.0, -6.5), "MIKE": (4.5, 0.5),
+             "FS": (safety_d, -safety_w), "SS": (safety_d, safety_w)}
+    out = []
+    for p in defense("nickel", "two_high", off):
+        if p.key in moves:
+            p = p.moved(d=moves[p.key][0], w=moves[p.key][1])
+        if p.pos == "CB":
+            p = p.moved(label="CB")
+        out.append(p)
+    return out
+
+
+def protect(p, rushers=("SDE", "SDT", "WDT", "WDE")):
+    """Five linemen set, four rushers engage them: enough to show it is a pass, no more."""
+    for k in ("LT", "LG", "C", "RG", "RT"):
+        p.block(k, pts=[(-1.2, 0.0)])
+    for k in rushers:
+        p.rush(k, pts=[(-1.6, 0.0)], speed=2.0)
+
+
+def no_numbers(ax):
+    """Remove the painted yard-line numbers (they sit where wide receivers and corners stand)."""
+    for t in list(ax.texts):
+        if t.get_alpha() == 0.55:
+            t.remove()
+
+
+def ruler(fld, play, widths=False, fs=6.5, side="left"):
+    """Depth labels (yards past the line of scrimmage) down the left edge of the window, and
+    optionally where the hash marks and the painted numbers are along the bottom edge.
+    gridiron has no ruler, so it is drawn here on the Field's axes."""
+    ax = fld.ax
+    x_edge = FIELD_W - fld.y1 + 0.35 if side == "left" else FIELD_W - fld.y0 - 0.35
+    for d in range(5, 41, 5):
+        y = play.los + d
+        if fld.x0 + 0.8 <= y <= fld.x1 - 0.8:
+            ax.text(x_edge, y, f"{d}" + (" yd" if d == 5 else ""), fontsize=fs, color=style.INK_2,
+                    ha=side, va="center", zorder=12,
+                    bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.85))
+    if widths:
+        y = fld.x0 + 0.9
+        for yb, txt in ((23.58, "hash"), (FIELD_W - 23.58, "hash"), (13.0, "numbers"), (FIELD_W - 13.0, "numbers")):
+            if fld.y0 + 2.5 <= yb <= fld.y1 - 2.5:
+                ax.text(FIELD_W - yb, y, txt, fontsize=fs, color=style.INK_2, ha="center", va="center",
+                        zorder=12, style="italic",
+                        bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.85))
+
+
+def pointer(fld, play, text, text_at, to, ha="center", fs=7.5):
+    """A labelled arrow from a text box to a spot on the field (both in (d, w) yards)."""
+    tx, ty = fld.xy(*play.to_abs(*text_at))
+    px, py = fld.xy(*play.to_abs(*to))
+    fld.ax.annotate(text, xy=(px, py), xytext=(tx, ty), ha=ha, va="center", fontsize=fs, color=style.INK,
+                    zorder=12, arrowprops=dict(arrowstyle="-|>", color=style.INK_2, lw=0.9, shrinkB=6),
+                    bbox=dict(boxstyle="round,pad=0.25", fc=style.SURFACE, ec=style.BASELINE, lw=0.6))
+
+
+def say(fld, play, text, at, fs=7.0, color=None, ha="center", weight="normal", box=True):
+    """Plain on-field text at (d, w)."""
+    x, y = fld.xy(*play.to_abs(*at))
+    fld.ax.text(x, y, text, ha=ha, va="center", fontsize=fs, color=color or style.INK, zorder=12,
+                fontweight=weight,
+                bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none", alpha=0.95) if box else None)
+
+
+def trim(ax):
+    """Drop text labels whose anchor lies outside the drawn window (players cropped out of view)."""
+    x0, x1 = sorted(ax.get_xlim())
+    y0, y1 = sorted(ax.get_ylim())
+    for t in list(ax.texts):
+        x, y = t.get_position()
+        if t.get_transform() == ax.transData and not (x0 <= x <= x1 and y0 <= y <= y1):
+            t.remove()
+
+
+def zlabel(fld, play, text, at, fs=7.0):
+    """An italic zone name at (d, w), placed by hand so it never sits on a player."""
+    x, y = fld.xy(*play.to_abs(*at))
+    fld.ax.text(x, y, text, ha="center", va="center", fontsize=fs, color=style.INK_2, style="italic", zorder=3)
+
+
+def hole(fld, play, center, size, text, fs=7.2):
+    """A green 'thin spot' in the coverage, with its label."""
+    cx, cy = fld.xy(*play.to_abs(*center))
+    fld.ax.add_patch(Ellipse((cx, cy), size[1], size[0], facecolor=style.THIRD, alpha=0.16,
+                             edgecolor=style.THIRD, lw=1.2, zorder=2))
+    fld.ax.text(cx, cy, text, ha="center", va="center", fontsize=fs, color=style.INK, fontweight="bold",
+                zorder=6)
+
+
+# ---------------------------------------------------------------- moments of a play, for print
+def snapshot(play, t, ax=None, lateral="full", window=(-8.5, 24.0), width_in=6.5, notes=(), show_ruler=False,
+             ruler_side="left"):
+    """Everyone where he is at time t, with faint trails of where he has been and the ball's flight."""
+    pos = {k: play.position(k, t) for k in play.players}
+    moved = [pl.moved(d=float(pos[k][0]), w=float(pos[k][1])) for k, pl in play.players.items()]
+    q = Play([m for m in moved if m.side == "off"], [m for m in moved if m.side == "def"],
+             los=play.los, ball_y=play.ball_y, to_go=play.to_go)
+    q.highlights = dict(play.highlights)
+    fld = q.draw(ax=ax, lateral=lateral, window=window, width_in=width_in, title=False)
+    ax, ppy = fld.ax, fld.pts_per_yard()
+    no_numbers(ax)
+    if show_ruler:
+        ruler(fld, play, fs=5.5, side=ruler_side)
+    P = lambda d, w: fld.xy(*play.to_abs(d, w))  # noqa: E731
+    start = play._compile()[1]
+    for k, pl in play.players.items():
+        if pl.side == "off" and pl.pos not in ("WR", "TE", "RB"):
+            continue
+        pts = np.array([play.position(k, tt) for tt in np.linspace(start, t, 30)])
+        if np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) < 0.3:
+            continue
+        xs, ys = P(pts[:, 0], pts[:, 1])
+        if pl.side == "off":
+            ax.plot(xs, ys, color=style.OFFENSE, lw=1.0, alpha=0.45, zorder=3)
+        else:
+            ax.plot(xs, ys, color=style.DEFENSE, lw=1.3, ls=(0, (3, 2)), zorder=3)
+    bx, by = P(*play.ball_position(t))
+    for kind, _, t_rel in play.ball_events:
+        if kind == "pass" and t > t_rel:
+            sx, sy = P(*play.ball_position(t_rel))
+            ax.add_patch(FancyArrowPatch((float(sx), float(sy)), (float(bx), float(by)), arrowstyle="-|>",
+                                         mutation_scale=8, color=style.BALL, lw=1.4, ls=(0, (2, 1.5)), zorder=9))
+    draw_marker(ax, float(bx), float(by), "ball", "", ppy)
+    for text, at in notes:
+        say(fld, play, text, at, fs=6.4)
+    trim(ax)
+    return fld
+
+
+def strip(play, times, labels, lateral=(-HALF, HALF), window=(-8.5, 24.0), notes_at=None, width_in=6.5, ncols=2,
+          ruler_side="left"):
+    """The print version of an animation: one panel per chosen moment."""
+    n = len(times)
+    nrows = int(np.ceil(n / ncols))
+    pw = width_in / ncols
+    h = nrows * (pw * (window[1] - window[0]) / abs(lateral[1] - lateral[0]) + 0.32)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(width_in, h), squeeze=False)
+    for ax in axes.flat[n:]:
+        ax.axis("off")
+    for i, (ax, t, lab) in enumerate(zip(axes.flat, times, labels)):
+        snapshot(play, t, ax=ax, lateral=lateral, window=window, notes=(notes_at or {}).get(i, ()),
+                 show_ruler=(i == 0), ruler_side=ruler_side)
+        ax.set_title(lab, fontsize=8.5, color=style.INK, loc="left")
+    fig.tight_layout(h_pad=0.6, w_pad=0.4)
+    h = [Line2D([], [], color=style.DEFENSE, lw=1.3, ls=(0, (3, 2)), label="Defender's path so far"),
+         Line2D([], [], color=style.OFFENSE, lw=1.0, alpha=0.6, label="Receiver's path so far"),
+         Line2D([], [], color=style.BALL, lw=1.4, ls=(0, (2, 1.5)), label="The ball")]
+    fig.legend(handles=h, loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=3, fontsize=7.5, frameon=False)
+    return fig
+```
+
+Third-and-12 near midfield, a minute left in the first half. Both cornerbacks stand five yards off
+the wide receivers, a step outside them, flat-footed. Both safeties are deep, one on each side of
+the field. The quarterback throws a quick out to the sideline; the corner closes, tackles, gain of
+eight, and the offense punts. The analyst sounds almost pleased: "That's Cover 2 doing its job.
+Keep everything in front, make the tackle." Two series later the same corner stands in the same
+spot, the receiver runs straight past him, and the ball drops into his hands 22 yards downfield,
+between the corner and the safety, before the safety can get there. "And *that's* the hole in
+Cover 2," says the analyst. So which is it? Why would a defense build a coverage around a hole it
+knows is there, and why did one version of that coverage, Tampa 2, become the identity of a
+generation of NFL defenses and two Super Bowl champions? This chapter takes Cover 2 apart: who
+stands where, why, what it buys, where it bleeds, and what became of it.
+
+**You'll be able to…**
+
+- Draw Cover 2 against a 2x2 formation, name all seven zones and who takes each, and explain why
+  a Cover 2 cornerback stands where he does.
+- Spot a **hard (squat) corner** before the snap and say what it suggests about the coverage.
+- Point to Cover 2's four thin spots (the hole shot, the smash corner, the deep middle and the
+  sideline hole) and name a route that attacks each.
+- Explain what makes **Tampa 2** different (the middle linebacker runs the deep middle), the
+  problem it solved, and the kind of player it needs.
+- Tell Cover 2 from **2-Man** in the first second after the snap, and say when NFL defenses call
+  each.
+- Explain why classic Tampa 2 faded from the NFL, and which of its ideas are still on the field
+  every Sunday.
+
+::: {.callout-note title="You'll need"}
+This chapter builds on the first three coverage chapters. One line each:
+
+- **Shells, man and zone** ([A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)):
+  the [shell](../../appendices/glossary.qmd#gl-shell-coverage-shell) is the safeties' picture before
+  the snap: [one-high](../../appendices/glossary.qmd#gl-one-high) or
+  [two-high](../../appendices/glossary.qmd#gl-two-high).
+  [Man coverage](../../appendices/glossary.qmd#gl-man-coverage) gives each defender a receiver;
+  [zone coverage](../../appendices/glossary.qmd#gl-zone-coverage) gives each an area. The
+  [nickel](../../appendices/glossary.qmd#gl-nickel) defense swaps a linebacker for a fifth defensive back.
+- **Zones and techniques** ([Coverage Fundamentals](06-01-coverage-fundamentals.qmd)): the deep field
+  splits into [thirds](../../appendices/glossary.qmd#gl-deep-third), [halves](../../appendices/glossary.qmd#gl-deep-half)
+  or [quarters](../../appendices/glossary.qmd#gl-deep-quarter). Underneath, from the sideline in: the
+  [flat](../../appendices/glossary.qmd#gl-flat-zone) (near the sideline, 0–6 yards deep), the
+  [curl](../../appendices/glossary.qmd#gl-curl-zone) (10–12 yards, between the numbers and the hash), the
+  [hook](../../appendices/glossary.qmd#gl-hook-zone) (inside the curl, over the tackles) and the
+  [hole](../../appendices/glossary.qmd#gl-hole-zone) (the middle, 8–15 yards). A defender drops to a
+  [landmark](../../appendices/glossary.qmd#gl-landmark). [Press](../../appendices/glossary.qmd#gl-press)
+  is lining up on a receiver's nose; [off coverage](../../appendices/glossary.qmd#gl-off-coverage) is
+  lining up several yards away; a [bail](../../appendices/glossary.qmd#gl-bail) is showing press and
+  running deep at the snap. [MOFO](../../appendices/glossary.qmd#gl-mofo) means nobody in the deep
+  middle before the snap; [spot-drop zone](../../appendices/glossary.qmd#gl-spot-drop-zone) defenders
+  drop to landmarks and read the quarterback, while
+  [pattern-matching](../../appendices/glossary.qmd#gl-pattern-matching) defenders pick up receivers by rule.
+- **Man techniques** ([Man Coverage](06-02-man-coverage.qmd)): a defender in
+  [trail technique](../../appendices/glossary.qmd#gl-trail-technique) runs a step behind and underneath
+  his man, trusting help over the top; [Cover 1](../../appendices/glossary.qmd#gl-cover-1) is man with one
+  deep safety; a [bracket](../../appendices/glossary.qmd#gl-bracket) puts two defenders on one receiver.
+- **Cover 3** ([The Cover 3 Family](06-03-cover-3-family.qmd)), this chapter's prerequisite:
+  [Cover 3](../../appendices/glossary.qmd#gl-cover-3) is three deep, four under. Its corners bail to deep
+  thirds; the [curl-flat defender](../../appendices/glossary.qmd#gl-curl-flat-defender) covers both the curl
+  and the flat on one side; in a [cloud rotation](../../appendices/glossary.qmd#gl-cloud-rotation) a
+  corner takes the flat instead, which is the Cover 2 corner's job borrowed for one side.
+- **Routes and concepts** ([Passing Fundamentals](../04-the-passing-game/04-01-passing-fundamentals.qmd),
+  [Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd)): a
+  [seam](../../appendices/glossary.qmd#gl-seam) runs straight up between the hash and the numbers; a
+  [hitch](../../appendices/glossary.qmd#gl-hitch) stops and turns back; a
+  [corner route](../../appendices/glossary.qmd#gl-corner-route) breaks deep toward the sideline;
+  [smash](../../appendices/glossary.qmd#gl-smash) pairs a hitch outside with a corner route inside;
+  [four verticals](../../appendices/glossary.qmd#gl-four-verticals) sends four receivers deep.
+  A [high-low read](../../appendices/glossary.qmd#gl-high-low-read) puts one defender between a
+  deep route and a short one. A defender's
+  [leverage](../../appendices/glossary.qmd#gl-leverage-inside-outside) is which side of the receiver he
+  stands on.
+- **Field landmarks** ([The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd)):
+  the NFL [hash marks](../../appendices/glossary.qmd#gl-hash-marks) are only about 3 yards either side
+  of the middle of the field; the painted numbers are about 13 to 15 yards from the middle; each
+  sideline is about 26.7 yards from it.
+
+*Reading the diagrams:* offense is blue circles (X, Y, Z, H receivers; Q quarterback; R running
+back). Defense is outlined squares: E and T are defensive ends and tackles, M the
+[Mike](../../appendices/glossary.qmd#gl-mike-linebacker) (middle linebacker), W the
+[Will](../../appendices/glossary.qmd#gl-will-linebacker), $ the nickel back, CB a cornerback, FS and SS
+the free and strong safety. The faint lines across the field are 5 yards apart, starting at the line
+of scrimmage (the darker blue line), and the small numbers on the left edge give the depth. The
+orange line is the line to gain. Dashed arrows are defenders' movements, solid arrows receivers'
+routes, dotted lines man-coverage assignments, shaded ovals zones.
+:::
+
+## Two deep, five under
+
+Every coverage is an answer to the same arithmetic. The defense has eleven players. If four of
+them rush the passer, seven are left to cover. Those seven can be split between **deep**
+defenders, who stop the ball being thrown over everyone's head, and **underneath** defenders, who
+stop the short and medium throws. [Cover 3](06-03-cover-3-family.qmd) splits them three deep and
+four under. **[Cover 2](../../appendices/glossary.qmd#gl-cover-2)** splits them two deep and five
+under: two safeties each take a **deep half** of the field, and five defenders spread across the
+short zones in front of them.
+
+```{python}
+#| label: fig-cover2-2x2
+#| fig-cap: "Cover 2 against a 2x2 formation (11 personnel, a nickel defense). Before the snap: two safeties 13 yards deep, between the hash and the numbers; both corners 5 or 6 yards off, a step outside the wide receivers. At the snap (dashed arrows) the four linemen rush and seven defenders drop to their landmarks: the safeties to the two deep halves, the corners to the flats, the Will (W) and the nickel ($) to the curl-hook zones on each side, and the Mike (M) to the hole in the middle. Five zones underneath, two deep: that is the whole coverage."
+off = offense("gun_2x2")
+c2 = Play(off, c2_shell(off), los=35, to_go=10)
+protect(c2)
+for k, to in {"LCB": (8.5, -18.5), "RCB": (8.5, 18.5), "WILL": (10.0, -9.0), "NB": (10.0, 9.0),
+              "MIKE": (10.5, 0.0), "FS": (18.5, -12.0), "SS": (18.5, 12.0)}.items():
+    c2.drop(k, to)
+ZONES = [((24.0, -13.3), (13.0, 25.5), "deep ½", (25.5, -13.3)), ((24.0, 13.3), (13.0, 25.5), "deep ½", (25.5, 13.3)),
+         ((5.0, -21.5), (9.0, 9.5), "flat", (3.2, -22.0)), ((5.0, 21.5), (9.0, 9.5), "flat", (3.2, 22.0)),
+         ((11.0, -11.0), (8.0, 9.0), "curl-hook", (8.3, -12.4)), ((11.0, 11.0), (8.0, 9.0), "curl-hook", (8.3, 12.4)),
+         ((12.5, 0.0), (6.0, 8.0), "hole", (14.0, 0.0))]
+for c, sz, _, _ in ZONES:
+    c2.zone(c, sz)
+c2.highlight("FS", "SS", "LCB", "RCB")
+fld = c2.draw(lateral="full", window=(-8, 32))
+no_numbers(fld.ax)
+ruler(fld, c2, widths=True)
+for *_, lab, at in ZONES:
+    zlabel(fld, c2, lab, at)
+plt.show()
+```
+
+Here is each job, and the reason behind it.
+
+- **The two safeties: a deep half each.** Each safety owns everything deep on his side of the
+  field, from the middle of the field to the sideline: about 27 yards of width. His rule, in its
+  simplest form, is *nothing gets behind me*: he stays deeper than the deepest receiver in his
+  half and breaks on the ball when it's thrown. He lines up 12 to 14 yards deep and between the
+  hash and the numbers, roughly 8 to 10 yards from the middle of the field, because from there he
+  can reach both ends of his half: the seam near the middle and the sideline. Being wider and
+  deeper than a quarters safety ([Quarters and the Two-High Match Family](06-05-quarters-and-match.qmd))
+  is the price of owning a half instead of a quarter.
+- **The two corners: the flats.** A Cover 2 cornerback is not a deep defender at all. He lines up
+  close, outside the wide receiver, and at the snap he jams or redirects him and then stays short,
+  in the flat. This is the **hard corner**, and the next section is about him.
+- **The Will and the nickel: the curl-hook zones.** Between the flat and the middle, each takes
+  the curl and hook area on his side, 10 to 12 yards deep, under the inside receiver's routes
+  and in the lane of the outside receiver's curls and digs. In a base 4-3 defense these are the two
+  outside linebackers, the Sam and the Will.
+- **The Mike: the hole.** The middle linebacker drops straight back to the middle of the field, 10
+  to 12 yards deep, to take away throws over the ball: digs, crossing routes, a tight end
+  sitting down in the middle. (Hold on to this job. Tampa 2 changes it.)
+- **The four rushers.** In a pure Cover 2 nobody else is spare. The coverage depends on four
+  linemen getting to the quarterback without help, because seven defenders are all spoken for.
+
+::: {.callout-important title="Why it exists"}
+**What Cover 2 buys.** Five underneath defenders is the most any common zone puts there, so every
+short throw has a defender within a few yards of it, and the quarterback has to fit the ball into
+small windows or settle for short gains. The corners in the flats take away the quick throws to
+the outside that beat off-coverage corners (quick outs, hitches, bubble screens), and they
+squeeze the outside receivers' releases, which disrupts the timing of everything else. Two deep
+safeties mean no single deep defender is ever alone against two vertical routes in the middle of
+the field, as Cover 3's lone safety can be. And the corners never have to run step for step with
+the fastest receivers on the field, which lets a defense survive with corners who are physical
+and smart rather than fast.
+
+**What it gives up.** Only two defenders guard the whole deep field, so each safety has a huge
+area, and wherever two receivers go deep in one half, one safety is in a two-on-one. The corners
+stay short, so the sideline behind them is empty until a safety gets there. With both safeties
+deep, only six or seven defenders are near the line of scrimmage against the run (the
+[box](../../appendices/glossary.qmd#gl-box)), one fewer than when a safety comes down. Cover 2 is a
+bet that the offense can't complete enough of the hard throws to make up for all the easy ones it
+takes away.
+:::
+
+Cover 2 also has a run-defense job built into it, and it explains the corners' alignment as much
+as the passing game does. Against a run to his side, the Cover 2 corner is the
+[force](../../appendices/glossary.qmd#gl-force-defender) player: he comes up hard from the outside,
+meets the ball carrier at the edge and turns him back inside, toward the linebackers. The safety
+on that side becomes the [alley player](../../appendices/glossary.qmd#gl-alley-player), filling the gap
+between the corner and the box. A corner standing five yards off, outside the receiver, with his
+eyes inside, is in exactly the right spot to force, which is one more reason he stands there.
+([Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd) builds
+the run fits.)
+
+::: {.callout-note title="Madden vs. real life"}
+On a video-game play-call screen, Cover 2 looks like one play: pick it and the same seven zones
+appear every time. On an NFL defense, "Cover 2" is a family with dozens of members. Some teams
+press the corners and some play them off; some spot-drop and some pattern-match; some
+play it with three linebackers and some with a nickel or dime; one coach's safeties line up on the
+hashes and another's on the numbers. And many staffs never call it "Cover 2" at all. What stays the same is the
+skeleton, two deep halves and five underneath, with the corners in the flats. That is what to
+look for.
+:::
+
+## The hard corner
+
+The single most distinctive player in Cover 2 is the cornerback who doesn't go deep. A
+**[hard corner](../../appendices/glossary.qmd#gl-hard-corner)** (also called a
+**[squat corner](../../appendices/glossary.qmd#gl-squat-corner)**) lines up 5 to 7 yards off the
+outside receiver, or right on him in press, a step outside him with his shoulders turned slightly
+in so he can see through the receiver to the quarterback. At the snap he does three things in
+order:
+
+1. **Collision and redirect.** He meets the receiver at the line or as he comes off it, gets
+   his hands on him, and makes him release *inside*. A receiver who wants to run straight up the
+   sideline gets pushed toward the middle of the field, where the safety is. Every step the
+   receiver loses getting past the corner is a step the safety gains. All of this has to happen
+   within five yards of the line of scrimmage: after that, contact before the ball is thrown is a
+   foul, as long as the quarterback is still in the pocket with the ball.[^contact]
+2. **Sink.** If nobody threatens the flat, he doesn't stand still. He gives ground, backing
+   up and widening at an angle under the outside receiver, to shrink the gap between himself and
+   the safety. Coaches teach it as a rule, *sink until something threatens the flat*.
+3. **Squat.** When a receiver (the slot, the tight end or a running back) breaks toward the flat,
+   or the quarterback's eyes go there, he stops, plants and comes forward to make the tackle. He
+   keeps outside leverage throughout, so anything that goes inside of him goes to the linebackers
+   and the safety, and nothing escapes to the sideline.
+
+Set that next to the Cover 3 corner from the previous chapter, against the same receiver.
+
+```{python}
+#| label: fig-corner-technique
+#| fig-cap: "Two corners, one receiver (the offense's right side only). Left, Cover 3: the corner lines up 7 or 8 yards off and bails at the snap, turning to run with Z into his deep third; the flat is the curl-flat defender's ($). Right, Cover 2: the corner lines up 5 yards off, a step outside Z, jams him, forces his release inside toward the safety, then sinks under him and sits in the flat. Behind him, the strong safety (SS) has the whole deep half. Same receiver, opposite jobs: one corner is a deep defender who also helps in the flat, the other a flat defender who also slows down the deep ball."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.9))
+off = offense("gun_2x2")
+# Cover 3: off corner bails to a deep third; the nickel is the curl-flat defender
+right = [p for p in off if p.key in ("RT", "Y", "Z")]          # only the right side is drawn
+c3_def = [p.moved(d=7.5, w=16.0, label="CB") if p.key == "RCB" else p.moved(d=5.0, w=7.0)
+          for p in defense("nickel", "single_high", off) if p.key in ("RCB", "NB")]
+a = Play(right, c3_def, los=35, to_go=None)
+a.route("Z", r.go(19))
+a.drop("RCB", (17.0, 17.0), speed=5.5)
+a.drop("NB", (8.0, 13.5))
+a.zone((19.0, 17.8), (12.0, 15.5), "deep third")
+a.zone((4.5, 17.5), (6.5, 10.0), "flat")
+a.highlight("RCB")
+fa = a.draw(ax=axes[0], lateral=(1.5, HALF), window=(-3, 27.5), title=False)
+no_numbers(fa.ax)
+say(fa, a, "bail: turn and run\nwith him, eyes on Q", (13.5, 7.5), fs=6.5)
+axes[0].set_title("Cover 3 corner: bail", fontsize=9, loc="left")
+# Cover 2: hard corner jams, re-routes Z inside, sinks into the flat
+b = Play(right, [p for p in c2_shell(off) if p.key in ("RCB", "NB", "SS")], los=35, to_go=None)
+b.route("Z", r.path((3.0, -1.3), (19.0, -2.6)))
+b.path("RCB", [(4.0, 15.4), (8.5, 18.3)], absolute=True, speed=3.0)
+b.drop("SS", (18.0, 13.0))
+b.zone((21.5, 13.3), (11.0, 22.0), "deep ½ (SS)")
+b.zone((5.0, 20.5), (6.5, 10.0), "flat")
+b.highlight("RCB")
+fb = b.draw(ax=axes[1], lateral=(1.5, HALF), window=(-3, 27.5), title=False)
+no_numbers(fb.ax)
+say(fb, b, "jam, push him inside,\nsink, sit in the flat", (8.5, 7.5), fs=6.5)
+axes[1].set_title("Cover 2 corner: hard (squat)", fontsize=9, loc="left")
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+Why build a corner this way? Three reasons, and each is about time.
+
+**The flats are where quick throws go.** A corner 8 yards off and backing up concedes the 5-yard
+out and the hitch: by the time he plants and drives on the throw, the receiver has caught it and
+turned upfield. A squat corner is already there. Against offenses that live on quick timing throws
+to the outside ([The Quick Game](../04-the-passing-game/04-03-quick-game.qmd)), that matters on
+every down.
+
+**The jam buys the safety time.** The weakness of Cover 2 is the ground the safeties have to
+cover, so anything that delays the outside receiver helps. A receiver who has been knocked off his
+line and forced inside arrives at 15 yards a half-second late and closer to the middle, which is
+exactly where the safety is coming from.
+
+**Outside leverage turns the sideline into a defender.** Because the corner refuses to let
+anything escape outside, every receiver on his side is funnelled toward the middle of the
+field, into the zones of the linebackers and the safety. The offense has to throw *into* the
+defense.
+
+The price is plain from the picture: once the receiver is past him, the corner is no longer a
+deep defender. Everything behind him and outside the safety is grass, and it stays grass until the
+safety covers the 10 or 15 yards to get there.
+
+::: {.callout-note title="Go deeper: when the rules changed the corner's job"}
+Until the mid-1970s, defenders could keep hitting a receiver all the way down the field until the
+ball was in the air. The league chipped at that in 1974 and 1977, limiting how many times a
+defender could jam the same receiver. Pittsburgh's Mel Blount, a 6-foot-3 cornerback on the Steelers
+defenses of the 1970s, was so good at manhandling receivers that the bigger 1978 change is still
+called the "Mel Blount rule": from that season, defenders could make contact with a receiver only
+within 5 yards of the line of scrimmage.[^blount] The Cover 2 corner's jam survived because it happens inside
+those 5 yards. What disappeared was a defense's ability to keep rerouting receivers with
+linebackers and safeties downfield. The full story of the
+[chuck rule](../../appendices/glossary.qmd#gl-chuck-rule) and its effect on passing is in
+[1978 and the Passing Revolution](../11-history/11-02-the-1978-liberation.qmd), and today's contact
+rules are in [Contact Rules and Penalties as Strategy](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd).
+:::
+
+## Where Cover 2 is thin
+
+Every coverage has holes, because seven defenders can't cover a field 53 yards wide and as deep as
+a quarterback can throw. Cover 2's are unusually well known, because the coverage is so old and so
+common that every offense carries a list of its "Cover 2 beaters." There are four places to look.
+
+```{python}
+#| label: fig-cover2-holes
+#| fig-cap: "The Cover 2 map: the seven defenders at their landmarks about a second and a half after the snap, and the four thin spots (green). (1) The hole shot: deep along the sideline, behind the corner and in front of the safety. (2) The smash corner: the same strip of grass reached from inside, by a corner route breaking over the squatting corner. (3) The deep middle, between the two safeties and behind the Mike. (4) The sideline hole: the intermediate band outside the curl-hook defender, above the corner and below the safety, where deep outs and comebacks land. Each thin spot exists on both sides of the field; each is marked once here."
+off = offense("gun_2x2")
+land = {"LCB": (8.0, -18.0), "RCB": (8.0, 18.0), "WILL": (10.0, -9.0), "NB": (10.0, 9.0),
+        "MIKE": (10.5, 0.0), "FS": (18.5, -12.0), "SS": (18.5, 12.0)}
+dfn = [p.moved(d=land[p.key][0], w=land[p.key][1]) if p.key in land else p for p in c2_shell(off)]
+keep = {"LT", "LG", "C", "RG", "RT", "QB"}
+mp = Play([p.moved(d=-7.5) if p.key == "QB" else p for p in off if p.key in keep], dfn, los=35, to_go=None)
+fld = mp.draw(lateral="full", window=(-9, 31))
+no_numbers(fld.ax)
+ruler(fld, mp, widths=True)
+hole(fld, mp, (21.5, 20.0), (7.5, 9.5), "① hole shot")
+hole(fld, mp, (21.0, -19.0), (7.0, 10.0), "② smash\ncorner")
+hole(fld, mp, (24.0, 0.0), (8.0, 11.0), "③ deep middle")
+hole(fld, mp, (13.0, -19.5), (5.5, 10.0), "④ sideline\nhole")
+pointer(fld, mp, "one safety,\n27 yards of width", (27.5, 15.0), (18.5, 12.0), fs=7)
+say(fld, mp, "corners sit\nat 8 yards", (4.0, 18.0), fs=6.5)
+plt.show()
+```
+
+**① The hole shot.** The most famous one. The corner is sitting in the flat, 6 to 10 yards deep.
+The safety is on his half, starting 13 yards deep and 8 to 10 yards from the middle. Between them,
+along the sideline from about 15 to 25 yards deep, is a strip of grass that nobody is standing on
+at the snap. A **[hole shot](../../appendices/glossary.qmd#gl-hole-shot)** is a ball thrown into that
+strip: usually the outside receiver's go or fade route, released past the squatting corner and
+thrown on time, toward the sideline, before the safety can get across. The arithmetic is a race.
+From his alignment, the safety is roughly 14 yards from the spot where a fade is caught 20 or 22
+yards downfield, 5 yards from the sideline. Reading the play for a few tenths of a second and
+then running at 6 yards a second, he needs close to 3 seconds; a well-timed fade is caught at about
+the same moment. If anything holds him for a beat (a second receiver running up the seam inside
+him, or the quarterback's eyes looking that way), he loses. That is why offenses pair the outside
+go route with a seam inside it: two vertical routes in one half put one safety in a two-on-one.
+[Four verticals](../04-the-passing-game/04-04-dropback-concepts.qmd) does it on both sides at once.
+
+**② The smash corner.** [Smash](../04-the-passing-game/04-04-dropback-concepts.qmd) reaches the same
+grass from the inside. The outside receiver runs a hitch at 5 or 6 yards, which holds the hard
+corner in the flat: his rules tell him to sit on it. The inside receiver runs 10 or 12 yards up the
+field and breaks toward the back corner of the field, over the corner's head and under the
+safety. The corner can't play both: if he sinks under the corner route, the hitch is open; if he
+squats on the hitch, the corner route is. It is a
+[high-low read](../../appendices/glossary.qmd#gl-high-low-read) of one defender, and the next section
+plays it out frame by frame.
+
+**③ The deep middle.** With two safeties each guarding a half, the seam where the halves meet is
+the farthest point from both of them. Nobody is standing in the middle of the field 18 to 25 yards
+deep, and the Mike, who has the hole at 10 to 12 yards, can't run with a receiver who goes past
+him. A seam route that splits the safeties, a post, or a tight end running straight up the middle
+puts both safeties in a bind: whichever one comes inside to help has left his own sideline. This is
+the hole Tampa 2 was built to close.
+
+**④ The sideline hole.** Underneath the safety and above the corner there is also an
+*intermediate* gap, about 12 to 18 yards deep, outside the curl-hook defender. A deep out or a
+comeback from the outside receiver lands there; so does the middle route of a
+[flood](../04-the-passing-game/04-04-dropback-concepts.qmd) concept, which sends one receiver deep
+to hold the safety and one to the flat to hold the corner, then throws to the one in between.
+Coaches name these spots differently; some call the whole strip from 12 to 25 yards "the Cover 2
+hole" and some reserve the term for the deep end. The geometry is the same either way: the corner
+is low, the safety is high and wide, and the sideline between them is the offense's.
+
+::: {.callout-caution title="Common misconception"}
+"Cover 2 is soft." It's an easy thing to believe when a defense gives up 8-yard completions on
+third-and-12 and the announcer says the defense is "playing soft." But Cover 2's corners are the
+*most* aggressive in football against short throws, and five underneath defenders make the short
+middle crowded. What Cover 2 gives up is not the short ball but specific intermediate and deep
+windows, and a defense that plays it well makes the offense find those windows with a
+well-timed, accurate throw, over and over. A third-and-12 completion for 8 is the coverage
+working.
+:::
+
+### What the data say: quarterbacks throw deep middle against Cover 2
+
+If the deep middle really is the weak spot, quarterbacks should aim there more often against Cover 2
+than against other coverages. They do. The charting data in nflverse label the coverage on most
+dropbacks since 2018, and the play-by-play records whether each pass went to the left, middle or
+right of the field.
+
+```{python}
+#| code-summary: "Show the Python (nflverse coverage labels joined to play-by-play, 2018–2025)"
+#| output: false
+from gridiron.data import nfl, pbp
+
+SEASONS = list(range(2018, 2026))
+PB_COLS = ["season", "season_type", "game_id", "play_id", "down", "ydstogo", "half_seconds_remaining",
+           "qb_dropback", "pass_attempt", "air_yards", "pass_location", "epa"]
+_pb = pbp(SEASONS, columns=PB_COLS)
+_pb = _pb[_pb["season_type"] == "REG"]
+_part = (nfl().load_participation(SEASONS).to_pandas()
+         .rename(columns={"nflverse_game_id": "game_id"})[["game_id", "play_id", "defense_coverage_type"]])
+CV = _pb.merge(_part, on=["game_id", "play_id"])
+# charted dropbacks; blown coverages, 'combo' and prevent left out
+CV = CV[(CV["qb_dropback"] == 1) & CV["defense_coverage_type"].notna()
+        & ~CV["defense_coverage_type"].isin(["BLOWN", "COMBO", "PREVENT"])].copy()
+ERAS = ["2018–2022 (NGS charting)", "2023–2025 (FTN charting)"]
+CV["era"] = np.where(CV["season"] <= 2022, ERAS[0], ERAS[1])
+
+
+def _dd(row):
+    if pd.isna(row.down):        # two-point tries have no down (and ydstogo 2): keep them out of 3rd & short
+        return "none"
+    if row.down == 1:
+        return "1st"
+    if row.down == 2:
+        return "2nd"
+    for hi, lab in ((2, "3rd/4th & 1–2"), (6, "3rd/4th & 3–6"), (10, "3rd/4th & 7–10")):
+        if row.ydstogo <= hi:
+            return lab
+    return "3rd/4th & 11+"
+
+
+CV["dd"] = CV.apply(_dd, axis=1)
+CV["c2"] = CV["defense_coverage_type"].eq("COVER_2")
+CV["m2"] = CV["defense_coverage_type"].eq("2_MAN")
+DEEP = CV[(CV["pass_attempt"] == 1) & (CV["air_yards"] >= 15) & CV["pass_location"].notna()].copy()
+DEEP["middle"] = DEEP["pass_location"].eq("middle")
+```
+
+```{python}
+#| label: fig-deep-middle
+#| fig-cap: "Where deep passes go against each coverage. Left: of all passes thrown 15 or more yards past the line of scrimmage, the share the play-by-play records as thrown to the middle of the field (rather than left or right). Right: expected points added (EPA) per deep pass to the middle. Against Cover 1 and Cover 3 a deep safety sits in the middle, and quarterbacks rarely throw there; against Cover 2 they throw there more often than against any other coverage, and those throws are worth more on average than the same throws against Cover 1 or Cover 3. Regular-season dropbacks with a charted coverage; the two charting sources are shown separately because they label coverages differently."
+order = ["COVER_1", "COVER_3", "COVER_4", "COVER_2"]
+names = {"COVER_1": "Cover 1", "COVER_3": "Cover 3", "COVER_4": "Quarters\n(Cover 4)", "COVER_2": "Cover 2"}
+share = (DEEP.groupby(["defense_coverage_type", "era"])["middle"].mean() * 100).unstack().reindex(order)
+epa = DEEP[DEEP["middle"]].groupby(["defense_coverage_type", "era"])["epa"].mean().unstack().reindex(order)
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.0))
+x = np.arange(len(order))
+bw = 0.38
+for i, e in enumerate(ERAS):
+    col = style.SERIES[i]
+    for ax, vals, fmt in ((axes[0], share[e], "{:.0f}%"), (axes[1], epa[e], "{:+.2f}")):
+        bars = ax.bar(x + (i - 0.5) * bw, vals.values, width=bw * 0.92, color=col, label=e)
+        for xb, v in zip(x + (i - 0.5) * bw, vals.values):
+            ax.text(xb, v + (0.6 if ax is axes[0] else 0.012), fmt.format(v), ha="center", va="bottom",
+                    fontsize=6.5, color=style.INK)
+for ax, title, ylab in ((axes[0], "Share of deep passes thrown to the middle", "% of passes 15+ yards"),
+                        (axes[1], "Value of a deep pass to the middle", "EPA per pass")):
+    ax.set_xticks(x)
+    ax.set_xticklabels([names[c] for c in order], fontsize=7.5)
+    ax.set_title(title, fontsize=8.5)
+    ax.set_ylabel(ylab, fontsize=7.5)
+    ax.tick_params(labelsize=7)
+    ax.grid(axis="x", visible=False)
+axes[0].set_ylim(0, 45)
+axes[1].set_ylim(0, 0.9)
+fig.legend(handles=[Patch(color=style.SERIES[0], label=ERAS[0]), Patch(color=style.SERIES[1], label=ERAS[1])],
+           loc="upper center", ncol=2, fontsize=7.2, frameon=False, bbox_to_anchor=(0.5, 1.02))
+fig.tight_layout(w_pad=1.5, rect=(0, 0, 1, 0.92))
+plt.show()
+```
+
+The pattern is the coverage's geometry showing through the numbers. Against Cover 1, with a free
+safety parked in the middle, only about one deep pass in nine goes there. Against Cover 3 it is about
+one in five. Against Cover 2 it is about one in three in the Next Gen Stats seasons and a little
+under that in the FTN seasons, as high as against any coverage, and a deep pass to the middle
+against Cover 2 has been worth about two-thirds to three-quarters of a point to the offense on
+average, more than the same throw against Cover 3.[^deepmid] Quarters, the other two-high family,
+sits in between on how often the middle is targeted, because its safeties play narrower and help in
+the middle (that's the next chapter), though in the FTN seasons a deep throw to the middle
+against it has been about as valuable as one against Cover 2.
+
+Two cautions. The play-by-play's "middle" is a scorer's judgement, not a measured zone, so read
+the shares as rough. And these are *results*, which mix the coverage's weakness with the
+offense's choices: offenses that expect Cover 2 call plays that attack the middle. That is the
+point, though. The middle is where offenses go when they see two deep safeties, which is why
+defenses started looking for someone to put there.
+
+## Smash against Cover 2, move by move
+
+[Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd) drew smash from the
+quarterback's side, as a read. Here it is from the defense's side, as a problem with a clock on it.
+Watch the right cornerback.
+
+```{python}
+#| label: fig-smash-c2
+#| fig-cap: "Smash against Cover 2, the offense's right side, simulated. Snap: the corner (ringed) is 5 or 6 yards off Z, a step outside him; the strong safety (SS) is 13 deep. +0.9 s: Z has pushed to 6 yards and is turning back for the hitch; the corner, doing his job, has jammed and is sitting in the flat. Y, the slot receiver, is running straight up the field past the nickel ($). +1.9 s: Y has broken toward the sideline at 8 or 9 yards and the quarterback throws. The corner is driving on the hitch; the safety has backed up to 19 yards, on top of Y but 8 yards inside the spot Y is heading for, and is only now reacting. +3.5 s: the ball arrives about 18 yards downfield and 6 or 7 yards from the sideline, over the corner and under the safety, who is still a couple of steps away. The left side runs the mirror image (not shown)."
+def smash_play():
+    off = offense("gun_2x2")
+    p = Play(off, c2_shell(off, corner_d=5.5), los=40, to_go=8)
+    protect(p)
+    p.dropback(2.0)
+    p.route("Z", r.hitch(6.0))
+    p.route("Y", r.path((10.0, 0.0), (20.0, 11.5)))
+    p.route("X", r.hitch(6.0))
+    p.route("H", r.path((10.0, 0.0), (20.0, 11.5)))
+    p.route("RB", r.flat(1.5, 5.0), side=-1)
+    p.pass_to("Y", t=1.85)
+    # right corner: collision, sink a little, then drive on the hitch he sees in front of him
+    p.drop("RCB", (5.8, 16.0), speed=1.2)
+    p.drop("RCB", (7.6, 17.3), speed=2.4)
+    p.path("RCB", [(6.4, 15.2)], absolute=True, speed=3.5)
+    # strong safety: stays on top of Y's stem, breaks a beat after the ball is in the air
+    p.drop("SS", (18.8, 12.3), speed=4.0)
+    p.path("SS", [(18.6, 17.4)], absolute=True, speed=5.2, delay=0.75)
+    p.drop("NB", (10.0, 9.5)); p.drop("MIKE", (10.5, 0.0)); p.drop("WILL", (9.5, -6.8))
+    p.drop("LCB", (7.6, -17.3)); p.drop("FS", (18.8, -12.3))
+    p.highlight("RCB")
+    return p
+
+
+smash = smash_play()
+SMASH_T = [0.0, 0.9, 1.9, 3.5]
+if PDF:
+    strip(smash, SMASH_T, ["Snap · corner squats outside Z", "+0.9 s · jam, Z turns for the hitch",
+                           "+1.9 s · Y breaks to the corner: throw", "+3.5 s · over the corner, under the safety"],
+          lateral=(-8.0, HALF), window=(-8.5, 24.5), ruler_side="right",
+          notes_at={1: [("hitch", (3.0, 18.2))], 3: [("corner\nroute", (21.8, 21.0))]})
+    plt.show()
+else:
+    show_animation(smash, times=SMASH_T)
+```
+
+Look at the corner's three panels and you see a player doing everything right and losing anyway.
+His rules say: jam the outside receiver, sink, and squat on anything short in the flat. The hitch
+*is* short and in the flat, so he squats on it. Meanwhile, the corner route breaks behind him into
+the strip of grass he just left. The safety's rules say: stay deeper than anything in your half.
+He does: at 1.9 seconds he is 19 yards deep, deeper than Y, but 8 yards inside the spot the corner
+route is heading for, and he can't start running at it until he's sure that's where the ball is going. By the
+time he is sure, the ball is in the air. The throw beats him by a step.
+
+That is the general shape of beating any zone: find one defender with two jobs and make him choose.
+In smash the cornerback is that defender. And the quarterback's read is mercifully simple: he
+watches only the corner. Corner sinks, throw the hitch. Corner squats, throw the corner route.
+
+**How does the defense fight back?** Not by playing Cover 2 harder, but by changing what the
+corner and safety do when they see this route combination.
+
+- **Teach the corner to sink further.** Many Cover 2 coaches tell the corner that when the outside
+  receiver runs a short route and the inside receiver goes vertical, he should keep sinking under
+  the vertical instead of jumping the hitch: give up the 6-yard hitch, which the curl-hook
+  defender can rally to, and take away the 18-yard corner route.
+- **Widen the safety.** A safety who aligns wider, or who reads the inside receiver's release and
+  goes straight to the corner route, gets there sooner, at the cost of the seam and the deep middle.
+- **Change the coverage to that side.** Against a team that loves smash, a defense can play Cover 2
+  to one side and quarters to the other (Cover 6), or trap the corner route with a corner who bails
+  and a safety who drives on the hitch (Palms). Both are in
+  [Quarters and the Two-High Match Family](06-05-quarters-and-match.qmd). Or it can play 2-Man,
+  where the corner ignores the zones and follows his man, and the corner route runs into a trailing
+  slot defender and a safety over the top.
+
+Smash also tells you something about the chess of play-calling. Smash is a great call against Cover
+2 and a mediocre one against Cover 3, whose corners drop deep into the corner route's path. Which
+is why defenses that play a lot of Cover 2 try hard to make it look like something else before the
+snap ([Disguise, Rotation, and Split-Field Coverage](06-06-disguise-rotation-and-split-field.qmd)), and
+why [What Beats What](../08-the-chess-match/08-01-concepts-versus-coverages.qmd) puts smash versus
+Cover 2 in the first row of its matrix.
+
+## Tampa 2: the Mike takes the middle
+
+Go back to hole ③, the deep middle. Cover 2 has nobody there, and offenses learned to send a
+receiver straight up it: a tight end, a slot receiver, a running back out of the backfield. The
+Mike, sitting in the hole at 10 to 12 yards, watches him run past. Each safety is busy with his own
+half. The ball goes over the Mike and between the safeties.
+
+**[Tampa 2](../../appendices/glossary.qmd#gl-tampa-2)** answers that with one change. At the
+snap, if it's a pass, the Mike doesn't stop at 10 yards. He turns and runs straight down the
+middle of the field, to 15 or 20 yards, getting depth until something stops him, and he carries any
+receiver who runs up the seam in front of him. Coaches call his landing spot the "pipe" or the "middle
+of the field": the space between the two deep safeties. Everything else is Cover 2: two safeties on
+the deep halves, squat corners in the flats, two outside linebackers (or a linebacker and the
+nickel) in the curl-hook zones.
+
+```{python}
+#| label: fig-tampa2
+#| fig-cap: "Tampa 2 against a seam, simulated. Snap: a Cover 2 picture, Mike (M, ringed) 4.5 yards off the ball. +1.0 s: it's a pass, so he turns and runs straight down the middle. The corners have jammed X and Z and sunk; the safeties are widening over them. +2.0 s: Y, the slot receiver, has bent his seam toward the middle, the throw Cover 2 hates, and runs into the Mike, now about 15 yards deep and still running, with the strong safety over the top. +3.0 s: nothing is open deep, so the quarterback checks the ball down to the running back in the left flat, and the left corner, waiting there, makes the tackle. Five defenders underneath, three deep after the first second: that is the Tampa 2 bargain."
+def tampa_play():
+    off = offense("gun_2x2")
+    p = Play(off, c2_shell(off), los=40, to_go=10)
+    protect(p)
+    p.dropback(2.5)
+    p.route("X", r.go(19)); p.route("Z", r.go(19))
+    p.route("Y", r.path((10.0, 0.0), (20.0, -4.5)))
+    p.route("H", r.curl(11.0))
+    p.route("RB", r.path((0.6, 3.0), (1.8, 9.5)), side=-1)
+    p.pass_to("RB", t=2.55)
+    # Mike: open and run the middle, carrying the seam
+    p.path("MIKE", [(9.0, 1.2), (16.0, 3.2), (19.0, 3.8)], absolute=True, speed=5.9, delay=0.15)
+    # corners: collision, sink under the outside receivers; the left corner comes up on the flat throw
+    p.drop("LCB", (6.0, -15.8), speed=1.3)
+    p.drop("LCB", (9.5, -16.8), speed=2.8)
+    p.path("LCB", [(2.4, -13.6)], absolute=True, speed=5.5, delay=0.15)
+    p.drop("RCB", (6.0, 15.8), speed=1.3)
+    p.drop("RCB", (9.5, 16.8), speed=2.8)
+    # safeties widen over the outside verticals; underneath droppers to the curl-hook zones
+    p.drop("FS", (22.5, -14.5), speed=4.8); p.drop("SS", (22.5, 14.0), speed=4.8)
+    p.drop("WILL", (9.5, -10.0)); p.drop("NB", (9.5, 10.0))
+    p.highlight("MIKE")
+    return p
+
+
+tampa = tampa_play()
+TAMPA_T = [0.0, 1.0, 2.0, 3.3]
+if PDF:
+    strip(tampa, TAMPA_T, ["Snap · it looks like Cover 2", "+1.0 s · the Mike turns and runs",
+                           "+2.0 s · the seam runs into him", "+3.3 s · checkdown; the corner rallies"],
+          window=(-8.5, 25.5),
+          notes_at={2: [("Mike carries\nthe seam", (16.0, -4.5))]})
+    plt.show()
+else:
+    show_animation(tampa, times=TAMPA_T)
+```
+
+Look at the third panel and count the deep defenders: two safeties and the Mike. A coverage that
+started as two-high has become, by the time the seam gets to 15 yards, a three-deep coverage. The
+safeties are free to play wider, because the middle is covered, which also shrinks the hole
+along the sideline. And it happened without moving a safety, and without giving up a fifth
+underneath defender until the Mike is already past the short routes.
+
+What does it give up? The Mike's departure opens a new hole of its own: the middle of the field
+at about 10 to 15 yards, *in front of* the running Mike and *behind* the curl-hook defenders. A dig
+or a curl by the inside receiver, timed to sit down where the Mike was, is the classic Tampa 2
+answer. The Mike also has to make a decision on every snap: run, or stop because it's a run play,
+a screen, or a draw. A Mike who runs on a draw has left the middle of the field to the ball carrier.
+
+::: {.callout-important title="Why it exists: Tampa 2"}
+**What it solves.** Cover 2's worst hole, the deep middle, without giving up Cover 2's best
+feature, five defenders underneath, and without a second safety in the box. It also turns a
+two-high picture into a three-deep coverage after the snap, so the quarterback who saw "middle of
+the field open" and decided to throw the seam finds it closed.
+
+**What it gives up.** The intermediate middle behind the curl-hook defenders, and a lot of the
+Mike. He has to read run or pass instantly, then run 15 to 20 yards with a tight end or a slot
+receiver: a linebacker's job and a safety's job in one body. And because the whole defense rushes
+only four and drops seven, it depends on a four-man pass rush that wins without help.
+:::
+
+### Why it existed: a defense for fast, smart, ordinary-sized players
+
+The coverage didn't come first. The players and the philosophy did.
+
+Its roots are in Pittsburgh. Bud Carson, the Steelers' defensive backs coach from 1972 and their
+defensive coordinator from 1973 to 1977, had started building a two-deep zone at Georgia Tech, and
+in Pittsburgh he refined it into the coverage behind the "Steel Curtain." Its signature was a middle
+linebacker who dropped into coverage: when the Steelers got Jack Lambert, a rangy, fast middle
+linebacker, in 1974, Carson could ask him to run deep down the middle. The 1976 Steelers allowed
+28 points in total during a nine-game winning streak at the end of the season.[^carson] One of the
+safeties on the 1977 and 1978 Steelers was an undrafted rookie from Minnesota named Tony Dungy, who
+stayed in Pittsburgh as an assistant from 1981 to 1988, the last five years as defensive
+coordinator.[^dungy] Years later he described his whole approach in one sentence: "My philosophy is
+really out of the 1975 Pittsburgh Steelers playbook."[^tampa2wiki]
+
+When Dungy became the Tampa Bay Buccaneers' head coach in 1996, he brought that playbook and a
+defensive coordinator, Monte Kiffin, who had been on Dennis Green's Minnesota Vikings staff with
+him in the early 1990s. Kiffin coordinated Tampa Bay's defense for thirteen seasons, 1996 to 2008,
+and the two of them turned the old Steelers idea into an identity, so tightly linked to the
+franchise that the coverage took the city's name.[^kiffin]
+
+Their version was built on a few stubborn ideas:
+
+- **Simplicity.** A small number of calls, practised until every player could play them without
+  thinking. Players who aren't thinking play fast.
+- **Speed over size.** Lighter, faster players at every level: an undersized, quick
+  [3-technique](../../appendices/glossary.qmd#gl-3-technique) defensive tackle (Warren Sapp) who
+  penetrated rather than held his ground, linebackers who could run like safeties, and a
+  [4-3](../../appendices/glossary.qmd#gl-4-3) front in which every lineman attacked one gap
+  ([Even Fronts](../05-defensive-fronts-and-run-defense/05-02-even-fronts.qmd)).
+- **Four rushers, seven in coverage.** No exotic blitzes. The four-man rush was expected to get
+  home on its own, which is why the scheme prized pass-rushing linemen.
+- **Everything in front, then tackle.** Spot-drop zones, every underneath defender's eyes on the
+  quarterback, and a sprint to the ball the moment it's thrown. Let the offense complete short
+  passes, tackle immediately, and wait: a 12-play drive has a dozen chances for a penalty, a sack,
+  a dropped pass or a turnover.
+
+The Mike's deep drop fits all four. It needs a fast linebacker rather than an extra safety,
+it uses no extra rusher, and it removes the one throw that turns a long drive into a short one.
+
+::: {.callout-note title="Madden vs. real life"}
+In a video game you can call Tampa 2 with any eleven players and the Mike will run his drop. On a
+real field the coverage is only as good as the man running down the middle. Tampa 2 Mikes have to
+diagnose run or pass in a step, then turn and run 15 to 20 yards with a receiver while reading
+the quarterback. The players who made it famous were unusual athletes: Chicago's Brian Urlacher,
+for example, had played a hybrid linebacker-safety position in college at New Mexico.[^urlacher]
+A Tampa 2 with an ordinary middle linebacker is a Cover 2 with an extra hole.
+:::
+
+## Film room
+
+::: {.callout-note title="Film room: Pittsburgh Steelers 1974–1977 — Bud Carson's two-deep zone"}
+The Steelers won Super Bowls IX and X (the 1974 and 1975 seasons) with a defense that could play a
+two-deep zone with squeezing, physical corners and a middle linebacker who dropped into coverage.
+Jack Lambert, a rookie in 1974, was the prototype of the coverage linebacker; Mel Blount, the
+cornerback whose physical style later produced the 1978 contact rule, was the prototype of the
+corner who controlled a receiver's release. In 1976 the defense was at its peak: during a
+nine-game winning streak to finish the season it allowed 28 points in total.
+
+**What to notice** (on NFL Films footage of the era): the corners' alignment, tight and outside,
+and how often the middle linebacker turns and runs down the middle of the field on passing plays.
+The defense is two-deep before the snap and has a third player deep a second later. Twenty years
+before it had a name, that is Tampa 2.
+:::
+
+::: {.callout-note title="Film room: Tampa Bay Buccaneers 2002 — the scheme at its peak"}
+The 2002 Buccaneers were coached by Jon Gruden, who replaced the fired Dungy before the season, but
+the defense was still Kiffin's and still Dungy's design. It led the NFL in fewest points allowed
+(196, 12.3 a game) and fewest yards allowed, and opponents had a 48.4 passer rating against it.
+Derrick Brooks, the weak-side linebacker, was the AP Defensive Player of the Year and returned three
+interceptions for touchdowns in the regular season.[^bucs2002] In Super Bowl XXXVII, on January 26,
+2003, Tampa Bay beat an Oakland offense led by the league MVP, Rich Gannon, 48–21. Gannon threw five
+interceptions, a Super Bowl record; three were returned for touchdowns (two by Dwight Smith, one by
+Brooks), and safety Dexter Jackson, with two interceptions, was the game's MVP.[^sb37] (One footnote
+to the footnote: Gruden had coached Oakland until the year before, and the Raiders had not changed
+the audible signals he installed, so the Bucs often knew what was coming.)
+
+**What to notice:** every underneath defender's head. At the snap they turn to the quarterback, not
+to a receiver, and the instant he throws, all of them break toward the ball. Watch Brooks: he plays
+the curl-hook zone on his side and arrives at the ball at the same moment as the receiver. And
+watch the Mike (Shelton Quarles that year) run down the middle on passing downs, so that the seam
+throw the Raiders wanted was never there. Four of Tampa Bay's starters from that defense, Sapp,
+Brooks, safety John Lynch and cornerback Ronde Barber, are in the Pro Football Hall of Fame.
+:::
+
+::: {.callout-note title="Film room: Colts and Bears, 2006 season — one family, two head coaches, one Super Bowl"}
+Super Bowl XLI, February 4, 2007, in the rain in Miami, was a Tampa 2 family reunion. Indianapolis
+was coached by Dungy, who had built the same defense there after Tampa Bay; Chicago by Lovie Smith,
+Dungy's linebackers coach in Tampa from 1996 to 2000. They were the first two Black head coaches to
+reach a Super Bowl, and Dungy became the first to win one, 29–17.[^sb41]
+
+The two defenses show how far one scheme can stretch. Chicago's, built around Brian Urlacher in the
+middle, was one of the best in the league: the Bears went 13–3, and the year before Urlacher had been
+the Defensive Player of the Year and the defense had allowed the fewest points in the NFL.[^lovie]
+Indianapolis's was small and fast and, in the regular season, the worst run defense in the
+league, allowing 173 rushing yards a game: the light-box cost of a two-deep, four-rush defense, paid
+in full. Then the injured strong safety Bob Sanders came back for the playoffs, and the same defense
+got stingy. In the Super Bowl Sanders forced a fumble and intercepted a pass, and cornerback
+Kelvin Hayden returned an interception 56 yards for a fourth-quarter touchdown.
+
+**What to notice:** in Chicago's defense, Urlacher's depth on passing downs: he routinely ends up 15 or more yards
+deep in the middle of the field. In Indianapolis's, the corners: short, outside, and quick to the
+flat, with Dwight Freeney and Robert Mathis rushing from the ends, so that the four-man rush could do
+its part.
+:::
+
+## 2-Man: two deep, man underneath
+
+Keep the two deep safeties, but change what the five underneath defenders do. Instead of dropping
+to zones, each one takes a receiver, man-to-man. That's
+**[2-Man](../../appendices/glossary.qmd#gl-2-man)**, called **[Cover 5](../../appendices/glossary.qmd#gl-cover-5)**
+in many playbooks (in the old numbering, five underneath players in man plus two deep) and "Cover 2
+Man" in video games and on many broadcasts.
+
+```{python}
+#| label: fig-2man
+#| fig-cap: "2-Man against a 2x2 formation. The safeties play exactly as in Cover 2, a deep half each. Underneath, five defenders play man (dotted lines): the corners on X and Z, the nickel ($) on H, the Will on Y and the Mike on the running back. The man defenders line up on the receiver's inside shoulder (inside leverage), because the safety over the top has everything deep and outside; their job is to take away anything short and inside and to trail anything deep. Four rush."
+off = offense("gun_2x2")
+mv = {"LCB": (1.2, -14.0), "RCB": (1.2, 14.0), "NB": (1.5, -8.2), "WILL": (4.5, 7.8), "MIKE": (4.5, -0.8)}
+dfn = [p.moved(d=mv[p.key][0], w=mv[p.key][1]) if p.key in mv else p for p in c2_shell(off)]
+m2 = Play(off, dfn, los=35, to_go=8)
+protect(m2)
+for k, t in (("LCB", "X"), ("RCB", "Z"), ("NB", "H"), ("WILL", "Y"), ("MIKE", "RB")):
+    m2.man(k, t)
+m2.drop("FS", (18.5, -12.0)); m2.drop("SS", (18.5, 12.0))
+m2.zone((24.0, -13.3), (13.0, 25.5), "deep ½")
+m2.zone((24.0, 13.3), (13.0, 25.5), "deep ½")
+m2.highlight("LCB", "RCB", "NB", "WILL", "MIKE")
+fld = m2.draw(lateral="full", window=(-8, 32))
+no_numbers(fld.ax)
+ruler(fld, m2, widths=True)
+pointer(fld, m2, "inside shade:\ntake away the inside,\nhelp is over the top", (10.5, -16.5), (1.2, -14.0), fs=7)
+say(fld, m2, "man underneath, trail technique", (10.5, 3.5), fs=7)
+plt.show()
+```
+
+The logic of 2-Man is a cleaner, more aggressive version of the logic of Cover 2. Each man
+defender knows that anything deep belongs to the safety over the top, so he can play underneath and
+inside his receiver, in [trail technique](../../appendices/glossary.qmd#gl-trail-technique): a step
+behind him, on his hip, ready to undercut any route that breaks inside or stops short. The
+receiver's only open space is deep, and deep is where the safety is waiting. In effect every
+outside receiver is in a [bracket](../../appendices/glossary.qmd#gl-bracket): the man defender
+underneath, the safety on top.
+
+**When it's called.** 2-Man is a long-yardage and end-of-half coverage. On third-and-8, the
+offense has to throw past the line to gain, and zone coverage's habit of conceding the short
+completion and tackling isn't enough: the receiver at 8 yards has to be *covered*, not tackled after
+the catch. 2-Man contests every short and medium throw with a defender on the receiver's hip and
+still keeps two players deep, so the offense can't throw over the top. The charting data show it:
+
+```{python}
+#| label: fig-c2-when
+#| fig-cap: "When NFL defenses call Cover 2 and 2-Man, by down and distance (share of charted regular-season dropbacks). Left, Cover 2 (zone): fairly steady on early downs and third-and-long, least common on third-and-short, where the offense needs only a yard or two and squat corners and deep safeties are the wrong tools. Right, 2-Man: rare on early downs and peaking on third-and-7 or more, where the defense must cover the receivers at the sticks and keep two safeties deep. The charting source changed after 2022 and FTN labels both coverages more often than Next Gen Stats did, so compare the shapes, not the levels."
+dd_order = ["1st", "2nd", "3rd/4th & 1–2", "3rd/4th & 3–6", "3rd/4th & 7–10", "3rd/4th & 11+"]
+ticks = ["1st", "2nd", "3rd/4th\n& 1–2", "& 3–6", "& 7–10", "& 11+"]
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.1))
+xs = np.arange(len(dd_order))
+for ax, col, title, top in ((axes[0], "c2", "Cover 2", 30), (axes[1], "m2", "2-Man (Cover 5)", 12)):
+    tab = (CV.groupby(["dd", "era"])[col].mean() * 100).unstack().reindex(dd_order)
+    for i, e in enumerate(ERAS):
+        ax.plot(xs, tab[e].values, marker="o", ms=4.5, lw=1.8, color=style.SERIES[i], label=e)
+    ax.set_xticks(xs)
+    ax.set_xticklabels(ticks, fontsize=7)
+    ax.set_ylim(0, top)
+    ax.set_title(title, fontsize=9)
+    ax.set_ylabel("% of charted dropbacks", fontsize=7.5)
+    ax.tick_params(labelsize=7)
+axes[1].legend(fontsize=6.8, loc="upper left", frameon=False)
+fig.tight_layout(w_pad=1.5)
+plt.show()
+```
+
+In both charting eras, 2-Man is called on third-and-7 to 10 far more often than on first
+down (about 6 percent of charted dropbacks against about 1 in the Next Gen Stats seasons, and about
+10 against 5 in the FTN seasons), and it rises again in the last two minutes of a half, when the
+offense has to move quickly and the defense can't afford a long completion.[^when] It remains a
+specialist's call: a few percent of all dropbacks. Cover 2 itself is a far bigger part of the
+menu, roughly one dropback in seven in the Next Gen Stats charting (13.9 percent in 2025 by Next
+Gen Stats' own count), and it is least common on third-and-short, where an offense that needs two
+yards would love to face a defense with corners in the flats and two safeties 13 yards away.[^ngs]
+
+**What 2-Man gives up.** Everything man coverage gives up, plus the things two-deep gives up.
+
+- **The quarterback's legs.** Five defenders have their backs turned to the quarterback, chasing
+  receivers, and only four are rushing. If the pocket opens, there is nobody watching the
+  quarterback, and a scramble up the middle can go for 15 yards. 2-Man against a running
+  quarterback is a risk every coordinator weighs.
+- **The man-beaters.** [Rub routes](../../appendices/glossary.qmd#gl-rub-route) and crossing routes
+  like [mesh](../../appendices/glossary.qmd#gl-mesh) make trailing defenders run through traffic,
+  and routes that break *outside* (an out, a corner, a fade) go away from the defenders' inside
+  leverage ([Man Coverage](06-02-man-coverage.qmd) has the list).
+- **The run.** Two safeties deep and five defenders turned to their men: a draw on third-and-8 is a
+  classic call against it.
+
+**Telling Cover 2 from 2-Man.** Before the snap they can look identical, and good defenses make
+sure they do. After the snap, watch the corners and the underneath defenders in the first second.
+Cover 2 corners jam, then *sit*, facing the quarterback, while the outside receiver runs past.
+2-Man corners turn and *run* with the receiver, on his inside hip, with their backs half-turned to
+the quarterback. If the corner is still with the wide receiver 12 yards downfield, it's 2-Man.
+
+## Why classic Tampa 2 faded, and what survived
+
+In 2005 the Buccaneers had the NFL's best total defense and the Bears the second-best.[^spread]
+By 2006 a long list of teams (Buffalo, Minnesota, Kansas City, Detroit and others) had imported the
+system, often by hiring coaches from Dungy's and Kiffin's staffs. A decade later almost none
+of them played it as a base defense. What happened?
+
+**The rules leaned against it.** The coverage depended on squeezing receivers' releases and on
+underneath defenders who could disrupt routes as they crossed their zones. After the 2003 AFC
+Championship Game, in which New England's physical defensive backs (Ty Law above all) took apart
+Peyton Manning's Colts, the league made downfield contact past 5 yards a point of emphasis for the
+2004 season, and the flags for illegal contact more than doubled, from 79 in 2003 to 191 in 2004.[^tylaw] Physical zone coverage became
+expensive. (There's an irony in it: the Colts' complaints drove the change, and Dungy was the Colts'
+head coach.) [Dynasties and Counterpunches](../11-history/11-04-dynasties-and-counterpunches.qmd)
+tells the story of that rule and the passing boom that followed.
+
+**Offenses learned to live in the seam.** A Tampa 2 Mike carrying a tight end up the middle was a
+fair fight in 1999. Against a 6-foot-6 tight end who ran like a receiver, or a slot receiver
+lined up as the inside man in a trips formation, it wasn't. Offenses also learned to attack the
+hole the Mike vacates, with digs and curls that sit down 12 to 15 yards deep in front of him, and
+to flood the sideline holes the squat corners leave. Peyton Manning, who practised against Dungy's
+Tampa 2 every day in Indianapolis, became one of the best at taking it apart (that, too, is in
+[Dynasties and Counterpunches](../11-history/11-04-dynasties-and-counterpunches.qmd)).
+
+**The Mikes were rare.** A middle linebacker who can stop the run between the tackles and also
+run 20 yards with a receiver is one of the rarest athletes in the sport. Teams that copied the
+scheme without one found out quickly what Cover 2 without a deep middle defender looks like.
+
+**Light boxes met better run games.** A two-deep, four-rush defense lives with six or seven
+defenders near the line. That was survivable when offenses lined up in two-back formations and ran
+into the teeth of it; it was less survivable against spread formations that thinned the box further
+and against run games designed to exploit it.
+
+**Then the league went one-high, and then two-high again, but differently.** Through the early
+2010s the fashionable answer to everything was Pete Carroll's Seattle Cover 3, a single-high
+defense with press corners and an eighth defender near the line
+([The Cover 3 Family](06-03-cover-3-family.qmd)). (Gus Bradley, Seattle's defensive coordinator from 2009 to 2012,
+had coached linebackers under Kiffin in Tampa.) When two-high defense came back after 2018, it
+came back as **quarters and match coverage**: two safeties who read the receivers in front of them
+and fit the run, not two safeties guarding halves while the Mike runs the middle
+([Quarters and the Two-High Match Family](06-05-quarters-and-match.qmd)).
+
+### What survived
+
+A great deal, just not under its old name.
+
+- **Cover 2 itself.** It never left. Next Gen Stats counted 13.9 percent of 2025 dropbacks as Cover
+  2 (the source is in the note on 2-Man's situations), and the FTN charting in nflverse labels even
+  more; it remains a standard call on long yardage, at the end of halves, and as a change-up for
+  defenses whose base is something else.
+- **The Mike who carries the seam.** "The middle defender carries #3 vertical" is now a rule in
+  Cover 3 match and quarters, the descendants of spot-drop zone. Any time you see a linebacker turn
+  and run with a tight end up the middle of the field in a modern zone, that's the Tampa 2 Mike's
+  job inside a newer coverage ([Cover 3 match](../../appendices/glossary.qmd#gl-cover-3-match)).
+- **Two-high pictures that become three-deep.** The Tampa 2's real trick was showing two deep
+  safeties and playing with three deep defenders after the snap. Modern defenses do the same thing
+  by rotating a safety instead of running the Mike, and that is the whole subject of
+  [Disguise, Rotation, and Split-Field Coverage](06-06-disguise-rotation-and-split-field.qmd).
+- **Cover 2 as half a coverage.** Cover 6 plays quarters to one side and Cover 2 to the other,
+  squat corner and all; split-field defenses use the Cover 2 half to the short side of the field
+  or against a formation's lone receiver ([Quarters and the Two-High Match Family](06-05-quarters-and-match.qmd)).
+- **2-Man on third down,** as the chart above shows.
+- **The people.** The Tampa staffs of 1996–2008 seeded a generation of NFL coaches. Lovie Smith and
+  Rod Marinelli took the system to Chicago and Detroit; Mike Tomlin, Tampa Bay's defensive backs
+  coach from 2001 to 2005, and Raheem Morris, who worked his way up the same secondary, became head
+  coaches.[^tree] The approach (simple calls, fast players, eyes on the quarterback, rally to the ball)
+  outlived the coverage. Matt Eberflus, Dallas's linebackers coach while Marinelli ran its defense, carried a
+  Cover 2-heavy defense to Indianapolis as coordinator (2018–2021) and Chicago as head coach
+  (2022–2024): by the charting in nflverse, his 2018 Colts played Cover 2 on the second-highest share
+  of dropbacks in the league and his 2023 Bears on the third-highest.[^eberflus]
+
+::: {.callout-tip title="Watch for it on Sunday: the squat-corner spotter"}
+On every passing down for one quarter, look at the cornerbacks first.
+
+- **Before the snap.** Corners 5 to 7 yards off, a step *outside* the wide receiver, flat-footed,
+  shoulders turned in toward the ball? Two safeties deep (12 to 14 yards) and wide (outside the
+  hashes)? Think **Cover 2**. Corners on the receiver's inside shoulder, eyes locked on him? Think
+  **2-Man**. Corners 7 or 8 off and ready to backpedal? Probably not Cover 2.
+- **At the snap.** Does the corner punch the receiver and then *stop*, sitting in the flat while the
+  receiver runs past? Cover 2. Does he turn and run with him? 2-Man (or a disguise into something
+  else).
+- **One second later.** Find the Mike. Did he stop at 10 yards, eyes on the quarterback? Cover 2.
+  Is he still running straight down the middle at 15? **Tampa 2.**
+- **When the ball is thrown.** Where did it go? A sideline throw between the corner and the safety,
+  or a seam between the safeties, is the offense attacking exactly the holes this chapter mapped.
+  A completed 6-yard out on third-and-12, followed by an immediate tackle, is the coverage winning.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: corners on the doorstep"}
+```{python}
+#| label: fig-predict-squat
+#| fig-cap: "First-and-10 at midfield, ball in the middle of the field. The cornerbacks and safeties are ringed. Use the depth numbers on the left and the hash marks along the bottom."
+off = offense("gun_2x2")
+pr1 = Play(off, c2_shell(off, corner_d=5.0, safety_d=13.5, safety_w=10.0), los=60, to_go=10)
+pr1.highlight("LCB", "RCB", "FS", "SS")
+fld = pr1.draw(lateral="full", window=(-7.5, 17.5))
+no_numbers(fld.ax)
+ruler(fld, pr1, widths=True)
+plt.show()
+```
+
+**What coverage is the defense showing, and if it plays what it shows, what two-receiver
+combination on one side would you call, and why?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**It shows Cover 2.** The tells: both corners are 5 yards off, a step *outside* their receivers
+(outside leverage), not pressed and not 8 yards deep; both safeties are 13.5 yards deep and 10
+yards from the middle, between the hash and the numbers, where a deep-half player stands. That
+combination says the corners have the flats and the safeties have halves.
+
+**The call: smash, or a fade with a seam inside it.** Both attack the strip along the sideline
+between a squatting corner and a deep-half safety. Smash (outside hitch, inside corner route) puts
+the corner in a high-low bind; the quarterback reads only him. A go route by the outside receiver
+with a seam by the slot puts the *safety* in a two-on-one: he can't be over both. Either one works
+to the side the quarterback prefers; many offenses run the same concept to both sides and pick
+after the snap.
+
+**The catch:** confirm it after the snap. If the corners turn and run with the receivers, it's
+2-Man (and the corner route runs into a trailing defender with a safety on top). If one safety
+races to the middle, it was a disguise ([Disguise, Rotation, and Split-Field Coverage](06-06-disguise-rotation-and-split-field.qmd)).
+If the Mike runs down the middle, the seam is gone but the sideline holes are still there.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: the tight end up the middle"}
+```{python}
+#| label: fig-predict-trips
+#| fig-cap: "Second-and-7. Trips to the offense's right: Z (#1), H (#2) and the tight end Y (#3), in-line. The defense shows a two-high shell with squat corners. On this play Y will run straight up the middle of the field. The Mike (M) and Y are ringed."
+off = offense("gun_trips")
+dfn = c2_shell(off, corner_d=5.5)
+mv = {"NB": (5.0, 9.5), "MIKE": (4.5, 2.0), "WILL": (4.5, -3.0)}
+dfn = [p.moved(d=mv[p.key][0], w=mv[p.key][1]) if p.key in mv else p for p in dfn]
+pr2 = Play(off, dfn, los=40, to_go=7)
+pr2.route("Y", r.path((12.0, -3.5), (22.0, -4.0)))
+pr2.highlight("MIKE", "Y")
+fld = pr2.draw(lateral="full", window=(-7.5, 24))
+no_numbers(fld.ax)
+ruler(fld, pr2, widths=True)
+plt.show()
+```
+
+**If this is plain Cover 2, who covers Y, and what happens? If it's Tampa 2? And which version
+would the offense rather face with this formation?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**In plain Cover 2, almost nobody.** The Mike drops to the hole at 10 to 12 yards and watches Y run
+past him. The safety on the trips side has three receivers in his half, and the outside two are
+running routes he can't ignore; the far safety is guarding the left half and X. Y ends up in the
+deep middle, between the two safeties, which is hole ③. This is the classic way to attack Cover 2
+from trips: put the third receiver up the middle.
+
+**In Tampa 2, the Mike turns and runs with Y.** That's exactly the throw the coverage was built to
+take away: the Mike carries the seam and the safeties stay wide. The offense's question then
+becomes *who* is running up the middle. A big, slow tight end against a fast linebacker is a fair
+fight. A fast tight end, or a slot receiver moved into the #3 spot, against a linebacker 15 yards
+downfield is a mismatch, which is how offenses beat Tampa 2 in its later years.
+
+**The offense would rather face plain Cover 2,** but even against Tampa 2 it has an answer: Y's seam
+pulls the Mike deep, so a dig or curl by H settling down at 12 to 14 yards in the space the Mike just
+left is open underneath him. Either way the formation has done its job: it has put the middle
+defender on a receiver, alone.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: third-and-8, two-high, corners tight"}
+```{python}
+#| label: fig-predict-2man
+#| fig-cap: "Third-and-8. Two safeties deep. The corners are pressed, on the receivers' inside shoulders; the nickel ($) is tight on H and the Will (W) is over the tight end Y. The ringed defenders are looking at the receivers, not at the quarterback. The quarterback is a good runner."
+off = offense("gun_2x2")
+mv = {"LCB": (1.2, -14.0), "RCB": (1.2, 14.0), "NB": (1.5, -8.2), "WILL": (4.0, 8.0), "MIKE": (4.5, -0.8)}
+dfn = [p.moved(d=mv[p.key][0], w=mv[p.key][1]) if p.key in mv else p for p in c2_shell(off, safety_d=13.5)]
+pr3 = Play(off, dfn, los=45, to_go=8)
+pr3.highlight("LCB", "RCB", "NB", "WILL")
+fld = pr3.draw(lateral="full", window=(-7.5, 17.5))
+no_numbers(fld.ax)
+ruler(fld, pr3, widths=True)
+plt.show()
+```
+
+**What coverage is most likely, and name two ways the offense can beat it that would not work as
+well against Cover 2.**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Most likely 2-Man.** Two deep safeties plus man-coverage technique underneath: pressed corners,
+eyes on the receivers, *inside* leverage (the defenders are taking away the inside because the
+safeties are over the top). It's also the situation for it: third-and-7 to 10 is where NFL defenses
+call 2-Man most often.
+
+**Two ways to beat it:**
+
+- **The quarterback's legs.** Five defenders will turn and run with receivers, backs to the ball,
+  and only four will rush. If a lane opens, a scramble up the middle can easily cover 8 yards. Against
+  Cover 2, the underneath zone defenders are facing the quarterback and would come up to tackle him.
+- **Man-beaters that break away from the leverage.** A rub (one receiver's route crossing in front
+  of a teammate's defender), mesh, or out-breaking routes such as an out or a corner, all of which go
+  away from the defenders' inside shoulders. A 9-yard out against a corner who is trailing on the
+  inside is open; against a Cover 2 corner sitting in the flat, the same route runs into him.
+
+Throwing deep is the one thing *not* to do: two safeties are waiting there with nothing else to
+cover.
+:::
+:::
+
+## Takeaways
+
+- **Cover 2 is two deep and five under.** The safeties each guard a deep half; the corners guard
+  the flats; three linebackers (or two and a nickel) guard the curl-hook zones and the hole. It
+  takes away the short throws and everything over the top, and it costs a defender in the box.
+- **The hard (squat) corner is the tell.** Five to seven yards off, outside leverage, eyes inside;
+  at the snap he jams, sinks and sits in the flat. When you see two of them with two deep safeties,
+  think Cover 2 (and check for 2-Man after the snap).
+- **Cover 2's thin spots are known by heart:** the hole shot along the sideline, the smash corner
+  over the squat corner, the deep middle between the safeties, and the intermediate sideline hole.
+  Deep passes go to the middle against Cover 2 more often than against any other coverage in the
+  charting data.
+- **Tampa 2 sends the Mike down the middle,** turning two-deep into three-deep after the snap. It
+  closes the deep middle, needs a rare linebacker, opens the intermediate middle, and was the
+  identity of Dungy and Kiffin's Buccaneers, Dungy's Colts and Lovie Smith's Bears.
+- **2-Man keeps the two deep safeties and plays man underneath,** in trail technique with inside
+  leverage. It's a long-yardage and end-of-half call, vulnerable to scrambles, rubs and out-breaking
+  routes.
+- **Classic Tampa 2 faded** (contact rules, seam-stretching offenses, rare Mikes, light boxes, the
+  move to Cover 3 and then to quarters), **but its pieces survive:** Cover 2 as a call, the
+  seam-carrying middle defender, two-high pictures that become three-deep, and a large coaching tree.
+
+## Connections
+
+**Builds on:** [Coverage Fundamentals](06-01-coverage-fundamentals.qmd) (zones, the shell read,
+press and off), [Man Coverage](06-02-man-coverage.qmd) (trail technique and inside help, for
+2-Man), [The Cover 3 Family](06-03-cover-3-family.qmd) (the three-deep alternative, and the cloud
+rotation that borrows the squat corner for one side), and
+[Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd) (smash, flood and four
+verticals, the concepts built to beat this coverage).
+
+**Sets up:** [Quarters and the Two-High Match Family](06-05-quarters-and-match.qmd), the two-high
+coverage that replaced spot-drop Cover 2 as the NFL's two-deep base, and Cover 6, which is half
+Cover 2; [Disguise, Rotation, and Split-Field Coverage](06-06-disguise-rotation-and-split-field.qmd),
+where Cover 2 is reached by rotating from a one-high picture; [Zone Blitzes, Fire Zones, and Simulated
+Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd); [What Beats
+What](../08-the-chess-match/08-01-concepts-versus-coverages.qmd), which recaps smash versus Cover 2 in
+its concept-by-coverage matrix; [Third Down](../10-situational-football/10-02-third-down.qmd) and
+[Clock and Game Management](../10-situational-football/10-04-clock-and-game-management.qmd), where
+2-Man lives; and the history in [From the Single Wing to the 1970s Scoring
+Drought](../11-history/11-01-single-wing-to-scoring-drought.qmd) (Carson's Steelers) and
+[Dynasties and Counterpunches](../11-history/11-04-dynasties-and-counterpunches.qmd) (the Tampa 2
+dynasty and how Manning and the seam-running tight ends beat it). The
+[Coverage and Pressure Atlas](../../appendices/appendix-d-coverage-pressure-atlas.qmd) has one-page
+cards for Cover 2, Tampa 2 and 2-Man, and a dialect table (Cover 5, Cover 2 Man, 2-Man).
+
+**If you want to go deeper:** Tony Dungy's memoir *Quiet Strength* (2007) for the coach and his
+Steelers education; Chris B. Brown's *The Art of Smart Football* and his Smart Football essays on
+Cover 2 and Tampa 2; Cody Alexander's MatchQuarters newsletter and his book *Match Quarters* for how
+two-high coverage evolved after Cover 2; and NFL Films' footage of the 1976 Steelers and the 2002
+Buccaneers, where you can watch the Mike run down the middle long before broadcasts showed you the
+All-22.
+
+[^blount]: NFL rule history as summarised in "1974 NFL season," Wikipedia: https://en.wikipedia.org/wiki/1974_NFL_season (from 1974 an eligible receiver could be contacted only once after he was 3 yards past the line of scrimmage, the "Isaac Curtis rule") and "1978 NFL season," Wikipedia: https://en.wikipedia.org/wiki/1978_NFL_season (contact allowed only within 5 yards of the line of scrimmage); Christopher L. Gasper, "How wide receivers have evolved in the NFL," Boston Globe (Sept. 4, 2013): https://www.bostonglobe.com/sports/2013/09/04/how-wide-receivers-have-evolved-nfl/akAnTGNJaS7OrVnjAbbN6J/story.html (the 1974 "Isaac Curtis rule"; from 1977, "if a defender jammed a receiver inside the 3-yard zone, he could not contact him again"; from 1978, contact "permitted only within 5 yards of the line of scrimmage"). "Mel Blount explains play that created Mel Blount rule," Steelers Depot (Feb. 2024): https://steelersdepot.com/2024/02/mel-blount-explains-play-that-created-mel-blount-rule . Blount's height and the rule's nickname: https://en.wikipedia.org/wiki/Mel_Blount . Some accounts tie the nickname to the 1977 change; the 1978 five-yard rule is the one usually meant.
+
+[^contact]: NFL Rulebook, Rule 8, Section 4 ("Legal and Illegal Contact With Eligible Receivers"), https://operations.nfl.com/the-rules/nfl-rulebook/ : within 5 yards of the line a defender may chuck a receiver in front of him; beyond 5 yards, while the passer is still in the pocket with the ball, contact that impedes the receiver is illegal contact (5 yards and an automatic first down).
+
+[^deepmid]: This book's calculation from nflverse play-by-play joined to `load_participation()` coverage labels: regular-season dropbacks 2018–2025 with a charted coverage (BLOWN, COMBO and PREVENT excluded), pass attempts with `air_yards` of 15 or more and a recorded `pass_location`. Share thrown to the middle, NGS seasons (2018–2022) / FTN seasons (2023–2025): Cover 1 10.9% / 11.2%; Cover 3 20.2% / 21.8%; quarters 27.8% / 28.0%; Cover 2 36.3% / 29.4% (n = 2,121 and 1,739 deep passes against Cover 2). EPA per deep pass to the middle against Cover 2: +0.65 / +0.75; against Cover 3: +0.61 / +0.55. Coverage labels come from two charting sources with different rules (NGS through 2022, FTN from 2023); none exist for 2016–2017. Reproduce with the code behind the figure.
+
+[^carson]: "Bud Carson," Wikipedia: https://en.wikipedia.org/wiki/Bud_Carson (Steelers defensive backs coach 1972, defensive coordinator 1973–1977; began developing Cover 2 at Georgia Tech); "1976 Pittsburgh Steelers season," Wikipedia: https://en.wikipedia.org/wiki/1976_Pittsburgh_Steelers_season (138 points allowed all season; 28 in a nine-game winning streak that included five shutouts). Jack Lambert was a 1974 draft pick and that year's Defensive Rookie of the Year: https://en.wikipedia.org/wiki/Jack_Lambert_(American_football) . On Carson moving the middle linebacker into coverage and Lambert's role, see "Tampa 2," Wikipedia: https://en.wikipedia.org/wiki/Tampa_2 .
+
+[^dungy]: "Tony Dungy," Wikipedia: https://en.wikipedia.org/wiki/Tony_Dungy (Steelers safety 1977–1978; Steelers defensive backs coach 1981–1983 and defensive coordinator 1984–1988; Chiefs 1989–1991; Vikings defensive coordinator 1992–1995; Buccaneers head coach 1996–2001; Colts head coach 2002–2008; Hall of Fame 2016).
+
+[^tampa2wiki]: "Tampa 2," Wikipedia: https://en.wikipedia.org/wiki/Tampa_2 (Dungy: "My philosophy is really out of the 1975 Pittsburgh Steelers playbook"; Carson "introduced the idea of moving the middle linebacker into coverage").
+
+[^spread]: Buccaneers.com, "All the way to the top": https://buccaneers.com/news/all-the-way-to-the-top-2173524 (2005: Tampa Bay first in yards allowed at 277.8 a game, Chicago second at 281.8); "Tampa 2," Wikipedia: https://en.wikipedia.org/wiki/Tampa_2 (the same ranks; by 2006 Buffalo, Minnesota, Kansas City and Detroit had adopted the system).
+
+[^kiffin]: "Monte Kiffin," Wikipedia: https://en.wikipedia.org/wiki/Monte_Kiffin (Buccaneers defensive coordinator 1996–2008; Vikings assistant 1986–1989 and 1991–1994, overlapping Dungy's 1992–1995 tenure there); NBC News, "Monte Kiffin, NFL defensive mastermind and Super Bowl-winning assistant coach, dies at 84" (July 12, 2024): https://www.nbcnews.com/news/sports/monte-kiffin-tampa-2-defense-rcna161508
+
+[^urlacher]: "Brian Urlacher," Wikipedia: https://en.wikipedia.org/wiki/Brian_Urlacher (at New Mexico, Rocky Long used him as a "Lobo-Back," "a cross between a linebacker and free safety"; Bears 2000–2012; Defensive Rookie of the Year 2000, Defensive Player of the Year 2005; Hall of Fame 2018).
+
+[^bucs2002]: "2002 Tampa Bay Buccaneers season," Wikipedia: https://en.wikipedia.org/wiki/2002_Tampa_Bay_Buccaneers_season (196 points allowed, 12.3 per game; the first team since the 1985 Bears to lead the league in total defense, points allowed and interceptions; opponents' passer rating 48.4; Shelton Quarles the starting middle linebacker; Dungy fired in January 2002); "Derrick Brooks," Wikipedia: https://en.wikipedia.org/wiki/Derrick_Brooks (2002 AP Defensive Player of the Year; three interception-return touchdowns and one fumble-return touchdown in the regular season and a 44-yard interception return for a touchdown in Super Bowl XXXVII; Hall of Fame 2014). Hall of Fame classes: Sapp 2013 (Buccaneers.com, "Joining the legends": https://www.buccaneers.com/news/joining-the-legends-warren-sapp-gets-the-call-from-the-hall-9522982 ), Lynch 2021 (https://www.buccaneers.com/news/john-lynch-enters-pro-football-hall-of-fame-class-of-2021 ), Barber 2023 (Sports Illustrated: https://www.si.com/nfl/buccaneers/news/ronde-barber-elected-to-pro-football-hall-of-fame ).
+
+[^sb37]: "Super Bowl XXXVII," Wikipedia: https://en.wikipedia.org/wiki/Super_Bowl_XXXVII (January 26, 2003, Qualcomm Stadium, San Diego; Buccaneers 48, Raiders 21; Gannon, the league MVP, threw a Super Bowl-record five interceptions, three returned for touchdowns, by Dwight Smith (44 and 50 yards) and Derrick Brooks (44); MVP Dexter Jackson, two interceptions; the Raiders "hadn't changed their audible-calling signals" that Gruden had installed, and John Lynch and other Buccaneers recognised Oakland's formations and plays during the game).
+
+[^sb41]: "Super Bowl XLI," Wikipedia: https://en.wikipedia.org/wiki/Super_Bowl_XLI (February 4, 2007, Dolphin Stadium, Miami Gardens; the first Super Bowl played in rain; Colts 29, Bears 17; MVP Peyton Manning; Dungy and Smith the first African American head coaches to reach a Super Bowl; Smith Dungy's linebackers coach in Tampa 1996–2000; the Colts' regular-season run defense last in the league at 173.0 rushing yards a game; Bob Sanders's forced fumble and interception; Kelvin Hayden's 56-yard interception return for a touchdown in the fourth quarter).
+
+[^lovie]: "Lovie Smith," Wikipedia: https://en.wikipedia.org/wiki/Lovie_Smith (Buccaneers linebackers coach 1996–2000; Rams defensive coordinator 2001–2003; Bears head coach 2004–2012; 2005 Bears allowed the fewest points in the league; 2006 Bears 13–3). Urlacher's 2005 award: see the note on Urlacher.
+
+[^tylaw]: Tom E. Curran / NBC Sports Boston, "They called it the 'Ty Law Rule' … and that was OK with him" (Aug. 3, 2019): https://www.nbcsportsboston.com/nfl/new-england-patriots/they-called-it-the-ty-law-rule-and-that-was-ok-with-him/393549/ (Polian's complaints after the January 2004 AFC Championship Game; the 2004 emphasis on downfield contact). The foul counts: Mike Florio, ProFootballTalk, "New point of emphasis results in plenty of flags for illegal contact, defensive holding" (Aug. 8, 2014): https://www.nbcsports.com/nfl/profootballtalk/rumor-mill/news/new-point-of-emphasis-results-in-plenty-of-flags-for-illegal-contact-defensive-holding ("The fouls climbed from 79 in the entire 2003 regular season to 191 in 2004"), repeated as illegal-contact counts in later reports; PFT's wording does not make clear whether defensive holding is included.
+
+[^when]: This book's calculation from the same nflverse data as the deep-pass figure (regular-season dropbacks 2018–2025 with a charted coverage). 2-Man share by situation, NGS seasons / FTN seasons: first down 1.1% / 5.2%; third or fourth and 7–10 yards 6.4% / 9.7%; third or fourth and 11+ 5.1% / 8.1%; in the last two minutes of either half 4.4% / 9.2%, against 1.7% / 5.8% at other times. Cover 2: third or fourth and 1–2 yards 8.0% / 13.8%, first down 13.6% / 20.9%. Season shares of Cover 2 in the nflverse labels: 12.7–14.1% in 2018–2022 (NGS), 16.3%, 21.1% and 23.0% in 2023–2025 (FTN).
+
+[^ngs]: NFL Next Gen Stats via NFL.com, "The coverage that turned the Seahawks into Super Bowl winners and is taking the NFL by storm": https://www.nfl.com/news/the-coverage-that-turned-the-seahawks-into-super-bowl-winners-and-is-taking-the-nfl-by-storm (2025 coverage shares on dropbacks: Cover 4 17.2%, Cover 2 13.9%, Cover 6 9.2%). Next Gen Stats' own 2025 figure is lower than the FTN labels in nflverse (23.0%); the two charters classify coverages differently.
+
+[^tree]: Mike Tomlin: Buccaneers defensive backs coach 2001–2005, https://en.wikipedia.org/wiki/Mike_Tomlin ; Raheem Morris: Buccaneers defensive quality control coach 2002, defensive assistant 2003, assistant defensive backs coach 2004–2005, Kansas State defensive coordinator 2006, Buccaneers defensive backs coach 2007–2008 and head coach from 2009: https://en.wikipedia.org/wiki/Raheem_Morris . Rod Marinelli: Tampa Bay's defensive line coach (later also assistant head coach) 1996–2005 under Dungy and Gruden, Detroit's head coach 2006–2008, then on Lovie Smith's Chicago staff: https://en.wikipedia.org/wiki/Rod_Marinelli . Gus Bradley: Buccaneers defensive quality control coach 2006 and linebackers coach 2007–2008 under Kiffin, Seattle's defensive coordinator 2009–2012: https://en.wikipedia.org/wiki/Gus_Bradley . Tomlin resigned as Pittsburgh's head coach after the 2025 season; Morris is the 49ers' defensive coordinator in 2026 (course fact sheet, 2026 staffs).
+
+[^eberflus]: "Matt Eberflus," Wikipedia: https://en.wikipedia.org/wiki/Matt_Eberflus (Cowboys linebackers coach 2011–2017; Rod Marinelli was Dallas's defensive line coach from 2013 and defensive coordinator from 2014, https://en.wikipedia.org/wiki/Rod_Marinelli ; Colts defensive coordinator 2018–2021; Bears head coach 2022 to November 2024; Cowboys defensive coordinator 2025, dismissed in January 2026, then the 49ers' assistant head coach for defense: ABC7 News, "Source: 49ers adding Matt Eberflus to defensive staff," https://abc7news.com/post/source-49ers-adding-matt-eberflus-defensive-staff/18681364 ). Ranks are this book's calculation from nflverse participation labels, Cover 2 share of each defense's charted regular-season dropbacks: Indianapolis 31.8% in 2018 (2nd) and 24.1% in 2019 (4th); Chicago 26.1% in 2022 (4th) and 23.3% in 2023 (3rd). Ranks are within a season, so they are not affected by the 2022/2023 change of charting source.
