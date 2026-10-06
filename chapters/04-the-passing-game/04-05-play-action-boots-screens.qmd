@@ -1,0 +1,2192 @@
+---
+title: "Play-Action, Bootlegs, and Screens"
+subtitle: "Passes that pretend to be something else: the run fake, the quarterback on the move, and the throw that invites the rush in"
+description: "The passing game's deception family: why play-action works (linebackers' run-fit triggers, glossed here and built in 05-05) and why the data says it does not need a successful run game; under-center versus shotgun play-action; the bootleg, the naked bootleg, the keeper, the leak and the shot play; the slow (running back) screen, tunnel, jailbreak, tight end and middle screens; how a screen differs from a swing or flare route; screen timing, the linemen's release and why screens punish pressure; and team play-action rates and efficiency from FTN charting data."
+glossary:
+  "Play-action": "A pass play that begins with a fake run, usually a fake handoff to a running back, so that linebackers and safeties step toward the line before they realize it is a pass."
+  "Bootleg": "A play-action pass in which the quarterback fakes a run one way, then rolls out the other way with the ball, away from where the run fake sent the defense, toward receivers set at short, medium and deep levels on that side."
+  "Naked bootleg": "A bootleg with no blocker assigned to protect the quarterback on the side he rolls to: it depends on the unblocked end chasing the run fake."
+  "Keeper": "A quarterback run off a run fake: he shows the handoff, keeps the ball and runs, usually around the end the fake drew inside. On a bootleg it is the quarterback's choice to run when nobody has stayed outside to stop him; some playbooks also call the whole bootleg a 'keep'."
+  "Leak": "A late release by a tight end or back who first sells a block or a run fake, then slips into the space the defense has abandoned, often running against the flow of the play (for example, the tight end on the run-fake side releasing into the flat the quarterback just rolled away from, for a throwback)."
+  "Shot play": "A play built to throw deep, usually 20 or more yards downfield, called in a situation the offense has chosen for it; most are play-action passes with extra blockers and only two or three receivers in the pattern."
+  "Screen": "A pass thrown to a receiver at or behind the line of scrimmage with blockers already set up in front of him. The defense is invited to rush or flow one way; then the blockers release to the other."
+  "Slow screen": {def: "The classic screen to a running back: the linemen pass-block for a count or two and let the rushers through, the back pretends to block and slips out behind them, and the quarterback drifts back and throws over the rush to the back, with three linemen in front of him.", aliases: ["RB screen"]}
+  "Tunnel screen": "A wide receiver screen in which the receiver comes back inside, toward the ball, and catches it behind the line between blockers: linemen who have released outward and a teammate blocking the defender outside him, which forms the 'tunnel' he runs through."
+  "Jailbreak screen": "A screen in which some or all of the offensive linemen skip pass protection and sprint out to block in space at the snap, leaving the rushers free, while a receiver steps back to catch a quick throw behind them. Names vary by playbook; some teams call the tunnel screen a jailbreak."
+  "Swing route": "A running back's route that bows backward, then out toward the sideline, so he catches the ball on the move behind or at the line of scrimmage. Unlike a screen, nobody is set up to block for him."
+  "Flare": "A running back's quick release toward the sideline on a shallow arc that bends slightly upfield, used as a quarterback's outlet or to pull a linebacker wide. Many playbooks treat flare and swing as the same route."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import os
+import logging
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, Patch, RegularPolygon
+from matplotlib.lines import Line2D
+
+from gridiron import Play, Player, Field, routes as r, style
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+GREEN = "#0f7a55"           # a darker step of the aqua highlight, for text and read lines on the field
+PURPLE = style.SERIES[6]    # a ring colour that is neither offense blue nor defense orange
+GREY = style.MUTED
+LINE_D, OFF_BALL, GUN, UC = -0.7, -1.5, -5.0, -1.9
+OL = (("LT", -3.2), ("LG", -1.6), ("C", 0.0), ("RG", 1.6), ("RT", 3.2))
+
+
+# ---------------------------------------------------------------- players and alignments
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=label or key)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line5():
+    """The five offensive linemen, 1.6 yards apart, each lettered so the reader can follow him."""
+    return [O(k, k, LINE_D, w, k) for k, w in OL]
+
+
+def ace_tight():
+    """12 personnel under center: tight ends U (left) and Y (right) on the line, receivers X and Z
+    a step off the ball in tight splits, the back seven yards deep. Seven on the line: five
+    linemen plus the two tight ends, who are the ends and so eligible."""
+    return line5() + [O("QB", "QB", UC, 0.0, "Q"), O("RB", "RB", -7.0, 0.0, "R"),
+                      O("U", "TE", LINE_D, -4.8), O("Y", "TE", LINE_D, 4.8),
+                      O("X", "WR", OFF_BALL, -9.0), O("Z", "WR", OFF_BALL, 9.0)]
+
+
+def i_form():
+    """21 personnel I formation: X on the line wide left, Y in-line right, Z off the ball wide right."""
+    return line5() + [O("QB", "QB", UC, 0.0, "Q"), O("FB", "FB", -4.5, 0.0, "F"), O("RB", "RB", -7.0, 0.0, "R"),
+                      O("Y", "TE", LINE_D, 4.8), O("X", "WR", LINE_D, -14.0), O("Z", "WR", OFF_BALL, 14.0)]
+
+
+def spread(rb_w=-1.5, y_inline=False):
+    """11 personnel, shotgun 2x2: X and Z on the line wide, H in the left slot and Y (a tight end)
+    in the right slot, both a step off the ball. y_inline=True attaches Y to the line instead and
+    moves Z off the ball, so there are still exactly seven on the line."""
+    out = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, rb_w, "R"),
+                     O("X", "WR", LINE_D, -15.0), O("H", "WR", OFF_BALL, -9.0)]
+    if y_inline:
+        return out + [O("Y", "TE", LINE_D, 4.8), O("Z", "WR", OFF_BALL, 14.0)]
+    return out + [O("Y", "TE", OFF_BALL, 9.0), O("Z", "WR", LINE_D, 15.0)]
+
+
+def even_front(cb_w=10.0, shell="two"):
+    """A four-man even front (named in 05-02) with linemen labelled by technique number, three
+    linebackers and either two deep safeties (shell='two') or one, with the strong safety
+    walked down into the box (shell='one': eight in the box)."""
+    out = [D("PE", "DE", 1.0, 4.0, "5"), D("PT", "DT", 1.0, 0.7, "1"),
+           D("BT", "DT", 1.0, -2.35, "3"), D("BE", "DE", 1.0, -4.0, "5"),
+           D("SAM", "SAM", 4.0, 6.6, "S"), D("MIKE", "MIKE", 4.5, 1.6, "M"), D("WILL", "WILL", 4.5, -2.6, "W"),
+           D("LCB", "CB", 6.5, -cb_w - 0.5, "CB"), D("RCB", "CB", 6.5, cb_w + 0.5, "CB")]
+    if shell == "two":
+        out += [D("FS", "FS", 11.5, -8.0, "FS"), D("SS", "SS", 11.5, 8.0, "SS")]
+    else:
+        out += [D("FS", "FS", 13.0, 0.0, "FS"), D("SS", "SS", 6.5, 8.5, "SS")]
+    return out
+
+
+def nickel(extra=None, shell="three"):
+    """A 4-2-5 nickel against the 2x2: corners off the outside receivers, the strong safety over H
+    (left slot), the nickel ($) over Y (right slot), one deep safety. shell='zero' pulls the free
+    safety down to eight yards over the back (no deep help) for all-out pressure looks.
+    extra = {key: (d, w)} moves anyone."""
+    out = [D("WDE", "DE", 1.0, -5.4, "E"), D("WDT", "DT", 1.0, -0.8, "T"),
+           D("SDT", "DT", 1.0, 2.4, "T"), D("SDE", "DE", 1.0, 5.4, "E"),
+           D("MIKE", "MIKE", 4.5, 1.8, "M"), D("WILL", "WILL", 4.5, -2.2, "W"),
+           D("LCB", "CB", 7.0, -16.0, "CB"), D("RCB", "CB", 7.0, 16.0, "CB"),
+           D("SS", "SS", 5.5, -8.6, "SS"), D("NB", "NB", 5.0, 8.6, "$"),
+           D("FS", "FS", 13.0, 0.0, "FS") if shell == "three" else D("FS", "FS", 8.0, -2.0, "FS")]
+    extra = extra or {}
+    return [q.moved(d=extra[q.key][0], w=extra[q.key][1]) if q.key in extra else q for q in out]
+
+
+# ---------------------------------------------------------------- moving people
+def go_to(p, key, end, kind="path", delay=0.0, speed=None, via=()):
+    """Move `key` through absolute (d, w) points `via` to `end`, as a path, run, route, block, pull or rush."""
+    start = np.array(p._cur(key))
+    pts = [tuple(np.array(q) - start) for q in (*via, end)]
+    if kind == "rush":
+        return p.rush(key, pts=pts, delay=delay, speed=speed)
+    if kind == "route":
+        return p.route(key, pts, frame="field", delay=delay, speed=speed)
+    if kind == "block":
+        return p.block(key, pts=pts, delay=delay, speed=speed)
+    if kind == "pull":
+        return p.pull(key, pts, delay=delay, speed=speed)
+    return {"path": p.path, "run": p.run}[kind](key, pts, delay=delay, speed=speed)
+
+
+def pass_set(p, keys=("LT", "LG", "C", "RG", "RT"), depth=1.2, speed=None):
+    """Linemen step back into their pass sets."""
+    for k in keys:
+        p.block(k, pts=[(-depth, 0.0)], speed=speed)
+
+
+def zone_steps(p, keys=("LT", "LG", "C", "RG", "RT"), step=(0.15, 1.3)):
+    """Linemen take outside-zone steps to the right but stay at the line (the one-yard limit)."""
+    for k in keys:
+        p.block(k, pts=[step])
+
+
+# ---------------------------------------------------------------- drawing helpers
+def _P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def clean(ax):
+    """Drop the painted yard numbers (they sit where players stand); clip all text to the window."""
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, width_in=6.2, ax=None, **kw):
+    fld = p.draw(width_in=width_in, ax=ax, title=False, **kw)
+    clean(fld.ax)
+    return fld
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.2, ha="center", weight="normal", box=True):
+    """A short on-field label at (d, w)."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(float(x), float(y), text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=13,
+                fontweight=weight, linespacing=1.15,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9) if box else None)
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=7.0, ha="center", shrink=7):
+    """A label with a thin leader line to the player or spot it names."""
+    (xt, yt), (xp, yp) = _P(fld, p, *text_at), _P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha=ha, va="center", zorder=13, linespacing=1.15,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=shrink),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+DASH = (0, (3.6, 3.0))     # long enough to read as dashed at print size
+
+
+def branch(fld, p, pts, color=GREEN, lw=1.7, dash=DASH, end="arrow"):
+    """A dashed path through absolute (d, w) points: a defender's reaction, or the other branch of a read."""
+    xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    fld.ax.plot(xs, ys, color=color, lw=lw, ls=dash, zorder=5, solid_capstyle="round")
+    if end == "arrow":   # the head sits on the last yard only, so it never paints over the dashes
+        seg = float(np.hypot(xs[-1] - xs[-2], ys[-1] - ys[-2]))
+        f = min(1.0, 0.9 / seg) if seg > 0 else 1.0
+        x0, y0 = xs[-1] - f * (xs[-1] - xs[-2]), ys[-1] - f * (ys[-1] - ys[-2])
+        fld.ax.add_patch(FancyArrowPatch((x0, y0), (xs[-1], ys[-1]), arrowstyle="-|>",
+                                         mutation_scale=10, color=color, lw=lw, ls="-", zorder=5))
+    elif end == "tee":
+        v = np.array([xs[-1] - xs[-2], ys[-1] - ys[-2]])
+        perp = np.array([-v[1], v[0]]) / np.linalg.norm(v) * 0.75
+        fld.ax.plot([xs[-1] - perp[0], xs[-1] + perp[0]], [ys[-1] - perp[1], ys[-1] + perp[1]],
+                    color=color, lw=lw + 0.6, zorder=5)
+
+
+def after_throw(fld, p, key, target):
+    """A released lineman's climb to his block once the ball is in the air (dashed: it happens after the throw)."""
+    kf, _, _ = p._compile()
+    d0, w0 = kf[key][-1, 1:]
+    branch(fld, p, [(d0, w0), target], color=style.OFFENSE_DARK, lw=1.5, end="tee")
+
+
+def ring(fld, p, d, w, color=style.DEFENSE, r_=1.25):
+    x, y = _P(fld, p, d, w)
+    fld.ax.add_patch(Circle((float(x), float(y)), r_, fc="none", ec=color, lw=1.8, zorder=7))
+
+
+def opening(fld, p, center, size, color=style.THIRD, alpha=0.2):
+    """A soft green oval: the space that opens. size = (depth, width) in yards."""
+    x, y = _P(fld, p, *center)
+    fld.ax.add_patch(Ellipse((float(x), float(y)), size[1], size[0], fc=color, alpha=alpha, ec=color, lw=1.0,
+                             zorder=1.6))
+
+
+def badge(fld, p, d, w, n, color=GREEN):
+    """A small numbered circle: step n of a sequence."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(float(x), float(y), str(n), fontsize=7.5, color="white", fontweight="bold", ha="center",
+                va="center", zorder=14, bbox=dict(boxstyle="circle,pad=0.22", fc=color, ec="white", lw=0.6))
+
+
+def panel_title(ax, text, fs=9):
+    ax.set_title(text, fontsize=fs, loc="left", color=style.INK, fontweight="bold")
+
+
+LEGEND = {
+    "route": Line2D([], [], color=style.OFFENSE, lw=1.8, label="route"),
+    "block": Line2D([], [], color=style.OFFENSE_DARK, lw=1.8, marker="|", ms=8, mew=2.2, label="block"),
+    "run": Line2D([], [], color=style.OFFENSE_DARK, lw=2.6, label="ball carrier"),
+    "fake": Line2D([], [], color=style.OFFENSE, lw=1.6, label="fake / QB path"),
+    "pass": Line2D([], [], color=style.BALL, lw=1.3, ls=(0, (2, 2)), label="the throw"),
+    "react": Line2D([], [], color=style.DEFENSE, lw=1.4, ls=DASH, label="defender's reaction"),
+    "rush": Line2D([], [], color=style.DEFENSE, lw=1.8, label="rush / defender's path"),
+    "other": Line2D([], [], color=GREEN, lw=1.6, ls=DASH, label="the other option"),
+    "after": Line2D([], [], color=style.OFFENSE_DARK, lw=1.5, ls=DASH, label="block after the throw"),
+    "window": Patch(fc=style.THIRD, alpha=0.25, ec=style.THIRD, label="space that opens"),
+}
+
+
+def legend(fig, keys, ncol=None, y=0.0, fs=7):
+    hs = [LEGEND[k] for k in keys]
+    fig.legend(handles=hs, loc="upper center", bbox_to_anchor=(0.5, y), ncol=ncol or len(hs), fontsize=fs,
+               frameon=False, handlelength=2.0, columnspacing=1.0)
+
+
+# ---------------------------------------------------------------- frame strips (print) and video (web)
+MARK_R = 0.7
+
+
+def tracking(play):
+    df = play.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    return df
+
+
+def frame_panel(ax, play, df, t, lateral, window_, rings=(), throw_t=None, mark_r=MARK_R):
+    """One moment of a simulated play: markers, faint trails, optional rings and the ball's flight so far."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    ylo, yhi = sorted((play.ball_y - lateral[0], play.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=play.los, window=window_, numbers=False, hashes=True,
+                lateral=(ylo, yhi), to_go=play.to_go)
+    cur = df[df["frameId"] == fid]
+    shown = cur[cur["x"].between(play.los + window_[0] + 0.4, play.los + window_[1] - 0.4)
+                & cur["y"].between(ylo + 0.4, yhi - 0.4)]
+    ids = set(shown["_id"])
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(ids) & (df["side"] != "ball")]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=0.9, alpha=0.45, zorder=3)
+    if throw_t is not None and t > throw_t:
+        b = df[(df["side"] == "ball") & (df["frameId"] <= fid)]
+        b = b[b["time"] >= throw_t - 0.05]
+        xs, ys = fld.xy(b["x"].values, b["y"].values)
+        ax.plot(xs, ys, color=style.BALL, lw=1.3, ls=(0, (2, 1.5)), zorder=9)
+    ppy = fld.pts_per_yard()
+    for _, rr in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(rr["x"], rr["y"]))
+        if rr["side"] == "ball":     # drawn beside the carrier's marker so it never hides his label
+            ax.add_patch(Ellipse((x + mark_r * 1.15, y + mark_r * 0.55), 0.95, 0.6, fc=style.BALL, ec="white",
+                                 lw=0.5, zorder=11))
+            continue
+        lab = str(rr.get("label", "") or "")
+        if rr["side"] == "off":
+            ax.add_patch(Circle((x, y), mark_r, fc=style.OFFENSE, ec="white", lw=0.6, zorder=8))
+            tc = "white"
+        else:
+            ax.add_patch(RegularPolygon((x, y), 4, radius=mark_r * 1.3, orientation=np.pi / 4,
+                                        fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0, zorder=8))
+            tc = style.INK
+        fs = max(4.0, min(8.0, ppy * (0.85 if len(lab) <= 1 else 0.62) * mark_r / 0.7))
+        ax.text(x, y, lab, ha="center", va="center", fontsize=fs, color=tc, fontweight="bold", zorder=10)
+    for key, col in rings:
+        rr = cur[cur["displayName"] == key].iloc[0]
+        x, y = fld.xy(rr["x"], rr["y"])
+        ax.add_patch(Circle((float(x), float(y)), mark_r * 1.7, fc="none", ec=col, lw=1.7, zorder=7))
+    return fld
+
+
+def plan(fld, p, key, t0, color=None, lw=1.5, dashed=False):
+    """The rest of a player's path from time t0 on (where he is going), ending in an arrowhead."""
+    kf, _, _ = p._compile()
+    t1 = float(kf[key][-1, 0])
+    if t1 <= t0 + 0.05:
+        return
+    pts = np.array([p.position(key, tt) for tt in np.linspace(t0, t1, 50)])
+    xs, ys = _P(fld, p, pts[:, 0], pts[:, 1])
+    side = p.players[key].side
+    col = color or (style.OFFENSE if side == "off" else style.DEFENSE)
+    ls = (0, (3, 2)) if dashed else "-"
+    fld.ax.plot(xs[:-3], ys[:-3], color=col, lw=lw, ls=ls, zorder=4, solid_capstyle="round")
+    fld.ax.add_patch(FancyArrowPatch((xs[-4], ys[-4]), (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=9,
+                                     color=col, lw=lw, zorder=4))
+
+
+def moment(ax, p, t, lateral, window, rings=(), plans=(), mark_r=0.8):
+    """The play frozen at time t (faint trails show where everyone came from); `plans` adds
+    each listed player's remaining path."""
+    fld = frame_panel(ax, p, tracking(p), t, lateral, window, rings, mark_r=mark_r)
+    for key in plans:
+        plan(fld, p, key, t)
+    return fld
+
+
+def throw_arrow(fld, p, a, b):
+    """The throw, drawn by hand from (d, w) a to (d, w) b."""
+    (x0, y0), (x1, y1) = _P(fld, p, *a), _P(fld, p, *b)
+    fld.ax.add_patch(FancyArrowPatch((float(x0), float(y0)), (float(x1), float(y1)), arrowstyle="-|>",
+                                     mutation_scale=9, color=style.BALL, lw=1.3, ls=(0, (2, 2)), zorder=9,
+                                     connectionstyle="arc3,rad=-0.08"))
+
+
+def throw_at(p, key, t_catch):
+    """Schedule the pass so the ball reaches `key` at about t_catch (ball speed 18 yd/s)."""
+    t = t_catch - 0.6
+    for _ in range(5):
+        a, b = p.position("QB", t), p.position(key, t_catch)
+        t = t_catch - float(np.hypot(*(b - a))) / 18.0
+    p.pass_to(key, t=round(t, 2))
+    return round(t, 2)
+
+
+def strip(play, times, notes=None, lateral=(-24, 4), window=(-8, 14), ncols=2, rings=(), throw_t=None,
+          width_in=6.5, frame_rings=None):
+    """frame_rings: optional list (one entry per frame) of ((key, colour), ...) rings for that frame only."""
+    df = tracking(play)
+    nrows = int(np.ceil(len(times) / ncols))
+    pw = width_in / ncols
+    span_w, span_d = abs(lateral[1] - lateral[0]), window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False,
+                             figsize=(width_in, nrows * (pw * span_d / span_w + (0.62 if notes else 0.25))))
+    for ax in axes.flat[len(times):]:
+        ax.axis("off")
+    for i, (ax, t) in enumerate(zip(axes.flat, times)):
+        frame_panel(ax, play, df, t, lateral, window, frame_rings[i] if frame_rings else rings, throw_t)
+        lab = "snap" if abs(t) < 1e-6 else f"{t:+.1f} s"
+        ax.set_title(f"{i + 1}.  {lab}", fontsize=8.5, color=style.INK, loc="left")
+        if notes:
+            ax.text(0.5, -0.03, notes[i], transform=ax.transAxes, ha="center", va="top", fontsize=7.3,
+                    color=style.INK, linespacing=1.2)
+    fig.tight_layout(h_pad=2.4 if notes else 0.6, w_pad=0.6)
+    return fig
+
+
+def video(play, times, notes=None, lateral=(-24, 4), window=(-8, 14), rings=(), throw_t=None, width_in=5.6,
+          frame_rings=None):
+    from matplotlib import animation
+    from IPython.display import HTML, display
+    df = tracking(play)
+    span_w, span_d = abs(lateral[1] - lateral[0]), window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w + 0.4))
+    tmap = df.groupby("frameId")["time"].first()
+
+    def update(fid):
+        ax.clear()
+        t = float(tmap[fid])
+        if frame_rings:     # the rings of the latest strip frame reached (the first frame's before it)
+            k = max([i for i, tt in enumerate(times) if tt <= t + 1e-6] or [0])
+            rings_now = frame_rings[k]
+        else:
+            rings_now = rings
+        frame_panel(ax, play, df, t, lateral, window, rings_now, throw_t)
+        txt = "snap" if abs(t) < 0.05 else f"{t:+.1f} s"
+        if notes:
+            cur = [n for tt, n in zip(times, notes) if tt <= t + 1e-6]
+            txt += ("   " + cur[-1].replace("\n", " ")) if cur else ""
+        ax.set_title(txt, fontsize=8, color=style.INK, loc="left")
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=sorted(df["frameId"].unique()), interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def play_movie(play, times, notes=None, **kw):
+    """Video on the website; a numbered, captioned frame strip in the PDF."""
+    if PDF:
+        strip(play, times, notes=notes, **kw)
+        plt.show()
+    else:
+        kw.pop("ncols", None)
+        kw.pop("width_in", None)
+        video(play, times, notes=notes, **kw)
+```
+
+```{python}
+#| code-summary: "Show the Python (dropbacks with FTN play-action and screen charting, 2022-2025)"
+#| output: false
+from gridiron.data import nfl, pbp
+
+SEASONS = [2022, 2023, 2024, 2025]
+PCOLS = ["season", "season_type", "game_id", "play_id", "posteam", "qb_dropback", "qb_spike", "pass_attempt",
+         "sack", "qb_scramble", "epa", "success", "air_yards", "yards_after_catch", "complete_pass",
+         "receiver_player_id", "play_type", "qb_kneel", "down", "rusher_player_id"]
+FCOLS = ["game_id", "play_id", "is_play_action", "is_screen_pass", "qb_location", "is_qb_out_of_pocket",
+         "n_pass_rushers"]
+
+plays = pbp(SEASONS, columns=PCOLS)
+plays = plays[(plays["season_type"] == "REG") & plays["down"].notna() & plays["epa"].notna()]
+ftn = nfl().load_ftn_charting(SEASONS).to_pandas().rename(
+    columns={"nflverse_game_id": "game_id", "nflverse_play_id": "play_id"})
+DB = plays[(plays["qb_dropback"] == 1) & (plays["qb_spike"] != 1)].merge(ftn[FCOLS], on=["game_id", "play_id"],
+                                                                        how="inner")
+DB["pa"] = DB["is_play_action"].astype(bool)
+DB["screen"] = DB["is_screen_pass"].astype(bool)
+DB["oop"] = DB["is_qb_out_of_pocket"].astype(bool)
+
+# league play-action numbers
+by_season = DB.groupby(["season", "pa"])["epa"].mean().unstack()
+PA_RATE = DB.groupby("season")["pa"].mean()
+D25 = DB[DB["season"] == 2025]
+PA_EPA25, NO_EPA25 = D25.loc[D25["pa"], "epa"].mean(), D25.loc[~D25["pa"], "epa"].mean()
+PA_SR25, NO_SR25 = D25.loc[D25["pa"], "success"].mean(), D25.loc[~D25["pa"], "success"].mean()
+UC_PA25 = D25.loc[D25["qb_location"] == "U", "pa"].mean()
+GUN_PA25 = D25.loc[D25["qb_location"] == "S", "pa"].mean()
+loc = DB[DB["qb_location"].isin(["U", "S"])].groupby(["qb_location", "pa"])["epa"].mean().unstack()
+loc_n = DB[DB["qb_location"].isin(["U", "S"])].groupby(["qb_location", "pa"]).size().unstack()
+comp = DB[(DB["pass_attempt"] == 1) & (DB["sack"] == 0)]
+YAC = comp.groupby("pa")["yards_after_catch"].mean()
+AIR = comp.groupby("pa")["air_yards"].mean()
+OOP = DB.groupby("pa")["oop"].mean()
+SACK = DB.groupby("pa")["sack"].mean()
+EARLY = DB[DB["down"] <= 2]
+SACK12 = EARLY.groupby("pa")["sack"].mean()                    # first and second down only
+loc12 = EARLY[EARLY["qb_location"].isin(["U", "S"])].groupby(["qb_location", "pa"])["epa"].mean().unstack()
+LATE_SHARE = DB[DB["qb_location"] == "S"].groupby("pa")["down"].apply(lambda x: (x >= 3).mean())
+
+# team-level, 2025
+team25 = D25.groupby("posteam").agg(rate=("pa", "mean"), n=("epa", "size"))
+team25["epa_pa"] = D25[D25["pa"]].groupby("posteam")["epa"].mean()
+team25["epa_no"] = D25[~D25["pa"]].groupby("posteam")["epa"].mean()
+team25["gain"] = team25["epa_pa"] - team25["epa_no"]
+team25["n_pa"] = D25[D25["pa"]].groupby("posteam").size()
+N_BETTER25 = int((team25["gain"] > 0).sum())
+TOP_RATE = team25["rate"].idxmax()
+RANK = team25["rate"].rank(ascending=False, method="min")
+ordinal = lambda n: f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"  # noqa: E731
+TOP_GAIN = team25["gain"].idxmax()
+team25["epa_all"] = D25.groupby("posteam")["epa"].mean()
+EPA_RANK = team25["epa_all"].rank(ascending=False, method="min")
+LOW5 = list(team25.sort_values("rate").index[:5])
+
+# does play-action need a run game? team-seasons, running back carries only
+rosters = nfl().load_rosters(SEASONS).to_pandas()
+pos_of = rosters.drop_duplicates("gsis_id").set_index("gsis_id")["position"]
+backs = set(rosters.loc[rosters["position"].isin(["RB", "FB"]), "gsis_id"].dropna())
+runs = plays[(plays["play_type"] == "run") & (plays["qb_kneel"] == 0) & (plays["qb_scramble"] == 0)
+             & plays["rusher_player_id"].isin(backs)]
+ts = runs.groupby(["season", "posteam"]).agg(rush_epa=("epa", "mean"))
+ts["run_rate"] = plays[plays["play_type"].isin(["run", "pass"])].assign(
+    r=lambda x: (x["qb_dropback"] == 0)).groupby(["season", "posteam"])["r"].mean()
+g = DB.groupby(["season", "posteam", "pa"])["epa"].mean().unstack()
+ts["gain"] = g[True] - g[False]
+ts["rate"] = DB.groupby(["season", "posteam"])["pa"].mean()
+ts = ts.dropna()
+R_RUSH = ts["rush_epa"].corr(ts["gain"])
+R_RATE = ts["run_rate"].corr(ts["gain"])
+SHARE_POS = (ts["gain"] > 0).mean()
+
+# screens, by number of pass rushers (FTN), pass attempts only
+att = DB[DB["pass_attempt"] == 1].copy()
+att["rpos"] = att["receiver_player_id"].map(pos_of)
+att["rushers"] = att["n_pass_rushers"].clip(3, 6)
+SCR = att.groupby(["screen", "rushers"]).agg(n=("epa", "size"), epa=("epa", "mean")).reset_index()
+RBS = att[att["screen"] & (att["rpos"] == "RB")].groupby("rushers").agg(n=("epa", "size"), epa=("epa", "mean"))
+SCREEN_SHARE = att.groupby("season")["screen"].mean()
+SCR_RB_SHARE = (att.loc[att["screen"], "rpos"] == "RB").mean()
+kc = att[att["screen"]].groupby("posteam").agg(n=("epa", "size"), epa=("epa", "mean")).sort_values("n", ascending=False)
+LG_SCREEN_EPA = att.loc[att["screen"], "epa"].mean()
+pct = lambda v: f"{100 * v:.0f}%"   # noqa: E731
+```
+
+Second-and-3 near midfield, early in the third quarter. All afternoon the offense has lined up in this
+same two-tight-end formation and handed the ball off from it, and every time the defense's linebackers
+have shot forward at the snap and met the running back near the line. Now the quarterback takes the snap from under center, turns his back
+to the defense and pushes the ball into the running back's belly. Both linebackers take two hard steps
+toward the line, exactly as they have all afternoon. But the quarterback pulls the ball back out, spins
+the other way and runs toward the sideline, alone. The tight end who seemed to be blocking on the right
+side is now crossing the field ten yards downfield, behind the linebackers, waving his hand. The
+throw is easy, the catch is easy, and he runs another fifteen yards before anyone touches him. On the
+replay, the analyst circles a linebacker's feet: two steps forward, then a desperate turn. *That* is
+what this chapter is about: the passes that work by pretending to be something else.
+
+**You'll be able to…**
+
+- Explain why a run fake moves linebackers even against a team that cannot run, and what the
+  data says about the old rule that you must "establish the run" first.
+- Tell under-center from shotgun play-action, and a bootleg from a naked bootleg, a keeper, a leak
+  and a shot play, from the first two seconds of a broadcast.
+- Draw the running back's slow screen, the tunnel and jailbreak screens, the tight end screen and
+  the middle screen, and tell any screen from a swing or flare route.
+- Explain how a screen is timed, how the linemen release, and why screens get *better* the more
+  defenders rush.
+- Read a team's play-action rate and efficiency from charting data, and say which offenses lean on
+  deception most.
+
+::: {.callout-note title="You'll need"}
+- **[Dropback Concepts](04-04-dropback-concepts.qmd):** how pass concepts stretch a defender high and
+  low or side to side, the quarterback's progression, crossing routes, and the
+  [yankee](../../appendices/glossary.qmd#gl-yankee) shot concept (a deep post paired with a deep
+  crosser). Play-action passes are mostly those concepts with a fake in front.
+- **[Zone Running](../03-the-run-game/03-02-zone-running.qmd):** [outside (wide) zone](../../appendices/glossary.qmd#gl-outside-zone),
+  the line stepping sideways together, the linebackers flowing with it, the unblocked backside end, and
+  the first look at why outside zone and the bootleg are a matched pair.
+- **[Pass Protection](04-02-pass-protection.qmd):** the [pocket](../../appendices/glossary.qmd#gl-pocket),
+  the [launch point](../../appendices/glossary.qmd#gl-launch-point) (where the quarterback sets his feet
+  to throw), [max protect](../../appendices/glossary.qmd#gl-max-protect), and
+  [time to throw](../../appendices/glossary.qmd#gl-time-to-throw).
+- **[Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd):**
+  [EPA](../../appendices/glossary.qmd#gl-epa) (how much a play changed the offense's expected points;
+  above zero is good for the offense) and [success rate](../../appendices/glossary.qmd#gl-success-rate),
+  for the data sections.
+:::
+
+**How to read the diagrams.** Offense is blue circles, defense orange squares; *left* and *right* are
+the offense's. LT, LG, C, RG and RT are the offensive linemen, Q the quarterback, R the running back
+and F the fullback. **Y** and **U** are tight ends, **X** and **Z** wide receivers, and **H** a slot
+receiver. On defense, linemen are labelled by technique number in the under-center pictures and as T
+(tackle) and E (end) in the shotgun ones; S, M and W are the Sam, Mike and Will linebackers, CB a
+cornerback, $ the nickel back, and FS and SS the safeties. Thin arrows are routes and paths, the thick
+dark arrow is the ball carrier, lines ending in a short bar are blocks (dashed dark blue when the block
+happens only after the ball is thrown), dashed orange lines are what a defender does in reaction, and the
+dashed brown arrow is the throw. The yellow line across the field is the first-down line, as on a
+broadcast. The animations are simulated plays in Big Data Bowl coordinates (more on that at the end of the
+chapter).
+
+## Why a fake works: the linebacker's dilemma
+
+Start with the defender who is being fooled, because play-action is really a play *on him*.
+
+A linebacker lines up about four or five yards off the ball, and on every snap he has two jobs that
+pull in opposite directions. Against a run he has a **gap** to fill (a [run fit](../../appendices/glossary.qmd#gl-run-fit),
+the defense's plan for who fills which gap, built in [Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd)),
+and he has to get into it *fast*: a running back hits the line about a second after the snap, and a
+linebacker who waits to be sure arrives after the back has gone by. Against a pass he has a zone or a man
+to cover, which usually means running *backward*, to a spot ten yards deep or to a receiver.
+
+He cannot wait to find out which job it is. So he is taught to decide from a **key**, one or two
+players whose first step tells him run or pass ([key](../../appendices/glossary.qmd#gl-key-read-key-defense)
+reading is the subject of [Linebackers](../05-defensive-fronts-and-run-defense/05-04-linebackers-and-second-level.qmd)).
+The usual keys are the offensive guard in front of him and the backfield. A guard who fires forward
+with his pads low means run. A guard who pops up and steps backward into a pass set means pass. (This is
+the "high hat, low hat" read you met in [How to Watch a Broadcast](../01-foundations/01-06-how-to-watch-a-broadcast.qmd),
+seen from the linebacker's side.) A
+running back heading for the line with the quarterback's hands reaching toward him means run. Those
+first-step signals are the linebacker's **run-fit triggers**: the moment he sees them, he attacks
+his gap. Coaches call a linebacker who reacts fast to them a "downhill" player, and they love him,
+because against the run he is right.
+
+[**Play-action**](../../appendices/glossary.qmd#gl-play-action), a pass play that begins with a fake run, is
+built to pull those triggers on purpose. The guard fires out as if run-blocking. The
+running back takes the same path he takes on the real run. The quarterback reaches the ball out to him
+and pulls it back. For about a second, every signal the linebacker has been trained to trust says
+*run*. By the time he sees the quarterback still holding the ball, he has taken two or three steps
+forward, and he now has to stop, turn around and run back to a spot ten yards behind him. That
+second is the play.
+
+```{python}
+#| label: fig-lb-void
+#| fig-cap: "What one second of a fake buys. Both panels freeze the play 1.5 seconds after the snap; faint lines show the path each player has taken so far, and the blue arrow is the rest of Z's route, a dig (an in-breaking route at 13 yards). Left, a straight dropback: the linemen set back in pass protection, the linebackers read it at once and drop about ten yards deep, right in the dig's path, and the safeties bail over the top. Right, play-action: the line steps forward as if run-blocking, the back takes the handoff path, and the linebackers step up toward the line before turning back (see their faint trails). They are only about five yards deep, and the space behind them, where the dig crosses, is empty (green)."
+T_LOOK = 1.5
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.9))
+for ax, pa in zip(axes, (False, True)):
+    p = Play(ace_tight(), even_front(cb_w=10.0), los=35, to_go=None)
+    go_to(p, "Z", (13.0, -3.0), "route", via=[(12.6, 9.0)])
+    if pa:
+        zone_steps(p, keys=("U", "LT", "LG", "C", "RG", "RT", "Y"))
+        go_to(p, "QB", (-3.3, 1.5), via=[(-2.4, -0.4)], speed=3.4)
+        go_to(p, "QB", (-7.4, -1.2), speed=4.5)
+        go_to(p, "RB", (-2.7, 4.3), via=[(-4.3, 2.4)], speed=5.5)
+        for k, step, back in (("MIKE", (3.0, 3.2), (6.6, 1.2)), ("WILL", (3.1, -1.2), (6.6, -3.0)),
+                              ("SAM", (2.9, 7.8), (6.4, 8.4))):
+            go_to(p, k, step, speed=4.0)
+            go_to(p, k, back, speed=3.0, delay=0.2)
+        for k, w in (("FS", -7.0), ("SS", 7.0)):          # read step on the fake, then bail
+            go_to(p, k, (12.0, w * 1.06), speed=2.0)
+            go_to(p, k, (14.6, w), speed=4.0, delay=0.15)
+    else:
+        for k, w in (("FS", -7.0), ("SS", 7.0)):          # bail at once
+            go_to(p, k, (15.4, w), speed=4.5)
+        pass_set(p, speed=2.0)
+        go_to(p, "QB", (-7.4, 0.0), speed=4.5)
+        go_to(p, "RB", (-5.4, -1.6), speed=2.5)
+        for k, end in (("MIKE", (10.4, 2.6)), ("WILL", (10.2, -4.4)), ("SAM", (9.2, 6.0))):
+            go_to(p, k, end, speed=5.0)
+    fld = moment(ax, p, T_LOOK, lateral=(-13.0, 13.0), window=(-9.5, 17.5), plans=("Z",), mark_r=0.75)
+    if pa:
+        opening(fld, p, (11.0, 2.0), (6.0, 14.0))
+        say(fld, p, 15.6, 1.0, "empty: the LBs\nstepped up first", color=GREEN, fontsize=6.8, weight="bold")
+        say(fld, p, -7.6, 7.0, "the run fake", color=style.OFFENSE_DARK, fontsize=6.6)
+        panel_title(ax, "Play-action: LBs about 5 yd deep")
+    else:
+        say(fld, p, 15.6, 1.0, "LBs sit in\nthe dig's path", color=style.DEFENSE_DARK, fontsize=6.8, weight="bold")
+        say(fld, p, -7.6, 7.0, "pass set: LBs see it", color=style.OFFENSE_DARK, fontsize=6.6)
+        panel_title(ax, "Dropback: LBs about 10 yd deep")
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+Compare the two panels of @fig-lb-void. The receiver runs the same route in both. On the dropback,
+three linebackers are sitting at about the depth of his break, and the quarterback has to fit the ball
+between them. On the play-action pass, those same three linebackers are five yards shallower when the
+ball needs to arrive, and they are moving the wrong way. The window is not a little bigger. It is a
+different play.
+
+### The fake has rules too
+
+Two rules shape what the fake can look like, and both come from the offensive line.
+
+First, **the linemen cannot go downfield.** On any play with a forward pass, an offensive lineman may not
+be more than one yard past the line of scrimmage when the ball is thrown; if he is, it is
+a foul ([illegal man downfield](../../appendices/glossary.qmd#gl-illegal-man-downfield), taught in
+[Run-Pass Options](04-06-rpos.qmd)).[^ineligible] So a play-action line cannot really run-block the
+way it would on a run, driving defenders five yards back. It has to *look* like run blocking while
+staying at the line: aggressive, low first steps, then holding its ground. Coaches call this a
+"run-action" protection, and the best ones are nearly indistinguishable from the run for the first
+step or two, which is all the linebacker reads.
+
+Second, **the defensive line is fooled less, and for less time, than the linebackers.** A defensive
+lineman who has a blocker in front of him fights that blocker on every snap, and he feels pass protection
+almost the instant the blocker stops driving forward. (The exception is a lineman nobody blocks, usually the
+end on the far side from the run. With no blocker to feel, he reads the backfield the way a linebacker does,
+and he can be fooled the same way. The bootleg, below, is built on him.) That is why play-action does not buy
+the quarterback extra *protection*; it buys him *space behind the linebackers*. If anything the quarterback is
+a little more exposed: he has turned his back or spent half a second faking, and he still has to set up and
+throw. The sack numbers agree. Comparing like with like (first and second down, 2022–2025), play-action
+dropbacks ended in a sack `{python} f"{100 * SACK12[True]:.1f}"`% of the time, against
+`{python} f"{100 * SACK12[False]:.1f}"`% for other dropbacks.[^ftnsack]
+
+::: {.callout-important title="Why it exists"}
+Defenses have to stop the run quickly, so the defenders closest to the line are trained to react to the
+first signs of a run. Play-action turns that training into a weakness: it shows them those signs on a
+pass, gets them moving forward, and throws into the space they left. The price is time and protection.
+The fake takes half a second, the quarterback's back is often to the defense, the linemen are limited
+to the line, and the blocked defensive linemen are barely fooled. Play-action trades a little safety at the
+quarterback's spot for a lot of open grass downfield.
+:::
+
+## "You have to establish the run." Do you?
+
+Every broadcast you have ever watched has an announcer who says play-action works because the team has
+been running the ball well: the linebackers have been *punished* by the run, so they bite on the fake.
+It sounds like common sense. It is, mostly, not true.
+
+The cleanest test came from Ben Baldwin, an analyst who later co-created nflfastR, the play-by-play
+package behind the data this course uses. In early 2018 he looked at whether a team's play-action passes
+did better when it had been running the ball often, or running it well, before them, and found essentially
+no relationship: play-action passes beat ordinary dropbacks by about the same margin whether the run game
+had been good, bad or barely used.[^baldwin] Later that year Josh Hermsmeyer, writing for FiveThirtyEight,
+added the mechanism. With tracking data he measured how far middle linebackers moved the wrong way on a
+fake, and found they bit just as much on an offense's twelfth play-action pass of a game as on its first:
+linebackers react to run *action* because reacting is their job, not because they have been convinced by a
+running back's stats.
+
+You can rerun the test with the data this course uses. FTN's charters mark every dropback as play-action or
+not, and nflverse joins it to the play-by-play. Over 2022–2025, play-action dropbacks averaged
+`{python} f"{DB.loc[DB['pa'], 'epa'].mean():+.3f}"` EPA against `{python} f"{DB.loc[~DB['pa'], 'epa'].mean():+.3f}"`
+for other dropbacks (essentially zero), and the gap was there in every one of the four seasons:
+`{python} ", ".join(f"{yr} {by_season.loc[yr, True]:+.2f} vs {by_season.loc[yr, False]:+.2f}" for yr in SEASONS)`.[^ftn]
+@fig-pa-run-game asks Baldwin's question of every team-season.
+
+```{python}
+#| label: fig-pa-run-game
+#| fig-cap: "Does play-action need a good run game? Each dot is one team-season, 2022-2025 (128 in all). Across: how well the team's running backs ran the ball (EPA per carry). Up: how much better the team's play-action dropbacks were than its other dropbacks (EPA per dropback, play-action minus the rest). If a run game 'set up' play-action, the dots would climb to the right. They do not: the best and worst running teams got about the same boost from the fake. Data: nflverse play-by-play with FTN charting via nflreadpy; regular season."
+fig, ax = plt.subplots(figsize=(6.4, 3.9))
+ax.axhline(0, color=style.BASELINE, lw=1, zorder=1)
+ax.scatter(ts["rush_epa"], ts["gain"], s=22, color=style.SERIES[0], alpha=0.55, edgecolor=style.SURFACE,
+           lw=0.5, zorder=3)
+b, a = np.polyfit(ts["rush_epa"], ts["gain"], 1)
+xx = np.linspace(ts["rush_epa"].min(), ts["rush_epa"].max(), 2)
+ax.plot(xx, a + b * xx, color=style.SERIES[1], lw=1.8, zorder=4)
+ax.annotate(f"best-fit line: a slight tilt\n(correlation {R_RUSH:+.2f})",
+            (xx[1], a + b * xx[1]), xytext=(-4, 30), textcoords="offset points", ha="right", fontsize=7.5,
+            color=style.INK_2, bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none", alpha=0.85))
+ax.axhline(ts["gain"].mean(), color=style.SERIES[0], lw=0.8, ls=(0, (3, 2)), zorder=2)
+ax.text(xx[1], ts["gain"].mean() - 0.014, f"average boost {ts['gain'].mean():+.2f}",
+        fontsize=7.5, color=style.OFFENSE_DARK, va="top", ha="right",
+        bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none", alpha=0.85))
+ax.set_xlabel("Running back EPA per carry (team-season)", fontsize=8, color=style.INK_2)
+ax.set_ylabel("Play-action boost\n(EPA per dropback)", fontsize=8, color=style.INK_2)
+ax.tick_params(labelsize=7.5)
+ax.set_title("A team's run game does not predict its play-action boost", fontsize=10)
+fig.tight_layout()
+plt.show()
+```
+
+A *correlation* measures how closely two numbers move together, on a scale from −1 to +1: +1 means
+they rise in perfect step, 0 means knowing one tells you nothing about the other. Between a team's rushing
+efficiency and its play-action boost it was `{python} f"{R_RUSH:+.2f}"`, which is about as close to nothing
+as real data gets. (Square it and you get the share of the team-to-team differences the run game "explains":
+under 1%.) Play-action beat the team's other dropbacks in `{python} pct(SHARE_POS)` of team-seasons, good
+running teams and bad ones alike.
+
+One thing did matter a little. Teams that *ran more often* saw a somewhat bigger boost (correlation
+`{python} f"{R_RATE:+.2f}"`: small, but clearly not zero). That makes sense: a team that runs a lot shows the
+defense its run *look* a lot, and its fakes match what the linebackers have been reacting to all day. So the
+true part of "establish the run" is about *showing* the run, not about *succeeding* with it. Being good at
+running was not what mattered.
+
+So what does matter? Coaches who build play-action games answer in one sentence: **the fake has to look
+exactly like your real run**. Same formation, same line steps, same back's path, same quarterback
+footwork. A linebacker is not reading the season's rushing stats. He is reading a guard's helmet and a
+running back's first two steps, and if those match the run he has seen all day, he moves.
+
+::: {.callout-caution title="Common misconception"}
+"Play-action only works once the run game is working." A team with a poor run game can still have an
+excellent play-action game, and many have. The flip side: a fake that looks different from the real run (a
+sloppy handoff motion, linemen who pop up into pass sets) gets little, however many yards the back has.
+:::
+
+## Under center or shotgun: two kinds of fake
+
+The quarterback's starting spot changes what the fake can be, and you can see the difference from the
+couch in the first half-second.
+
+```{python}
+#| label: fig-uc-vs-gun
+#| fig-cap: "Two kinds of fake. Left, under center: the quarterback opens, turns his back to the defense and extends the ball to the back on the outside-zone path (1), then turns around, finds the defense and sets up seven or eight yards deep (2). For about a second he cannot see the field. Right, shotgun: the back runs across the quarterback's face, the quarterback rides the ball into his belly (1) and pulls it, never turning his head away from the defense (2). The fake is quicker, but it looks less like a real handoff, and the defense knows most shotgun snaps are passes."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.5))
+for ax, uc in zip(axes, (True, False)):
+    off = [q for q in (ace_tight() if uc else spread(rb_w=-2.0)) if q.key in (*dict(OL), "QB", "RB")]
+    dfn = [q for q in even_front() if q.key in ("PE", "PT", "BT", "BE", "MIKE", "WILL")]
+    p = Play(off, dfn, los=35, to_go=None)
+    zone_steps(p)
+    if uc:
+        go_to(p, "QB", (-3.3, 1.6), via=[(-2.5, -0.5)], speed=3.0)
+        go_to(p, "QB", (-7.4, -1.4), speed=4.0)
+        go_to(p, "RB", (-1.8, 4.7), via=[(-4.4, 2.3)])
+    else:
+        go_to(p, "QB", (-5.4, 0.7), speed=2.0)
+        go_to(p, "QB", (-7.0, 0.2), speed=3.0)
+        go_to(p, "RB", (-2.2, 4.0), via=[(-3.7, 1.1)])
+    p.read("RB", key="MIKE")
+    fld = draw(p, ax=ax, lateral=(-8.5, 8.5), window=(-10.5, 7.2))
+    if uc:
+        badge(fld, p, -2.6, 3.0, 1)
+        say(fld, p, -3.6, -5.6, "back to the\ndefense", color=style.OFFENSE_DARK, fontsize=6.8)
+        badge(fld, p, -8.8, -2.8, 2)
+        say(fld, p, -8.2, -5.0, "turn, find the\ndefense, set", color=style.OFFENSE_DARK, fontsize=6.8)
+        panel_title(ax, "Under center: a full fake")
+    else:
+        badge(fld, p, -3.6, 2.2, 1)
+        badge(fld, p, -8.2, 1.4, 2)
+        say(fld, p, -8.2, -4.8, "eyes downfield\nthe whole time", color=style.OFFENSE_DARK, fontsize=6.8)
+        panel_title(ax, "Shotgun: a ride and a pull")
+    say(fld, p, 5.3, 5.0, "M reads\nthe back", color=GREEN, fontsize=6.6)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+**Under center**, the quarterback takes the snap, turns and carries out the same footwork as a real
+handoff, often with his back fully to the defense, and the running back's path is identical to the run.
+It is the most convincing fake in football, because it *is* the run for the first second. The cost is that
+the quarterback loses sight of the defense, then has to whip around, find his receivers and throw, often
+with a defensive lineman closing. Plays from under center are therefore usually built with a simple
+read the quarterback can find quickly after he turns.
+
+**From the shotgun**, the back runs across the quarterback's face and the quarterback "rides" the ball
+into his belly for a beat, the same handoff exchange (the *mesh*) as a shotgun run. The quarterback never stops seeing the
+defense, and the throw can come sooner. But a shotgun fake looks less like a run, partly because
+defenses know that most shotgun plays are passes.
+
+The numbers make the split vivid. In 2025, `{python} pct(UC_PA25)` of all dropbacks from under center
+used play-action, against `{python} pct(GUN_PA25)` from the shotgun. Under center has become, in effect, the
+play-action formation, which is a big reason it came back into fashion.[^ftn2] And play-action from under
+center was the most productive kind of dropback in football. Over 2022–2025:
+
+| Dropback from… | No fake | Play-action | Boost |
+|---|---|---|---|
+| Under center | `{python} f"{loc.loc['U', False]:+.2f}"` | `{python} f"{loc.loc['U', True]:+.2f}"` | `{python} f"{loc.loc['U', True] - loc.loc['U', False]:+.2f}"` |
+| Shotgun | `{python} f"{loc.loc['S', False]:+.2f}"` | `{python} f"{loc.loc['S', True]:+.2f}"` | `{python} f"{loc.loc['S', True] - loc.loc['S', False]:+.2f}"` |
+
+: EPA per dropback by the quarterback's alignment and whether he faked a handoff, 2022–2025 regular seasons (FTN charting via nflverse). Under-center dropbacks without a fake are a small, unusual group (`{python} f"{int(loc_n.loc['U', False]):,}"` plays against `{python} f"{int(loc_n.loc['U', True]):,}"` with a fake). {#tbl-pa-location}
+
+Does the "Boost" column mean the shotgun fake is better? No. The shotgun's no-fake column is dragged down by
+the obvious passing downs: `{python} pct(LATE_SHARE[False])` of shotgun dropbacks without a fake came on third or
+fourth down, against `{python} pct(LATE_SHARE[True])` of shotgun fakes. Compare first and second downs only and
+the two boosts are about the same (`{python} f"{loc12.loc['S', True] - loc12.loc['S', False]:+.2f}"` from the
+shotgun, `{python} f"{loc12.loc['U', True] - loc12.loc['U', False]:+.2f}"` from under center). The verdict: both
+fakes help, and the full fake from under center, the one that looks most like a run, is the most productive
+dropback an offense has.
+
+::: {.callout-note title="Madden vs. real life"}
+In Madden, play-action is a menu category: pick a play with "PA" in the name and the game handles the
+fake. In real football the fake is a skill that the quarterback, the back and the linemen rehearse every
+week, and it degrades if any one of them gets lazy. Quarterbacks are graded on their fakes. Running backs
+are coached to carry out the fake for several steps after the quarterback has pulled the ball, often
+running into the line with an empty hand, because a linebacker who sees the back stop knows instantly.
+:::
+
+## Where the fake sends the ball: three windows
+
+What does the quarterback do with the second the fake bought? Look at where play-action completions end
+up. Over 2022–2025, play-action passes traveled about as far in the air as other passes
+(`{python} f"{AIR[True]:.1f}"` yards on average, against `{python} f"{AIR[False]:.1f}"`), but receivers
+gained **`{python} f"{YAC[True]:.1f}"` yards after the catch** on them, against
+`{python} f"{YAC[False]:.1f}"` on other passes.[^ftn3] The fake's main gift is not depth. It is catching the
+ball with nobody in front of you, because the people who would have been in front of you stepped up.
+
+That points to the three places a play-action pass usually goes:
+
+1. **Behind the linebackers, in the middle.** The window in @fig-lb-void: crossing routes, digs and
+   [shallow crosses](../../appendices/glossary.qmd#gl-shallow-cross) that cross the field 5–15 yards deep
+   through the space the linebackers just vacated.
+2. **Behind the safeties.** If a safety reads run and comes down to help, the deep post or the corner route
+   behind him is open. This is the *shot play*, below.
+3. **To the side the defense left.** Move the quarterback the other way with the ball, and the whole
+   defense's flow is pointing at the wrong sideline. This is the bootleg.
+
+## The bootleg: move the launch point away from the flow
+
+You met the bootleg in [Zone Running](../03-the-run-game/03-02-zone-running.qmd) as outside zone's
+partner, and its ancestor, the Wing-T's [waggle](../../appendices/glossary.qmd#gl-waggle), in
+[Perimeter Runs and Misdirection](../03-the-run-game/03-05-perimeter-and-misdirection.qmd). Here is
+the full play.
+
+A [**bootleg**](../../appendices/glossary.qmd#gl-bootleg) is a play-action pass in which the quarterback
+fakes a run one way and then rolls out the *other* way with the ball, toward a group of receivers set up at
+three depths on that side. Nobody recorded who named it, but the usual story is that the quarterback hides
+the ball against his hip or thigh as he rolls away, the way a Prohibition bootlegger hid a bottle.[^bootname] Two things make it work at once:
+
+- **The run fake** pulls the linebackers and safeties toward the run side, and it pulls the one defensive
+  lineman nobody blocks, the end on the far side, down the line after the back.
+- **The rollout** moves the quarterback's [launch point](../../appendices/glossary.qmd#gl-launch-point)
+  away from that side, so the pass rush, which is aimed at where he *was*, has to turn around and chase.
+
+The classic route combination is a *flood* of the boot side at three depths (the
+[flood](../../appendices/glossary.qmd#gl-flood) idea of [Dropback Concepts](04-04-dropback-concepts.qmd)):
+a short route to the **flat** (the area near the sideline just past the line), a **crosser** coming all the
+way across the field from the other side at about 6–10 yards, and a deep route, often a deep crosser called
+the **over** route, 15–20 yards down. A receiver on the boot side runs deep straight away to clear out the
+cornerback. That gives the quarterback a simple read on the move: deep if it is there, crosser if the
+linebackers are trailing, flat if anyone comes at him.
+
+Watch it move.
+
+```{python}
+#| label: fig-boot-animation
+#| fig-cap: "The outside-zone bootleg, frame by frame (simulated, BDB-format; faint lines show each player's path so far). The offense shows the same two-tight-end look and the same first steps as outside zone right (03-02). (1) The line steps right, the back takes the fake, the Y and U show their run blocks, and the Mike and Will (ringed) step up and flow with it. (2) The quarterback has pulled the ball and is rolling left; the backside end (ringed) chased the fake and is now behind him. (3) The Y, who started on the right side as a blocker, is crossing behind the linebackers, who are turning to chase; on the left, X's deep clear-out has taken the cornerback away, the U is in the flat, and Z's deep over route has the free safety (ringed) sitting on it, so the deep throw is not there. (4) The quarterback comes down to his second read and the ball goes to the Y on the move, with room to run."
+def boot_play():
+    p = Play(ace_tight(), even_front(cb_w=10.0), los=35, to_go=10)
+    zone_steps(p)
+    # the fake: reverse out, ball to the back on the outside-zone path, then boot left and set to throw
+    go_to(p, "QB", (-3.3, 1.6), via=[(-2.5, -0.5)], speed=4.0)
+    go_to(p, "QB", (-6.0, -8.0), speed=6.2, via=[(-5.0, -3.0)], delay=0.05)
+    go_to(p, "RB", (-1.0, 6.8), via=[(-4.3, 2.4), (-1.9, 4.9)], speed=6.0)
+    # U shows the cut-off block he makes on the real run, then lets the end go and releases to the flat
+    go_to(p, "U", (-0.1, -4.5), "block", speed=2.0)
+    go_to(p, "U", (3.0, -15.0), "route", via=[(-0.4, -6.6), (0.8, -9.2)], delay=0.15)
+    # Y sells his outside-zone block for a beat, then crosses behind the linebackers' flow
+    go_to(p, "Y", (-0.1, 5.4), "block", speed=3.0)
+    go_to(p, "Y", (10.0, -15.0), "route", via=[(5.5, 2.5), (7.6, -3.0), (9.2, -9.0)], delay=0.25, speed=6.5)
+    go_to(p, "Z", (18.0, -13.0), "route", via=[(10.0, 8.0), (14.5, 1.0)])           # deep over
+    go_to(p, "X", (19.5, -15.0), "route", via=[(8.0, -10.5)], speed=6.5)             # clear-out
+    # the defense believes the run
+    go_to(p, "PE", (1.6, 4.4), speed=2.0)
+    go_to(p, "PT", (1.1, 2.0), speed=1.5)
+    go_to(p, "BT", (0.9, -0.9), speed=1.5)
+    go_to(p, "BE", (-1.8, 0.6), via=[(0.6, -3.2), (-0.8, -1.4)], speed=4.2)          # chases the fake ...
+    go_to(p, "BE", (-4.2, -5.0), speed=4.4, delay=0.15)                              # ... then turns, too late
+    go_to(p, "MIKE", (2.9, 3.6), speed=4.0)                                          # step up, flow ...
+    go_to(p, "MIKE", (5.6, -4.0), speed=4.2, delay=0.35)                            # ... then turn and chase
+    go_to(p, "WILL", (3.0, -0.6), speed=4.0)
+    go_to(p, "WILL", (5.8, -8.5), speed=4.6, delay=0.35)
+    go_to(p, "SAM", (2.8, 7.2), speed=3.0)
+    go_to(p, "SAM", (4.6, 3.5), speed=3.5, delay=0.3)
+    go_to(p, "SS", (7.5, 6.5), speed=4.5)
+    go_to(p, "SS", (10.0, -1.0), speed=5.0)
+    go_to(p, "FS", (10.5, -7.8), speed=3.0)                                          # a step up on the fake ...
+    go_to(p, "FS", (16.5, -11.0), speed=5.5)                                         # ... then over the over route
+    go_to(p, "LCB", (18.5, -16.0), speed=6.2, via=[(8.0, -11.2)])                    # runs with the clear-out
+    go_to(p, "RCB", (12.0, 6.0), speed=4.5)
+    throw_at(p, "Y", 3.2)
+    return p
+
+
+bp = boot_play()
+T_THROW = [e[2] for e in bp.ball_events if e[0] == "pass"][0]
+play_movie(bp, [0.6, 1.7, 2.2, 3.2],
+           notes=["the fake: line steps right, Y and U\nshow blocks, LBs step up and flow",
+                  "QB pulls it and boots left;\nthe end (ringed) chased the fake",
+                  "Y crosses behind the LBs; X has\ntaken the CB deep, FS sits on Z",
+                  "deep is covered, so the ball\ncomes down to the Y: room to run"],
+           frame_rings=[(("MIKE", style.DEFENSE), ("WILL", style.DEFENSE)),
+                        (("BE", style.DEFENSE),),
+                        (("Y", style.THIRD), ("FS", style.DEFENSE)),
+                        (("Y", style.THIRD),)],
+           lateral=(-19.5, 12.5), window=(-9.5, 21.0), throw_t=T_THROW)
+```
+
+Look at frame 2 of @fig-boot-animation. Every defender's momentum is going one way and the quarterback is
+going the other. The Y has already slipped past the two linebackers who stepped up; they are still facing
+the line, and by frame 3 they are chasing him from behind. The cornerback on the boot side has turned and
+run with the clear-out, and the backside end, the one man whose job was to stay home, chased the fake and
+is behind the play.
+
+Now count the quarterback's options. All three receivers are on his side of the field, at three depths,
+and he is moving toward them, which shortens every throw. The read is usually **high to low**. First the
+over route, if nobody deep is on it: the cornerback has gone with the clear-out, so the man to check is the
+safety on that side (in @fig-boot-animation the free safety has stayed over it, so the quarterback moves on).
+Then the crosser, if the linebackers are trailing him. Then the flat, if a defender comes up to stop the
+quarterback. If nobody comes up at all, he can run.
+
+**Why the defense struggles.** It is not that the defenders are fooled for long. It is that the linebackers
+and the unblocked end are fooled at the *start*, when the decisive steps happen, and then the play moves
+away from them. A defense that has
+been flowing hard to stop outside zone has been flowing correctly, every time, for three quarters. The
+bootleg makes the correct reaction to the run the wrong reaction to the play.
+
+**What the bootleg gives up.** The quarterback is throwing on the run, to only half the field, with fewer
+receivers than a dropback (three, usually, sometimes four). Moving the launch point also moves it away from
+most of the protection: on most boots, nobody is blocking the man the quarterback is running toward. And the
+direction matters. Every boot in this chapter goes left, which for a right-handed quarterback is the harder
+way: rolling right, a right-hander's body is already turned the way he throws, but rolling left he has to
+open his hips and shoulders back toward the receiver before he can throw. Quarterbacks drill it ("flip the hips") because
+outside zone goes both ways, and so must its boot.
+
+### The naked bootleg: nobody blocks the end
+
+That last point is the bootleg's central bet, and the **naked** version makes it explicitly. A
+[**naked bootleg**](../../appendices/glossary.qmd#gl-naked-bootleg) assigns *no one* to block the
+defender on the boot side, usually the backside end. On the real outside zone run from this formation, the U
+cuts that end off ([03-02](../03-the-run-game/03-02-zone-running.qmd)). On the naked boot the U *shows* that
+block for a beat, then lets the end go and releases to the flat, so nobody blocks him. The whole line and the
+back go with the run fake. The play is betting that the end, seeing a run and no blocker, will chase the back
+down the line, as he does on the real run.
+
+```{python}
+#| label: fig-naked-boot
+#| fig-cap: "The naked bootleg's bet, frozen 1.8 seconds after the snap (faint lines: where players have been; arrows: where the receivers are going). The quarterback has faked outside zone right and is rolling left; the U showed his cut-off block and released, so nobody is assigned to the backside end (ringed). Left: the end chased the fake down the line, so he is behind the quarterback, who has the edge: he can throw to any of his three receivers (U in the flat, Y crossing, Z deep) or, if nobody comes up, keep it and run (green dashes: the keeper). Right: the end stayed home and is attacking the quarterback. Now there is no time to read high to low; the quarterback throws to the flat at once (or throws the ball away)."
+def naked(bites):
+    p = Play(ace_tight(), even_front(cb_w=10.0), los=35, to_go=10)
+    zone_steps(p)
+    go_to(p, "QB", (-3.3, 1.6), via=[(-2.5, -0.5)], speed=3.4)
+    go_to(p, "QB", (-6.2, -8.0), speed=4.8, via=[(-5.0, -3.0)], delay=0.05)
+    go_to(p, "RB", (-1.0, 6.8), via=[(-4.3, 2.4), (-1.9, 4.9)], speed=6.0)
+    go_to(p, "U", (-0.1, -4.5), "block", speed=2.0)            # show the cut-off block ...
+    go_to(p, "U", (3.0, -15.0), "route", via=[(-0.4, -6.6), (0.8, -9.2)], delay=0.15)   # ... then the flat
+    go_to(p, "Y", (-0.1, 5.4), "block", speed=3.0)
+    go_to(p, "Y", (10.6, -14.0), "route", via=[(5.5, 2.5), (8.0, -3.0), (10.2, -8.0)], delay=0.25, speed=6.5)
+    go_to(p, "Z", (17.0, -6.0), "route", via=[(10.0, 8.0), (15.5, 1.0)])
+    go_to(p, "X", (17.0, -10.0), "route")
+    go_to(p, "MIKE", (2.9, 3.6), speed=4.0)
+    go_to(p, "WILL", (3.0, -0.6), speed=4.0)
+    go_to(p, "SAM", (2.8, 8.2), speed=3.0)
+    if bites:
+        go_to(p, "BE", (-2.4, 1.0), via=[(0.4, -3.5), (-1.5, -2.6)], speed=4.2)
+    else:
+        go_to(p, "BE", (-4.4, -6.4), via=[(0.0, -5.0), (-2.6, -5.8)], speed=3.6)
+    return p
+
+
+T_NB = 1.8
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.7))
+for ax, bites in zip(axes, (True, False)):
+    p = naked(bites)
+    fld = moment(ax, p, T_NB, lateral=(-18.5, 11.5), window=(-10.0, 17.5), rings=(("BE", style.DEFENSE),),
+                 plans=("U", "Y", "Z", "X"), mark_r=0.75)
+    q = p.position("QB", T_NB)
+    if bites:
+        plan(fld, p, "QB", T_NB, color=style.OFFENSE)
+        branch(fld, p, [(-6.2, -8.0), (-4.2, -11.6), (0.5, -13.2), (4.5, -13.6)])
+        say(fld, p, -2.2, -15.4, "keeper", color=GREEN, fontsize=7, weight="bold")
+        say(fld, p, -5.2, 5.4, "end chased\nthe fake", color=style.DEFENSE_DARK, fontsize=6.8)
+        say(fld, p, -8.6, -2.4, "Q: the edge\nis his", color=style.OFFENSE_DARK, fontsize=6.8)
+        panel_title(ax, "The end bites: throw or run")
+    else:
+        u = p.position("U", T_NB + 0.6)
+        throw_arrow(fld, p, tuple(q), tuple(u))
+        say(fld, p, -7.6, -12.6, "end stayed\nhome", color=style.DEFENSE_DARK, fontsize=6.8)
+        say(fld, p, -8.6, 1.4, "Q: throw the\nflat now", color=style.OFFENSE_DARK, fontsize=6.8)
+        panel_title(ax, "The end stays home: get rid of it")
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+When the bet wins (left panel of @fig-naked-boot), the naked boot is one of the easiest plays in football:
+the quarterback is alone on the edge with three receivers and a defense running the wrong way. When it
+loses (right panel), the quarterback has turned his back on a free defender. That is why the flat route is
+always there and always first if the end stays home: it is the boot's built-in [hot](../../appendices/glossary.qmd#gl-hot-route)
+throw, and the quarterback learns to check the end before anything else. It is also why offenses run naked
+boots *after* the end has been chasing outside zone all day, not before.
+
+### Keepers, protected boots and leaks
+
+Three variations answer the obvious questions a defense asks of the bootleg.
+
+**What if nobody covers the quarterback?** Then he runs. A [**keeper**](../../appendices/glossary.qmd#gl-keeper)
+is a quarterback run off a run fake: he shows the handoff, keeps the ball and goes around the end the fake
+drew inside. On a bootleg it is built in (the green branch in @fig-naked-boot): if the end chased and the
+flat defender has run with the flat route, the quarterback's best option is often the empty grass in front
+of him. Some teams also call keepers as designed runs, and some playbooks simply call the whole bootleg a
+"keep." Either way, a quarterback who will run makes the defense pay for chasing the receivers.
+
+**What if the end stops chasing?** Then the offense blocks him. A **protected** bootleg sends a blocker to
+meet the end on the boot side: a guard pulling from the line, as the Wing-T's waggle did (@fig-boot-family,
+left), or, very often in today's NFL, a fullback, H-back or tight end coming across behind the line, the same
+block that kicks out the end on [split zone](../../appendices/glossary.qmd#gl-split-zone). The price is a tell:
+a blocker running the "wrong" way, away from the run fake, is the first thing a linebacker who keys the guards
+and the backfield will see.
+
+**What if the whole defense starts flowing to the boot?** Then throw back the other way. A
+[**leak**](../../appendices/glossary.qmd#gl-leak) is a late release by a tight end or back who first sells a
+block, then slips into the space the defense has abandoned. On a bootleg, the classic leak is the tight end
+on the run-fake side, who blocks the end for a count as if the run were real, then releases into the flat on
+*his* side, the side the quarterback just ran away from. It is a change-up, not a staple, because the throw is
+hard: the quarterback has to stop his roll, reset his feet and throw back across the field, against his own
+momentum, to the side he has been moving away from.
+
+```{python}
+#| label: fig-boot-family
+#| fig-cap: "Two answers to two defensive adjustments, each frozen mid-play (faint lines: where players have been; arrows: where they are going). Left, a protected bootleg at 1.3 seconds: against an end who will not chase, the left guard pulls (purple ring) on his way to kick him out, so the quarterback has a blocker on the boot side; the cost is that the pulling guard tips off linebackers who read the guards. Right, a boot leak at 2.1 seconds: against a defense that has learned to flow to the boot, the quarterback still rolls left and the receivers still flood that side, dragging the coverage with them (the defenders' faint orange trails all lead left), but the Y (green ring) blocked the end for a count and is now releasing into the right flat, where nobody is left; the quarterback will throw back across the field (dashed brown)."
+def boot_variant(kind):
+    p = Play(ace_tight(), even_front(cb_w=10.0), los=35, to_go=10)
+    zone_steps(p, keys=("LT", "C", "RG", "RT") if kind == "protect" else ("LT", "LG", "C", "RG", "RT"))
+    go_to(p, "QB", (-3.3, 1.6), via=[(-2.5, -0.5)], speed=3.4)
+    go_to(p, "QB", (-6.2, -8.0), speed=4.8, via=[(-5.0, -3.0)], delay=0.05)
+    go_to(p, "RB", (-2.0, 5.4), via=[(-4.3, 2.4)], speed=6.0)
+    go_to(p, "U", (-0.1, -4.5), "block", speed=2.0)            # show the cut-off block ...
+    go_to(p, "U", (3.0, -15.0), "route", via=[(-0.4, -6.6), (0.8, -9.2)], delay=0.15)   # ... then the flat
+    go_to(p, "Z", (17.0, -8.0), "route", via=[(10.0, 8.0), (15.5, 1.0)])
+    go_to(p, "X", (17.0, -10.0), "route")
+    go_to(p, "MIKE", (2.9, 3.6), speed=4.0)
+    go_to(p, "WILL", (3.0, -0.6), speed=4.0)
+    go_to(p, "SAM", (2.8, 8.2), speed=3.0)
+    if kind == "protect":
+        go_to(p, "Y", (-0.1, 5.4), "block", speed=3.0)
+        go_to(p, "Y", (10.6, -14.0), "route", via=[(5.5, 2.5), (8.0, -3.0), (10.2, -8.0)], delay=0.25, speed=6.5)
+        go_to(p, "LG", (-0.6, -5.0), "pull", via=[(-1.8, -2.2), (-1.6, -4.0)], speed=4.5)
+        go_to(p, "BE", (1.2, -6.6), speed=2.0)          # will not chase: squeezes upfield and outside
+    else:   # the coverage has learned to flow to the boot; the Y blocks, then leaks the other way
+        go_to(p, "Y", (0.5, 5.4), "block", speed=1.0)
+        go_to(p, "Y", (7.0, 12.0), "route", via=[(0.6, 8.8)], delay=0.6, speed=6.5)
+        go_to(p, "PE", (0.9, 5.2), speed=2.0)
+        go_to(p, "PE", (-4.0, -2.0), speed=5.0, delay=0.1)
+        go_to(p, "BE", (-0.2, -5.4), speed=2.0)
+        for k, step in (("MIKE", (5.0, -4.0)), ("WILL", (5.0, -9.0)), ("SAM", (5.2, 1.0))):
+            go_to(p, k, step, speed=4.5, delay=0.2)
+        go_to(p, "SS", (13.0, -1.0), speed=5.0)
+        go_to(p, "RCB", (14.0, 3.0), speed=5.5)
+        go_to(p, "FS", (14.0, -10.0), speed=4.0)
+        go_to(p, "LCB", (12.0, -14.5), speed=4.5)
+        throw_at(p, "Y", 3.3)
+    return p
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.8))
+for ax, kind in zip(axes, ("protect", "leak")):
+    p = boot_variant(kind)
+    if kind == "protect":
+        t = 1.3
+        fld = moment(ax, p, t, lateral=(-18.5, 15.0), window=(-10.0, 18.0), rings=(("LG", PURPLE),),
+                     plans=("U", "Y", "Z", "X", "QB"), mark_r=0.75)
+        say(fld, p, -7.8, -12.6, "LG pulls and\nkicks out the end", color=PURPLE, fontsize=6.8)
+        say(fld, p, -7.6, 6.6, "a guard pulling away\nfrom the fake: a tell", color=style.INK_2, fontsize=6.6)
+        panel_title(ax, "Protected boot")
+    else:
+        t = 2.1
+        fld = moment(ax, p, t, lateral=(-18.5, 15.0), window=(-10.0, 18.0), rings=(("Y", style.THIRD),),
+                     plans=("U", "Z", "X", "QB", "Y"), mark_r=0.75)
+        te = [e[2] for e in p.ball_events if e[0] == "pass"][0]
+        throw_arrow(fld, p, tuple(p.position("QB", te)), tuple(p.position("Y", 3.3)))
+        say(fld, p, -3.0, 10.6, "Y: block,\nthen leak", color=style.OFFENSE_DARK, fontsize=6.8)
+        say(fld, p, -8.3, -13.4, "the coverage flowed\nto the boot (left)", color=style.DEFENSE_DARK, fontsize=6.6)
+        panel_title(ax, "Boot leak: throw it back")
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+Each of these is a reply to a defensive reply. None is a great play on its own; together, they make chasing,
+staying home and flowing all wrong some of the time, which is all an offense needs.
+
+How much of this do offenses actually run? FTN charts whether the quarterback threw from outside the
+pocket. From 2022 to 2025, the quarterback was out of the pocket on `{python} pct(OOP[True])` of play-action
+dropbacks, against `{python} pct(OOP[False])` of the rest, and those include scrambles; the difference is
+mostly designed boots and rollouts.
+
+## The shot play: the fake that goes deep
+
+The third window in the list above is behind the safeties. A [**shot play**](../../appendices/glossary.qmd#gl-shot-play)
+is a play built to throw deep, usually 20 or more yards downfield, and called in a situation the offense
+picked for it. Most shot plays share three features, and each has a reason.
+
+- **Play-action**, because the deepest defender that matters is a safety, and a safety who reads run takes
+  a step or two forward. A deep throw needs only that. A safety who starts 13 yards deep normally backpedals
+  at the snap and is 15 or 16 yards deep when the receivers get to him. One who steps up on the fake is at
+  11 or 12 and has to stop and turn before he can run. That is about four yards of cushion gone, and a
+  receiver at full speed covers four yards in under half a second: the difference between a breakup and a
+  touchdown.
+- **Extra blockers**, often [max protect](../../appendices/glossary.qmd#gl-max-protect) with seven or eight
+  men in protection, because a deep route takes three seconds or more to develop.
+- **Only two or three receivers**, which is the price of the extra blockers. They are paired so that the one
+  safety cannot cover both: in the classic [yankee](../../appendices/glossary.qmd#gl-yankee) concept, a deep
+  post from one side and a deep over route from the other.
+
+```{python}
+#| label: fig-shot-play
+#| fig-cap: "A play-action shot from the I formation against Cover 1 (man coverage with one deep safety) and eight defenders near the box. Eight blockers stay in: the five linemen, the Y, the fullback and, after his fake, the running back. Only two receivers go out: X on a deep post and Z on a deep over route (the yankee pairing). Each cornerback runs with his man (solid orange): the left one trails the post, the right one chases the over across the field from behind. The fake pulls the linebackers and the strong safety forward, and the free safety, the only deep help, takes two steps up (dashed orange) before he can retreat. He is the read: if he stays on the post, throw the over in front of him (green dashes: the other throw); if he drives on the over, throw the post behind him."
+p = Play(i_form(), even_front(cb_w=13.5, shell="one"), los=35, to_go=None)
+p.players["LCB"] = p.players["LCB"].moved(w=-14.5)
+p.players["RCB"] = p.players["RCB"].moved(w=14.5)
+zone_steps(p, step=(0.2, 0.3))
+p.block("Y", pts=[(0.2, 0.2)])
+go_to(p, "QB", (-3.0, 0.9), via=[(-2.4, -0.4)], speed=3.0)
+go_to(p, "QB", (-8.0, -0.6), speed=4.0)
+go_to(p, "RB", (-2.3, 1.6), via=[(-4.4, 0.9)])
+go_to(p, "FB", (-2.6, -2.4), "block")
+go_to(p, "X", (28.0, -1.0), "route", via=[(13.0, -14.0)])
+go_to(p, "Z", (20.5, -12.0), "route", via=[(12.0, 14.0), (17.5, 6.0)])
+# Cover 1: each cornerback runs with his man; the free safety is the only deep help
+go_to(p, "LCB", (25.0, -3.0), via=[(13.5, -12.8)], speed=7.0)                  # trails the post, a step behind
+go_to(p, "RCB", (19.2, -6.0), via=[(11.6, 12.9), (16.3, 5.0)], speed=7.0)      # chases the over across the field
+p.pass_to("X", t=2.9)
+fld = draw(p, width_in=6.2, lateral=(-18.5, 18.5), window=(-10.0, 31.5))
+for k, end in (("MIKE", (2.4, 1.4)), ("WILL", (2.5, -2.4)), ("SAM", (2.3, 6.0)), ("SS", (3.6, 8.0))):
+    q = p.players[k]
+    branch(fld, p, [(q.d, q.w), end], color=style.DEFENSE, lw=1.6)
+branch(fld, p, [(13.0, 0.0), (10.4, 0.0)], color=style.DEFENSE, lw=1.8)
+branch(fld, p, [(-8.0, -0.9), (18.6, -8.4)], color=GREEN, lw=1.5)
+opening(fld, p, (24.5, -1.0), (6.0, 8.0))
+opening(fld, p, (19.0, -8.5), (4.5, 7.5))
+say(fld, p, 11.6, 6.2, "FS: two steps up", color=style.DEFENSE_DARK, fontsize=7)
+say(fld, p, 28.6, 4.8, "post", color=GREEN, fontsize=7.4, weight="bold")
+say(fld, p, 22.0, -12.6, "over", color=GREEN, fontsize=7.4, weight="bold")
+say(fld, p, -8.2, 7.4, "eight blockers,\ntwo receivers", color=style.OFFENSE_DARK, fontsize=6.8)
+say(fld, p, 5.4, -9.4, "LBs and SS\nattack the fake", color=style.DEFENSE_DARK, fontsize=6.8)
+say(fld, p, -5.0, 12.4, "Cover 1: each CB\nruns with his man", color=style.DEFENSE_DARK, fontsize=6.8)
+fld.ax.legend(handles=[LEGEND["rush"], LEGEND["react"], LEGEND["pass"], LEGEND["other"], LEGEND["window"]],
+              loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=3, fontsize=7, frameon=False)
+plt.show()
+```
+
+The defense in @fig-shot-play is the picture offenses want for a shot: one deep safety, the other safety
+down near the box, and linebackers who attack the run. Against [Cover 1](../../appendices/glossary.qmd#gl-cover-1)
+(man coverage with one deep safety, built in [Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd)), the
+corners are in man coverage and the yankee routes run away from them, so the free safety alone has to help on two
+deep routes. (Against [Cover 3](../../appendices/glossary.qmd#gl-cover-3),
+where the cornerback on the over's side bails into a deep third, the over attacks that corner's zone and the read shifts to
+him, but the idea is the same: make one deep defender choose.) That defense is built to stop the run, and the
+offense has usually spent the game showing it run looks from this exact formation. Situations matter as
+much as looks. Coaches like shots on **second-and-short** (an incompletion leaves a manageable
+third-and-short), right after a **turnover or a big play** (the defense is rattled and expects
+conservatism), and when the defense has just moved a safety down to stop the run.
+
+[Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd)
+showed that NFL offenses mostly *run* on second-and-short. That is one reason the shot works when it comes:
+a defense that has seen second-and-short handed off fifty times believes the fake.
+
+**What the shot play gives up.** Two receivers against at least three deep defenders (both corners and the free
+safety), with every linebacker whose man stays in to block free to drop or to rush, is a long-odds play on any
+single snap, and it has no answer if both routes are covered except a throwaway, a
+scramble or a sack. Coaches accept a low completion rate for the size of the prize: one completion can be
+worth more expected points than a whole series of short gains.
+
+## Screens: let them come
+
+Now the opposite trick. Play-action pretends to be a run so the defense steps *forward*. A
+[**screen**](../../appendices/glossary.qmd#gl-screen) pretends to be a normal pass so the defense
+rushes *in*, then throws the ball to a receiver at or behind the line with blockers already set up in
+front of him. The rushers who came after the quarterback are now behind the play. The defenders left
+in front are outnumbered by linemen.
+
+The quick wide receiver screens, the [now screen](../../appendices/glossary.qmd#gl-now-screen) and the
+[bubble screen](../../appendices/glossary.qmd#gl-bubble-screen), were in [The Quick Game](04-03-quick-game.qmd):
+the ball comes out at the snap and the blockers are other receivers. This section is about the screens that
+use the **offensive linemen** as blockers, which changes everything about their timing.
+
+The one-yard rule from the start of the chapter shapes how they are blocked. In the NFL it covers every
+forward pass, including one caught behind the line, so screen linemen release *flat*, sideways along the
+line, set up a wall where the receiver will catch the ball, and turn upfield to block only once the ball is
+in the air. (College is different: its limit is three yards and covers only passes that cross the line, so
+college screen blockers can be well downfield before the throw.)[^ineligible2] Every screen in this section
+follows that pattern: in the diagrams, a dashed block is the climb that happens after the throw.
+
+### The slow screen
+
+The original is the running back's screen, the [**slow screen**](../../appendices/glossary.qmd#gl-slow-screen)
+(also called the [**RB screen**](../../appendices/glossary.qmd#gl-rb-screen)). It is "slow" because it is
+built on patience: everyone on the offense pretends, for a count or two, that this is an ordinary dropback.
+
+```{python}
+#| label: fig-slow-screen
+#| fig-cap: "The running back slow screen to the left, against a four-man rush (all eleven jobs). (1) The linemen set as if pass-blocking and give a soft punch, and the back pretends to block. (2) On a count of about one-and-a-half to two, the LT, LG and C let their rushers go and release flat to the left, staying within a yard of the line until the ball is thrown; the back slides out behind them. (3) The quarterback drifts back to pull the rushers deeper and lofts the ball over them, about two and a half seconds after the snap. The RG and RT keep blocking their men; the key under the field says who blocks whom in front of the back."
+def slow_screen(p):
+    """RB slow screen to the left: the line sets, the LT, LG and C release, the back slides out behind them."""
+    for k in ("RG", "RT"):
+        p.block(k, pts=[(-1.2, 0.0)])
+    # each sets and punches for a beat (the delay), then releases: the first man out takes the widest threat,
+    # the next the man inside him, the center peels back for the first chaser
+    # NFL rule 8-3-1: no lineman more than a yard past the line before the throw, so they release flat
+    go_to(p, "LT", (0.8, -8.8), "block", via=[(-1.7, -3.6)], speed=4.2, delay=0.8)
+    go_to(p, "LG", (0.8, -5.2), "block", via=[(-1.7, -1.8)], speed=4.2, delay=0.8)
+    go_to(p, "C", (-1.4, -3.4), "block", via=[(-1.6, 0.0)], speed=3.0, delay=0.8)
+    go_to(p, "RB", (-4.2, -2.6), speed=2.0)                                  # pretend to block ...
+    go_to(p, "RB", (-3.3, -7.0), "route", delay=0.8, speed=3.5, via=[(-4.6, -5.0)])  # ... then slide out
+    go_to(p, "RB", (8.0, -6.3), "run", delay=0.12, via=[(1.0, -6.6)])
+    go_to(p, "QB", (-9.4, 0.4), speed=2.0)
+    go_to(p, "X", (16.0, -15.5), "route")
+    go_to(p, "H", (4.4, -11.4), "block", speed=3.0)
+    kf, _, _ = p._compile()
+    t_catch = float([a.t1 for a in p.actions if a.key == "RB" and a.kind == "route"][-1]) + 0.05
+    throw_at(p, "RB", t_catch)
+    return p
+
+
+p = slow_screen(Play(spread(), nickel(), los=35, to_go=None))
+for k, end in (("WDE", (-7.4, -2.6)), ("WDT", (-7.0, -0.2)), ("SDT", (-1.0, 2.0)), ("SDE", (-1.2, 4.4))):
+    go_to(p, k, end, "rush", speed=3.6)
+fld = draw(p, width_in=6.2, lateral=(-19.5, 17.5), window=(-11.5, 17.5))
+for k, end in (("WILL", (3.1, -8.2)), ("MIKE", (3.4, -4.8)), ("SS", (5.4, -11.6)), ("LCB", (13.0, -16.0))):
+    q = p.players[k]
+    branch(fld, p, [(q.d, q.w), end], color=style.DEFENSE, lw=1.4)
+badge(fld, p, -2.6, 2.4, 1)
+badge(fld, p, 0.9, -2.8, 2)
+badge(fld, p, -10.2, 2.2, 3)
+say(fld, p, -10.0, 7.4, "drift back: pull\nthe rush deeper", color=style.OFFENSE_DARK, fontsize=6.8)
+say(fld, p, -7.8, -14.2, "R: block a count,\nthen slide out", color=style.OFFENSE_DARK, fontsize=6.8)
+say(fld, p, -9.7, -4.6, "rushers let through", color=style.DEFENSE_DARK, fontsize=6.8)
+point_to(fld, p, (8.2, -4.0), (0.8, -8.8), "three linemen out in front,\nwithin a yard of the line",
+         color=GREEN, fontsize=6.8, shrink=6)
+fld.ax.legend(handles=[LEGEND["block"], LEGEND["run"], LEGEND["pass"], LEGEND["react"]], loc="upper center",
+              bbox_to_anchor=(0.5, 0.0), ncol=4, fontsize=7, frameon=False)
+fld.ax.text(0.5, -0.085, "Who blocks whom: LT \u2192 Will (the widest threat), LG \u2192 Mike, C \u2192 the first chaser,\n"
+            "H \u2192 the safety over him; X runs his corner off.", transform=fld.ax.transAxes, ha="center", va="top",
+            fontsize=7, color=style.INK_2)
+plt.show()
+```
+
+Walk through @fig-slow-screen in order, because the order is the play.
+
+**Sell the dropback.** For the first second and a half, nothing looks unusual. The linemen pass-set,
+the back steps up as if to pick up a blitzer, and the receivers run their routes, and those routes have a job:
+pulling the cornerback and safeties deep and away from where the ball is going.
+
+**Let them go.** Then the three linemen on the screen side deliberately lose. Each gives his rusher a
+punch, then lets him run past toward the quarterback, and releases to the side. Line coaches teach the
+release with a count (it varies by team, but roughly "one-thousand-one, one-thousand-two"), because a
+lineman who leaves too early tips the play off and one who leaves too late is still in the backfield when
+the ball arrives. They release flat, along the line (the one-yard rule), each to a spot a few yards outside
+where the back will catch it, with a rule for whom to block: the first one out takes the widest threat, the
+next one the next defender inside, the center the first defender chasing from behind.
+
+**Pull the rush deep, then throw over it.** The quarterback keeps drifting back, eight, nine, ten yards,
+dragging the rushers with him, then floats the ball over their heads to the back, who has slid out behind
+the released linemen. The deeper the rushers chase, the farther they are from the catch.
+
+**What the slow screen gives up.** It is a timing play with a lot of moving parts and a low margin for
+error. If a rusher is *not* fooled (a defensive end who sees the tackle let go and stops to sit in the
+throwing lane, which coaches call "smelling" the screen), the ball can be batted or intercepted near the
+line. If the released linemen miss their spots, the back is running into a crowd. And it gives up the
+whole downfield passing game for one snap: the quarterback has one place to throw. When the screen is
+sniffed out, the quarterback's best play is usually to throw the ball into the ground at the back's feet. That
+is legal, because the back is an eligible receiver right there ([intentional grounding](../../appendices/glossary.qmd#gl-intentional-grounding),
+the foul for throwing the ball away under pressure, applies only to a pass that is not in the direction and
+vicinity of an eligible receiver), and an incompletion is much better than a sack or a tipped
+interception.[^grounding]
+
+(For the stat sheet: a screen thrown forward, even from behind the line, is an ordinary pass, with an attempt,
+passing yards and receiving yards, which is how this chapter's play-by-play data can count screens at all. One
+thrown *backward* is a lateral, as [The Quick Game](04-03-quick-game.qmd) showed.)
+
+### Swing and flare: not screens
+
+Casual viewers call any short pass to a running back a screen. Most of them are not, and the difference
+tells you what the offense was thinking.
+
+```{python}
+#| label: fig-swing-vs-screen
+#| fig-cap: "Swing route or screen? Same formation, same defense, two different plays. Left, a swing route: the linemen stay in pass protection, nobody releases, and the back leaves at the snap, bows backward and out toward the sideline and catches the ball on the move, with the safety over the slot coming to meet him (dashed orange). He has to beat that man himself. Right, the slow screen of the figure above: the back first sets as if to block, the left side of the line releases in front of him, and when he catches it he has three blockers between him and the defense."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.4))
+for ax, screen in zip(axes, (False, True)):
+    p = Play(spread(), nickel(), los=35, to_go=None)
+    if screen:
+        slow_screen(p)
+    else:
+        pass_set(p)
+        p.dropback(1.6)
+        p.route("RB", r.swing(9.0), side=-1)
+        go_to(p, "RB", (6.0, -11.5), "run", delay=0.1, via=[(1.0, -11.0)])
+        go_to(p, "H", (14.0, -9.0), "route")
+        go_to(p, "X", (16.0, -15.5), "route")
+        p._compile()
+        t_c = float([a.t1 for a in p.actions if a.key == "RB" and a.kind == "route"][0])
+        throw_at(p, "RB", t_c)
+    fld = draw(p, ax=ax, lateral=(-19.5, 11.0), window=(-11.5, 17.5))
+    if screen:
+        say(fld, p, 10.6, -6.4, "three linemen\nin front", color=GREEN, fontsize=6.8, weight="bold")
+        te = [e[2] for e in p.ball_events if e[0] == "pass"][0]
+        say(fld, p, -10.0, 4.6, f"ball out\nat ~{te:.1f} s", color=style.OFFENSE_DARK, fontsize=6.6)
+        say(fld, p, -9.2, -12.4, "R: blocks a count,\nthen settles in", color=style.OFFENSE_DARK, fontsize=6.6)
+        panel_title(ax, "Slow screen: blockers out front")
+    else:
+        q = p.players["SS"]
+        branch(fld, p, [(q.d, q.w), (1.6, -11.0)], color=style.DEFENSE, lw=1.5)
+        say(fld, p, -3.4, 4.6, "the line keeps\npass-blocking", color=style.OFFENSE_DARK, fontsize=6.6)
+        say(fld, p, -9.6, -12.0, "R leaves at the snap;\ncaught on the move", color=style.OFFENSE_DARK, fontsize=6.6)
+        say(fld, p, 4.6, -15.6, "SS comes\nto meet him", color=style.DEFENSE_DARK, fontsize=6.6)
+        panel_title(ax, "Swing route: no blockers")
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+A [**swing route**](../../appendices/glossary.qmd#gl-swing-route) is a running back's route that bows
+backward and then out toward the sideline, so he catches the ball on the move behind or at the line.
+A [**flare**](../../appendices/glossary.qmd#gl-flare) is a quicker, flatter release toward the sideline that
+bends slightly upfield; many playbooks use the two words for the same thing. Either way, it is a pass
+*route*: the line keeps blocking and nobody releases in front of the back.
+Its purposes are different from a screen's. It is an outlet when the downfield routes are covered (a
+[checkdown](../../appendices/glossary.qmd#gl-checkdown) the quarterback can always find), a way to pull a
+linebacker wide and open the middle for another route, and a way to get a fast back the ball in space against
+a slower linebacker.
+
+The tell on a broadcast is the offensive line. **If linemen leave their rushers and slide out to one side
+before the ball is thrown, it is a screen** (or a run). If the line is still pass-blocking when the back catches
+it, it was a route. The second tell is the back's first steps. A swing back leaves at the snap and runs his path.
+A screen back *waits*: he sets as if to block, then slips out and settles behind the released linemen. Don't rely
+on timing: a swing can be thrown at once or late as a checkdown.
+
+## The screen family
+
+Once you see the slow screen's logic (let the rush come, release the linemen, throw behind them), the rest of
+the family is variations on who catches it and where the blockers go.
+
+### Tunnel and jailbreak: screens to a wide receiver
+
+```{python}
+#| label: fig-tunnel-jailbreak
+#| fig-cap: "Two wide receiver screens that use the offensive line. Left, a tunnel screen to Z: Z takes two hard steps upfield to back his cornerback off, then comes back inside toward the ball and catches it behind the line. The Y (an eligible receiver, so he may go downfield) blocks out on the cornerback; the RT and RG show a quick pass set, release outward along the line, and climb to the nickel and the Mike once the ball is thrown (dashed); Z runs up the 'tunnel' between them. Right, a jailbreak screen to H: at the snap the LT, LG and C skip pass protection entirely and sprint out flat to the left, while H takes two steps upfield and comes back behind the line for the throw; the linemen turn upfield to block only after it (dashed). The two rushers they would have blocked are left free (ringed). X blocks his cornerback."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.25))
+for ax, kind in zip(axes, ("tunnel", "jail")):
+    p = Play(spread(), nickel(), los=35, to_go=None)
+    if kind == "tunnel":
+        for k in ("LT", "LG", "C"):
+            p.block(k, pts=[(-1.2, 0.0)])
+        # a quick pass set, then out along the line; they climb only once the ball is thrown (dashed)
+        go_to(p, "RT", (0.6, 7.4), "block", via=[(-1.0, 4.2)], speed=5.0)
+        go_to(p, "RG", (0.6, 4.2), "block", via=[(-0.9, 2.4)], speed=4.5)
+        go_to(p, "Y", (4.4, 14.0), "block", speed=4.5)                          # an eligible: may go downfield
+        go_to(p, "Z", (-0.8, 11.2), "route", via=[(3.0, 15.4)], speed=5.5)     # sell upfield, come back inside
+        go_to(p, "Z", (11.0, 10.6), "run", delay=0.1, via=[(3.0, 10.4)])
+        p._compile()
+        te = throw_at(p, "Z", float([a.t1 for a in p.actions if a.key == "Z" and a.kind == "route"][0]) + 0.05)
+        p.path("QB", [(-0.8, 0.0)], speed=2.0)
+        go_to(p, "SDE", (-3.6, 4.4), "rush", speed=3.4)
+        go_to(p, "SDT", (-3.4, 1.4), "rush", speed=3.4)
+        fld = draw(p, ax=ax, lateral=(-6.8, 20.5), window=(-9.0, 15.0))
+        for k, end in (("NB", (3.4, 8.2)), ("MIKE", (3.8, 4.4)), ("RCB", (7.6, 15.0))):
+            q = p.players[k]
+            branch(fld, p, [(q.d, q.w), end], color=style.DEFENSE, lw=1.3)
+        after_throw(fld, p, "RT", (2.6, 8.0))
+        after_throw(fld, p, "RG", (3.0, 4.4))
+        say(fld, p, 9.0, 13.4, "the tunnel", color=GREEN, fontsize=7, weight="bold")
+        say(fld, p, -5.6, 12.0, "Z: two steps up,\nthen back inside", color=style.OFFENSE_DARK, fontsize=6.6)
+        say(fld, p, -6.4, 4.6, f"ball out at ~{te:.1f} s", color=style.OFFENSE_DARK, fontsize=6.6)
+        panel_title(ax, "Tunnel screen")
+    else:
+        # the screen-side linemen never pass-set: they sprint out along the line at the snap
+        go_to(p, "LT", (0.6, -12.0), "block", via=[(-0.4, -6.2)], speed=5.5)
+        go_to(p, "LG", (0.6, -8.4), "block", via=[(-0.4, -4.2)], speed=5.5)
+        go_to(p, "C", (0.5, -4.6), "block", via=[(-0.3, -1.6)], speed=5.0)
+        for k in ("RG", "RT"):
+            p.block(k, pts=[(-1.2, 0.0)])
+        go_to(p, "H", (2.0, -9.4), "route", speed=6.0)                          # a two-step stem upfield ...
+        go_to(p, "H", (-1.8, -10.4), "route", speed=4.0)                        # ... then back behind the line
+        go_to(p, "H", (10.0, -10.6), "run", delay=0.1, via=[(2.0, -10.2)])
+        p._compile()
+        te = throw_at(p, "H", float([a.t1 for a in p.actions if a.key == "H" and a.kind == "route"][-1]) + 0.05)
+        go_to(p, "X", (3.0, -15.4), "block", speed=4.0)
+        p.path("QB", [(-0.8, 0.0)], speed=2.0)
+        for k, end in (("WDE", (-3.8, -2.2)), ("WDT", (-3.8, -0.4))):
+            go_to(p, k, end, "rush", speed=4.5)
+        fld = draw(p, ax=ax, lateral=(-20.5, 6.8), window=(-9.0, 15.0))
+        for k in ("WDE", "WDT"):
+            q = p.players[k]
+            ring(fld, p, q.d, q.w, r_=1.2)
+        for k, end in (("SS", (3.6, -12.4)), ("WILL", (4.0, -8.6)), ("MIKE", (4.4, -4.8))):
+            q = p.players[k]
+            branch(fld, p, [(q.d, q.w), end], color=style.DEFENSE, lw=1.3)
+        after_throw(fld, p, "LT", (2.6, -12.2))
+        after_throw(fld, p, "LG", (3.0, -8.6))
+        after_throw(fld, p, "C", (3.4, -4.8))
+        say(fld, p, 9.4, -5.4, "linemen sprint out\nat the snap, flat", color=GREEN, fontsize=6.8, weight="bold")
+        say(fld, p, -7.0, -6.0, "rushers\nleft free", color=style.DEFENSE_DARK, fontsize=6.8)
+        say(fld, p, -6.6, -14.6, f"ball out at ~{te:.1f} s", color=style.OFFENSE_DARK, fontsize=6.6)
+        panel_title(ax, "Jailbreak screen")
+fig.tight_layout(w_pad=0.6, rect=(0, 0.06, 1, 1))
+legend(fig, ["block", "after", "run", "pass", "react"], ncol=5, y=0.06)
+plt.show()
+```
+
+A [**tunnel screen**](../../appendices/glossary.qmd#gl-tunnel-screen) goes to an outside receiver who
+comes back *inside*, toward the ball. The receiver's first steps upfield matter: the cornerback, seeing a
+receiver attack him, backs up, and that cushion is the space the receiver catches the ball in. Two linemen
+show a quick pass set, then release outward along the line to wall off the defenders inside, and a teammate
+(here the Y, a tight end in the slot, a natural blocker) blocks the cornerback from the outside. The receiver
+catches it in the gap between them and runs up the "tunnel."
+
+A [**jailbreak screen**](../../appendices/glossary.qmd#gl-jailbreak-screen) gets its name from what the line
+does: at the snap, the linemen on the screen side do not pass-block at all, they break out and sprint toward
+the screen side, leaving their rushers free. That makes it a *quick* screen, thrown in about a second, because
+nobody is blocking those rushers. Its advantage over the now and bubble screens of 04-03 is size: instead of a
+receiver trying to block a defender, a 310-pound lineman arrives in space against a 190-pound cornerback.
+
+Both screens obey the one-yard rule the same way the slow screen does. The linemen sprint *sideways*, along the
+line, and the ball comes out about a second after the snap, so they are barely a yard past the line when it is
+thrown; only then do they turn upfield onto the linebackers and safeties. That is why the receiver's two steps
+upfield matter on both: they buy the second the linemen need to get across.
+
+| | Tunnel screen | Jailbreak screen |
+|---|---|---|
+| Who catches it | An outside receiver | Usually a slot receiver (here H) |
+| His path | Two steps upfield, then back *inside* between blockers | A step or two up, then back behind the line |
+| The linemen | Two or three show a quick pass set, then release outward | The screen-side linemen sprint out at the snap: no pass set at all |
+| Who blocks the corner | A teammate outside him (here the Y) | A teammate outside him (here X) |
+| Ball out | About a second | About a second |
+
+: The two wide receiver screens side by side, as this book names them. {#tbl-tunnel-jailbreak}
+
+Playbook names in this family vary a lot. Some teams call the tunnel screen a jailbreak, and some call any
+screen with the whole line releasing a "jailbreak." The features in @tbl-tunnel-jailbreak are what matter: who
+catches it, which way he runs, and whether the linemen sell pass first.
+
+### Tight end and middle screens
+
+```{python}
+#| label: fig-te-middle
+#| fig-cap: "Two more members of the family (receivers not involved in the play stand still). Left, a tight end screen: the Y blocks the end for a count, then slides out to the right flat behind the line; the RG and RT set, release outward along the line and, once the ball is thrown, climb to the Mike and the nickel (dashed); Z runs his cornerback off. Right, a middle screen to the back: the tackles push the ends wide and past the quarterback; the guards and center set, let the defensive tackles through, and form a wall at the line in front of the back, climbing to the linebackers only once the ball is thrown (dashed); the back slips into the middle behind the rushers, in the space they left."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.1))
+for ax, kind in zip(axes, ("te", "mid")):
+    if kind == "te":
+        p = Play(spread(y_inline=True), nickel(extra={"NB": (5.0, 8.4), "RCB": (7.0, 15.0)}), los=35, to_go=None)
+        for k in ("LT", "LG", "C"):
+            p.block(k, pts=[(-1.3, 0.0)])
+        # set for a count, then out along the line (dashed: the climb after the throw)
+        go_to(p, "RG", (0.5, 3.6), "block", via=[(-1.6, 1.8)], speed=2.4)
+        go_to(p, "RT", (0.5, 7.0), "block", via=[(-1.6, 3.4)], speed=2.4)
+        go_to(p, "Y", (-1.0, 5.2), "block", speed=0.8)                          # block the end for a count ...
+        go_to(p, "Y", (-2.4, 8.4), "route", delay=0.2, speed=3.5)               # ... then slide out
+        go_to(p, "Y", (9.0, 10.4), "run", delay=0.1, via=[(1.0, 9.6)])
+        go_to(p, "Z", (14.0, 14.5), "route")
+        go_to(p, "QB", (-8.8, -0.4), speed=2.2)
+        p._compile()
+        throw_at(p, "Y", float([a.t1 for a in p.actions if a.key == "Y" and a.kind == "route"][0]) + 0.05)
+        go_to(p, "SDE", (-5.4, 2.6), "rush", speed=3.4)
+        go_to(p, "SDT", (-5.0, 1.0), "rush", speed=3.4)
+        fld = draw(p, ax=ax, lateral=(-6.8, 18.5), window=(-11.0, 15.5))
+        for k, end in (("NB", (3.2, 7.8)), ("MIKE", (3.6, 3.8)), ("RCB", (11.0, 15.0))):
+            q = p.players[k]
+            branch(fld, p, [(q.d, q.w), end], color=style.DEFENSE, lw=1.3)
+        after_throw(fld, p, "RG", (2.4, 3.8))
+        after_throw(fld, p, "RT", (2.2, 7.8))
+        say(fld, p, -6.6, 11.8, "Y: block a count,\nthen slide out", color=style.OFFENSE_DARK, fontsize=6.6)
+        panel_title(ax, "Tight end screen")
+    else:
+        p = Play(spread(), nickel(), los=35, to_go=None)
+        go_to(p, "LT", (-3.2, -5.0), "block", speed=2.6)                         # push the ends wide
+        go_to(p, "RT", (-3.2, 5.0), "block", speed=2.6)
+        # set, let the tackles through, then shuffle up to the line in front of the catch (dashed: after the throw)
+        go_to(p, "LG", (0.5, -2.2), "block", via=[(-1.7, -1.6)], speed=2.0)
+        go_to(p, "C", (0.5, 0.2), "block", via=[(-1.7, 0.0)], speed=2.0)
+        go_to(p, "RG", (0.5, 2.6), "block", via=[(-1.7, 1.6)], speed=2.0)
+        go_to(p, "RB", (-4.2, -1.6), speed=2.0)
+        go_to(p, "RB", (-2.6, -0.4), "route", delay=0.7, speed=2.5)
+        go_to(p, "RB", (9.0, -0.3), "run", delay=0.1)
+        go_to(p, "QB", (-9.0, 0.6), speed=2.2)
+        p._compile()
+        throw_at(p, "RB", float([a.t1 for a in p.actions if a.key == "RB" and a.kind == "route"][0]) + 0.05)
+        for k, end in (("WDE", (-4.4, -6.2)), ("SDE", (-4.4, 6.2)), ("WDT", (-7.2, -1.4)), ("SDT", (-7.2, 2.0))):
+            go_to(p, k, end, "rush", speed=3.6)
+        fld = draw(p, ax=ax, lateral=(-12.5, 12.5), window=(-11.0, 15.5))
+        for k, end in (("WILL", (3.8, -2.6)), ("MIKE", (4.0, 1.8))):
+            q = p.players[k]
+            branch(fld, p, [(q.d, q.w), (q.d + 2.0, q.w)], color=style.DEFENSE, lw=1.3)
+        after_throw(fld, p, "LG", (5.4, -2.6))
+        after_throw(fld, p, "C", (5.6, 1.6))
+        after_throw(fld, p, "RG", (3.6, 5.6))
+        say(fld, p, -9.6, -8.0, "tackles push\nthe ends wide", color=style.OFFENSE_DARK, fontsize=6.6)
+        say(fld, p, 10.6, 6.4, "G, C, G: a wall at the\nline, then up to the LBs", color=GREEN, fontsize=6.6,
+            weight="bold")
+        say(fld, p, -9.4, 6.4, "DTs let\nthrough", color=style.DEFENSE_DARK, fontsize=6.6)
+        panel_title(ax, "Middle screen")
+fig.tight_layout(w_pad=0.6, rect=(0, 0.06, 1, 1))
+legend(fig, ["block", "after", "run", "pass", "react"], ncol=5, y=0.06)
+plt.show()
+```
+
+The **tight end screen** is the slow screen run with a tight end: he blocks the end for a count, which
+is exactly what defenders expect a tight end to do, then slides out behind the line on his side. It is a
+good call against defenses that bring the edge rusher hard, because the rusher is the man the tight end just
+let go. The **middle screen** puts the back in the middle of the field instead of the flat. The tackles
+push the ends wide, as they do on any dropback; the guards and center let the defensive tackles through, set up
+a wall at the line, and climb to the linebackers as the ball is thrown; the back slips into the space the
+defensive tackles just left.
+It punishes interior pass rushers who get upfield fast, and linebackers who drop deep on passing downs.
+
+::: {.callout-important title="Why screens exist"}
+Every good pass rush has the same weakness: its rushers are trying to get *upfield* as fast as possible,
+toward the quarterback. A screen uses that against them. It turns the rushers' speed into distance from the
+ball, and it turns the five biggest people on the field, who are usually stuck at the line, into blockers in
+open space. The price is that a screen gives up the rest of the passing game for one snap, needs precise
+timing from seven or more players, and turns into a loss, or worse, if the defense recognizes it.
+:::
+
+## Screens punish pressure
+
+The logic of the screen predicts something you can check: **screens should get better the more defenders
+rush.** Every extra rusher is one more defender running away from the ball, and one fewer defender in front
+of it.
+
+Watch it against a six-man blitz. In @fig-screen-blitz the defense shows pressure before the snap: both
+linebackers walk up into the gaps beside the center (a [double A-gap mug](../../appendices/glossary.qmd#gl-double-a-gap-mug),
+built in [Blitz and Man Pressure](../07-pressure/07-02-blitz-and-man-pressure.qmd)), and behind them the
+defensive backs play man coverage. The free safety has come down to about eight yards to cover the running
+back man-to-man, so nobody is left deep. Six rushers, five protectors plus the back.
+
+```{python}
+#| label: fig-screen-blitz
+#| fig-cap: "The slow screen against a six-man blitz, frame by frame (simulated, BDB-format). (1) Six defenders show blitz; the Mike and Will (ringed) stand in the A gaps. (2) The LT, LG and C let their men go and release left along the line; the back (ringed), who appeared to pick up a blitzer, slides out behind them. (3) Four rushers converge on the quarterback, who throws over them. (4) The ball is out, so the linemen have turned upfield in front of the back, and the only defender left to beat is the free safety (ringed), the man assigned to cover him. Every blitzer is behind the play."
+def screen_vs_blitz():
+    dfn = nickel(extra={"MIKE": (1.5, 0.8), "WILL": (1.5, -0.8), "WDT": (1.0, -2.6), "LCB": (6.0, -15.5),
+                        "RCB": (6.0, 15.5)},
+                 shell="zero")
+    p = Play(spread(), dfn, los=35, to_go=8)
+    for k in ("RG", "RT"):
+        p.block(k, pts=[(-1.4, 0.0)], speed=1.5)
+    go_to(p, "LT", (-1.4, -3.4), "block", speed=1.6)
+    go_to(p, "LT", (0.8, -9.8), "block", delay=0.45, speed=5.0)     # flat release: within a yard at the throw
+    go_to(p, "LG", (-1.4, -1.8), "block", speed=1.6)
+    go_to(p, "LG", (0.8, -4.6), "block", delay=0.45, speed=5.0)
+    go_to(p, "C", (-1.3, 0.0), "block", speed=1.6)
+    go_to(p, "C", (0.6, -6.2), "block", delay=0.45, speed=5.0, via=[(-0.4, -4.4)])
+    go_to(p, "RB", (-4.2, -2.0), speed=2.0)
+    go_to(p, "RB", (-3.0, -7.4), "route", delay=0.35, speed=3.4, via=[(-4.4, -4.6)])
+    go_to(p, "RB", (9.0, -9.0), "run", speed=6.0, via=[(-1.5, -8.0), (3.0, -8.0)])
+    go_to(p, "QB", (-8.6, 0.2), speed=2.6)
+    go_to(p, "QB", (-10.4, 0.8), speed=1.6)
+    p.pass_to("RB", t=2.0)
+    go_to(p, "X", (15.0, -15.5), "route")
+    go_to(p, "H", (5.0, -9.4), "route")
+    go_to(p, "Y", (8.0, 9.0), "route")
+    go_to(p, "Z", (12.0, 15.0), "route")
+    # the rush: the screen side lets them through; they converge on the quarterback
+    go_to(p, "WILL", (-7.6, -3.2), "rush", speed=4.4, via=[(-1.0, -0.5)])
+    go_to(p, "MIKE", (-7.4, 2.4), "rush", speed=4.2, via=[(-1.0, 0.1)])
+    go_to(p, "WDT", (-9.0, -0.8), "rush", speed=4.4, via=[(-1.0, -2.4)])
+    go_to(p, "WDE", (-6.4, -4.6), "rush", speed=4.2, via=[(-1.6, -4.6)])
+    go_to(p, "SDT", (-0.4, 2.0), speed=1.2)
+    go_to(p, "SDE", (-0.6, 4.4), speed=1.2)
+    # man coverage: each defender runs with his receiver; the free safety has the back
+    go_to(p, "LCB", (15.0, -15.0), speed=6.5)
+    go_to(p, "SS", (6.0, -9.0), speed=5.0)
+    go_to(p, "NB", (9.0, 8.5), speed=6.0)
+    go_to(p, "RCB", (12.5, 14.5), speed=5.5)
+    go_to(p, "FS", (5.0, -5.0), speed=1.6)
+    go_to(p, "FS", (4.6, -8.0), speed=5.0)
+    # once the ball is out (2.0 s) the released linemen turn upfield (rule 8-3-2 lets them advance now)
+    kf, _, _ = p._compile()
+    for k, end in (("LT", (4.4, -10.6)), ("LG", (3.6, -6.8)), ("C", (3.0, -8.6))):
+        go_to(p, k, end, "block", delay=max(0.0, 2.05 - float(kf[k][-1, 0])), speed=4.5)
+    return p
+
+
+sp = screen_vs_blitz()
+play_movie(sp, [0.0, 0.9, 2.0, 3.0],
+           notes=["six show blitz: the Mike and\nWill stand in the A gaps",
+                  "LT, LG, C let them go and\nrelease; the back slides out",
+                  "four rushers converge;\nthe throw goes over them",
+                  "linemen turn upfield in front\nof him; every blitzer is behind"],
+           frame_rings=[(("MIKE", style.DEFENSE), ("WILL", style.DEFENSE)),
+                        (("RB", style.THIRD),), (("RB", style.THIRD),), (("RB", style.THIRD), ("FS", style.DEFENSE))],
+           lateral=(-20.0, 8.0), window=(-11.8, 10.6), throw_t=2.0)
+```
+
+The data agrees, strikingly. FTN's charters count the pass rushers on every dropback, so we can split
+pass attempts by how many came after the quarterback.
+
+```{python}
+#| label: fig-screen-rushers
+#| fig-cap: "Screens get better as the rush gets bigger. EPA per pass attempt by the number of pass rushers, 2022-2025 regular seasons: screens of every kind (blue), running back screens alone (green) and every other pass (orange). Against three rushers (with eight defenders in coverage), screens are among the worst plays in football; against six or more, they beat ordinary passes. The six-plus group is small (labelled counts), so read its exact height loosely and its direction firmly. Data: nflverse play-by-play with FTN charting via nflreadpy."
+fig, ax = plt.subplots(figsize=(6.4, 3.7))
+xs = [3, 4, 5, 6]
+lab = {3: "3", 4: "4", 5: "5", 6: "6+"}
+ax.axhline(0, color=style.BASELINE, lw=1, zorder=1)
+series = [("Other passes", SCR[~SCR["screen"]].set_index("rushers"), style.SERIES[1]),
+          ("All screens", SCR[SCR["screen"]].set_index("rushers"), style.SERIES[0]),
+          ("RB screens", RBS, style.SERIES[2])]
+for name, df, col in series:
+    df = df.reindex(xs)
+    ax.plot(xs, df["epa"], color=col, marker="o", ms=6, mec=style.SURFACE, mew=1.2, lw=2, zorder=3)
+    ax.annotate(name, (6, df["epa"].iloc[-1]), xytext=(8, 0), textcoords="offset points", va="center",
+                fontsize=7.5, color=style.INK_2)
+    if name != "Other passes":
+        for x_, (n_, e_) in zip(xs, zip(df["n"], df["epa"])):
+            off = (0, -12) if name == "All screens" else ((-20, -2) if x_ == 4 else (0, 8))
+            ax.annotate(f"n={int(n_):,}", (x_, e_), xytext=off, textcoords="offset points", ha="center",
+                        fontsize=6.3, color=style.MUTED)
+ax.set_xticks(xs, [lab[x] for x in xs])
+ax.set_xlim(2.7, 6.9)
+ax.set_ylim(-0.25, 0.2)
+ax.set_xlabel("Pass rushers on the play", fontsize=8, color=style.INK_2)
+ax.set_ylabel("EPA per pass attempt", fontsize=8, color=style.INK_2)
+ax.tick_params(labelsize=7.5)
+ax.grid(axis="x", visible=False)
+ax.set_title("The more they rush, the better the screen", fontsize=10)
+fig.tight_layout()
+plt.show()
+```
+
+Read @fig-screen-rushers from left to right. Against a three-man rush, all screens averaged
+`{python} f"{SCR.set_index(['screen', 'rushers']).loc[(True, 3), 'epa']:+.2f}"` EPA per attempt: the defense
+has eight players in coverage and no rushers to fool, so the screen is just a short pass into a crowd.
+Against six or more rushers they averaged `{python} f"{SCR.set_index(['screen', 'rushers']).loc[(True, 6), 'epa']:+.2f}"`,
+better than other passes against the same pressure. Running back screens, the purest version of the idea,
+climb the most steeply.
+
+Coverage matters too. Against man coverage, the defender assigned to the back (usually a linebacker or, as in
+@fig-screen-blitz, a safety) has to chase him, which means running straight into the released linemen. That is
+why screens pair so well against [Cover 0](../../appendices/glossary.qmd#gl-cover-0) blitzes (man coverage with
+nobody deep, as in @fig-screen-blitz) and Cover 1 blitzes. Against zone, the danger is an underneath defender
+who simply sits in the flat where the screen is going and waits for it.
+
+Two cautions about the chart. First, selection: offenses call screens when they *expect* pressure, and a screen called into a
+blitz is likely to be the right call at the right moment, so these averages flatter screens a little. Second,
+the typical screen is not a great play: across all rush counts, screens averaged
+`{python} f"{LG_SCREEN_EPA:+.2f}"` EPA per attempt, below ordinary passes. Screens are not an engine of an
+offense. They are a **tax on pressure**: a play that makes blitzing expensive, so that the defense rushes four
+more often, which helps every other pass the offense throws. Screens made up about
+`{python} pct(SCREEN_SHARE.loc[2025])` of pass attempts in 2025, and `{python} pct(SCR_RB_SHARE)` of screens
+over 2022–2025 went to running backs.
+
+## How defenses fight back
+
+None of this is free for the offense, because defenses coach against every one of these plays. The answers
+belong to the defensive chapters, but here is the shape of each, so you can spot it on Sunday.
+
+- **Against the fake:** linebackers are taught to read *through* their key. A guard who fires out but stops at
+  the line, or a guard pulling the "wrong" way, says pass or boot even when the back says run; some teams have
+  their linebackers *cross-key*, each watching the guard on the far side as well as his own. On obvious
+  passing downs, many simply give ground first and react to the run late. ([Linebackers](../05-defensive-fronts-and-run-defense/05-04-linebackers-and-second-level.qmd)
+  builds this.)
+- **Against the boot:** the backside end is assigned to stay home (his checklist is *boot, counter, reverse*),
+  and the flat defender on the boot side sinks under the over route instead of jumping the flat. Coverages with a
+  middle-of-the-field [robber](../../appendices/glossary.qmd#gl-robber) or match rules that pass the crosser from one defender to the next take away the
+  boot's middle read. ([Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd)
+  and [Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd).)
+- **Against the screen:** a defensive lineman who feels his blocker let go is taught to stop rushing and turn to
+  find the back ("smell" it), and a rusher who sees a back slip out can peel off and chase him. Defenses that
+  expect a screen on third-and-long call a coverage that keeps an underneath defender home rather than blitzing.
+  ([Blitz and Man Pressure](../07-pressure/07-02-blitz-and-man-pressure.qmd).)
+
+Each of those answers costs the defense something on another play: an end who stays home is not chasing the run,
+and a lineman who stops to smell the screen is not rushing the passer. The offense's reply to the reply is the
+subject of [Constraint Theory](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd).
+
+## A short history
+
+**Play-action** is as old as the legal forward pass (1906): as soon as a team could throw, faking a run
+first was the obvious way to make a defense hesitate.[^forward] What changed over the twentieth century was
+how *systematically* offenses built it in. The Wing-T of the 1950s made the run fake and the bootleg (its
+waggle) part of a series in which every play looked like the others, the idea you met in
+[03-05](../03-the-run-game/03-05-perimeter-and-misdirection.qmd).
+
+The modern NFL bootleg game runs through **Mike Shanahan** and **Gary Kubiak** in Denver. Kubiak was the
+Broncos' offensive coordinator from 1995 through 2005 under Shanahan, alongside Alex Gibbs's outside zone run
+game of [03-02](../03-the-run-game/03-02-zone-running.qmd), and John Elway, in the last four seasons of his
+career, made faking outside zone and rolling away from it a staple. The pairing became a coaching tree's signature. Kyle Shanahan, Mike's son, was the Atlanta Falcons'
+offensive coordinator in 2016, when Matt Ryan, throwing off play-action and boots, was named the league's
+MVP. Kyle took the system to San Francisco as head coach in 2017, and Sean McVay and Matt LaFleur, who had
+coached on his offensive staffs in Washington (and, for LaFleur, Atlanta), carried it to the Rams and the
+Packers.[^tree]
+
+Then the data caught up with the coaches. In 2018 Sean McVay's Rams went 13–3 and reached the Super Bowl
+with Jared Goff throwing off play-action more than any quarterback in the league, on about 35 percent of his
+dropbacks.[^rams18] In the same year Baldwin and Hermsmeyer published the analyses described above, showing
+that play-action's value did not depend on the run game. The league was already moving that way: by Football
+Outsiders' count, play-action rose from 18 percent of dropbacks in 2016 to 24 percent in 2018.[^parate] (Other
+charting services count fakes differently, so their percentages are not comparable year to year.) In FTN's charting the league used play-action on `{python} pct(PA_RATE.loc[2022])` of dropbacks in
+2022 and `{python} pct(PA_RATE.loc[2025])` in 2025, with the return of the under-center formation (see
+[Classic Formations](../02-personnel-and-formations/02-03-classic-formations.qmd)) helping push it up.
+
+**Screens** are just as old, and no one owns them. The screen game most associated with the modern NFL is
+**Andy Reid**'s. Reid learned the West Coast offense under Mike Holmgren in Green Bay, and from his first
+years as a head coach in Philadelphia (from 1999) his teams threw running back screens as a core play, not a
+gimmick, with Brian Westbrook as their best-known weapon in the 2000s. He took the same habits to Kansas City
+in 2013.[^reid]
+
+::: {.callout-note title="Film room: Los Angeles Rams 2018"}
+**The season:** the one in the history above. Notice the formation: the Rams faked nearly always from the same
+11-personnel, tight-split sets they used for their outside zone runs with Todd Gurley (see the film room in
+[Spread and Modern Formations](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)). The "run
+look" was not two tight ends; it was whatever the Rams ran from.
+
+**What to notice:**
+
+- The *match*. Line steps, back's path and receivers' splits are identical on the run and the fake. Try to
+  call run or pass from the first step; you will be wrong often, and so were linebackers.
+- The *crossers*. A large share of the big plays are receivers running across the field at 10–15 yards,
+  behind linebackers who stepped up: the window of @fig-lb-void.
+- The *boots*. Goff rolling away from outside zone with the flat, crosser and over routes, often after
+  pre-snap motion has moved a receiver to the boot side.
+- What went wrong in the Super Bowl: the Rams scored three points. New England packed the middle of the field,
+  where the crossers run, and pressured Goff on about 43 percent of his dropbacks, much of it with stunts that
+  had time to develop because Goff was holding the ball.[^sb53] A play-action game still needs time and room to throw.
+:::
+
+::: {.callout-note title="Film room: Seattle Seahawks 2025"}
+**The season:** Klint Kubiak's one year as Seattle's offensive coordinator, with Sam Darnold at
+quarterback, ending in a 29–13 win over New England in Super Bowl LX.[^lx] Kubiak is Gary Kubiak's son, and
+his offense was the Denver tree in its 2025 form: outside zone from tight formations and the boots and
+play-action that pair with it. In FTN's charting, Seattle's play-action dropbacks averaged
+`{python} f"{team25.loc['SEA', 'epa_pa']:+.2f}"` EPA, against `{python} f"{team25.loc['SEA', 'epa_no']:+.2f}"`
+on its other dropbacks, `{python} "the biggest gap in the league" if TOP_GAIN == "SEA" else "one of the biggest gaps in the league"`
+(@fig-pa-teams).
+
+**What to do:** watch any Seahawks game from 2025 and keep two counts: how many dropbacks start with a run
+fake, and how many of those move the quarterback out of the pocket. Then watch the linebackers on each fake
+with this chapter's checklist. Kubiak was hired as the Raiders' head coach for 2026, so this was one season's
+offense, not Seattle's current one.
+:::
+
+::: {.callout-note title="Film room: Kansas City Chiefs 2022–2025, the screen game"}
+**The record:** in FTN's charting, the Chiefs threw `{python} int(kc.loc['KC', 'n'])` screens over the four
+seasons, `{python} "more than any other team" if kc.index[0] == "KC" else "among the most in the league"`,
+and averaged `{python} f"{kc.loc['KC', 'epa']:+.2f}"` EPA on them, when the league average screen was worth
+`{python} f"{LG_SCREEN_EPA:+.2f}"`. Most teams use screens as a tax on pressure; Reid's offense gets value
+from them.
+
+**What to notice:**
+
+- The *sell*. Watch the Chiefs' linemen on a running back screen: they pass-set, punch and give ground as if
+  in a real protection before releasing. A lazy release is the most common way screens die, and Kansas City's
+  rarely look lazy.
+- The *variety*. Running back slow screens, tunnel screens to receivers, tight end screens, screens off
+  play-action and screens after motion: the defense cannot simply key one look.
+- The *timing against pressure*. Watch what the Chiefs call on downs when an opponent has been blitzing;
+  the screen is often the punishment.
+:::
+
+## The numbers: who fakes, and does it work?
+
+Now the league-wide picture. In 2025 offenses used play-action on `{python} pct(PA_RATE.loc[2025])` of
+dropbacks, and those dropbacks averaged `{python} f"{PA_EPA25:+.2f}"` EPA, against
+`{python} f"{NO_EPA25:+.2f}"` for dropbacks without a fake; their success rate was
+`{python} pct(PA_SR25)` against `{python} pct(NO_SR25)`. @fig-pa-teams breaks that down by team.
+
+```{python}
+#| label: fig-pa-teams
+#| fig-cap: "Play-action by team, 2025 regular season. Each row is a team: EPA per dropback without a run fake (orange) and with one (blue); the line between them is the boost the fake gave that team. The right-hand column is the team's play-action rate (share of its dropbacks that began with a fake). Teams are sorted by that rate; where a team shows one dot (KC), the two sit on top of each other: the fake made no difference. Data: nflverse play-by-play with FTN charting via nflreadpy; dropbacks include sacks and scrambles."
+t = team25.sort_values("rate")
+fig, ax = plt.subplots(figsize=(6.4, 5.6))
+y = np.arange(len(t))
+ax.axvline(0, color=style.BASELINE, lw=1, zorder=1)
+ax.hlines(y, t["epa_no"], t["epa_pa"], color=style.GRID, lw=2.4, zorder=2)
+ax.scatter(t["epa_no"], y, s=30, color=style.SERIES[1], zorder=3, label="No run fake", edgecolor=style.SURFACE, lw=0.6)
+ax.scatter(t["epa_pa"], y, s=30, color=style.SERIES[0], zorder=4, label="Play-action", edgecolor=style.SURFACE, lw=0.6)
+ax.set_yticks(y, t.index, fontsize=6.4)
+ax.tick_params(axis="x", labelsize=7.5)
+xmax = float(max(t["epa_pa"].max(), t["epa_no"].max())) + 0.07
+ax.set_xlim(float(min(t["epa_pa"].min(), t["epa_no"].min())) - 0.05, xmax + 0.12)
+for yi, (rate, team) in enumerate(zip(t["rate"], t.index)):
+    ax.text(xmax + 0.1, yi, f"{100 * rate:.0f}%", fontsize=6.4, color=style.INK_2, va="center", ha="right")
+ax.text(xmax + 0.1, len(t) - 0.2, "PA rate", fontsize=7, color=style.INK_2, va="bottom", ha="right",
+        fontweight="bold")
+ax.set_ylim(-0.8, len(t) + 0.4)
+ax.grid(axis="y", visible=False)
+ax.set_xlabel("EPA per dropback", fontsize=8, color=style.INK_2)
+ax.set_ylim(-0.8, len(t) + 1.6)
+ax.legend(loc="upper center", bbox_to_anchor=(0.42, 1.0), ncol=2, fontsize=7.5, frameon=False)
+ax.set_title("Most offenses are better when they fake", fontsize=10)
+fig.tight_layout()
+plt.show()
+```
+
+Three things stand out in @fig-pa-teams.
+
+**Most teams were better with the fake.** `{python} N_BETTER25` of 32 offenses averaged more EPA on
+play-action dropbacks than on their others. That is a single season, and some teams' play-action samples
+are only a hundred-odd plays, so individual gaps bounce around from year to year. The league-wide pattern
+does not.
+
+**The heaviest users build their passing game on their run game.** McVay's Rams led the league at
+`{python} pct(team25.loc['LA', 'rate'])` and Ben Johnson's Bears were next at `{python} pct(team25.loc['CHI', 'rate'])`.
+Several other offenses from the Shanahan family tree sat in the top half (McDaniel's Dolphins, LaFleur's
+Packers, Kubiak's Seahawks), though Shanahan's own 49ers ranked only `{python} ordinal(int(RANK['SF']))` in
+2025. These are offenses whose runs and passes are designed to look alike before and just after the snap.
+
+**Some offenses barely fake, and not all of them suffer for it.** The lowest rates belong to offenses built
+around a shotgun quarterback who wins from the pocket, where a fake looks less like a run. The Chiefs ranked
+`{python} ordinal(int(RANK['KC']))` in play-action rate but `{python} ordinal(int(EPA_RANK['KC']))` in EPA per
+dropback, above the league's middle. Low use is a style, not a mistake: a fake is worth most when it looks like
+your real run, and some offenses' real runs are not the ones defenses fear.
+
+Why doesn't everyone fake on every snap, if it is worth that much? Because a fake only works while the defense
+must respect the run (part of the measured boost belongs to the friendly early-down situations offenses pick for
+it). On third-and-9, nobody bites.
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it: the linebackers' feet"}
+**Before the snap**
+
+- **Under center?** About four of every five under-center dropbacks begin with a run fake. When the
+  quarterback lines up under the center, think run *or* play-action, not dropback.
+- **The run look.** Whatever formation this offense runs its main run from (often 12 personnel, or 11 personnel
+  with the receivers in tight splits) is the formation it fakes from.
+- **The down and distance.** First-and-10 and second-and-short are play-action downs; third-and-long is not.
+
+**At the snap: watch the linebackers' feet, not the ball**
+
+- Did they step *forward*? Count the steps. Two steps up on a fake is a win for the offense. The main broadcast
+  shot is usually framed on the box, so the linebackers are in it; the replay from the end zone, behind the
+  offense, shows their first steps best.
+- Did the guard in front of them fire out low, or pop up? If he popped up and they stayed home, the fake did
+  not work, and the throw will be harder.
+
+**In the first two seconds**
+
+- Did the quarterback turn his back to the defense (under-center fake) or ride the back (shotgun)?
+- Did he roll away from the fake? Find the backside end: did he chase (the boot wins) or stay home (watch for
+  the quick throw to the flat, or a protected boot with a pulling guard or a back coming across)?
+- **Only two receivers out, eight in to block?** Count the receivers who release. Two out with a hard fake on an
+  early down is a shot play: look deep, at the single safety.
+- **A tight end who blocks on the run-fake side, then slips out late** while everyone else floods the other way:
+  that's the leak.
+- **Linemen leaving their rushers and sliding out to one side before the throw?** It's a screen. Which ones released, and to which side? Did
+  the rushers run past the back?
+
+**After the play (on the replay)**
+
+- How many yards did the crosser gain *after* the catch? That is the space the linebackers left.
+- On a screen, count the blockers in front of the catch and the rushers behind it.
+
+**For your prediction log** ([How to Watch a Broadcast](../01-foundations/01-06-how-to-watch-a-broadcast.qmd)):
+on every under-center snap, write *run*, *PA* or *boot* before the snap. Then, when the defense blitzes on a
+passing down, write *screen?* and see how often you are right.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: shot or not?"}
+```{python}
+#| label: fig-predict-shot
+#| fig-cap: "Two snaps from the same game, both second-and-2 near midfield, both from the I formation (21 personnel) that the offense has handed off from on almost every early down today. Only the defense differs. Left (A): the defense has walked a safety down beside the tight end and left one safety deep in the middle. Right (B): both safeties stay deep and seven defenders are near the box. (The wide receivers and cornerbacks are just outside the picture.)"
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.0))
+for ax, single in zip(axes, (True, False)):
+    if single:
+        dfn = [q.moved(d=1.4, w=8.0) if q.key == "SS" else (q.moved(d=4.3, w=5.2) if q.key == "SAM" else q)
+               for q in even_front(cb_w=13.5, shell="one")]
+    else:
+        dfn = [q.moved(d=12.5, w=-9.0 if q.key == "FS" else 9.0) if q.key in ("FS", "SS") else q
+               for q in even_front(cb_w=13.5, shell="two")]
+    dfn = [q.moved(w=-14.5) if q.key == "LCB" else (q.moved(w=14.5) if q.key == "RCB" else q) for q in dfn]
+    p = Play(i_form(), dfn, los=50, to_go=2)
+    draw(p, ax=ax, lateral=(-11.6, 11.6), window=(-8.6, 15.4))
+    panel_title(ax, "A" if single else "B")
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+**Against which picture would you call the play-action shot, which defender is it aimed at, and what would
+you call against the other one?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The shot goes against A, aimed at the one deep safety.** Count the defense. In A, eight players are within a
+few yards of the line, so only three are deep enough to matter on a deep pass: two cornerbacks and the free
+safety. The corners each have a receiver; the free safety is the only player protecting the middle of the field
+deep, and the fake is aimed at *him*. If he takes two steps forward when the back hits the line, a deep post goes
+over his head; pair the post with a deep over route from the other side (the yankee idea in @fig-shot-play) and he
+cannot cover both. The down makes it cheap: on second-and-2, an incompletion leaves third-and-2, still a
+comfortable down, and the defense *expects* a run here because this offense, like most
+([01-02](../01-foundations/01-02-downs-distance-and-field-position.qmd)), usually runs on second-and-short.
+
+**Against B, don't take the shot.** Two safeties deep means two players over the top of the post and the over,
+and the fake has to fool both. But B has paid for its deep help with only seven near the box, against seven
+blockers (five linemen, the tight end and the fullback) with the back carrying the ball. Run the ball, or throw play-action to the *first* window: crossers behind linebackers who step up,
+underneath the two deep safeties.
+
+Notice what the clue was. Not the run game's yardage: the formation the offense always runs from, and how many
+defenders the defense moved down to stop it.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: the end who won't bite"}
+```{python}
+#| label: fig-predict-boot
+#| fig-cap: "Same two-tight-end look the offense has run outside zone right from all game. On each of its last two naked bootlegs left, the backside end (ringed) did not chase the run fake: he stepped upfield and outside and waited for the quarterback (dashed orange), and both times the quarterback had to throw the ball away. It is first-and-10."
+p = Play(ace_tight(), even_front(cb_w=10.0), los=30, to_go=10)
+p.highlight("BE", color=style.DEFENSE_DARK)
+fld = draw(p, lateral=(-14.5, 13.5), window=(-9.5, 13.0))
+branch(fld, p, [(1.0, -4.0), (-0.6, -5.6), (-4.8, -6.8)], color=style.DEFENSE, lw=1.5)
+say(fld, p, -7.6, -10.4, "what the end did\non the last two boots", color=style.DEFENSE_DARK, fontsize=7)
+plt.show()
+```
+
+**What has the end taken away, what has he given up, and what are two good calls from this look?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**He has taken away the naked boot and given up some of his run defense.** He is playing his textbook rule:
+the backside end on outside zone is taught to check **boot, counter, reverse** before he chases
+([Perimeter Runs and Misdirection](../03-the-run-game/03-05-perimeter-and-misdirection.qmd)). An end who stays home
+and waits for the quarterback is the one defender the naked bootleg cannot survive (@fig-naked-boot, right).
+
+What he has given up depends on one thing: **he cannot tell the boot from the run until it is too late**, because
+for the first second they look the same (that is the point of the boot). So if he has decided to stay home on the
+boot, he is staying home on the run too, and he is no longer chasing the outside zone run from behind. The
+backside of the run, where the back cuts back, is softer than it was.
+
+**Two good calls:**
+
+1. **Outside zone right**, and let the back cut back. The end's new habit has taken him out of the play's backside
+   pursuit. (Or [split zone](../../appendices/glossary.qmd#gl-split-zone), from
+   [03-02](../03-the-run-game/03-02-zone-running.qmd): a tight end or H comes across behind the line and kicks out
+   the end, who is now sitting still and easy to find.)
+2. **A protected bootleg** (@fig-boot-family, left): the same fake and the same boot, but a guard pulls, or a tight
+   end or fullback comes across, to kick the end out. The end is now a blocked defender, and the quarterback gets the
+   edge he wanted. The risk is the tell of a blocker going the "wrong" way, which is why it is a call to make after
+   the defense has adjusted, not before.
+
+And if the end still wins on a boot, the quarterback has a legal escape: once he is outside the tackles he may throw
+the ball away with no receiver near it, as long as it reaches the line of scrimmage, without being called for
+intentional grounding (the rule is in the screens section's note and in
+[Quarterback Play](04-07-quarterback-play.qmd)). That is why "throw it away" was the right answer on the last two
+boots, not a sack.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: screen or not?"}
+```{python}
+#| label: fig-predict-screen
+#| fig-cap: "Third-and-7, shotgun, 11 personnel; two different snaps, each frozen 1.2 seconds after the snap. The faint lines show where every player has come from (offense blue, defense orange). One of them is a screen."
+T_P3 = 1.2
+
+
+def te_screen(p):
+    """Tight end screen right: the line sets, the RG and RT release outward, the Y blocks a count and slides out."""
+    for k in ("LT", "LG", "C"):
+        p.block(k, pts=[(-1.3, 0.0)])
+    go_to(p, "RG", (0.5, 3.6), "block", via=[(-1.6, 1.8)], speed=2.4)
+    go_to(p, "RT", (0.5, 7.0), "block", via=[(-1.6, 3.4)], speed=2.4)
+    go_to(p, "Y", (-1.0, 5.2), "block", speed=0.8)
+    go_to(p, "Y", (-2.4, 8.4), "route", delay=0.2, speed=3.5)
+    go_to(p, "Y", (9.0, 10.4), "run", delay=0.1, via=[(1.0, 9.6)])
+    go_to(p, "Z", (14.0, 14.5), "route")
+    go_to(p, "X", (14.0, -15.0), "route")
+    go_to(p, "H", (12.0, -9.0), "route")
+    go_to(p, "QB", (-8.8, -0.4), speed=2.2)
+    go_to(p, "RB", (-4.6, -3.2), speed=2.0)
+    for k, end in (("SDE", (-5.4, 2.6)), ("SDT", (-5.0, 1.0)), ("WDE", (-1.8, -5.2)), ("WDT", (-0.6, -1.4))):
+        go_to(p, k, end, "rush", speed=3.4)
+    return p
+
+
+def swing_left(p):
+    """A swing to the back: the whole line pass-blocks and the back leaves at the snap."""
+    pass_set(p)
+    p.dropback(1.6)
+    p.route("RB", r.swing(9.0), side=-1)
+    go_to(p, "H", (14.0, -9.0), "route")
+    go_to(p, "X", (16.0, -15.5), "route")
+    go_to(p, "Y", (12.0, 9.0), "route")
+    go_to(p, "Z", (14.0, 15.0), "route")
+    for k, end in (("SDE", (-1.8, 5.2)), ("SDT", (-0.6, 1.6)), ("WDE", (-1.8, -5.2)), ("WDT", (-0.6, -1.4))):
+        go_to(p, k, end, "rush", speed=3.4)
+    return p
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.0))
+for ax, build, name in zip(axes, (te_screen, swing_left), ("A", "B")):
+    p = build(Play(spread(y_inline=(name == "A")), nickel(), los=40, to_go=7))
+    moment(ax, p, T_P3, lateral=(-12.6, 12.6), window=(-10.5, 9.5), mark_r=0.8)
+    panel_title(ax, name)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+**Which snap is the screen, and to whom? What is the other one, and what told you?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**A is a tight end screen to the right; B is a swing route to the back.** Look at the line first, not the ball.
+
+- **In A, two linemen have left their rushers.** The right guard and right tackle set, gave a punch and are now
+  sliding *out* to the right, level with the line, while the end and tackle they were blocking run free toward the
+  quarterback. Linemen leave rushers on purpose only for a screen (or a run), and the side they slide to is the screen
+  side. The Y, who blocked the end for a count, is slipping out behind them. The quarterback is drifting back to pull
+  the rush deeper. The linemen are still level with the line because the ball has not been thrown yet: in the NFL
+  they may not be more than a yard downfield until it is (the rule from earlier in the chapter).
+- **In B, all five linemen are still pass-blocking**, and the back left at the snap and is already bowing out toward
+  the left sideline on his own. Nobody is releasing in front of him. That is a route: a swing, an outlet the
+  quarterback can throw whenever he wants.
+
+The timing tells you less than you might think: a swing can be thrown at once or late as a checkdown. The line, and
+whether the back *waited* before leaving, tell you every time.
+:::
+:::
+
+## Takeaways
+
+- **Play-action works on the linebackers' run-fit triggers.** Defenders near the line must react to run
+  signals fast; a fake that shows those signals (low line steps, the back's path, the handoff) moves them
+  forward and opens the space behind them. It buys space, not protection.
+- **It does not need a good run game.** Baldwin's 2018 analysis and this chapter's 2022–2025 rerun agree: a
+  team's rushing efficiency barely predicts its play-action boost. What matters is that the fake **looks exactly
+  like the real run**. Under-center play-action, the most convincing fake, was the most productive dropback in
+  football over 2022–2025.
+- The fake sends the ball to **three windows**: behind the linebackers (crossers, most of the value, much of it
+  after the catch), behind the safeties (the **shot play**, with extra blockers and two or three receivers), and
+  to the side the defense left (the **bootleg**).
+- The **bootleg** moves the launch point away from the defense's flow, with three receivers at three depths. The
+  **naked** boot bets that the end chases; the **keeper**, the **protected boot** and the **leak** answer the
+  defense's adjustments to it.
+- A **screen** invites the rush, releases linemen in front of a receiver behind the line (in the NFL they slide
+  out along the line and turn upfield only after the throw) and throws over the rushers. **Slow, tunnel, jailbreak, tight end and middle** screens
+  vary who catches it and where the blockers go. A **swing** or **flare** is a route, not a screen: nobody
+  releases to block.
+- **Screens punish pressure.** Their value climbs with every extra rusher; against a soft rush they are among the
+  worst plays in football. They are a tax that keeps defenses from blitzing freely.
+
+## Connections
+
+**Builds on:** [Zone Running](../03-the-run-game/03-02-zone-running.qmd) (outside zone, the unblocked backside
+end and the first look at the bootleg), [Perimeter Runs and Misdirection](../03-the-run-game/03-05-perimeter-and-misdirection.qmd)
+(the Wing-T waggle), [Pass Protection](04-02-pass-protection.qmd) (max protect and the launch point),
+[The Quick Game](04-03-quick-game.qmd) (the now and bubble screens) and [Dropback Concepts](04-04-dropback-concepts.qmd)
+(the route combinations a fake is put in front of).
+
+**Sets up:**
+
+- [Run-Pass Options](04-06-rpos.qmd): plays that are a run and a pass at once, and the one-yard rule that limits
+  them; an RPO is not a fake but a real choice made after the snap.
+- [Linebackers](../05-defensive-fronts-and-run-defense/05-04-linebackers-and-second-level.qmd) and
+  [Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd): the keys and
+  run-fit triggers this chapter glossed, from the defense's side, and how defenses teach linebackers to survive
+  play-action.
+- [Blitz and Man Pressure](../07-pressure/07-02-blitz-and-man-pressure.qmd): the pressures screens punish.
+- [Constraint Theory and Sequencing](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd): how
+  play-action, boots and screens keep the base plays honest, and how play-callers sequence them.
+
+**See also (case study):** [The Shanahan Tree: Wide Zone, Boots, and the Illusion of Complexity](../12-case-studies/12-03-shanahan-wide-zone-tree.qmd)
+and [Andy Reid's Chiefs](../12-case-studies/12-04-reid-chiefs.qmd).
+
+**If you want to go deeper:** Ben Baldwin's and Josh Hermsmeyer's 2018 play-action analyses (footnoted
+below) and Baldwin's later open-source work at Open Source Football; Chris B. Brown's *The Art of Smart Football*
+on the bootleg and the screen game; and any Shanahan-tree offense's All-22 film, watched with nothing but the
+linebackers' first two steps in mind.
+
+::: {.callout-note title="Go deeper"}
+**From diagrams to real tracking data.** The animations in this chapter are gridiron simulations in NFL Big Data
+Bowl (BDB) coordinates, the format of the league's public tracking-data competition. The 2025 Big Data Bowl release
+(2022 season, weeks 1–9) records every player ten times a second, and its `plays.csv` marks each play's
+`playAction` and `dropbackType`, so you can find real bootlegs and watch the linebackers step up on the fake. The
+data needs a free Kaggle login, so this code is not run when the book is built.
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (real Big Data Bowl tracking; not run in the build)"
+import pandas as pd
+from gridiron import bdb, show_animation
+
+plays = pd.read_csv("data/bdb/plays.csv")
+# play-action passes on which the quarterback rolled out by design (a bootleg or a rollout)
+boots = plays[(plays["playAction"] == True)
+              & plays["dropbackType"].astype(str).str.contains("ROLLOUT", case=False)]
+print(len(boots), "play-action rollouts")
+g, pl = boots.iloc[0][["gameId", "playId"]]
+
+trk = bdb.load_tracking("data/bdb/tracking_week_*.csv")
+one = bdb.prepare(trk, plays, game_id=g, play_id=pl)
+show_animation(one, times=[0.0, 0.7, 1.5, 2.3])   # snap, the fake, the boot, the throw
+```
+:::
+
+[^ineligible]: NFL Football Operations, *2026 Official Playing Rules*, Rule 8, Section 3, Article 1 ("Ineligible
+    Player Downfield"): "On a scrimmage play during which a legal forward pass is thrown, it is a foul if the entire
+    body of an ineligible offensive player ... is more than one yard beyond the line of scrimmage before the pass has
+    been thrown"; a lineman blocking an opponent who started within a yard of the line may be carried past it, and
+    Article 2 lets linemen advance once the ball is thrown. Penalty: five yards.
+    <https://operations.nfl.com/the-rules/nfl-rulebook/>. The rule is taught in [Run-Pass Options](04-06-rpos.qmd).
+
+[^baldwin]: Ben Baldwin, "Rushing Success and Play-Action Passing," guest column, Football Outsiders, February
+    2018 (play-by-play charting, 2011–2017; the date and findings are summarized in Acme Packing Company, Aug. 3,
+    2018: <https://www.acmepackingcompany.com/by-the-numbers/2018/8/3/17644926/packers-hoping-to-restore-the-declining-play-action-pass-in-2018>).
+    Josh Hermsmeyer, "Can NFL Coaches Overuse Play-Action? They Haven't Yet," FiveThirtyEight, 2018:
+    <https://fivethirtyeight.com/features/can-nfl-coaches-overuse-play-action-they-havent-yet/>; his tracking-data
+    finding on middle linebackers is summarized in Ed Feng, "How Super Bowl contenders use analytics," The Power
+    Rank, Sept. 10, 2021: <https://thepowerrank.com/2021/09/10/how-super-bowl-contenders-use-analytics/>. Baldwin
+    and Sebastian Carl are the authors of nflfastR: <https://www.nflfastr.com/>. The same sources are used in
+    [Expected Points, EPA, and Success Rate](../13-analytics-and-data/13-02-expected-points-and-success-rate.qmd).
+
+[^ftn]: Course calculation from nflverse play-by-play (`load_pbp`) joined to FTN charting (`load_ftn_charting`,
+    fields `is_play_action`, `is_screen_pass`, `qb_location`, `is_qb_out_of_pocket`, `n_pass_rushers`), 2022–2025
+    regular seasons. A dropback is any play with `qb_dropback == 1`, including sacks and scrambles, spikes
+    removed. Running back carries for the run-game measure are runs by players listed as RB or FB on nflverse
+    rosters, excluding scrambles and kneels. FTN's public data dictionary defines the fields only as "play-action
+    pass," "screen pass" and "quarterback moved out of pocket," so edge cases (a shotgun ride, a fake jet sweep)
+    are the charters' judgment: read team rates as one charting service's calls. Data dictionary:
+    <https://nflreadr.nflverse.com/articles/dictionary_ftn_charting.html>.
+
+[^ftnsack]: Course calculation from nflverse play-by-play (`load_pbp`) joined to FTN charting
+    (`load_ftn_charting`, field `is_play_action`) via nflreadpy: dropbacks (`qb_dropback == 1`, spikes removed) on
+    first and second down, 2022–2025 regular seasons, with `sack == 1`. Across all downs the comparison flips (play-action `{python} f"{100 * SACK[True]:.1f}"`%, others
+    `{python} f"{100 * SACK[False]:.1f}"`%), because the no-fake group contains almost every third-and-long, when
+    defenses rush hardest.
+
+[^ftn2]: Same data and method as the previous note, 2025 season. The under-center comeback in personnel and
+    formation data: see [Classic Formations](../02-personnel-and-formations/02-03-classic-formations.qmd).
+
+[^ftn3]: Same data; pass attempts that were not sacks, 2022–2025. Air yards and yards after the catch are
+    nflverse's `air_yards` and `yards_after_catch` (the latter only on completions).
+
+[^bootname]: The football name has no documented coinage; the hidden-ball explanation is the standard one
+    (Wikipedia, "Bootleg play": the quarterback "hides the ball from the defense by his thigh ... similar to the way
+    bootleggers would hide whiskey in their trousers during Prohibition": <https://en.wikipedia.org/wiki/Bootleg_play>).
+    The word itself is older, from smugglers hiding goods in the legs of their boots: Merriam-Webster, "bootleg":
+    <https://www.merriam-webster.com/dictionary/bootleg>.
+
+[^ineligible2]: NFL Rule 8-3-1 (see the earlier note) has no exception for passes caught behind the line; the
+    college rule does: NCAA Rule 7-3-10, "No originally ineligible receiver shall be or have been more than three
+    yards beyond the neutral zone until a legal forward pass that crosses the neutral zone has been thrown"
+    (<https://www.sdcfoa.org/ncaa/rule-7-snapping-and-passing-the-ball/college-7-3-10>). An NFL example of the rule on
+    a screen: a 2024 ineligible-downfield flag on a Dak Prescott screen to Rico Dowdle was picked up only after replay
+    showed where the lineman was relative to the line (ProFootballTalk, Sept. 27, 2024:
+    <https://www.nbcsports.com/nfl/profootballtalk/rumor-mill/news/nfl-officials-used-replay-assistance-to-pick-up-flag-for-ineligible-man-downfield-not-holding>).
+
+[^grounding]: NFL Football Operations, *2026 Official Playing Rules*, Rule 8, Section 2, Article 1 (intentional
+    grounding): a foul if a passer facing an imminent loss of yardage throws a forward pass that is not in the
+    direction and vicinity of an originally eligible receiver; it is not called when a passer who is or has been
+    outside the pocket area throws a pass that lands at or beyond the line of scrimmage (including out of bounds).
+    <https://operations.nfl.com/the-rules/nfl-rulebook/>. The rule is taught in
+    [Quarterback Play](04-07-quarterback-play.qmd) and owned by
+    [Officiating, Replay, and the Rules of the Ball](../09-special-teams-and-the-rules-that-shape-strategy/09-04-officiating-replay-and-rules-of-the-ball.qmd).
+
+[^forward]: The forward pass became legal in American football in 1906, after the rules reforms of 1905–06:
+    <https://en.wikipedia.org/wiki/Forward_pass>.
+
+[^tree]: Gary Kubiak was Denver's offensive coordinator 1995–2005 (Pro Football Reference coaching page:
+    <https://www.pro-football-reference.com/coaches/KubiGa0.htm>). Matt Ryan was the 2016 AP MVP with Kyle Shanahan
+    as Atlanta's offensive coordinator (<https://www.pro-football-reference.com/years/2016/>;
+    <https://www.pro-football-reference.com/coaches/ShanKy0.htm>). McVay (Washington assistant 2010–13 while
+    Shanahan was offensive coordinator) and LaFleur (Washington quarterbacks coach 2010–13, Atlanta quarterbacks coach
+    2015–16): <https://www.pro-football-reference.com/coaches/McVaSe0.htm>,
+    <https://www.pro-football-reference.com/coaches/LaFlMa0.htm>. The tree is traced in
+    [Zone Running](../03-the-run-game/03-02-zone-running.qmd) and the
+    [12-03](../12-case-studies/12-03-shanahan-wide-zone-tree.qmd) case study.
+
+[^rams18]: 2018 Rams record and Super Bowl LIII (lost 13–3 to New England): Pro Football Reference,
+    <https://www.pro-football-reference.com/teams/ram/2018.htm>. Goff "used play-action on 34.6 percent of his
+    dropbacks, the highest mark in the league by more than 4 percentage points, according to Pro Football Focus":
+    Robert Mays, The Ringer, Feb. 1, 2019:
+    <https://www.theringer.com/2019/02/01/nfl/rams-sean-mcvay-play-action-history-bill-walsh-mike-shanahan>.
+
+[^parate]: Danny Kelly, The Ringer, Sept. 3, 2019, citing the *Football Outsiders Almanac*:
+    <https://www.theringer.com/nfl/2019/9/3/20847182/weird-nfl-stats-2019-oddities>.
+
+[^reid]: Reid was a Packers assistant under Holmgren 1992–98, Eagles head coach 1999–2012 and Chiefs head coach from
+    2013: <https://www.pro-football-reference.com/coaches/ReidAn0.htm>. On his Eagles screen game: Reid, "primarily
+    with Staley, Brian Westbrook and LeSean McCoy, diagramed and dialed up screens like it was an art form" (Jeff
+    McLane, *Philadelphia Inquirer*, Nov. 26, 2020:
+    <https://www.inquirer.com/eagles/eagles-screen-passes-doug-pederson-carson-wentz-miles-sanders-20201126.html>).
+
+[^sb53]: Ben Linsey, "Patriots follow blueprint for beating Jared Goff and the Rams to perfection," PFF, Feb. 4,
+    2019 (pressure on 42.9 percent of dropbacks; stunts on 18 dropbacks; the middle of the field packed):
+    <https://www.pff.com/news/pro-patriots-follow-blueprint-for-beating-jared-goff-and-the-rams-to-perfection>.
+
+[^lx]: Super Bowl LX, February 8, 2026: Seattle 29, New England 13 (see the course fact sheet):
+    <https://en.wikipedia.org/wiki/Super_Bowl_LX>. Seattle's 2025 staff and quarterback:
+    <https://en.wikipedia.org/wiki/2025_Seattle_Seahawks_season>.
