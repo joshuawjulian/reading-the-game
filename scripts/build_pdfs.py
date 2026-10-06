@@ -123,7 +123,10 @@ def main():
     if a.slugs:
         todo = [p for p in todo if any(p.stem.startswith(s) for s in a.slugs)]
     if not todo:
-        sys.exit("no matching chapters")
+        if a.slugs:
+            sys.exit("no matching chapters")
+        print("no chapters yet")
+        return
     failed = []
     with ThreadPoolExecutor(a.jobs) as ex:
         for slug, ok, log in ex.map(lambda p: build(p, a.html), todo):
