@@ -1,0 +1,1572 @@
+---
+title: "Man Coverage: Cover 0, Cover 1, Robbers, and Brackets"
+subtitle: "What it means to give every defender a receiver, why the defense keeps one man free, and how it handles stacks, stars and the receiver it fears most."
+description: "Man coverage from the defense's side: Cover 1 (man-free) and its free defender (rat, robber, lurk), Cover 0 and the arithmetic of the all-out blitz, the techniques (press-man, off-man, trail) and how leverage follows the help, banjo and combo calls against stacks and bunches, brackets on a star receiver, shadow corners, when defenses choose man (third down, the red zone, talent) in nflverse charting data, and the man-beaters offenses answer with."
+glossary:
+  "Cover 1": {def: "Man coverage with one deep safety in the middle of the field: every eligible receiver has a defender on him, the free safety plays the deep middle as help for all of them, and the defense usually has one more defender left over to rush, spy or sit in the middle.", aliases: ["Man-free"]}
+  "Cover 0": "Man coverage with no deep safety: every eligible receiver has a defender on him and everyone else rushes the quarterback, so no one is left to help over the top. Usually paired with a six- or seven-man blitz."
+  Robber: {def: "A defender with no receiver to cover in man coverage (usually a safety) who sits in the middle of the field about 8 to 12 yards deep, reads the quarterback, and drives on in-breaking throws such as digs, crossers and slants. Many playbooks call him the rat, especially when he is a linebacker sitting lower, in the hole.", aliases: ["Rat"]}
+  Lurk: "A free defender in man coverage, often one who lines up as a blitzer or a deep safety, who drops at the snap into the shallow middle (roughly 5 to 10 yards deep) to sit under crossing routes and hot throws. A disguised cousin of the robber."
+  Banjo: "A two-defender rule for two receivers who line up close together (a stack, a bunch or a tight split): instead of each defender locking onto one man, they decide at the release, usually with the outside defender taking the first receiver to break outside and the inside defender the first to break inside, so neither has to fight through traffic."
+  "Combo coverage": "Any coverage in which two or more defenders share two or more receivers and decide who takes whom by how the routes declare after the snap (a banjo is the simplest), or which mixes man rules and zone rules on the same snap. Charters also use the word for a play that fits no single coverage label."
+  Bracket: "Two defenders on one receiver, one on each side of him: underneath and over the top (under-over) or inside and outside (in-out), so that whichever way he breaks, a defender is already there. The usual way to take away a star."
+  "Shadow corner": "A cornerback assigned to follow one receiver (usually the opponent's best) wherever he lines up, left, right or in the slot, instead of staying on one side of the field."
+  "Inside help": "A defender positioned toward the middle of the field from a man defender (the deep middle safety, or a robber underneath) who can take routes that break inside, so the man defender can play outside leverage and take away the sideline."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import os
+import logging
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from matplotlib.patches import Ellipse, FancyArrowPatch, Patch
+from matplotlib.lines import Line2D
+
+from gridiron import Play, Player, Field, routes as r, style, draw_marker
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+READ_GREEN = "#0f7a55"          # darker step of the aqua highlight, for text and read lines
+OD, DD = style.OFFENSE_DARK, style.DEFENSE_DARK
+LINE_D, OFF_BALL, GUN = -0.7, -1.5, -5.0
+LOS = 40                        # the offense's own 30: room for deep routes in the window
+FW = 160 / 3
+
+
+# ---------------------------------------------------------------- players and alignments
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=key if label is None else label)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line5():
+    """Five offensive linemen, 1.6 yards apart (only the center is lettered)."""
+    return [O(k, k, LINE_D, w, "C" if k == "C" else "") for k, w in
+            (("LT", -3.2), ("LG", -1.6), ("C", 0.0), ("RG", 1.6), ("RT", 3.2))]
+
+
+def spread(rb_w=1.5, x_w=-15.0, h_w=-9.0, y_w=9.0, z_w=15.0):
+    """11 personnel, shotgun 2x2: X and Z on the line (with the five linemen, seven on the line);
+    H in the left slot and Y, a tight end split out, in the right slot, both a step off the ball."""
+    return line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, rb_w, "R"),
+                      O("X", "WR", LINE_D, x_w), O("H", "WR", OFF_BALL, h_w),
+                      O("Y", "TE", OFF_BALL, y_w), O("Z", "WR", LINE_D, z_w)]
+
+
+def dline():
+    """Four down linemen (a four-man rush), strength to the offense's right."""
+    return [D("WDE", "DE", 1.0, -5.4, "E"), D("WDT", "DT", 1.0, -0.8, "T"),
+            D("SDT", "DT", 1.0, 2.4, "T"), D("SDE", "DE", 1.0, 5.4, "E")]
+
+
+def moved(players, extra=None):
+    extra = extra or {}
+    return [q.moved(d=extra[q.key][0], w=extra[q.key][1]) if q.key in extra else q for q in players]
+
+
+def cover1_def(extra=None):
+    """Nickel Cover 1 against 2x2: corners pressed with a slight outside shade (their help is
+    inside), the nickel ($) on H, the strong safety on the tight end, the Will on the back, the
+    Mike free, the free safety alone in the deep middle."""
+    return moved(dline() + [D("MIKE", "MIKE", 4.5, -1.8, "M"), D("WILL", "WILL", 4.5, 2.4, "W"),
+                            D("NB", "NB", 4.0, -9.8, "$"), D("SS", "SS", 5.0, 9.8, "SS"),
+                            D("LCB", "CB", 1.2, -15.9, "CB"), D("RCB", "CB", 1.2, 15.9, "CB"),
+                            D("FS", "FS", 14.0, 0.0, "FS")], extra)
+
+
+def protect(p, rushers=("WDE", "WDT", "SDT", "SDE"), linemen=("LT", "LG", "C", "RG", "RT")):
+    """Linemen set, rushers engage them: enough to say 'pass', no more."""
+    for k in linemen:
+        p.block(k, pts=[(-1.2, 0.0)])
+    for k in rushers:
+        p.rush(k, pts=[(-1.6, 0.0)], speed=2.0)
+
+
+def route_to(p, key, *pts, delay=0.0, speed=None):
+    """A route through absolute (d, w) points."""
+    start = np.array(p._cur(key))
+    return p.route(key, [tuple(np.array(q) - start) for q in pts], frame="field", delay=delay, speed=speed)
+
+
+# ---------------------------------------------------------------- drawing helpers
+def P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def clean(ax):
+    """Drop the painted yard numbers (they sit where receivers stand); clip all text to the window."""
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def ruler(fld, p, fs=6.0, step=5, top=30):
+    """Depth labels (yards past the line of scrimmage) just inside the left edge of the window."""
+    xl = FW - fld.y1 + 0.4
+    for d in range(step, top + 1, step):
+        y = p.los + d
+        if fld.x0 + 1.5 <= y <= fld.x1 - 1.5:
+            fld.ax.text(xl, y, f"{d}" + (" yd" if d == step else ""), fontsize=fs, color=style.INK_2,
+                        ha="left", va="center", zorder=12,
+                        bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.85))
+
+
+def draw(p, width_in=8.3, ax=None, show_ruler=True, **kw):
+    fld = p.draw(width_in=width_in, ax=ax, title=False, **kw)
+    clean(fld.ax)
+    if show_ruler:
+        ruler(fld, p)
+    return fld
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.0, ha="center", weight="normal", box=True):
+    x, y = P(fld, p, d, w)
+    fld.ax.text(float(x), float(y), text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=13,
+                fontweight=weight, linespacing=1.15,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9) if box else None)
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=7.0, ha="center"):
+    (xt, yt), (xp, yp) = P(fld, p, *text_at), P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha=ha, va="center", zorder=13, linespacing=1.15,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=7),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def branch(fld, p, pts, color=style.DEFENSE, lw=1.5, dash=(0, (3, 2.2)), end="arrow", z=5):
+    """A path through absolute (d, w) points: by default a defender's reaction (orange dashes)."""
+    xs, ys = P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    fld.ax.plot(xs, ys, color=color, lw=lw, ls=dash, zorder=z, solid_capstyle="round")
+    if end == "arrow":
+        fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>",
+                                         mutation_scale=10, color=color, lw=lw, zorder=z))
+
+
+def oval(fld, p, center, size, color=style.DEFENSE, label=None, alpha=0.13, fs=7.0, ls=(0, (3, 2))):
+    """A shaded area (depth, width) with an optional italic label at its centre."""
+    x, y = P(fld, p, *center)
+    fld.ax.add_patch(Ellipse((float(x), float(y)), size[1], size[0], fc=color, alpha=alpha, ec=color, lw=0.9,
+                             ls=ls, zorder=1.6))
+    if label:
+        fld.ax.text(float(x), float(y), label, ha="center", va="center", fontsize=fs, color=style.INK_2,
+                    style="italic", zorder=3)
+
+
+def vdim(fld, p, w, d0, d1, text, fs=6.5, side=1):
+    """A vertical dimension line at width w from depth d0 to d1, labelled beside it."""
+    (x0, y0), (x1, y1) = P(fld, p, d0, w), P(fld, p, d1, w)
+    fld.ax.annotate("", (float(x1), float(y1)), xytext=(float(x0), float(y0)),
+                    arrowprops=dict(arrowstyle="<->", color=style.INK_2, lw=0.8), zorder=6)
+    say(fld, p, (d0 + d1) / 2, w + side * 2.4, text, fontsize=fs)
+
+
+def hline(fld, p, d, w0, w1, color=style.INK_2, lw=0.9, ls=(0, (4, 3))):
+    (x0, y0), (x1, y1) = P(fld, p, d, w0), P(fld, p, d, w1)
+    fld.ax.plot([float(x0), float(x1)], [float(y0), float(y1)], color=color, lw=lw, ls=ls, zorder=2.5)
+
+
+def number(fld, p, keys_texts, dd=-2.9):
+    """Receiver numbers (#1, #2 ...) under the named receivers."""
+    for key, txt in keys_texts:
+        q = p.players[key]
+        say(fld, p, q.d + dd, q.w, txt, color=OD, fontsize=6.8, weight="bold")
+
+
+def panel_title(ax, text, fs=8.6):
+    ax.set_title(text, fontsize=fs, loc="left", color=style.INK, fontweight="bold")
+
+
+def under_note(ax, text, fs=6.9):
+    ax.text(0.5, -0.02, text, transform=ax.transAxes, ha="center", va="top", fontsize=fs, color=style.INK,
+            linespacing=1.2)
+
+
+LEGEND = {
+    "route": Line2D([], [], color=style.OFFENSE, lw=1.8, label="route"),
+    "man": Line2D([], [], color=style.DEFENSE, lw=0.9, ls=(0, (1, 2)), label="man assignment"),
+    "drop": Line2D([], [], color=style.DEFENSE, lw=1.3, ls=(0, (3, 2)), label="defender's drop / path"),
+    "react": Line2D([], [], color=style.DEFENSE, lw=1.4, ls=(0, (3, 2.2)), label="defender's reaction"),
+    "rush": Line2D([], [], color=style.DEFENSE, lw=1.8, label="rusher"),
+    "ring": Line2D([], [], marker="o", ls="", ms=11, mfc="none", mec=style.THIRD, mew=2, label="player to watch"),
+    "area": Patch(fc=style.DEFENSE, alpha=0.2, ec=style.DEFENSE, label="area a defender guards"),
+    "ltg": Line2D([], [], color=style.LINE_TO_GAIN, lw=2.2, label="line to gain"),
+    "pass": Line2D([], [], color=style.BALL, lw=1.3, ls=(0, (2, 2)), label="the throw"),
+}
+
+
+def field_legend(ax, keys, fs=7.0, ncol=None):
+    hs = [LEGEND[k] for k in keys]
+    ax.legend(handles=hs, loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=ncol or min(len(hs), 4),
+              fontsize=fs, frameon=False, handlelength=2.0, columnspacing=1.2, borderaxespad=0.2)
+
+
+# ---------------------------------------------------------------- motion: keyframes, frame strips, video
+def set_tracks(p, tracks, t_end=None):
+    """Hand-made keyframes {key: [(t, d, w), ...]} for some players, after all routes are added.
+    gridiron's man() keeps a shrinking cushion that ends on top of the receiver (which hides him in
+    print) and cannot switch receivers, so man defenders here are keyframed by hand."""
+    kf, t0, t1 = p._compile()
+    kf = dict(kf)
+    for key, rows in tracks.items():
+        q = p.players[key]
+        rows = [(min(t0, -1.0), q.d, q.w), (0.0, q.d, q.w)] + [tuple(r_) for r_ in rows]
+        kf[key] = np.array(rows, dtype=float)
+    p._compiled = (kf, t0, max(t1, t_end or 0.0, *[rows[-1][0] for rows in tracks.values()]))
+
+
+def chase(p, key, target, off, lag=0.25, t_on=0.7, t_end=3.6, t_start=0.1):
+    """Keyframes for a man defender who settles `off` = (down, toward the offense's right) yards
+    from where his receiver was `lag` seconds earlier."""
+    q = p.players[key]
+    rows = []
+    for tt in np.round(np.arange(t_start, t_end, 0.05), 3):
+        f = min(1.0, max(0.0, (tt - t_start) / (t_on - t_start)))
+        f = f * f * (3 - 2 * f)
+        tgt = p.position(target, max(0.0, tt - lag)) + np.array(off)
+        rows.append((tt, *(np.array([q.d, q.w]) * (1 - f) + tgt * f)))
+    return rows
+
+
+def ease(points, step=0.05):
+    """Smooth keyframes through (t, d, w) waypoints (ease in and out on each leg)."""
+    rows = []
+    for (ta, da, wa), (tb, db, wb) in zip(points[:-1], points[1:]):
+        for tt in np.arange(ta, tb, step):
+            f = (tt - ta) / (tb - ta)
+            f = f * f * (3 - 2 * f)
+            rows.append((round(float(tt), 3), da + (db - da) * f, wa + (wb - wa) * f))
+    rows.append(tuple(points[-1]))
+    return rows
+
+
+def frame(ax, p, t, lateral, window, rings=(), ltg=True):
+    """Everyone at time t, with faint trails of where they have been and the ball's flight so far."""
+    ylo, yhi = sorted((p.ball_y - lateral[0], p.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=p.los, window=window, numbers=False, lateral=(ylo, yhi),
+                to_go=p.to_go if ltg else None)
+    ppy = fld.pts_per_yard()
+    wl, wr = sorted(lateral)
+    ring = dict(rings)
+    for k, q in p.players.items():
+        d, w = p.position(k, t)
+        if not (window[0] + 0.4 < d < window[1] - 0.4 and wl + 0.4 < w < wr - 0.4):
+            continue
+        if t > 0:
+            pts = np.array([p.position(k, tt) for tt in np.linspace(0.0, t, 40)])
+            if np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) > 0.3:
+                xs, ys = P(fld, p, pts[:, 0], pts[:, 1])
+                ax.plot(xs, ys, color=style.OFFENSE if q.side == "off" else style.DEFENSE, lw=1.0,
+                        alpha=0.5, zorder=3)
+        x, y = P(fld, p, d, w)
+        draw_marker(ax, float(x), float(y), q.side, q.label, ppy, ring=ring.get(k))
+    for kind, to, te in p.ball_events:
+        if kind == "pass" and t > te:
+            ts = np.linspace(te, t, 20)
+            b = np.array([p.ball_position(tt) for tt in ts])
+            xs, ys = P(fld, p, b[:, 0], b[:, 1])
+            ax.plot(xs, ys, color=style.BALL, lw=1.4, ls=(0, (2, 1.5)), zorder=9)
+            ax.add_patch(Ellipse((float(xs[-1]) - 0.9, float(ys[-1])), 1.0, 0.62, fc=style.BALL, ec="white",
+                                 lw=0.5, zorder=11))
+    clean(ax)
+    return fld
+
+
+def strip_grid(p, times, notes, lateral, window, rings=(), ncols=2, width_in=6.5, deco=None, fs=6.9):
+    """Print stand-in for an animation: numbered panels, each with a sentence underneath."""
+    nrows = int(np.ceil(len(times) / ncols))
+    pw = width_in / ncols
+    ph = pw * (window[1] - window[0]) / abs(lateral[1] - lateral[0])
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False, figsize=(width_in, nrows * (ph + 0.75)))
+    for ax in axes.flat[len(times):]:
+        ax.axis("off")
+    for i, (ax, t) in enumerate(zip(axes.flat, times)):
+        fld = frame(ax, p, t, lateral, window, rings)
+        if deco:
+            deco(i, fld, p)
+        panel_title(ax, f"{i + 1}.  " + ("snap" if abs(t) < 1e-6 else f"+{t:.1f} s"))
+        under_note(ax, notes[i], fs=fs)
+    fig.tight_layout(h_pad=3.2, w_pad=0.8)
+    return fig
+
+
+def strip_rows(plays, names, times, notes, lateral, window, rings=(), width_in=6.5, fs=6.6):
+    """One row per play, one column per moment: two versions of a play on the same clock."""
+    nc = len(times)
+    pw = width_in / nc
+    ph = pw * (window[1] - window[0]) / abs(lateral[1] - lateral[0])
+    fig, axes = plt.subplots(len(plays), nc, squeeze=False, figsize=(width_in, len(plays) * (ph + 0.8)))
+    for i, (p, nm) in enumerate(zip(plays, names)):
+        for j, t in enumerate(times):
+            frame(axes[i, j], p, t, lateral, window, rings)
+            panel_title(axes[i, j], f"{nm}: " + ("snap" if abs(t) < 1e-6 else f"+{t:.1f} s"), fs=8)
+            under_note(axes[i, j], notes[i][j], fs=fs)
+    fig.tight_layout(h_pad=3.0, w_pad=0.6)
+    return fig
+
+
+def video(plays, names, lateral, window, t_end, rings=(), width_in=6.0, t_start=-0.4):
+    """Web version: the plays side by side, on one clock."""
+    from IPython.display import HTML, display
+    n = len(plays)
+    span_w, span_d = abs(lateral[1] - lateral[0]), window[1] - window[0]
+    fig, axes = plt.subplots(1, n, figsize=(width_in, width_in / n * span_d / span_w + 0.5), squeeze=False)
+    ts = np.round(np.arange(t_start, t_end + 1e-9, 0.1), 2)
+
+    def update(i):
+        for ax, p, nm in zip(axes[0], plays, names):
+            ax.clear()
+            frame(ax, p, max(0.0, float(ts[i])), lateral, window, rings)
+            panel_title(ax, (nm + ": " if nm else "") + ("snap" if ts[i] <= 0 else f"+{ts[i]:.1f} s"), fs=9)
+        return []
+
+    fig.tight_layout()
+    anim = animation.FuncAnimation(fig, update, frames=len(ts), interval=100, blit=False)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+```
+
+```{python}
+#| code-summary: "Show the Python (nflverse coverage labels joined to play-by-play, 2018–2025)"
+#| output: false
+from gridiron.data import nfl, pbp
+
+SEASONS = list(range(2018, 2026))
+PB_COLS = ["season", "season_type", "game_id", "play_id", "down", "ydstogo", "yardline_100", "defteam",
+           "qb_dropback", "sack", "yards_gained"]
+_pb = pbp(SEASONS, columns=PB_COLS)
+_pb = _pb[_pb["season_type"] == "REG"]
+_part = (nfl().load_participation(SEASONS).to_pandas()
+         .rename(columns={"nflverse_game_id": "game_id"})
+         [["game_id", "play_id", "defense_coverage_type", "number_of_pass_rushers", "time_to_throw"]])
+CV = _pb.merge(_part, on=["game_id", "play_id"])
+# charted dropbacks; blown coverages, 'combo' and prevent left out
+CV = CV[(CV["qb_dropback"] == 1) & CV["defense_coverage_type"].notna()
+        & ~CV["defense_coverage_type"].isin(["BLOWN", "COMBO", "PREVENT"])].copy()
+CV["man"] = CV["defense_coverage_type"].isin(["COVER_0", "COVER_1", "2_MAN"])
+CV["c0"] = CV["defense_coverage_type"].eq("COVER_0")
+CV["era"] = np.where(CV["season"] <= 2022, "2018–2022 (NGS charting)", "2023–2025 (FTN charting)")
+CV["explosive"] = CV["yards_gained"] >= 20
+CV["rush5"] = CV["number_of_pass_rushers"] >= 5
+
+
+def _dd(row):
+    if row.down == 1:
+        return "1st down"
+    if row.down == 2:
+        return "2nd down"
+    for hi, lab in ((2, "3rd/4th & 1–2"), (6, "3rd/4th & 3–6"), (10, "3rd/4th & 7–10")):
+        if row.ydstogo <= hi:
+            return lab
+    return "3rd/4th & 11+"
+
+
+CV["dd"] = CV.apply(_dd, axis=1)
+CV["zone_fp"] = pd.cut(CV["yardline_100"], [0, 5, 10, 20, 40, 80, 100],
+                       labels=["1–5", "6–10", "11–20", "21–40", "41–80", "81–99"])
+SEASON_MAN = CV.groupby("season")["man"].mean() * 100
+TEAM = CV.groupby(["season", "defteam"])[["man", "c0"]].mean().reset_index()
+TEAM["man_rank"] = TEAM.groupby("season")["man"].rank(ascending=False, method="min")
+TEAM["c0_rank"] = TEAM.groupby("season")["c0"].rank(ascending=False, method="min")
+```
+
+Third-and-5 in the red zone. The offense comes out with two receivers on each side, and as the
+quarterback starts his cadence the broadcast's camera catches something it rarely shows on first
+down: both cornerbacks walk up until they are standing a yard from the receivers' faces, squared
+up, eyes on the receivers' belts rather than on the quarterback. The slot receiver motions across
+the formation, and a defender jogs across with him, mirroring every step. One safety drifts back
+to the middle of the field, 14 yards deep, all alone. The analyst says, "They're in man." The ball
+is snapped, the quarterback looks to his favourite target running a crossing route, and a
+linebacker who had been standing in the middle covering nobody steps into the lane and knocks the
+ball down. Who was that linebacker covering? Nobody, and that was the point. This chapter is about
+the coverages in which defenders cover *people*: what each defender is asked to do, the one or two
+defenders the system deliberately leaves free, and the tricks defenses use when one-on-one isn't
+enough.
+
+**You'll be able to…**
+
+- Draw Cover 1 (man-free), its robber and rat versions, and Cover 0, and say for each one who
+  covers whom, who is left free, and what the defense gives up.
+- Tell press-man, off-man and trail technique apart on a replay, and explain why a man defender's
+  leverage depends on where his help is.
+- Recognise a banjo against stacked and bunched receivers, a bracket on a star receiver, and a
+  shadow cornerback, and say what each costs the rest of the coverage.
+- Predict when a defense is most likely to play man (third down, the red zone, a great cornerback)
+  and read the situational numbers that show it.
+- Name the offense's standard answers to man coverage (rubs and mesh, slants, double moves,
+  motion, a back on a linebacker) and the defensive counter to each.
+
+::: {.callout-note title="You'll need"}
+- **Zones, technique words and the shell** ([Coverage Fundamentals](06-01-coverage-fundamentals.qmd)):
+  [press](../../appendices/glossary.qmd#gl-press) is a defender lined up within a yard or two of a
+  receiver to jam him; [off coverage](../../appendices/glossary.qmd#gl-off-coverage) starts 5 to 10
+  yards away; the [cushion](../../appendices/glossary.qmd#gl-cushion) is that gap.
+  [Trail technique](../../appendices/glossary.qmd#gl-trail-technique) is running just behind and
+  underneath a receiver, trusting a safety over the top. The middle of the field is
+  [closed](../../appendices/glossary.qmd#gl-mofc) (MOFC) when a safety stands deep in it and
+  [open](../../appendices/glossary.qmd#gl-mofo) (MOFO) when no one does. The
+  [hole](../../appendices/glossary.qmd#gl-hole-zone) is the middle of the field 10 to 15 yards
+  deep, in front of the deep safety. Coverage numbers (Cover 0 to Cover 9) mostly count the deep
+  defenders.
+- **Man and zone, one-high and two-high** ([A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)):
+  in [man coverage](../../appendices/glossary.qmd#gl-man-coverage) each defender follows one
+  receiver; in [zone](../../appendices/glossary.qmd#gl-zone-coverage) each guards an area. A
+  [one-high](../../appendices/glossary.qmd#gl-one-high) shell has one deep safety, a
+  [two-high](../../appendices/glossary.qmd#gl-two-high) shell two. A
+  [blitz](../../appendices/glossary.qmd#gl-blitz) sends five or more rushers. The
+  [nickel](../../appendices/glossary.qmd#gl-nickel) package has five defensive backs; the fifth,
+  the nickel back, is drawn as **$**.
+- **Leverage and press from the receiver's side** ([The Quick Game](../04-the-passing-game/04-03-quick-game.qmd)):
+  a defender's [leverage](../../appendices/glossary.qmd#gl-leverage-inside-outside) is the side of
+  the receiver he lines up on; a receiver beats press with his
+  [release](../../appendices/glossary.qmd#gl-release-vs-press); a
+  [double move](../../appendices/glossary.qmd#gl-double-move) fakes one route and runs another.
+  Within five yards of the line an NFL defender may jam a receiver; beyond that, contact before the
+  throw is [illegal contact](../../appendices/glossary.qmd#gl-illegal-contact).
+- **Man-beaters** ([Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd)):
+  [mesh](../../appendices/glossary.qmd#gl-mesh) crosses two receivers over the middle; a
+  [rub route](../../appendices/glossary.qmd#gl-rub-route) makes a chasing defender go around a
+  teammate; the [angle route](../../appendices/glossary.qmd#gl-angle-route) puts a running back
+  on a linebacker.
+- **Motion** ([Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)):
+  a defender who [travels](../../appendices/glossary.qmd#gl-travel-man-defender-follows-motion)
+  across the formation with a man in motion suggests man coverage; an
+  [exchange](../../appendices/glossary.qmd#gl-exchange-man-coverage-on-motion) is a man defense
+  swapping receivers instead.
+- **Formations** ([Spread Formations](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)):
+  [2x2](../../appendices/glossary.qmd#gl-2x2) is two receivers on each side,
+  [3x1](../../appendices/glossary.qmd#gl-3x1) three and one, [empty](../../appendices/glossary.qmd#gl-empty)
+  has no back in the backfield. In a [stack](../../appendices/glossary.qmd#gl-stack) one receiver
+  lines up directly behind another; a [bunch](../../appendices/glossary.qmd#gl-bunch) is three in a
+  tight cluster. Receivers are numbered from the sideline in: #1 is the widest on his side.
+
+*Reading the diagrams:* offense is blue circles (X, Y, Z, H receivers; Q quarterback; R running
+back; C center). Defense is outlined squares: E and T the defensive ends and tackles, M the Mike
+(middle) linebacker, W the Will, **$** the nickel back, CB a cornerback, FS and SS the free and
+strong safety. Dotted orange lines join a man defender to the receiver he covers; dashed orange
+arrows are defenders' movements; shaded ovals are areas a defender guards. A green ring marks the
+player to watch. The small numbers down the left edge give the depth in yards past the line of
+scrimmage (the darker blue line); the orange line is the line to gain.
+:::
+
+## What man coverage asks of a defender
+
+Every pass defense has to answer one question before the snap: when the receivers start running,
+how does each defender know what to do? Zone coverage answers with *places*: you have the deep
+third, you have the flat, guard it and take whoever comes. Man coverage answers with *people*:
+you have number 11, go where he goes. Everything in this chapter grows from that one choice, so it
+is worth slowing down on what it buys and what it costs.
+
+What it buys is **tightness and certainty**. A zone defender guards grass, so a receiver can sit
+down in the soft spot between two zones and catch the ball with nobody within three yards of him.
+A man defender guards a body. If he is good enough, there is no soft spot, because the soft spot
+moves with the receiver and so does the defender. There is also no confusion about who takes the
+receiver who wanders between two areas, which is where zone coverages break down. And man coverage
+lets a defense choose its matchups: its best cornerback on their best receiver, its fastest
+linebacker on their running back.
+
+What it costs comes from where the man defender is looking. A zone defender watches the
+quarterback and can break on the ball the moment it's thrown. A man defender watches his receiver,
+usually his hips and belt, because that is where a route's direction shows first. So he often
+has his **back to the quarterback**. He doesn't see the ball leave the hand; he reacts to the
+receiver's hands and eyes going up. He can't help a teammate, because his own man would be left
+alone. If the quarterback escapes the pocket and runs, half the defense is running *away* from him,
+following receivers downfield. And if a receiver beats his defender, by a quick release, a sharp
+break, or a route that drags the defender into traffic, there is nobody nearby to fix it.
+
+That last problem is the one man coverages are built around. The pure version, every defender on a
+receiver and nobody else, is all risk: one lost footrace is a touchdown. So almost every man
+coverage keeps one or two defenders **free**, with no receiver of their own, to help the others.
+Where the free defenders stand, how many there are, and what they do give us the family names:
+Cover 1, Cover 0, the robber and rat versions, brackets. The free defender is the whole game.
+
+::: {.callout-important title="Why it exists"}
+Man coverage exists because **a defender who covers a person never has to decide whose person
+he is.** Against short, precise throws (the slant, the stick, the quick out) a zone defender is
+often a step too far away, because he started in the middle of an area. A man defender starts
+on the receiver and stays there, and that tightness is worth most where throws are short and
+timing is everything: third-and-short, the red zone, any down where the defense is also sending
+extra rushers. The price is eyes: man defenders watch receivers, not the ball, and need help
+somewhere behind them.
+:::
+
+### A little history: the bump, the rule, and the rule again
+
+Man coverage is as old as the forward pass, but the modern, aggressive form grew up in the 1960s
+American Football League. Willie Brown, a cornerback who had been a linebacker in college, began
+jamming receivers right at the line in 1963, and with Al Davis's Raiders he became the face of
+**bump-and-run**: line up in the receiver's face, hit him at the snap, then run with him. (Davis
+said he borrowed the idea from the full-court press of John Wooden's UCLA basketball teams.)
+Brown played 12 seasons in Oakland and is in the Hall of Fame.[^bumprun]
+
+For a while the bump didn't have to stop at the line. Until 1978, a defender could keep contacting a
+receiver all the way down the field until the ball was thrown. Pittsburgh's Mel Blount, a
+6-foot-3 cornerback who was very good at it, became the symbol of a defensive era; by 1977 NFL games
+averaged only about 34 combined points. In 1978 the league changed the rule: contact was
+allowed only within five yards of the line of scrimmage. Everyone called it the "Mel Blount
+rule."[^blount] That five-yard box is still the frame of every press-man rep in the NFL today.
+(How the 1978 changes reshaped the passing game is a story of its own, told in
+[The 1978 Liberation](../11-history/11-02-the-1978-liberation.qmd).)
+
+It got enforced again a generation later. In the 2003 season's AFC Championship Game, New England
+cornerback Ty Law intercepted Peyton Manning three times as the Patriots beat the Colts 24–14, and
+the Colts' complaint afterward was that New England's defensive backs had been grabbing their
+receivers well past five yards all day. That off-season the Competition Committee made illegal
+contact and defensive holding a point of emphasis for 2004. Players called it the "Ty Law
+Rule."[^lawrule] The rulebook barely changed; what changed was how often officials threw the flag.
+That pattern, a physical man-coverage style followed by a rules response, explains why NFL man
+coverage today is so much about *technique* inside five yards and *position* beyond it.
+([Contact Rules and Penalties](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd)
+has the full rule and how it is called.)[^contact]
+
+## Cover 1: man-free
+
+The most common man coverage in football is
+[**Cover 1**](../../appendices/glossary.qmd#gl-cover-1), which coaches also call
+[**man-free**](../../appendices/glossary.qmd#gl-man-free). The name is the coverage: man coverage
+on every eligible receiver, plus one *free* safety who has no man at all and plays the deep middle
+of the field. The "1" is the one deep defender.
+
+```{python}
+#| label: fig-cover1-2x2
+#| fig-cap: "Cover 1 against a 2x2 formation (11 personnel: one back, one tight end, three wide receivers), third-and-5. Every eligible receiver has a man defender (dotted lines): the cornerbacks (CB) on the outside receivers X and Z, the nickel back ($) on the slot H, the strong safety (SS) on the tight end Y, the Will (W) on the running back. The free safety (FS, ringed) has nobody: he guards the deep middle for all of them. That still leaves one defender over, the Mike (M, ringed), who here sits in the hole as the rat. The corners line up a step outside their receivers, because their help is inside."
+p = Play(spread(), cover1_def(), los=LOS, to_go=5)
+for d_, t_ in (("LCB", "X"), ("RCB", "Z"), ("NB", "H"), ("SS", "Y"), ("WILL", "RB")):
+    p.man(d_, t_)
+p.drop("MIKE", (8.0, -0.5), zone=(3.6, 9.0), label="hole")
+p.zone((17.5, 0.0), (6.5, 26.0), label="deep middle")
+protect(p)
+p.highlight("FS", "MIKE")
+fld = draw(p, lateral="full", window=(-8.5, 22.5))
+say(fld, p, 14.0, 7.8, "FS: no man.\nHelp for everyone", fontsize=6.8)
+say(fld, p, 10.6, -10.0, "the free defender:\nrat, extra rusher or spy", fontsize=6.8)
+say(fld, p, -3.8, -19.6, "outside shade:\nhelp is inside", fontsize=6.8)
+say(fld, p, -3.8, 19.6, "outside shade:\nhelp is inside", fontsize=6.8)
+field_legend(fld.ax, ["man", "drop", "area", "ltg"])
+plt.show()
+```
+
+Count the defenders in the picture. Four rush. The offense has five eligible receivers, so five
+defenders have a man. That is nine. The tenth is the free safety, alone in the middle 13 to 15
+yards deep, and the eleventh, here the Mike linebacker, is free too. Cover 1 against five
+receivers and a four-man rush always leaves that eleventh man over, and the defense gets to decide
+what to do with him. He can rush, making it a five-man pressure; he can sit in the middle as a
+helper; or he can mirror a running quarterback (a [spy](../../appendices/glossary.qmd#gl-spy),
+covered in [Third Down](../10-situational-football/10-02-third-down.qmd)). The next section is
+about that choice.
+
+### Who takes whom
+
+A man coverage is only as good as its matching rules, because the offense chooses the formation
+and the defense has to sort itself out in the 15 or so seconds before the snap. A typical set of
+rules, which varies by team:
+
+- **Corners take the widest receiver on each side (#1).** They are the best man-to-man athletes on
+  the field and the outside receivers are usually the fastest.
+- **The nickel takes the slot receiver** (#2 to his side); in a base defense, with no nickel back,
+  that job goes to a safety or a linebacker.
+- **A safety or linebacker takes the tight end**, matched for size.
+- **A linebacker takes the running back**, and if the back stays in to block, that linebacker
+  is free to rush (a "hug" or "green-dog" rule) or drop into the middle.
+- **The free safety takes nobody** and plays the deep middle.
+
+The rules have to cope with whatever the offense shows. When a receiver motions across the
+formation, his defender either *travels* with him, the classic tell you met in
+[Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd), or the
+defenders *exchange*, each sliding over a spot and swapping receivers. When the offense shows three
+receivers to one side, someone from the other side has to be matched across. When the offense
+lines up in a formation the defense didn't prepare for, the defense has a short list of simple
+"checks" to fall back on. Much of what looks like a cornerback getting "beat" on a broadcast is
+actually two defenders who disagreed about a rule.
+
+### The help is inside, so the leverage is outside
+
+Look again at the cornerbacks in the figure: each is a step *outside* his receiver. That isn't a
+style choice; it follows from where the help is. In Cover 1 the free safety lives in the deep
+middle, and often a second free defender sits underneath in the middle too. That help is
+**[inside help](../../appendices/glossary.qmd#gl-inside-help)**: defenders positioned toward the
+middle of the field from the man defender, who can get to routes that break inside (posts, digs,
+slants) faster than they can get to the sideline.
+
+So the man defender takes away the side where help can't reach him. A cornerback with inside help
+plays **outside leverage**: he protects the sideline routes (the fade, the out, the comeback) and,
+in coaches' language, *funnels* the receiver inside, toward the help. If the receiver runs a post,
+the corner chases and the free safety arrives from the middle. If he runs a slant or a dig, the
+corner trails and the help underneath is waiting. The general rule, which works for every man
+coverage in this chapter: **play away from your help**. Where there is help, you can give ground;
+where there isn't, you can't.
+
+::: {.callout-important title="Why it exists: Cover 1"}
+Cover 1 is the compromise that makes man coverage affordable. Pure man everywhere leaves every
+defender alone against a deep route. One deep safety turns every one-on-one into a
+one-on-one *with help on the deep, inside throw*, and the coverage still has a defender left over
+to rush or to rob. It keeps the box strong, too: with one safety deep, the other is free to come
+down, so the defense can still stop the run. **What it gives up:** the middle of the field
+underneath (unless the extra defender sits there), the receiver who simply wins his matchup to the
+outside, where there is no help, and the throws that make man defenders run through traffic.
+:::
+
+## Press, off and trail: the man defender's techniques
+
+"Man coverage" says *who*; technique says *how*. The same Cover 1 call can be played with every
+cornerback in the receivers' faces or with every cornerback seven yards off, and the difference
+changes which throws are open. There are three basic ways to cover a man.
+
+```{python}
+#| label: fig-techniques
+#| fig-cap: "Three ways to play man on the same receiver (X, on the offense's left; simulated). Blue is the route, orange dashes the cornerback's movement. 1. Press-man: the corner starts a yard away, jams X inside the five-yard limit (dashed line), then runs on his hip on a go route. 2. Off-man: the corner starts about seven yards off with a cushion, backpedals while X pushes upfield, and drives on the curl when X stops; he can see the break coming but arrives a step late, conceding the short throw. 3. Trail: the corner presses, then runs a step behind and underneath X on a post, protecting the low throw, because a safety (FS) is over the top to take the high one."
+LAT_T, WIN_T = (-23.5, -6.5), (-3.5, 20.0)
+
+
+def tech_panel(ax, kind):
+    off = [O("X", "WR", LINE_D, -15.0)]
+    dfn = []
+    if kind == "press":
+        dfn = [D("CB", "CB", 1.0, -14.4, "CB")]
+    elif kind == "off":
+        dfn = [D("CB", "CB", 7.0, -14.0, "CB")]
+    else:
+        dfn = [D("CB", "CB", 1.0, -15.8, "CB"), D("FS", "FS", 16.5, -8.6, "FS")]
+    p = Play(off, dfn, los=LOS, to_go=None)
+    if kind == "press":
+        route_to(p, "X", (18.5, -15.3))
+    elif kind == "off":
+        route_to(p, "X", (12.6, -15.0), (11.2, -13.7))
+    else:
+        route_to(p, "X", (9.5, -15.0), (17.0, -10.8))
+    p.highlight("CB")
+    fld = p.draw(ax=ax, lateral=LAT_T, window=WIN_T, title=False)
+    clean(ax)
+    ruler(fld, p, fs=5.5)
+    if kind == "press":
+        hline(fld, p, 5.0, -21.5, -8.0, color=style.DEFENSE_DARK)
+        say(fld, p, 5.9, -10.3, "5 yd: contact\nmust stop", fontsize=6.0)
+        branch(fld, p, [(1.0, -14.4), (2.4, -14.5), (5.0, -14.4), (17.0, -14.3)])
+        say(fld, p, 2.0, -19.8, "jam", fontsize=6.4, color=DD, weight="bold")
+    elif kind == "off":
+        branch(fld, p, [(7.0, -14.0), (10.4, -14.2), (11.6, -12.9)])
+        vdim(fld, p, -11.0, 0.0, 6.6, "cushion\n~7 yd", fs=6.0)
+        say(fld, p, 15.5, -14.0, "sees the break,\narrives late", fontsize=6.0)
+    else:
+        branch(fld, p, [(1.0, -15.8), (3.0, -15.9), (9.0, -15.8), (15.4, -11.8)])
+        say(fld, p, 12.0, -8.9, "help over\nthe top", fontsize=6.0)
+        say(fld, p, 6.0, -19.6, "a step behind,\nunderneath", fontsize=6.0)
+    return fld
+
+
+fig, axes = plt.subplots(1, 3, figsize=(6.6, 3.9))
+for ax, kind, ttl in zip(axes, ("press", "off", "trail"), ("1. Press-man", "2. Off-man", "3. Trail")):
+    tech_panel(ax, kind)
+    panel_title(ax, ttl)
+fig.legend(handles=[LEGEND["route"], LEGEND["react"], LEGEND["ring"]], loc="upper center",
+           bbox_to_anchor=(0.5, 0.04), ncol=3, fontsize=7, frameon=False)
+fig.tight_layout(w_pad=0.8, rect=(0, 0.05, 1, 1))
+plt.show()
+```
+
+**Press-man** is the bump-and-run's descendant. The defender lines up within a yard or two of the
+receiver, gets his hands on him at the snap (legal inside five yards), and tries to knock him off
+his path and onto the defender's terms. If the jam lands, the route is late, and a late route in
+a timing offense is a dead route: the quarterback's feet have finished their drop and the receiver
+isn't where he's supposed to be. If the jam misses, the defender has to turn and run with a
+receiver who now has a step on him. Press-man is the purest test of athletes in football, and the
+reason teams pay elite cornerbacks: hips that turn fast, long arms, and the recovery speed to
+survive a miss. You met the receiver's side of this fight in
+[The Quick Game](../04-the-passing-game/04-03-quick-game.qmd).
+
+**Off-man** gives the receiver room. The defender starts 5 to 8 yards away, often with his weight
+back, and backpedals or shuffles as the receiver comes toward him, keeping that **cushion** while
+he reads the route. Off-man trades the jam for vision: he sees the break coming and is rarely
+beaten deep. The cost is the short throw. A receiver who turns around at six yards against a
+defender who started at seven is open, and good quarterbacks take that throw all day. Off-man is
+common against very fast receivers, against receivers in the slot (where a jam is harder because
+the receiver can release either way), and on long-yardage downs where a six-yard catch doesn't
+hurt.
+
+**Trail technique** is what man defenders do when they have help over the top. The defender runs a
+step behind the receiver and slightly underneath him, on his hip, taking away anything thrown low
+or short, and trusts a safety to take the ball thrown high and deep. It is the technique of
+[2-Man](../../appendices/glossary.qmd#gl-2-man), two deep safeties with man underneath
+([Cover 2 and Tampa 2](06-04-cover-2-and-tampa-2.qmd)), and of any Cover 1 defender whose man
+runs into the free safety's area. Trailing looks like losing on a broadcast (the receiver is
+ahead), but the trailing defender is exactly where he wants to be: under the throw.
+
+Teams rarely pick one technique for a whole game. They pick per matchup and per call: press on
+a slow receiver, off on a fast one; press on third-and-2, off on third-and-14. The quarterback's
+pre-snap read is partly a read of these techniques, which is why defenses mix them and sometimes
+show press and bail out at the snap.
+
+::: {.callout-caution title="Common misconception"}
+**"Press means man, off means zone."** It is a decent first guess and a poor rule. Seattle's
+Cover 3 teams of the 2010s pressed their outside corners and then bailed into deep thirds (zone),
+and plenty of man calls are played off, especially in the slot and on long yardage. The better
+tell is the defender's *eyes* after the snap: man defenders look at the receiver, zone defenders
+look at the quarterback. Before the snap, look at the defender's stance and angle too. A man
+defender is usually squared up to his receiver and slightly turned toward the sideline; a zone
+corner is usually turned in so he can see the quarterback.
+:::
+
+## The free defender: rat, robber and lurk
+
+Back to the eleventh man. In Cover 1 with a four-man rush, one defender has no receiver and no
+deep responsibility. Defenses can turn him into a fifth rusher (Cover 1 pressure, in
+[Blitzing](../07-pressure/07-02-blitz-and-man-pressure.qmd)) or keep him in coverage as a
+helper. As a helper he has three common names, and coaches don't use them identically, so
+learn the jobs rather than the words.
+
+```{python}
+#| label: fig-free-player
+#| fig-cap: "Three ways to use Cover 1's free underneath defender, drawn on one field (a defense picks one per snap). Rat: a linebacker (M) who has no man drops a few yards into the low hole, about 6 to 9 yards deep, under crossing routes. Robber: a safety (SS) who started deep, here as if two-high, comes down to about 10 to 12 yards in the middle, under the free safety, to drive on digs and deep crossers. Lurk: a defender who lined up as a blitzer (W, walked up to the line) drops out at the snap into the shallow middle, where the quarterback's hot throw is supposed to go. All three read the quarterback, not a receiver."
+off = spread()
+dfn = cover1_def(extra={"SS": (12.5, 7.5), "WILL": (1.2, -7.4), "MIKE": (4.5, 1.2)})
+p = Play(off, dfn, los=LOS, to_go=None)
+p.highlight("MIKE", "SS", "WILL")
+fld = draw(p, lateral=(-21, 21), window=(-6.5, 19.5))
+oval(fld, p, (7.6, 2.6), (3.0, 6.0), label="rat")
+oval(fld, p, (11.6, -1.0), (2.8, 7.5), label="robber")
+oval(fld, p, (5.6, -4.6), (3.0, 5.6), label="lurk")
+branch(fld, p, [(4.5, 1.2), (6.6, 2.4)], lw=1.4)
+branch(fld, p, [(12.5, 7.5), (12.0, 4.0), (11.6, 1.8)], lw=1.4)
+branch(fld, p, [(1.2, -7.4), (3.2, -6.6), (4.8, -5.6)], lw=1.4)
+say(fld, p, 16.8, 8.6, "robber: a safety\ncomes down", fontsize=6.6)
+say(fld, p, 3.0, -15.0, "lurk: showed\nblitz, drops out", fontsize=6.6)
+say(fld, p, 9.8, 8.6, "rat: the linebacker\nwith no man", fontsize=6.6)
+field_legend(fld.ax, ["drop", "area", "ring"])
+plt.show()
+```
+
+- The [**robber**](../../appendices/glossary.qmd#gl-robber) is the free defender sitting in the
+  middle of the field, usually 8 to 12 yards deep, reading the quarterback's eyes and driving on
+  in-breaking throws: digs, deep crossers, the slant that gets past its man. Classically he is a
+  safety who lines up deep (often disguised as half of a two-high shell, the subject of
+  [Disguise, Rotation, and Split-Field Coverage](06-06-disguise-rotation-and-split-field.qmd)) and
+  comes down at the snap. His name says what he is for: he steals the throws man coverage is worst
+  at defending, the ones where receivers run away from their defenders across the field.
+- The [**rat**](../../appendices/glossary.qmd#gl-rat) is, in many playbooks, simply another name for
+  the same job. When coaches distinguish them, the rat is lower and usually a linebacker, the man
+  left over when the back he would have covered stays in to block, or the Mike in the figure
+  above, sitting 6 to 9 yards deep in the hole. (That is why the hole is sometimes called the *rat
+  zone*.) His prey is the shallow cross and the quarterback scramble up the middle.
+- [**Lurk**](../../appendices/glossary.qmd#gl-lurk) describes the same idea with disguise built in.
+  The lurker lines up somewhere that says something else, often walked up to the line as if
+  blitzing, sometimes deep as a safety, and drops at the snap into the shallow middle. Pressure
+  defenses love it, because the quarterback who sees a blitz coming throws the quick
+  [hot route](../../appendices/glossary.qmd#gl-hot-route) to the middle, and the lurker is standing
+  in it.
+
+Whatever it's called, the free underneath defender changes the math of Cover 1. Against pure man,
+a receiver who wins inside is open. Against Cover 1 with a robber, a receiver who wins inside runs
+into a second defender who has been watching the quarterback the whole time and is moving before
+the ball is. Here it is in motion.
+
+```{python}
+#| label: fig-rat-dig
+#| fig-cap: "Cover 1 robber against a dig, simulated (BDB-format tracking, generated by gridiron rather than recorded). Z runs a dig, a square break inside at about 12 yards, from the right; his cornerback, playing outside leverage, trails him across the field, as Cover 1 corners do, because the help is inside. The strong safety (SS, ringed) is the robber: he started at 9 yards, gave the quarterback nothing to see, and settled in the middle at 10 to 11 yards with his eyes on the quarterback. When the quarterback hitches to throw the dig, the robber drives on it and arrives in the throwing lane, in front of Z, as the ball does. The free safety stays deep; the other receivers are carried by their man defenders. In the web version this is a video."
+p = Play(spread(rb_w=-1.5), cover1_def(extra={"SS": (9.0, 4.5), "MIKE": (4.5, 6.6), "WILL": (4.5, -1.2)}),
+         los=LOS, to_go=8)
+protect(p)
+p.dropback(2.0)
+route_to(p, "X", (24.0, -15.4))
+route_to(p, "H", (22.0, -8.6))
+route_to(p, "Y", (2.6, 10.5), (3.8, 16.5))
+route_to(p, "Z", (12.0, 15.0), (12.0, 2.0), (12.4, -4.0))
+route_to(p, "RB", (-4.6, -4.5), (-1.0, -9.0), (0.5, -12.0), delay=0.5)
+T_THROW = 2.15
+kf, _, _ = p._compile()
+# where Z will be when a firm throw arrives, and a spot just in front of him in the lane
+qb = np.array(p.position("QB", T_THROW))
+t_c = T_THROW + 0.9
+for _ in range(4):
+    z = p.position("Z", t_c)
+    t_c = T_THROW + float(np.linalg.norm(z - qb)) / 18.0
+z = p.position("Z", t_c)
+lane = z + (qb - z) / np.linalg.norm(qb - z) * 1.7
+T_CATCH = round(t_c, 2)
+tracks = {
+    "LCB": chase(p, "LCB", "X", off=(-1.0, -0.9)),
+    "NB": chase(p, "NB", "H", off=(-1.0, -0.9)),
+    "MIKE": chase(p, "MIKE", "Y", off=(-0.6, -1.1)),
+    "WILL": chase(p, "WILL", "RB", off=(0.4, 1.0), t_on=1.0),
+    "RCB": chase(p, "RCB", "Z", off=(-1.2, 1.1), lag=0.3),
+    "SS": ease([(0.0, 9.0, 4.5), (0.9, 10.2, 1.4), (T_THROW, 10.6, 2.6), (T_CATCH, *lane), (3.6, *lane)]),
+    "FS": ease([(0.0, 14.0, 0.0), (1.2, 16.0, 0.6), (3.6, 16.5, 2.5)]),
+}
+p.pass_to("SS", t=T_THROW)      # the ball goes where the robber will be: in the lane, in front of Z
+set_tracks(p, tracks, t_end=3.6)
+RAT_LAT, RAT_WIN = (-21.0, 21.0), (-8.5, 22.5)
+notes = ["Cover 1: a man on each receiver, FS deep,\nSS at 9 yards with no man (the robber).",
+         "Z pushes upfield; his corner trails with\noutside leverage. SS settles, eyes on Q.",
+         "Z breaks inside on the dig and Q starts\nto throw. SS is already moving.",
+         "The robber arrives in the lane in front of Z\nas the ball does: broken up or intercepted."]
+if PDF:
+    strip_grid(p, [0.0, 1.0, T_THROW, T_CATCH], notes, RAT_LAT, RAT_WIN, rings=[("SS", style.THIRD)])
+    plt.show()
+else:
+    video([p], [""], RAT_LAT, RAT_WIN, t_end=T_CATCH + 0.4, rings=[("SS", style.THIRD)], width_in=5.6)
+```
+
+What makes the robber work is that the dig is a *man-beater by design*. The receiver runs straight
+at his defender, then breaks flat across the field, away from a corner who was protecting the
+outside. Against pure man that corner is chasing, and a dig thrown on time is a completion with
+room to run. The robber doesn't need to cover Z. He only needs to be in the lane when the ball
+comes, which he can do because he reads the quarterback, not a receiver. That is the key idea of
+modern man coverage: **man coverage on the receivers, zone eyes on the quarterback from the one
+defender who can afford them**.
+
+The robber has his own weakness, and offenses know it. He is one man in the middle guarding a
+lane, so put *two* receivers in his area at different depths, a shallow cross under a dig, and he
+can only take one. That is a high-low on the robber, exactly the read
+[Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd) built the drive and
+shallow-cross concepts around. And a quarterback who looks the robber off, staring at the middle to
+pull him in before throwing outside, turns the robber's best habit against him.
+
+::: {.callout-note title="Madden vs. real life"}
+In Madden, "Cover 1" is a play on a menu, and the game decides who covers whom. On a real field
+the call is a family of rules, and the most important ones are about the defender with no man.
+The same Cover 1 call might have the leftover linebacker rushing if the back stays in to block,
+sitting in the hole if the back releases, or spying a mobile quarterback; the safety might show
+two-high and rob, or line up in the middle and stay there. The defensive coordinator also decides
+technique and leverage player by player and receiver by receiver, often on the sideline between
+series. Two Cover 1 calls can look nothing alike.
+:::
+
+## Cover 0: everybody's man, nobody's deep
+
+Now remove the safety. [**Cover 0**](../../appendices/glossary.qmd#gl-cover-0) is man coverage on
+every eligible receiver with **no deep defender at all**. The "0" is the number of deep safeties.
+The players who would have been free (the deep safety and the robber) rush the quarterback
+instead, so Cover 0 nearly always travels with a big blitz, six or seven rushers. It is the
+all-out blitz, the "house call," the coverage behind the moment when the defense decides that the
+quarterback won't have time to find the open man.
+
+```{python}
+#| label: fig-cover0-empty
+#| fig-cap: "Cover 0 against an empty formation (five receivers, nobody in the backfield), third-and-7. All five receivers have a man defender, each pressed and shaded inside, and no one is deep: the middle of the field is open all the way to the end zone. The other six defenders rush, including both linebackers (M and W) walked up into the gaps. Five linemen can block only five of them, so one rusher (ringed) comes free, and the quarterback has to throw before he arrives, usually in about two seconds."
+off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("X", "WR", LINE_D, -16.0), O("H", "WR", OFF_BALL, -9.5),
+                 O("RB", "RB", OFF_BALL, 5.0, "R"), O("Y", "TE", OFF_BALL, 10.0), O("Z", "WR", LINE_D, 16.0)]
+dfn = dline() + [D("MIKE", "MIKE", 1.6, -2.5, "M"), D("WILL", "WILL", 1.6, 0.8, "W"),
+                 D("LCB", "CB", 1.2, -15.3, "CB"), D("NB", "NB", 1.5, -8.8, "$"),
+                 D("RCB", "CB", 1.2, 15.3, "CB"), D("SS", "SS", 2.5, 9.3, "SS"), D("FS", "FS", 4.0, 4.4, "FS")]
+p = Play(off, dfn, los=LOS, to_go=7)
+for d_, t_ in (("LCB", "X"), ("NB", "H"), ("RCB", "Z"), ("SS", "Y"), ("FS", "RB")):
+    p.man(d_, t_)
+for k in ("LT", "LG", "C", "RG", "RT"):
+    p.block(k, pts=[(-1.4, 0.0)])
+for k in ("WDE", "MIKE", "WDT", "SDT", "SDE"):
+    p.rush(k, pts=[(-1.7, 0.0)], speed=2.0)
+p.rush("WILL", pts=[(-4.0, -0.3), (-5.6, -0.6)])
+p.highlight("WILL")
+fld = draw(p, lateral="full", window=(-9.5, 21.5))
+oval(fld, p, (15.5, 0.0), (7.0, 30.0), color=style.MUTED, label="nobody deep", alpha=0.10)
+say(fld, p, -7.6, 9.0, "6 rush, 5 block:\none comes free", fontsize=6.8)
+say(fld, p, 6.5, -19.5, "inside shade:\nno help anywhere", fontsize=6.8)
+field_legend(fld.ax, ["man", "rush", "ring", "ltg"])
+plt.show()
+```
+
+The logic is arithmetic. The offense has five linemen. If the running back and tight end go out on
+routes, the five linemen are the only blockers, and six rushers beat five blockers: one is free.
+If the offense keeps a back in to block, his man defender has nobody to cover and joins the rush,
+so it's seven against six, still one free. Cover 0 is built so that **someone always comes
+unblocked**, and the quarterback has to get rid of the ball before he arrives. In the charted
+seasons, Cover 0 was played with five or more rushers about three times in four, and the median
+throw against it left the quarterback's hand in about 2.1 seconds, roughly four-tenths of a second
+faster than against any other coverage.[^bargain] Four-tenths of a second is two or three steps of
+a receiver's route: the difference between a dig and a slant.
+
+Because no one is behind them, Cover 0 defenders play **inside leverage**, the mirror of Cover 1.
+With no help in the middle, the most dangerous throw is the quick one inside, toward the
+quarterback, where the receiver has the most room to run after the catch. So they take that away
+and dare the quarterback to throw outside, a longer, slower throw with the sideline as an extra
+defender. The other danger is obvious from the picture: a receiver who beats his man on a deep
+route has nothing in front of him but grass. That is the bargain.
+
+```{python}
+#| label: fig-cover0-bargain
+#| fig-cap: "The Cover 0 bargain, in charted NFL dropbacks between the 20s (2023–2025 regular seasons, FTN charting). Left: the median time from snap to throw against each coverage; Cover 0's blitz gets the ball out fastest. Right: the share of dropbacks that gained 20 yards or more; Cover 0 also gives up the most big plays, because nobody is deep. The 2018–2022 seasons (NGS charting) show the same order. Source: nflverse participation data joined to play-by-play; sacks count as dropbacks with no throw, so they are left out of the time-to-throw medians."
+mid = CV[(CV["yardline_100"] > 20) & (CV["season"] >= 2023)]
+order = ["COVER_0", "COVER_1", "2_MAN", "COVER_3", "COVER_2", "COVER_4", "COVER_6"]
+names = {"COVER_0": "Cover 0", "COVER_1": "Cover 1", "2_MAN": "2-Man", "COVER_3": "Cover 3",
+         "COVER_2": "Cover 2", "COVER_4": "Quarters (Cover 4)", "COVER_6": "Cover 6"}
+g = mid.groupby("defense_coverage_type")
+ttt = g["time_to_throw"].median().reindex(order)
+expl = (g["explosive"].mean() * 100).reindex(order)
+cols = [style.SERIES[1] if c == "COVER_0" else (style.SERIES[0] if c in ("COVER_1", "2_MAN") else style.MUTED)
+        for c in order]
+fig, axes = plt.subplots(1, 2, figsize=(6.5, 2.9), sharey=True)
+ys = np.arange(len(order))[::-1]
+for ax, vals, lab, fmt in ((axes[0], ttt, "Median time to throw (seconds)", "{:.1f} s"),
+                           (axes[1], expl, "Dropbacks gaining 20+ yards (%)", "{:.1f}%")):
+    ax.barh(ys, vals.values, color=cols, height=0.62)
+    for y_, v in zip(ys, vals.values):
+        ax.text(v + vals.max() * 0.015, y_, fmt.format(v), va="center", fontsize=7.5, color=style.INK)
+    ax.set_xlabel(lab, fontsize=8)
+    ax.set_xlim(0, vals.max() * 1.22)
+    ax.grid(axis="y", visible=False)
+    ax.tick_params(labelsize=7.5)
+axes[0].set_yticks(ys)
+axes[0].set_yticklabels([names[c] for c in order], fontsize=8)
+axes[0].legend(handles=[Patch(color=style.SERIES[1], label="no deep help"),
+                        Patch(color=style.SERIES[0], label="other man"), Patch(color=style.MUTED, label="zone")],
+               fontsize=7, loc="lower right", frameon=False)
+fig.tight_layout(w_pad=1.2)
+plt.show()
+```
+
+The chart puts numbers on the trade. Between the 20-yard lines in 2023–2025, Cover 0 got the ball
+out fastest (a median of about 2.0 seconds), and it also gave up a gain of 20 yards or more on
+about one dropback in seven, the highest rate of any coverage and nearly twice the rate of the
+two-high zones. Cover 1, with its deep safety, sits in between. The defense is trading a higher
+chance of a quick incompletion or a sack for a higher chance of a long touchdown. That is a good
+bet when the offense needs a few yards and has to throw quickly anyway; it is a bad bet when one
+long completion decides the game. (The full blitz menu, and how offenses protect against it, is
+in [Blitzing](../07-pressure/07-02-blitz-and-man-pressure.qmd).)
+
+::: {.callout-important title="Why it exists: Cover 0"}
+Cover 0 exists to win a race. Every rusher it can spare is sent, so the quarterback must throw
+*now*, often before his receivers have finished their routes, and every receiver has a man on him
+so there is no easy hot throw. It shines where the field is short and the throw has to be quick
+anyway: third-and-short, fourth down, inside the 10. **What it gives up:** any help at all. One
+missed tackle, one blown assignment or one receiver who beats his man deep is a touchdown, and a
+quarterback who escapes the free rusher finds a field full of defenders with their backs to him.
+:::
+
+Steve Spagnuolo is the coordinator most identified with the call in the modern NFL. His 2007
+Giants defense pressured Tom Brady relentlessly in Super Bowl XLII, the upset that ended New
+England's bid for a 19–0 season, and since he became Kansas City's defensive coordinator in 2019
+his defenses have used Cover 0 more than almost anyone: in nflverse charting the Chiefs ranked in
+the top five in Cover 0 rate in every season from 2019 to 2025, and first in 2025.[^spags] His
+reputation is for calling it at moments when offenses least expect it, which is part of what makes
+it work: a quarterback who knows Cover 0 is coming can call a protection and a route to beat it.
+
+## Stacks and bunches: banjo and combo coverage
+
+Man coverage has a structural weak point, and offenses found it long ago: **receivers who line up
+close together**. When two receivers stand a yard apart, or one directly behind the other in a
+[stack](../../appendices/glossary.qmd#gl-stack), their defenders are close together too, and the
+receivers can release in directions that make the defenders cross. A defender chasing his man has
+to go around the other receiver, or around his own teammate, and loses a step. That is the
+[rub](../../appendices/glossary.qmd#gl-rub-route) from
+[Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd), and stacks and
+[bunches](../../appendices/glossary.qmd#gl-bunch) are formations built to create it.
+
+The defense's answer is to stop deciding before the snap. In a
+[**banjo**](../../appendices/glossary.qmd#gl-banjo), two defenders take two receivers *together*,
+and decide who has whom by how the routes declare: the outside defender takes the first receiver
+who breaks outside, the inside defender the first who breaks inside. Some teams call it "in-out";
+some, a "switch." Either way, nobody has to cross anybody.
+
+```{python}
+#| label: fig-banjo
+#| fig-cap: "The same stack release against two ways of covering it (the offense's right side; simulated). Z is on the line, H directly behind him. Z runs a slant inside, H a quick out. Top row, locked man: the cornerback (CB) has Z and the nickel ($) has H, so they have to cross each other and H's release; both lose two to three yards in the traffic and both receivers come open. Bottom row, banjo: the same two defenders wait for the routes to declare; the cornerback, outside, takes the receiver who breaks out (H) and the nickel, inside, takes the one who breaks in (Z). Nobody crosses, and both receivers are covered. In the web version this is a video."
+BJ_LAT, BJ_WIN = (4.0, 24.0), (-4.0, 10.0)
+
+
+def stack_play():
+    off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("Z", "WR", LINE_D, 13.0), O("H", "WR", -2.6, 13.6)]
+    dfn = [D("RCB", "CB", 4.8, 15.8, "CB"), D("NB", "NB", 4.8, 10.4, "$")]
+    p = Play(off, dfn, los=LOS, to_go=None)
+    route_to(p, "Z", (2.0, 13.0), (6.0, 8.5), (7.6, 6.4))
+    route_to(p, "H", (2.4, 14.1), (4.4, 19.6), (4.7, 21.2))
+    return p
+
+
+lock, banjo = stack_play(), stack_play()
+set_tracks(lock, {
+    "RCB": ease([(0.0, 4.8, 15.8), (0.35, 4.6, 15.0), (0.7, 3.8, 13.9), (1.0, 3.7, 13.1), (1.6, 5.4, 10.6),
+                 (2.0, 6.4, 8.6)]),
+    "NB": ease([(0.0, 4.8, 10.4), (0.45, 4.5, 11.8), (0.8, 4.2, 12.9), (1.1, 4.0, 14.6), (1.6, 4.3, 17.4),
+                (2.0, 4.6, 19.0)]),
+}, t_end=2.0)
+set_tracks(banjo, {
+    "RCB": ease([(0.0, 4.8, 15.8), (0.5, 4.6, 16.0), (1.0, 5.0, 17.6), (1.45, 5.5, 19.4), (2.0, 5.8, 20.6)]),
+    "NB": ease([(0.0, 4.8, 10.4), (0.45, 4.7, 10.6), (1.05, 6.6, 7.9), (1.45, 8.0, 6.1), (2.0, 8.6, 5.4)]),
+}, t_end=2.0)
+rings = [("RCB", style.THIRD), ("NB", style.THIRD)]
+if PDF:
+    strip_rows([lock, banjo], ["Locked man", "Banjo"], [0.0, 0.7, 1.45],
+               [["CB has Z, $ has H.", "They must cross: traffic.", "Both receivers open."],
+                ["They wait for the routes.", "Z breaks in, H out.", "CB takes H, $ takes Z."]],
+               BJ_LAT, BJ_WIN, rings=rings)
+    plt.show()
+else:
+    video([lock, banjo], ["Locked man", "Banjo"], BJ_LAT, BJ_WIN, t_end=1.8, rings=rings, width_in=6.4)
+```
+
+The banjo solves the rub by trading a little of man coverage's certainty for zone-like
+flexibility. It is a small zone rule inside a man call: for the first yard or two, each defender
+guards a *side* rather than a person, then locks on to whoever comes to that side. That makes it
+the simplest example of a [**combo coverage**](../../appendices/glossary.qmd#gl-combo-coverage),
+the general name for coverages in which two or more defenders share receivers and decide who takes
+whom by how the routes declare. Bigger combos handle a three-receiver bunch with three defenders
+("one in, one out, one deep," for instance), or play man on one side of the formation and zone on
+the other.
+
+The price is communication and a new weakness. Both defenders must call it, both must read the
+same release, and both must commit at the same instant. Offenses go after banjos with routes that
+make the release ambiguous: both receivers breaking the same way, one a beat later than the other,
+so the inside defender takes the first and the second has a head start on the outside defender; a
+receiver who fakes in and breaks out after the defenders have switched; or a third receiver
+arriving in the space the two defenders vacated. That is why bunch formations are a red-zone
+staple. They stress whatever rule the defense has.
+
+The charters who label coverages for the NFL's public data see these mixtures too. From 2023 on,
+the charting used by nflverse includes a label, COMBO, for plays that don't fit a single coverage
+name; this chapter's counts leave those plays out.<!-- VERIFY: FTN's definition of the COMBO coverage label (mixed coverage / combination); not documented in the nflverse data dictionary checked. -->
+
+## Brackets: two on one
+
+Sometimes the problem isn't the formation; it's one receiver. The offense has a player the defense
+cannot cover one-on-one, and leaving him in man coverage, even with a deep safety somewhere, is
+asking for a long afternoon. The answer is a [**bracket**](../../appendices/glossary.qmd#gl-bracket):
+two defenders on one receiver, one on each side of him, so whichever way he breaks, somebody is
+already there.
+
+```{python}
+#| label: fig-bracket-3x1
+#| fig-cap: "A bracket on the isolated receiver in a 3x1 formation. The offense puts its best receiver, X (ringed), alone on the left as #1, with three receivers to the right. The defense brackets him: the left cornerback plays underneath with trail technique and the free safety (FS) plays over the top, 12 yards deep and shaded toward X. The trips side is man coverage, with the strong safety (SS) as the single deep defender over it. The cost shows in the middle: the safety who would have been the robber is spent on X, so nobody sits in the hole, and the trips side's man defenders have only one safety behind them."
+off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.5, "R"),
+                 O("X", "WR", LINE_D, -15.0), O("Y", "TE", OFF_BALL, 7.5),
+                 O("H", "WR", OFF_BALL, 12.0), O("Z", "WR", LINE_D, 17.0)]
+dfn = dline() + [D("MIKE", "MIKE", 5.0, 6.8, "M"), D("WILL", "WILL", 4.5, -2.4, "W"),
+                 D("LCB", "CB", 1.2, -15.7, "CB"), D("FS", "FS", 12.0, -11.0, "FS"),
+                 D("NB", "NB", 3.5, 11.3, "$"), D("RCB", "CB", 1.2, 17.6, "CB"),
+                 D("SS", "SS", 14.0, 6.0, "SS")]
+p = Play(off, dfn, los=LOS, to_go=10)
+for d_, t_ in (("LCB", "X"), ("FS", "X"), ("NB", "H"), ("RCB", "Z"), ("MIKE", "Y"), ("WILL", "RB")):
+    p.man(d_, t_)
+protect(p)
+p.zone((17.5, 9.0), (6.0, 22.0), label="deep, trips side")
+p.highlight("X")
+fld = draw(p, lateral="full", window=(-8.5, 22.5))
+number(fld, p, [("X", "#1"), ("Z", "#1"), ("H", "#2"), ("Y", "#3")])
+say(fld, p, 15.6, -16.6, "over: FS", fontsize=6.8, color=DD, weight="bold")
+say(fld, p, 4.4, -20.5, "under: CB", fontsize=6.8, color=DD, weight="bold")
+oval(fld, p, (9.5, 0.5), (4.0, 8.0), color=style.MUTED, label="empty hole", alpha=0.10)
+field_legend(fld.ax, ["man", "area", "ring", "ltg"])
+plt.show()
+```
+
+Brackets come in two shapes, named for where the two defenders stand.
+
+```{python}
+#| label: fig-bracket-kinds
+#| fig-cap: "The two shapes of bracket, on the same isolated receiver (X, offense's left). Left, under-over: the cornerback takes everything short and intermediate, trailing underneath; the safety takes everything deep. Right, in-out: the cornerback plays outside leverage and takes routes to the sideline (out, comeback, fade); a second defender inside, a robber or linebacker at 8 to 10 yards, takes everything that breaks in (slant, dig, the post's first steps). Either way X has a defender on both sides of every route he can run."
+LAT_B, WIN_B = (-25.0, -3.0), (-3.5, 21.0)
+
+
+def bracket_panel(ax, kind):
+    off = [O("X", "WR", LINE_D, -15.0)]
+    if kind == "under":
+        dfn = [D("CB", "CB", 1.2, -15.6, "CB"), D("FS", "FS", 13.0, -11.5, "FS")]
+    else:
+        dfn = [D("CB", "CB", 1.2, -16.0, "CB"), D("SS", "SS", 9.0, -9.5, "SS")]
+    p = Play(off, dfn, los=LOS, to_go=None)
+    p.highlight("X")
+    fld = p.draw(ax=ax, lateral=LAT_B, window=WIN_B, title=False)
+    clean(ax)
+    ruler(fld, p, fs=5.5)
+    if kind == "under":
+        oval(fld, p, (7.0, -15.0), (10.0, 9.0), label="under:\nshort, middle", fs=6.3)
+        oval(fld, p, (17.0, -14.0), (5.6, 14.0), color=style.DEFENSE_DARK, label="over: deep", fs=6.3)
+    else:
+        oval(fld, p, (9.0, -19.2), (14.0, 6.0), label="out", fs=6.3)
+        oval(fld, p, (10.0, -10.5), (8.0, 8.0), color=style.DEFENSE_DARK, label="in", fs=6.3)
+    return fld
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.4, 3.9))
+for ax, kind, ttl in zip(axes, ("under", "inout"), ("Under-over", "In-out")):
+    bracket_panel(ax, kind)
+    panel_title(ax, ttl)
+fig.tight_layout(w_pad=1.2)
+plt.show()
+```
+
+- **Under-over (top-bottom).** The cornerback plays underneath, in trail technique, taking away
+  anything short or intermediate; a safety plays over the top, taking away anything deep. The
+  receiver can't run past the safety and can't break in front of the corner. It is the classic
+  way to take a deep threat out of a game.
+- **In-out.** The cornerback plays outside leverage and owns the sideline; a second defender (a
+  robber, a linebacker, a nickel) sits inside and owns everything that breaks toward the middle.
+  It suits a receiver who wins on slants and digs more than on go routes.
+
+Brackets are expensive, and the bill always arrives somewhere else. Eleven defenders minus four
+rushers leaves seven for five receivers. Spend two on one receiver and the other four have five
+defenders between them: one is still free, but now he is usually the *only* deep player, or there
+is no robber, or one man defender has no help at all. In the 3x1 picture, the bracket on X is paid
+for by an empty hole in the middle of the field. Bracket the star and the offense's job becomes
+simple: throw to the others, especially the receiver now covered by a linebacker.
+
+That is a perfectly good outcome for many defenses. The idea is associated above all with Bill
+Belichick, whose game plans often started from one question: *what does this offense most need to
+do, and how do we take it away?* If the answer was a receiver, the answer was often a bracket, and
+the offense's second and third options were invited to beat the Patriots instead. (How that habit
+became a philosophy is the story of
+[Case Study: Belichick and Game-Plan Football](../12-case-studies/12-02-belichick-patriots-game-plan.qmd).)
+A defense can also bracket only on some downs, or only in certain areas of the field, so the
+quarterback can't assume where the second defender will be.
+
+## Shadow corners
+
+There is a cheaper way to deal with a great receiver, if you have the player for it: give him
+your own great player, everywhere. A [**shadow corner**](../../appendices/glossary.qmd#gl-shadow-corner)
+is a cornerback assigned to one receiver for the whole game. Wherever that receiver lines up (left,
+right, in the slot, in motion) the corner goes with him.
+
+```{python}
+#| label: fig-shadow
+#| fig-cap: "A shadow corner on two snaps. Top: X lines up wide on the left, and the shadow corner (ringed CB) presses him there. Bottom: the offense moves X into the right slot of a 3x1 formation to get him away from that corner, and the corner goes with him, leaving the other cornerback to take whoever is wide on the left (here H). A defense that keeps its corners on fixed sides (left corner, right corner) would let the offense pick the matchup by choosing where X lines up."
+def shadow_snap(ax, snap):
+    if snap == 1:
+        off = spread()
+        dfn = cover1_def(extra={"LCB": (1.2, -15.9)})
+        keys = (("LCB", "X"), ("RCB", "Z"), ("NB", "H"), ("SS", "Y"), ("WILL", "RB"))
+        star = "LCB"
+    else:
+        off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.5, "R"),
+                         O("H", "WR", LINE_D, -15.0), O("Y", "TE", OFF_BALL, 6.5),
+                         O("X", "WR", OFF_BALL, 11.0), O("Z", "WR", LINE_D, 16.5)]
+        dfn = cover1_def(extra={"LCB": (1.6, 11.6), "NB": (1.2, -15.9), "RCB": (1.2, 17.1),
+                                "SS": (5.0, 7.1), "WILL": (4.5, -2.6), "MIKE": (4.5, 2.4)})
+        dfn = [q.moved(label="CB") if q.key == "NB" else q for q in dfn]
+        keys = (("LCB", "X"), ("RCB", "Z"), ("NB", "H"), ("SS", "Y"), ("WILL", "RB"))
+        star = "LCB"
+    p = Play(off, dfn, los=LOS, to_go=None)
+    for d_, t_ in keys:
+        p.man(d_, t_)
+    p.highlight(star)
+    fld = p.draw(ax=ax, lateral="full", window=(-7.0, 17.0), title=False)
+    clean(ax)
+    return fld, p
+
+
+fig, axes = plt.subplots(2, 1, figsize=(6.5, 5.6))
+fld, p = shadow_snap(axes[0], 1)
+panel_title(axes[0], "Snap 1: X wide left. The shadow corner is on him.")
+say(fld, p, 6.5, -17.5, "shadow corner", fontsize=6.8, color=style.INK, weight="bold")
+fld, p = shadow_snap(axes[1], 2)
+panel_title(axes[1], "Snap 2: X moves into the right slot. The shadow corner goes with him.")
+say(fld, p, 6.0, 13.6, "same corner,\nnow in the slot", fontsize=6.8, color=style.INK, weight="bold")
+say(fld, p, 6.0, -15.8, "other corner\ntakes H", fontsize=6.6)
+fig.tight_layout(h_pad=1.2)
+plt.show()
+```
+
+The reason most teams don't do this is that it's harder than it looks, for the corner and for the
+defense. A cornerback who has played the left side his whole career has to learn the right side,
+where his footwork is reversed, and the slot, where a receiver can release in either direction and
+the help is in different places. The rest of the defense has to adjust every snap around wherever
+the shadow went. And the corner has to be good enough that the defense can treat one receiver as
+solved, which is the whole point: a true shadow corner turns a bracket's two defenders into one,
+and gives the defense its extra defender back.
+
+The modern archetype is Darrelle Revis. With Rex Ryan's 2009 Jets he followed the opponent's best
+receiver week after week, and the list of receivers he held quiet that season reads like an
+All-Pro team: Randy Moss twice, Andre Johnson, Terrell Owens twice, Reggie Wayne, Chad Ochocinco
+(no catches at all in their game). The press called it "Revis Island," the place where
+receivers went to disappear, and the Jets allowed the fewest points in the NFL that year. Revis
+went into the Hall of Fame in his first year of eligibility, in 2023.[^revis] More recently, Denver's
+Patrick Surtain II, the 2024 Defensive Player of the Year, played the role for Vance Joseph's
+defense: in the 2024 opener he lined up across from Seattle's DK Metcalf on 24 of Metcalf's 25
+routes, by Next Gen Stats' count.[^surtain] By this book's count from nflverse charting, the
+Broncos played man coverage on a larger share of dropbacks than any other defense in both 2024 and
+2025, a reminder that teams play the coverage their best players are built for.[^teamman]
+
+The contrast is instructive. Richard Sherman, one of the best cornerbacks of the 2010s, mostly
+did *not* shadow. Seattle's defense was built on Cover 3, a zone, and Sherman usually lined up on
+the defense's left side and stayed there, letting the offense decide who would face him.
+Seattle sometimes moved him to follow a particular receiver, as against Atlanta's Julio Jones in
+the January 2017 playoffs, but it was the exception.[^sherman] Revis was a man-coverage corner in
+a man-coverage defense; Sherman was a zone corner in a zone defense. Both were great; the system
+decided which kind of great it needed.
+
+## When defenses choose man
+
+Every defense plays both man and zone, and how often depends on scheme, on personnel and on the
+situation. You can see the situational part clearly in the public charting data.
+
+```{python}
+#| label: fig-man-situations
+#| fig-cap: "When NFL defenses play man. Left: share of charted dropbacks played in a man coverage (Cover 0, Cover 1 or 2-Man), by down and distance. Right: share played in Cover 0, by how far the ball is from the goal line the defense is protecting. Each line is one charting source: NGS for 2018–2022 and FTN for 2023–2025. The two sources label man coverage at different rates, so compare the shapes, not the levels: in both, man coverage is most common on third (and fourth) and short or medium, least common on third-and-long, and Cover 0 takes over near the goal line. Regular seasons; blown coverages and plays charted as mixed are left out."
+dd_order = ["1st down", "2nd down", "3rd/4th & 1–2", "3rd/4th & 3–6", "3rd/4th & 7–10", "3rd/4th & 11+"]
+fp_order = ["81–99", "41–80", "21–40", "11–20", "6–10", "1–5"]
+eras = ["2018–2022 (NGS charting)", "2023–2025 (FTN charting)"]
+ecol = {eras[0]: style.SERIES[0], eras[1]: style.SERIES[1]}
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.4))
+a = (CV.groupby(["dd", "era"])["man"].mean() * 100).unstack().reindex(dd_order)
+b = (CV.groupby(["zone_fp", "era"], observed=True)["c0"].mean() * 100).unstack().reindex(fp_order)
+xs = np.arange(len(dd_order))
+for e in eras:
+    axes[0].plot(xs, a[e].values, marker="o", ms=4.5, color=ecol[e], lw=1.8, label=e)
+    axes[1].plot(np.arange(len(fp_order)), b[e].values, marker="o", ms=4.5, color=ecol[e], lw=1.8, label=e)
+axes[0].set_xticks(xs)
+axes[0].set_xticklabels(["1st", "2nd", "3rd/4th\n& 1–2", "& 3–6", "& 7–10", "& 11+"], fontsize=7)
+axes[0].set_ylabel("Man coverage, % of dropbacks", fontsize=8)
+axes[0].set_ylim(0, 75)
+axes[0].set_title("Man coverage by down and distance", fontsize=9)
+axes[1].set_xticks(np.arange(len(fp_order)))
+axes[1].set_xticklabels(["81–99", "41–80", "21–40", "11–20", "6–10", "1–5"], fontsize=7)
+axes[1].set_xlabel("Yards from the goal line being defended", fontsize=7.5)
+axes[1].set_ylabel("Cover 0, % of dropbacks", fontsize=8)
+axes[1].set_ylim(0, 70)
+axes[1].set_title("Cover 0 by field position", fontsize=9)
+for ax in axes:
+    ax.tick_params(labelsize=7)
+axes[0].legend(fontsize=6.8, loc="upper left", frameon=False)
+fig.tight_layout(w_pad=1.5)
+plt.show()
+```
+
+Three situations stand out, and each has a reason.
+
+**Third down, short and medium.** On third-and-3 to third-and-6, defenses played man on about 60%
+of charted dropbacks in both charting eras, roughly twice their first-down rate.[^manshare] The
+defense knows where the ball has to go: just past the line to gain. Man coverage contests the
+throw at the sticks instead of rallying to tackle after a catch short of them, and it pairs
+naturally with a blitz, which third down invites. Notice what happens on third-and-11 or more:
+man coverage *drops* to its lowest rate of any situation. With that much to go, the defense is
+happy to let the receiver catch the ball in front of it and tackle him short, which is a zone's
+job. Third-and-long is the zone defense's down; third-and-medium is man's.
+
+**The red zone and the goal line.** As the field shrinks, man coverage takes over. Inside the
+defense's 5-yard line, charters labelled 78 to 88% of dropbacks as man coverage, and Cover 0 on
+41 to 62% of them, depending on the source. Near the goal line the biggest weakness of man
+coverage nearly disappears. A receiver who beats his man deep runs out of field: the back line of
+the end zone, the **end line**, acts like a safety that never misses. Zones, meanwhile, get
+crowded and leaky; there is little room to drop into and receivers are always near a seam. So
+defenses spend their deep defenders on the rush or on more man coverage. (The red zone gets its
+own chapter: [Red Zone, Goal Line, and Short Yardage](../10-situational-football/10-03-red-zone-goal-line-and-short-yardage.qmd).)
+
+**Talent.** Man coverage is only as good as the worst matchup in it, so teams with great
+cornerbacks play more of it. In nflverse charting, the Patriots played man on a larger share of
+dropbacks than any other defense in 2018 and 2019 (about 61% and 68%), the seasons around Stephon
+Gilmore's Defensive Player of the Year award; Miami, coached from 2019 to 2021 by Brian Flores, a
+long-time Belichick assistant, led the league in 2020 and 2021; Denver, with Surtain, led it in
+2024 and 2025.[^teamman] The reverse is true too. A defense with a weak link in the secondary, or
+facing a quarterback who punishes defenders with their backs turned by running, leans toward zone,
+where everyone faces the ball.
+
+::: {.callout-caution title="Common misconception"}
+**"NFL defenses are playing more and more man coverage."** You may see charts that say so. Be
+careful. The public coverage labels come from two different charting sources (NGS through 2022,
+FTN from 2023), and the man share jumps from about 29% of charted dropbacks in 2022 to about 44% in
+2023 and 50% in 2024, then falls back to 31% in 2025. Defenses didn't change that much that fast;
+the labelling did. Comparisons *within* a source (one season, or one era, as in the chart above)
+are safe; trend lines across the 2022/2023 break are not.[^manshare]
+:::
+
+## How offenses attack man, and how the defense answers
+
+Every offense has a list of plays it calls when it expects man coverage. You met most of them from
+the offense's side in Part 4; here they are from the defense's side, paired with the counter each
+one provokes. Notice that most of the defense's counters are things we've already met in this
+chapter: the free defender, the banjo, the bracket.
+
+| The offense's man-beater | Why it works against man | The defense's counter |
+|---|---|---|
+| **Crossers and mesh** ([Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd)) | A crossing receiver runs away from a trailing defender, through traffic. | A robber or rat sitting in the middle; defenders who pass crossers on to each other in combos. |
+| **Rubs, stacks and bunches** | Defenders must go around receivers or teammates. | Banjo and combo rules; pressing the front receiver of a stack to wreck the timing. |
+| **The slant** ([The Quick Game](../04-the-passing-game/04-03-quick-game.qmd)) | Beats an outside-leveraged defender inside, quickly. | Inside help: a rat or lurker under the slant; inside leverage in Cover 0. |
+| **Double moves** | Punish a man defender who jumps the first break. | A deep safety over the top (Cover 1, a bracket); patient technique. |
+| **Motion, especially at the snap** ([Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)) | Gives the receiver a running start and forces the defender to chase across the formation; it also reveals man. | Exchanges instead of travelling; disguised calls that look like man until the snap. |
+| **The running back on a linebacker** (the angle route) | The slowest cover man on the field is often matched on a quick back. | Putting a safety or a fast linebacker on the back; a free defender who helps on him. |
+| **The scrambling quarterback** | Man defenders have their backs to him; nobody is left to tackle. | A spy, or a rat who keeps his eyes on the quarterback; more zone. |
+| **The back-shoulder and the fade** | Against press, the ball is thrown where only the receiver can reach it. | A safety over the top; a cornerback who plays the receiver's hands. |
+
+The Chiefs' "Corn Dog" touchdowns in Super Bowl LVII, which you met in
+[Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd), are the
+textbook case of the motion line in that table: the man defender went with the first move, the
+receiver came back the other way, and nobody was there. The general lesson is the one you started
+the chapter with. Man coverage asks each defender to *stay with a person*, and every man-beater is
+a way of making that harder: run away, run through traffic, change direction twice, or start
+already moving.
+
+## Film room
+
+::: {.callout-note title="Film room: Patriots 2003 and 2019 — Ty Law, Stephon Gilmore and the man-coverage habit"}
+Two Patriots seasons, sixteen years apart, bookend Belichick's man-coverage defenses. In the 2003
+AFC Championship Game against Indianapolis, Ty Law intercepted Peyton Manning three times in a
+24–14 win, playing press-man against the Colts' receivers and, in his words afterward, the
+simplest game plan imaginable: "Just beat them up." The rules response that followed, the 2004
+emphasis on illegal contact, is the "Ty Law Rule" from the history section above.[^lawfilm]
+
+In 2019 the Patriots led the NFL in points allowed (14.1 per game) and total defense, and Stephon
+Gilmore became the first Patriot to be named Defensive Player of the Year, tying for the league
+lead with six interceptions and returning two of them for touchdowns.[^gilmore] By this book's
+count from NGS charting, New England played man on about two-thirds of its charted dropbacks that
+season, the highest share in the league, with Gilmore often on the opponent's top receiver.
+
+**What to notice:** on a 2019 Patriots third down, find the free defenders first. Usually there
+are two: a safety deep in the middle, and a second defender sitting in the hole or bracketing the
+offense's best receiver. Then find the cornerbacks: pressed, slightly outside, eyes on the
+receivers. The pattern repeats from 2003 to 2019, with different players: man coverage on the
+people the defense trusts, and the free defenders spent on the player or the area it fears.
+:::
+
+::: {.callout-note title="Film room: Chiefs, Super Bowl LVIII (February 11, 2024) — Spagnuolo brings the house"}
+Overtime, 49ers ball, third-and-4 at the Kansas City 9. San Francisco had a play-action pass
+designed for Jauan Jennings, and the replays later showed receivers coming open. It didn't matter.
+Steve Spagnuolo sent six rushers, Chris Jones came through untouched, and Brock Purdy had to throw
+the ball away before the routes could develop. San Francisco settled for a field goal, and Patrick
+Mahomes answered with the game-winning touchdown drive. "On third down," linebacker Nick Bolton
+said afterward, "we brought the house."[^sb58]<!-- VERIFY: reports describe the coverage behind the six-man pressure as Cover 0 (no deep safety); confirm on the All-22. -->
+
+**What to notice:** an all-out pressure on a third down inside the 10 is the Cover 0 bargain at its
+most favourable for the defense. The field is short, so the deep ball that punishes Cover 0
+everywhere else barely exists; the throw has to be quick anyway; and one free rusher is enough to
+end the play. Watch for the same ingredients on any Chiefs third down near the goal line: the
+safeties walking down, everyone pressed, and a count of rushers that exceeds the count of
+blockers.
+:::
+
+::: {.callout-note title="Film room: Jets 2009 and Broncos 2024 — the shadow"}
+Watch any 2009 Jets game against a team with a star receiver and follow Darrelle Revis before the
+snap. When the star moves from one side to the other, Revis moves with him, and the other Jets
+defenders reshuffle around that one fixed matchup. Then do the same with Patrick Surtain II in
+Denver's 2024 opener at Seattle, where he followed DK Metcalf on almost every route.[^surtain2]
+
+**What to notice:** the shadow corner's matchup frees the rest of the defense. Against Revis's
+receiver the Jets often needed no help at all, so the safety who would have bracketed him was
+available to rob, blitz or double someone else. That is what a shadow corner is really worth: one
+player doing the job of two.
+:::
+
+::: {.callout-tip title="Watch for it on Sunday"}
+**Who's facing the quarterback?** It is the fastest man-or-zone test there is.
+
+- **Before the snap: the corners.** Squared up to the receiver, close, weight forward, eyes on the
+  receiver's belt: lean man. Turned inside, deeper, eyes on the quarterback: lean zone.
+- **Before the snap: motion.** Does somebody run across the formation with the man in motion?
+  That is man. Do the defenders shift over and swap? Could be either: watch the next clue.
+- **Before the snap: the safeties.** One deep safety in the middle and corners pressed: think Cover
+  1. *Nobody* deep and six or seven players on or near the line on third down or near the goal
+  line: think Cover 0 and expect a quick throw.
+- **At the snap: the eyes.** One second after the snap, look at the defenders underneath. Backs
+  turned to the quarterback, running with receivers: man. Facing the quarterback, settling into
+  areas: zone. The one defender in the middle facing the quarterback when everyone else is
+  running with someone is the rat or robber. Find him and you'll know where *not* to throw.
+- **Close formations.** When receivers stack or bunch, watch the two or three defenders over them
+  at the release. Do they cross each other (locked man) or trade (banjo)?
+- **The star.** Where is the offense's best receiver, and who is on him? The same corner every
+  snap, on both sides of the field, is a shadow. A safety leaning toward him from 12 yards deep is
+  a bracket.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: the man in the middle"}
+```{python}
+#| label: fig-predict-robber
+#| fig-cap: "Second-and-8, ball in the middle of the field. The offense is 2x2. Before the snap, H motioned from the left slot to the right slot and the nickel ($) ran across with him (he is shown where he finished). The corners are pressed, a step outside. One safety (FS) is 14 yards deep in the middle; the other (SS, ringed) stands 9 yards deep, just off the middle, with no receiver in front of him."
+off = spread(rb_w=-1.5)
+off = [q.moved(w=5.0) if q.key == "H" else q for q in off]
+off = [q.moved(w=12.0) if q.key == "Y" else q for q in off]
+dfn = cover1_def(extra={"NB": (3.5, 4.4), "SS": (9.0, 2.6), "MIKE": (4.5, 11.0), "WILL": (4.5, -1.6),
+                        "LCB": (1.2, -15.9), "RCB": (1.2, 15.9)})
+p = Play(off, dfn, los=LOS, to_go=8)
+p.highlight("SS")
+fld = draw(p, lateral="full", window=(-8.5, 19.0))
+branch(fld, p, [(-1.5, -9.0), (-1.9, -2.0), (-1.5, 4.0)], color=style.OFFENSE, lw=1.3)
+branch(fld, p, [(4.0, -9.8), (3.8, -3.0), (3.5, 3.4)], lw=1.3)
+say(fld, p, 6.4, -6.0, "$ followed H across", fontsize=6.6)
+field_legend(fld.ax, ["react", "ring", "ltg"])
+plt.show()
+```
+
+**What coverage is this most likely to be, and which throw should the quarterback avoid? What
+would you call to beat it?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Cover 1 with a robber.** The tells stack up: the nickel *travelled* with H's motion all the way
+across the formation, which is man coverage; the corners are pressed and squared up; and there is
+exactly one safety deep in the middle, so the middle of the field is closed. The second safety at
+9 yards, near the middle, with nobody to cover, is the free defender. He is a robber (or rat), and
+his job is to read the quarterback and jump anything that breaks into the middle.
+
+**Avoid** the single in-breaking route into his area: a lone dig or crosser at 8 to 12 yards is
+exactly the throw he is there to steal, as in the robber animation earlier in the chapter.
+**Attack** him with a high-low: a shallow crosser underneath and a dig behind it (the drive
+concept), so he can't take both, or look him off to the middle and throw outside. You could also
+attack the corners one-on-one away from the robber with a back-shoulder fade or a double move,
+since the free safety must cover the whole deep middle, or put the running back on a linebacker
+with an angle route.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: nobody home"}
+```{python}
+#| label: fig-predict-zero
+#| fig-cap: "Third-and-6 at the defense's 14. The offense is empty (five receivers, no back). Every receiver has a defender within two yards of him, shaded inside. Both linebackers stand in the A gaps beside the center, and the deepest defender on the field is the safety (FS, ringed) over the right slot at 5 yards."
+off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("X", "WR", LINE_D, -16.0), O("H", "WR", OFF_BALL, -9.5),
+                 O("RB", "RB", OFF_BALL, 5.0, "R"), O("Y", "TE", OFF_BALL, 10.0), O("Z", "WR", LINE_D, 16.0)]
+dfn = dline() + [D("MIKE", "MIKE", 1.6, -0.9, "M"), D("WILL", "WILL", 1.6, 0.9, "W"),
+                 D("LCB", "CB", 1.4, -15.3, "CB"), D("NB", "NB", 1.6, -8.8, "$"),
+                 D("RCB", "CB", 1.4, 15.3, "CB"), D("SS", "SS", 2.5, 9.3, "SS"), D("FS", "FS", 5.0, 4.4, "FS")]
+p = Play(off, dfn, los=96, to_go=6)
+p.highlight("FS")
+fld = draw(p, lateral="full", window=(-8.5, 17.0), show_ruler=False)
+say(fld, p, 7.6, 0.0, "goal line", fontsize=6.4)
+field_legend(fld.ax, ["ring", "ltg"])
+plt.show()
+```
+
+**What is the defense likely to do at the snap, and what does the quarterback need to do about
+it?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Cover 0, with a six-man pressure.** Nobody is deep: the deepest defender is 5 yards off the ball,
+over a slot receiver, so he is a man defender, not a safety. Five receivers, five tight man
+defenders, and six players left over at the line: the four linemen and two linebackers in the A
+gaps. Against an empty formation, five linemen can't block six, so somebody comes free. (A defense
+can show exactly this and drop the linebackers out, a "simulated" pressure covered in
+[Zone Blitzes, Fire Zones, and Simulated Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd),
+but this is the situation where Cover 0 is most common: third down, inside the 20.)
+
+The quarterback has to **throw quickly to a receiver who can win immediately**, before the free
+rusher arrives. The defenders are shaded inside, so the quick slant is harder than usual; the
+better throws are breaks *away* from the leverage (a quick out or a fade to the sideline, a pivot
+route that fakes in and breaks out) or a rub between two of the receivers, which the press
+defenders can't banjo easily without deep help. And because nobody is deep, any receiver who
+beats his man on a vertical route is a touchdown: offenses often have an "alert" to throw the go
+route against Cover 0. Inside the 14, the end zone is short, which is exactly why the defense is
+willing to take that risk.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: the leaning safety"}
+```{python}
+#| label: fig-predict-bracket
+#| fig-cap: "Third-and-9. The offense shows 3x1 with its best receiver, X (ringed), alone on the left. The left cornerback is a yard off X, a step outside. The left safety (FS) is 12 yards deep and only about 4 yards inside X, far from the middle. The other safety (SS) is 14 yards deep over the right half of the field. The nickel and the right corner are pressed on the trips receivers."
+off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.5, "R"),
+                 O("X", "WR", LINE_D, -15.0), O("Y", "TE", OFF_BALL, 7.5),
+                 O("H", "WR", OFF_BALL, 12.0), O("Z", "WR", LINE_D, 17.0)]
+dfn = dline() + [D("MIKE", "MIKE", 4.8, 6.4, "M"), D("WILL", "WILL", 4.5, -2.4, "W"),
+                 D("LCB", "CB", 1.2, -15.7, "CB"), D("FS", "FS", 12.0, -11.2, "FS"),
+                 D("NB", "NB", 1.6, 11.4, "$"), D("RCB", "CB", 1.2, 17.6, "CB"),
+                 D("SS", "SS", 14.0, 7.0, "SS")]
+p = Play(off, dfn, los=LOS, to_go=9)
+p.highlight("X")
+fld = draw(p, lateral="full", window=(-8.5, 19.0))
+number(fld, p, [("X", "#1"), ("Z", "#1"), ("H", "#2"), ("Y", "#3")])
+field_legend(fld.ax, ["ring", "ltg"])
+plt.show()
+```
+
+**What is the defense doing to X, and where should the ball go?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**An under-over bracket on X.** The left safety has no reason to stand 12 yards deep and only 4
+yards inside the isolated receiver unless X is his job: he is the "over" half of the bracket, and
+the left corner, a yard off and outside, is the "under" half. The other safety, deep over the
+trips side, is the only deep help for the three receivers on the right, who are in man coverage
+underneath (the corner and nickel pressed; the Mike, at 5 yards, on the tight end Y, who is #3).
+
+**Throw to the trips side.** Two defenders on X means everyone else is one-on-one with less help
+than usual. The best matchup is often #3, the tight end, on the Mike linebacker: a seam or an
+option route against a linebacker in man. A rub between H and Z against the pressed corner and
+nickel is another, and with no robber in the middle, a crosser from the trips side has room once
+it clears the Mike. Throwing to X into a bracket on third-and-9 is what the defense is daring the
+quarterback to do. A defense can disguise this, of course, by leaning the safety and then playing
+something else; but a leaning safety and an isolated star on third down is one of the more honest
+pictures you will see.
+:::
+:::
+
+## Takeaways
+
+- **Man coverage covers people, not places.** It is tight, certain about who covers whom, and lets
+  the defense pick matchups. Its price is that man defenders watch receivers, not the
+  quarterback, and need help somewhere.
+- **The free defenders define the family.** Cover 1 keeps one safety deep and usually one more
+  defender to rush, rob or spy; Cover 0 sends everyone and keeps nobody deep. The rat, the robber
+  and the lurker are the same idea: one defender with zone eyes, in the middle, where man coverage
+  is weakest.
+- **Leverage follows the help.** With inside help (Cover 1), corners play outside and funnel
+  receivers inside; with no help (Cover 0), they play inside and protect the quick throw.
+  Technique (press, off, trail) is chosen per matchup and per down.
+- **Close formations and great receivers get special rules.** Banjo and combo calls stop stacks
+  and bunches from creating rubs; brackets spend two defenders on one star; a shadow corner spends
+  one.
+- **Man coverage is a situational weapon.** In the charted NFL seasons it was most common on third
+  and short-to-medium and near the goal line (where Cover 0 is often the most common call), and
+  least common on third-and-long. The public man-rate trend breaks at 2022/2023 because the
+  charting source changed.
+- **Every man-beater makes staying with a receiver harder:** crossers and mesh, rubs, slants
+  against leverage, double moves, motion at the snap, a back on a linebacker, a scrambling
+  quarterback. The defense's counters are the free defender, the banjo and the bracket.
+
+## Connections
+
+**Builds on:** [Coverage Fundamentals](06-01-coverage-fundamentals.qmd) (press, off, trail, the
+shell), [A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)
+(man versus zone), and the offense's side of the same fights in
+[The Quick Game](../04-the-passing-game/04-03-quick-game.qmd) (beating press, double moves) and
+[Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd) (mesh, rubs, the angle
+route).
+
+**Sets up:** [Cover 2 and Tampa 2](06-04-cover-2-and-tampa-2.qmd), where 2-Man puts two safeties
+over man coverage; [Quarters and the Two-High Match Family](06-05-quarters-and-match.qmd), where
+zone defenders turn into man defenders by pattern (and MEG, a corner playing his man everywhere,
+appears inside a zone call); [Disguise, Rotation, and Split-Field Coverage](06-06-disguise-rotation-and-split-field.qmd),
+where the robber comes down from a two-high shell; [Blitzing: Numbers, Overloads, A-Gap Mugs, and Cover 0](../07-pressure/07-02-blitz-and-man-pressure.qmd),
+the pressure side of Cover 1 and Cover 0; and [What Beats What](../08-the-chess-match/08-01-concepts-versus-coverages.qmd),
+which pairs every coverage in Part 6 with the concepts that beat it.
+
+**Case studies:** [Belichick and Game-Plan Football](../12-case-studies/12-02-belichick-patriots-game-plan.qmd)
+(brackets and taking away the best player) and [Andy Reid and the Kansas City Chiefs](../12-case-studies/12-04-reid-chiefs.qmd)
+(Spagnuolo's pressure on the defensive side of the Chiefs' run).
+
+::: {.callout-note title="Go deeper"}
+- Chris B. Brown, *The Art of Smart Football* (2015) and *The Essential Smart Football* (2012):
+  essays on the coverage arms race, including man-beaters and the defenses built to stop them.
+- Cody Alexander's MatchQuarters newsletter and books: the clearest public writing on how modern
+  defenses mix man and zone (combo and match rules) from a coach's point of view.
+- Coaches' clinic material on Cover 1 and banjo rules (search for "Cover 1 rat," "banjo
+  technique," and "bracket coverage"); and, for the history, Pro Football Hall of Fame
+  biographies of Willie Brown, Mel Blount, Ty Law and Darrelle Revis.
+:::
+
+[^bumprun]: "Bump and run coverage," Wikipedia: https://en.wikipedia.org/wiki/Bump_and_run_coverage (Brown came up with the jam at the line in 1963, drawing on his college experience as a linebacker at Grambling, first with the Denver Broncos, and joined the Raiders in 1967; Davis modelled the coverage on the press defense of John Wooden's UCLA basketball teams). ESPN, "Hall of Fame cornerback Willie Brown dies at 78" (Oct. 2019): https://www.espn.com/nfl/story/_/id/27903518 . Brown was inducted into the Pro Football Hall of Fame in 1984. <!-- VERIFY: induction year 1984 and the "12 seasons with the Raiders" figure against PFHOF bio -->
+
+[^blount]: "1978 NFL season," Wikipedia: https://en.wikipedia.org/wiki/1978_NFL_season (defenders may contact receivers only within five yards of the line of scrimmage; part of a package of changes meant to increase scoring). Steelers Depot, "Mel Blount explains play that created 'Mel Blount Rule'" (Feb. 2024): https://steelersdepot.com/2024/02/mel-blount-explains-play-that-created-mel-blount-rule . Before 1978, contact was allowed until the pass was thrown. The 1977 figure of 34.4 combined points per game is from the Wikipedia season article.
+
+[^lawrule]: Tom E. Curran, "They called it the 'Ty Law Rule' … and that was OK with him," NBC Sports Boston: https://www.nbcsportsboston.com/nfl/new-england-patriots/they-called-it-the-ty-law-rule-and-that-was-ok-with-him/393549/ (the Competition Committee's 2004 crackdown on illegal contact after the 2003 AFC Championship Game; Colts president Bill Polian and coach Tony Dungy on the committee side). <!-- VERIFY: author byline -->
+
+[^contact]: NFL Rulebook, Rule 8, Section 4 ("Legal and Illegal Contact With Eligible Receivers"): within five yards of the line of scrimmage a defender may contact a receiver in front of him; beyond five yards, while the passer is in the pocket with the ball, he may not initiate contact that impedes the receiver (illegal contact: five yards and an automatic first down). Rule 8, Section 5 governs pass interference once the ball is thrown: https://operations.nfl.com/the-rules/nfl-rulebook/
+
+[^manshare]: This book's calculation from nflverse `load_participation()` joined to play-by-play: regular-season dropbacks (2018–2025) with a charted `defense_coverage_type`; BLOWN, COMBO and PREVENT excluded; man = COVER_0, COVER_1 and 2_MAN (the same plays the data's `defense_man_zone_type` marks as man). NGS supplies the labels for 2016–2022 (none for 2016–2017) and FTN from 2023, with different label sets. Man share by season: 35.2% (2018), 37.3%, 34.6%, 30.4%, 28.9% (2022), 43.8% (2023), 49.6% (2024), 31.1% (2025). Third-and-3 to 6 (with fourth downs): 59.2% (NGS era) and 60.1% (FTN era); first down 25.5% and 35.6%; third-and-11+ 20.9% and 26.0%. Inside the 5: man 87.8% / 77.6%, Cover 0 61.5% / 41.4%. Reproduce with the code behind the figures; small differences from published figures come from the filters.
+
+[^bargain]: This book's calculation from the same data: share of dropbacks with five or more pass rushers, Cover 0 73.4% (2018–2022) and 75.3% (2023–2025), against 47.7% and 39.8% for Cover 1; median `time_to_throw` on throws, Cover 0 2.25 s (2018–2022) and 2.10 s (2023–2025) against 2.4 to 2.8 s for every other coverage. Between the 20s, 2023–2025, a gain of 20 or more yards on 13.8% of Cover 0 dropbacks (Cover 1 10.9%, Cover 3 9.6%, Cover 2 7.7%, quarters 7.3%); 2018–2022 shows the same order (Cover 0 12.9%, Cover 1 12.3%).
+
+[^spags]: Super Bowl XLII (Feb. 3, 2008), Giants 17, Patriots 14, ending New England's 18–0 season: https://en.wikipedia.org/wiki/Super_Bowl_XLII ; Spagnuolo was the Giants' defensive coordinator in 2007–2008 and has been the Chiefs' since 2019: https://en.wikipedia.org/wiki/Steve_Spagnuolo . Cover 0 ranks are this book's calculation from nflverse participation data (method in the note on man-coverage shares): Kansas City's rank in Cover 0 share of charted dropbacks was 3, 2, 3, 3, 5, 2 and 1 from 2019 to 2025 (it was 4th in 2018, the year before Spagnuolo arrived).
+
+[^teamman]: This book's calculation from nflverse participation data, man share of charted regular-season dropbacks by defense: New England first in 2018 (60.8%) and 2019 (67.6%); Miami first in 2020 (54.0%) and 2021 (48.2%); Denver first in 2024 (63.5%) and 2025 (45.1%). Ranks are within each season, so they are not affected by the 2022/2023 change of charting source. Flores was a Patriots assistant from 2004 to 2018 and Miami's head coach 2019–2021: https://en.wikipedia.org/wiki/Brian_Flores . Vance Joseph has been Denver's defensive coordinator since 2023: https://en.wikipedia.org/wiki/Vance_Joseph
+
+[^revis]: Pro Football Hall of Fame, Darrelle Revis: https://profootballhof.com/players/darrelle-revis (Class of 2023, elected in his first year of eligibility); New York Jets, "Darrelle Revis, Pro Football Hall of Fame Class of 2023": https://newyorkjets.com/news/darrelle-revis-pro-football-hall-of-fame-class-of-2023-jets . 2009 matchups: Michael Nania, "15 Darrelle Revis stats that capture his all-time dominance," Jets X-Factor (July 15, 2020): https://jetsxfactor.com/2020/07/15/15-darrelle-revis-stats-that-capture-his-all-time-dominance/ (Moss, Owens, Smith, Johnson, White, Wayne and Ochocinco each held under 36 yards; Ochocinco to no catches). The Jets allowed 236 points in 2009, fewest in the NFL. <!-- VERIFY: Jets X-Factor author; spot-check 2009 points allowed on PFR -->
+
+[^surtain]: Jeff Legwold, "Will Broncos' Pat Surtain II shadow top receivers in 2024?," ESPN (Sept. 10, 2024): https://www.espn.com/nfl/story/_/id/41198764/denver-broncos-cornerback-pat-surtain-ii-cover-top-receivers-dk-metcalf (Surtain matched Metcalf on 24 of his 25 routes in Week 1, per Next Gen Stats). Surtain was the AP Defensive Player of the Year for 2024: https://www.cbsnews.com/colorado/news/associated-press-votes-denver-bronco-patrick-surtain-ii-nfl-top-cornerback
+
+[^sherman]: Sheil Kapadia, "Richard Sherman in the spotlight vs. Julio Jones, Falcons," ESPN (Jan. 10, 2017): https://www.espn.com/blog/seattle-seahawks/post/_/id/24142/richard-sherman-in-the-spotlight-vs-julio-jones-falcons (Sherman lined up on Jones's side on 30 of 46 coverage snaps in the regular-season meeting). On Sherman's usual left-side alignment in Seattle's Cover 3: PFF, "Packers elect to not even test Richard Sherman in season opener": https://www.profootballfocus.com/packers-elect-to-not-even-test-richard-sherman-in-season-opener/ (61 of 61 snaps on the left side). <!-- VERIFY: whether the Kapadia piece previews the Jan. 2017 divisional playoff or describes the Oct. 2016 game; the text says Seattle moved him "as against Atlanta's Julio Jones" around the January 2017 playoffs. -->
+
+[^lawfilm]: The score, the three interceptions and Law's "Just beat them up" are from the NBC Sports Boston piece cited in the history section and the Patriots Hall of Fame biography of Ty Law: https://www.patriotshalloffame.com/hall_of_famer/ty-law/ . The game was played on Jan. 18, 2004. <!-- VERIFY: date -->
+
+[^gilmore]: Patriots.com, "Stephon Gilmore named Associated Press 2019 NFL Defensive Player of the Year" (Feb. 1, 2020): https://www.patriots.com/news/stephon-gilmore-named-associated-press-2019-nfl-defensive-player-of-the-year (No. 1 in total defense, 275.9 yards per game, and points allowed, 14.1 per game; six interceptions, tied for the league lead; 20 passes defensed); CBS Sports, "NFL Honors: Patriots' Stephon Gilmore wins Defensive Player of the Year": https://www.cbssports.com/nfl/news/nfl-honors-patriots-stephon-gilmore-wins-defensive-player-of-the-year-for-standout-2019-season (two interceptions returned for touchdowns; first Patriot to win the award).
+
+[^sb58]: Barry Petchesky, "The Chiefs Defense Unleashed Hell," Defector (Feb. 12, 2024): https://defector.com/the-chiefs-defense-unleashed-hell (six rushers, Jones unblocked, Bolton's quote); Nick Shook, NFL.com (Feb. 12, 2024): https://www.nfl.com/news/chiefs-defense-follows-survive-then-thrive-motto-to-earn-super-bowl-lviii-victory-over-49ers (Jones's pressure on third-and-4 from the Kansas City 9). Final score Chiefs 25, 49ers 22 (OT).
+
+[^surtain2]: The Week 1, 2024 game at Seattle, per the ESPN piece in the shadow-corner section.

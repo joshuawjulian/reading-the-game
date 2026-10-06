@@ -1,0 +1,1480 @@
+---
+title: "Even Fronts: 4-3 Over, Under, Wide-9, and the 46 Bear"
+subtitle: "Four defensive linemen, two ways to lean them, one way to spread them out and one way to smother the middle, and how to tell which you're watching"
+description: "The four-man even front from the defense's side: what makes a front even, how a strength call sets it, the 4-3 Over and the 4-3 Under and the trade each one makes (where the 3-technique goes, where the uncovered guard is, who has the edge), the wide-9 front and the run lanes it pays for its pass rush, Buddy Ryan's 46 defense and the bear front that covers the center and both guards, how an even front changes when the offense goes from two backs to three receivers, and how to name the front from the broadcast angle."
+glossary:
+  "Even front": "A defensive front whose down linemen are set in pairs, two on each side of the ball, with nobody head-up on the center: in practice a four-man line, the 4-3 family. Most even fronts lean one tackle onto a shoulder of the center (a 1-technique) and set the other outside a guard (a 3-technique), and the direction of that lean is what Over and Under name."
+  "4-3 Over": "An even front shifted toward the offense's strength (usually the tight end): the 3-technique and one end on the strong side, the 1-technique shaded to the weak side of the center, the other end on the weak side, and the Sam linebacker off the ball outside the tight end. The guard left without a lineman on him is the weak-side guard."
+  "4-3 Under": "An even front shifted away from the offense's strength: the 3-technique on the weak side, the nose shaded to the strong side of the center, a 5-technique end on the strong side and the Sam linebacker on the line outside the tight end. The guard left without a lineman on him is the strong-side guard, with the Mike over him. Often described as a 4-3 with 3-4 personnel."
+  "46 defense": "Buddy Ryan's eight-man front of the 1980s Chicago Bears, named for safety Doug Plank's jersey number, not for a count of players: a bear front (the center and both guards covered), both outside linebackers on the tight end's side, the strong safety in the box as a linebacker, and usually man coverage and a blitz behind it."
+  "Bear front": "A front that covers the center and both guards (a 0-technique nose and a 3-technique on each guard), so no interior offensive lineman is free to double-team or climb to a linebacker. The line of the 46 defense, now used mostly near the goal line and against heavy formations."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared helpers for this chapter's diagrams)"
+#| output: false
+import logging
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, Polygon, Rectangle, RegularPolygon
+from gridiron import Play, Player, Field, offense, technique, style, routes as r
+from gridiron.play import draw_marker
+
+GREEN = "#0f7a55"         # darker step of the aqua highlight, for text on the light field
+PURPLE = style.SERIES[6]  # a ring colour that is neither offense blue nor defense orange
+OL_KEYS = ("LT", "LG", "C", "RG", "RT")
+
+
+def pdf_build():
+    return os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+
+def O(key, pos, d, w, label):
+    return Player(key, pos, "off", d, w, label=label)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line(labels="full"):
+    """The five offensive linemen, labelled LT..RT ("full") or with one letter, T G C G T ("short")."""
+    short = {"LT": "T", "LG": "G", "C": "C", "RG": "G", "RT": "T"}
+    return [p.moved(label=(p.key if labels == "full" else short[p.key])) for p in offense("singleback")
+            if p.key in OL_KEYS]
+
+
+def te(side=1, key=None, label=None):
+    """An in-line tight end: Y on the right, U on the left."""
+    key = key or ("Y" if side > 0 else "U")
+    return O(key, "TE", -0.7, side * 4.8, label or key)
+
+
+def T(t, side=1):
+    """Width of technique t on the offense's right (side=+1) or left (side=-1)."""
+    return technique(t, side)
+
+
+def go_to(p, key, end, kind="block", delay=0.0, speed=None, via=()):
+    """Move `key` through absolute (d, w) points `via` to `end`, as a block, path or run."""
+    start = np.array(p._cur(key))
+    pts = [tuple(np.array(q) - start) for q in (*via, end)]
+    if kind == "block":
+        return p.block(key, pts=pts, delay=delay, speed=speed)
+    if kind == "pull":
+        return p.pull(key, pts, delay=delay, speed=speed)
+    return {"path": p.path, "run": p.run}[kind](key, pts, delay=delay, speed=speed)
+
+
+def _P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.5, ha="center", weight="normal"):
+    """A short on-field label at (d, w)."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=9, fontweight=weight,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=7, shrink=7):
+    """A label with a thin leader line to the player or spot it names."""
+    (xt, yt), (xp, yp) = _P(fld, p, *text_at), _P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha="center", va="center", zorder=9,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=shrink),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def gap_tag(fld, p, d, w, text, color=GREEN, fontsize=8.5):
+    """A gap letter in a small rounded box."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha="center", va="center", zorder=9,
+                fontweight="bold", bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec=color, lw=1.0))
+
+
+def spot(fld, p, d, w, color=style.DEFENSE_DARK, ms=10):
+    """Mark a point (a tackle, a meeting point) with an X."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.plot([x], [y], marker="X", ms=ms, color=color, mec="white", mew=0.8, zorder=12)
+
+
+def ring(fld, p, key, color=GREEN, r=1.25, lw=1.8, ls="-"):
+    """A ring around a player at his alignment (drawn under the marker's label)."""
+    q = p.players[key]
+    x, y = _P(fld, p, q.d, q.w)
+    fld.ax.add_patch(Circle((float(x), float(y)), r, fc="none", ec=color, lw=lw, ls=ls, zorder=7.5))
+
+
+def lane(fld, p, w0, w1, d0, d1, color=style.OFFENSE, alpha=0.10, ls=(0, (3, 2))):
+    """Shade a rectangular lane (a run lane, a gap) from width w0 to w1 and depth d0 to d1."""
+    (x0, y0), (x1, y1) = _P(fld, p, d0, w0), _P(fld, p, d1, w1)
+    fld.ax.add_patch(Rectangle((min(x0, x1), min(y0, y1)), abs(x1 - x0), abs(y1 - y0), fc=color, alpha=alpha,
+                               ec=color, lw=0.9, ls=ls, zorder=0.8))
+
+
+def dashed(fld, p, pts, color=style.THIRD, lw=1.5, dash=(0, (3, 2.2)), end="arrow"):
+    """A dashed 'what if' or 'intent' path through absolute (d, w) points."""
+    xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    xs, ys = np.asarray(xs, float), np.asarray(ys, float)
+    if end == "arrow":   # dashed all the way to a short solid head on the last 25% of the last leg
+        hx, hy = xs[-2] + 0.75 * (xs[-1] - xs[-2]), ys[-2] + 0.75 * (ys[-1] - ys[-2])
+        xs = np.concatenate([xs[:-1], [hx, xs[-1]]]); ys = np.concatenate([ys[:-1], [hy, ys[-1]]])
+        fld.ax.plot(xs[:-1], ys[:-1], color=color, lw=lw, ls=dash, zorder=6)
+        fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>",
+                                         mutation_scale=10, color=color, lw=lw, zorder=6))
+    else:
+        fld.ax.plot(xs, ys, color=color, lw=lw, ls=dash, zorder=6)
+
+
+def ghost(fld, p, d, w, label, side="def"):
+    """A faint, dotted outline where a player USED to be (before a shift)."""
+    x, y = _P(fld, p, d, w)
+    x, y = float(x), float(y)
+    if side == "def":
+        fld.ax.add_patch(RegularPolygon((x, y), 4, radius=0.75 * 1.25, orientation=np.pi / 4, fc="none",
+                                        ec=style.DEFENSE, lw=1.0, ls=(0, (1.5, 1.2)), zorder=7))
+        fld.ax.text(x, y, label, ha="center", va="center", fontsize=6.5, color=style.MUTED, zorder=7)
+    else:
+        fld.ax.add_patch(Circle((x, y), 0.75, fc="none", ec=style.OFFENSE, lw=1.0, ls=(0, (1.5, 1.2)), zorder=7))
+
+
+def bracket(fld, p, d, w0, w1, color=style.DEFENSE_DARK, lw=1.6):
+    """A bar spanning the gap(s) a player owns, with end ticks."""
+    (xa, ya), (xb, yb) = _P(fld, p, d, w0), _P(fld, p, d, w1)
+    fld.ax.plot([xa, xb], [ya, yb], color=color, lw=lw, solid_capstyle="butt", zorder=5)
+    for w in (w0, w1):
+        (x0, y0), (x1, y1) = _P(fld, p, d - 0.35, w), _P(fld, p, d + 0.35, w)
+        fld.ax.plot([x0, x1], [y0, y1], color=color, lw=lw, zorder=5)
+
+
+def clean(ax):
+    """Box-zoomed diagrams: drop hash ticks and yard numbers, clip anything outside the window."""
+    for ln in list(ax.lines):
+        xs, ys = ln.get_data()
+        if len(xs) == 2 and ln.get_linewidth() == 0.5 and np.hypot(xs[1] - xs[0], ys[1] - ys[0]) < 1.0:
+            ln.remove()
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() == 0.55:   # yard numbers, not technique labels
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, width_in=5.8, ax=None, **kw):
+    """Play.draw, sized for the page, cleaned for a box-sized window."""
+    fld = p.draw(width_in=width_in, ax=ax, **kw)
+    clean(fld.ax)
+    return fld
+
+
+def title(ax, text, size=8.8):
+    ax.set_title(text, fontsize=size, loc="left", color=style.INK, fontweight="bold")
+
+
+GAPS = [(-4.0, "C"), (-2.4, "B"), (-0.8, "A"), (0.8, "A"), (2.4, "B"), (4.0, "C"), (5.95, "D")]
+
+
+def gap_row(f, p, owners, d_tag=-2.2, d_bar=-3.0, d_lab=-3.75, gaps=GAPS):
+    """Gap letters under the line, and below them the player who owns each gap."""
+    for w, g in gaps:
+        gap_tag(f, p, d_tag, w, g, fontsize=7.8)
+    for (w, _), lab in zip(gaps, owners):
+        bracket(f, p, d_bar, w - 0.35, w + 0.35)
+        say(f, p, d_lab, w, lab, color=style.DEFENSE_DARK, fontsize=7, weight="bold")
+
+
+# --- the chapter's fronts, all authored with the tight end (the strength) on the offense's RIGHT -------
+def over_front(s=1, sam=True):
+    """4-3 Over to side s: weak 5, 1 shaded weak, 3 strong, strong 5; Sam stacked outside the TE,
+    Mike over the strong A gap, Will over the weak (uncovered) guard."""
+    out = [D("WE", "DE", 1.0, T("5", -s), "5"), D("NT", "DT", 1.0, T("1", -s), "1"),
+           D("DT", "DT", 1.0, T("3", s), "3"), D("SE", "DE", 1.0, T("5", s), "5"),
+           D("MIKE", "LB", 4.5, s * 0.8, "M"), D("WILL", "LB", 4.5, -s * 2.0, "W")]
+    if sam:
+        out.append(D("SAM", "LB", 4.2, s * 6.2, "S"))
+    return out
+
+
+def under_front(s=1, sam=True):
+    """4-3 Under to side s: Sam on the line outside the TE (a 9), strong 5, nose shaded strong (1),
+    3-technique weak, weak end in a wide 5; Mike over the strong (uncovered) guard, Will over the weak A."""
+    out = [D("WE", "DE", 1.0, T("5", -s) - s * 1.0, "5"), D("DT", "DT", 1.0, T("3", -s), "3"),
+           D("NT", "DT", 1.0, T("1", s), "1"), D("SE", "DE", 1.0, T("5", s), "5"),
+           D("MIKE", "LB", 4.5, s * 1.9, "M"), D("WILL", "LB", 4.5, -s * 1.1, "W")]
+    if sam:
+        out.append(D("SAM", "LB", 1.0, T("9", s), "S"))
+    return out
+
+
+# --- frame strips (PDF) and video (web) for the simulated plays --------------------------------------
+MARK_R = 0.62
+
+
+def tracking(play):
+    df = play.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    return df
+
+
+def panel(ax, play, df, t, lateral, window, rings=(), enter=(), ring_r=0.85):
+    """One moment of a simulated play on `ax`: markers, trails of on-screen players, rings."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    ylo, yhi = sorted((play.ball_y - lateral[0], play.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=play.los, window=window, numbers=False, hashes=False,
+                lateral=(ylo, yhi), to_go=play.to_go)
+    cur = df[df["frameId"] == fid]
+    snap = df[df["frameId"] == int((tmap - 0.0).abs().idxmin())]
+    first = snap[snap["x"].between(play.los + window[0] + 0.8, play.los + window[1] - 0.8)
+                 & snap["y"].between(ylo + 0.8, yhi - 0.8)]
+    ids = set(first["_id"]) | {"football"}
+    inside = cur[cur["x"].between(play.los + window[0], play.los + window[1]) & cur["y"].between(ylo, yhi)]
+    ids |= set(inside["_id"]) & set(enter)
+    shown = cur[cur["_id"].isin(ids) | (cur["side"] == "ball")]
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(ids) & (df["side"] != "ball")]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=0.9, alpha=0.4, zorder=3)
+    ppy = fld.pts_per_yard()
+    for _, r_ in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(r_["x"], r_["y"]))
+        if r_["side"] == "ball":
+            ax.add_patch(Ellipse((x, y + 0.45), 0.7, 0.42, fc=style.BALL, ec="white", lw=0.5, zorder=9))
+            continue
+        lab = str(r_.get("label", "") or "")
+        if r_["side"] == "off":
+            ax.add_patch(Circle((x, y), MARK_R, fc=style.OFFENSE, ec="white", lw=0.6, zorder=8))
+            tc = "white"
+        else:
+            ax.add_patch(RegularPolygon((x, y), 4, radius=MARK_R * 1.3, orientation=np.pi / 4,
+                                        fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0, zorder=8))
+            tc = style.INK
+        fs = max(4.0, min(8.0, ppy * (0.85 if len(lab) <= 1 else 0.62)))
+        ax.text(x, y, lab, ha="center", va="center", fontsize=fs, color=tc, fontweight="bold", zorder=10)
+    for key, col in rings:
+        r_ = cur[cur["displayName"] == key].iloc[0]
+        x, y = fld.xy(r_["x"], r_["y"])
+        ax.add_patch(Circle((float(x), float(y)), ring_r, fc="none", ec=col, lw=1.6, zorder=7))
+    for patch in ax.patches:
+        patch.set_clip_on(True)
+    return fld
+
+
+def strip(moments, lateral, window, notes=None, rings=(), ncols=2, width_in=5.2, after=None, enter=()):
+    """Numbered frame strip. `moments` is a list of (play, t, tag)."""
+    cache = {}
+    nrows = int(np.ceil(len(moments) / ncols))
+    pw = width_in / ncols
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False,
+                             figsize=(width_in, nrows * (pw * span_d / span_w + (0.62 if notes else 0.25))))
+    for ax in axes.flat[len(moments):]:
+        ax.axis("off")
+    for i, (ax, (play, t, tag)) in enumerate(zip(axes.flat, moments)):
+        if id(play) not in cache:
+            cache[id(play)] = tracking(play)
+        fld = panel(ax, play, cache[id(play)], t, lateral, window, rings, enter)
+        if after:
+            after(fld, play, t, i)
+        lab = "snap" if abs(t) < 1e-6 else f"{t:+.2f} s".replace("0 s", " s")
+        ax.set_title(f"{i + 1}.  {lab}" + (f"   {tag}" if tag else ""), fontsize=8.3, color=style.INK_2, loc="left")
+        if notes:
+            ax.text(0.5, -0.03, notes[i], transform=ax.transAxes, ha="center", va="top",
+                    fontsize=7.1, color=style.INK)
+    fig.tight_layout(h_pad=1.3 if notes else 0.6, w_pad=0.6)
+    return fig
+
+
+def video(segments, lateral, window, rings=(), width_in=4.6, after=None, enter=()):
+    """Web version: each (play, tag, [(t, note), ...]) segment played in turn, notes as captions."""
+    import shutil
+    from matplotlib import animation
+    from IPython.display import HTML, display
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w + 0.45))
+    frames = []
+    for play, tag, notes in segments:
+        df = tracking(play)
+        tmap = df.groupby("frameId")["time"].first()
+        frames += [(play, df, float(tmap[f]), tag, notes) for f in sorted(df["frameId"].unique())]
+
+    def update(k):
+        play, df, t, tag, notes = frames[k]
+        ax.clear()
+        fld = panel(ax, play, df, t, lateral, window, rings, enter)
+        if after:
+            after(fld, play, t, -1)
+        txt = ("snap" if abs(t) < 0.05 else f"{t:+.1f} s") + (f"  {tag}" if tag else "")
+        cur = [n for tt, n in notes if tt <= t + 1e-6]
+        ax.set_title(txt + (("\n" + cur[-1].replace("\n", " ")) if cur else ""), fontsize=8.5, color=style.INK,
+                     loc="left")
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=range(len(frames)), interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def animation_or_strip(moments, notes, lateral, window, rings=(), after=None, enter=(), ncols=2, width_in=5.2):
+    """Video on the website; a numbered, captioned frame strip in the PDF."""
+    if pdf_build():
+        strip(moments, lateral, window, notes=notes, rings=rings, ncols=ncols, width_in=width_in,
+              after=after, enter=enter)
+        plt.show()
+        return
+    segs = []
+    for play, t, tag in moments:
+        if not segs or segs[-1][0] is not play:
+            segs.append((play, tag, []))
+    for (play, t, tag), n in zip(moments, notes):
+        for s in segs:
+            if s[0] is play:
+                s[2].append((t, n))
+    video(segs, lateral, window, rings=rings, after=after, enter=enter)
+```
+
+First-and-10. The offense breaks the huddle with its tight end on the right. Before the quarterback
+reaches the line, the defensive tackle who had been standing over the right guard jogs across to the
+left guard, the other tackle slides the opposite way, and a linebacker who had been off the ball walks up
+and plants himself on the line just outside the tight end, hand on his knees. The middle linebacker is
+pointing and shouting one word. Two plays later the tight end lines up on the left, and this time the
+tackles don't trade places at all, and the linebacker outside the tight end stays five yards back. Nobody
+on the broadcast mentions it. The defense has just played two different fronts, chosen by one word and
+the position of one offensive player, and each was a bet about where the run would go. This chapter
+teaches you to read that bet.
+
+**You'll be able to:**
+
+- Draw a 4-3 Over and a 4-3 Under from the offense's strength, and say which guard each leaves uncovered,
+  who owns each gap, and which runs each front is built to stop.
+- Explain the wide-9 front's trade, more pass rush for bigger running lanes inside the ends, and who on
+  the defense has to pay for it.
+- Diagram the 46 and its bear front, and explain why covering the center and both guards breaks so many
+  blocking schemes, and why offenses made it disappear.
+- Show how an even front changes when the offense swaps a fullback for a third wide receiver (21 to 11
+  personnel), and what stays the same.
+- Name the front from the broadcast angle before the snap, using two landmarks: the tight end and the
+  3-technique.
+
+::: {.callout-note title="You'll need"}
+- **[Defensive Line Play: Techniques, One-Gap and Two-Gap](05-01-dl-techniques-and-gap-control.qmd)**: the
+  technique numbers as job descriptions (a **1** shaded on the center, the **3** on a guard's outside
+  shoulder, the **5** on a tackle's, the **9** and the **wide-9** outside the tight end), one-gap
+  (attack a gap) versus two-gap (control a blocker and read), setting the edge, and the gap accounting
+  that gives every gap an owner.
+- From earlier parts: **[formation strength](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)**
+  (the side the defense calls "strong," usually the tight end's), **covered and uncovered** linemen and the
+  A-to-D gaps from [The Language of the Run Game](../03-the-run-game/03-01-run-game-language.qmd), and the
+  4-3 and nickel packages from [A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd).
+:::
+
+**How to read the diagrams.** Offense is blue circles, defense orange squares, and plays go up the page.
+*Left* and *right* always mean the offense's left and right. LT, LG, C, RG and RT are the offensive
+linemen (T, G and C in the smallest pictures), Y and U are tight ends, Q the quarterback, R the running
+back and F a fullback. Defensive linemen are labelled with their technique number; M, W and S are the
+Mike, Will and Sam linebackers; SS and FS are the safeties and $ a nickel back. Green letters are gaps,
+never players. Unless a picture says otherwise, the tight end, and so the offense's strength, is on the
+**right**.
+
+## What makes a front "even"
+
+[A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) counted the
+front by its players: a 4-3 has four linemen and three linebackers. Coaches count it a second way, by
+*where the linemen stand*, and the second count is the one that tells the offense what it is up against.
+
+```{python}
+#| label: fig-even-odd
+#| fig-cap: "Even and odd, the coach's way of counting. Left, an even front: four linemen set in pairs, two on each side of the ball, and nobody head-up on the center (green ring), so the center is free to help a teammate or climb to a linebacker. Right, an odd front: a nose head-up on the center, splitting the line into a middle man and a pair on either side. Fronts are named after this picture as much as after the head count."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 2.9))
+dfns = [("Even: 5, 3, 3, 5 (four down)",
+         [D("LE", "DE", 1.0, T("5", -1), "5"), D("LT3", "DT", 1.0, T("3", -1), "3"),
+          D("RT3", "DT", 1.0, T("3", 1), "3"), D("RE", "DE", 1.0, T("5", 1), "5")]),
+        ("Odd: 4, 0, 4 (three down)",
+         [D("LE", "DE", 1.0, T("4", -1), "4"), D("NT", "DT", 1.0, 0.0, "0"), D("RE", "DE", 1.0, T("4", 1), "4")])]
+for ax, (ttl, dl) in zip(axes, dfns):
+    p = Play(line("short") + [te(+1)], dl, los=35, to_go=None)
+    f = draw(p, ax=ax, lateral=(-6.6, 7.6), window=(-3.4, 4.2), title=False)
+    ring(f, p, "C", color=GREEN if "Even" in ttl else style.DEFENSE_DARK, r=1.15)
+    say(f, p, 3.0, 0.0, "center free" if "Even" in ttl else "center covered",
+        color=GREEN if "Even" in ttl else style.DEFENSE_DARK, fontsize=7, weight="bold")
+    title(ax, ttl)
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+An [**even front**](../../appendices/glossary.qmd#gl-even-front) sets its down linemen in pairs, two on
+each side of the ball, with nobody head-up on the center. In practice that means a four-man line, the
+family of fronts that grew up around the 4-3. An odd front puts a man on the center (the nose of a 3-4,
+or the middle man of a five-man line) and is the subject of
+[Odd and Hybrid Fronts](05-03-odd-and-hybrid-fronts.qmd).
+
+Why does the center matter so much? Because of what you learned about *covered* and *uncovered*
+linemen in [03-01](../03-the-run-game/03-01-run-game-language.qmd). An offensive lineman with nobody
+on him is the offense's spare part: he can double-team a neighbor or climb to a linebacker. In an odd
+front the center is busy from the first instant, and the spare parts are the guards. In an even front
+the center starts free, and so does at least one guard, which is where the offense will look first.
+Every even front is a decision about *which* linemen to leave free, and where to put the linebackers who
+have to deal with them.
+
+The perfectly balanced version in @fig-even-odd (a 3-technique on each guard, an end on each tackle)
+exists, and you will see it on passing downs, when it gives each of the two best interior rushers a guard
+to himself. On early downs, most even fronts are *unbalanced* on purpose. One tackle slides in to a
+**1-technique**, shaded on a shoulder of the center, and the other stays a **3-technique**, outside a
+guard. Now the line leans: the 3-technique's side has its linemen spread wide, the 1-technique's side has
+them pinched in toward the ball. Which way the line leans, toward the offense's strength or away from it,
+is the difference between the two fronts this chapter is built around.
+
+::: {.callout-caution title="Common misconception"}
+"Even and odd just mean four linemen or three." That's the fan's shortcut and it usually works. But the
+coaches' test is the center and the pairs, and the two counts can disagree: the bear front later in this
+chapter has four men with their hands down *and* a nose head-up on the center, and a 3-4 team can put a
+fourth player's hand on the ground without changing who covers whom. When the counts argue, believe
+the alignment.
+:::
+
+## Setting the front: the strength call
+
+A front leans toward or away from something, so before it can line up, the defense needs a word for
+which side is which. That word is the **strength**, the side the defense calls strong, from
+[Formation Rules and Vocabulary](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd).
+For fronts, the usual rule is simple: **the strength is the tight end's side.** The tight end is a sixth
+blocker attached to the line, so his side has one more gap (the D gap outside him) and one more man to
+block with. Runs go there more often, and the front wants to know about it.
+
+When there is no tight end, or one on each side, defenses fall back on other rules. Common ones are the
+*field* (the wide side of the field when the ball is on a hash), the *running back* (the side he is
+offset to in the shotgun), or the side with more receivers. Which rule a team uses, and in what order,
+is in its playbook, and the call before the snap says which one applies.
+
+The call is relative, and that is the whole point. The defense does not call "3-technique on the left
+guard." It calls something like "Over" and lets the formation decide which guard: **Over** means the line
+leans *toward* the strength, **Under** means it leans *away* from it.[^broaddus] A Mike linebacker
+shouting "Strong right! Over!" is translating one word into eleven alignments for this particular snap.
+
+## The 4-3 Over
+
+```{python}
+#| label: fig-over-under
+#| fig-cap: "The two even fronts against the same offense (tight end on the right; the backs of the I-formation are not shown). Under each front: the seven gaps (green) and the player who owns each one. Left, the 4-3 Over: the line leans toward the tight end, with the 3-technique on the right guard and the 1-technique shaded to the left of the center. The left guard has nobody on him (green ring): he is the uncovered guard, and the Will stands over him. The Sam is off the ball outside the tight end. Right, the 4-3 Under: the line leans away from the tight end, with the 3-technique on the left guard and the nose shaded to the right of the center. Now the right guard is uncovered and the Mike stands over him, and the Sam is on the line, outside the tight end. Same eleven players, same personnel, opposite bets."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.0))
+for ax, (ttl, dfn, free, owners) in zip(axes, [
+        ("4-3 Over: lean toward the TE", over_front(+1), "LG", ["5", "W", "1", "M", "3", "5", "S"]),
+        ("4-3 Under: lean away from it", under_front(+1), "RG", ["5", "3", "W", "1", "M", "5", "S"])]):
+    p = Play(line("short") + [te(+1)], dfn, los=35, to_go=None)
+    f = draw(p, ax=ax, lateral=(-7.6, 8.4), window=(-5.0, 6.6), title=False)
+    gap_row(f, p, owners)
+    ring(f, p, free, color=GREEN, r=1.05)
+    title(ax, ttl)
+fig.tight_layout(w_pad=0.7)
+plt.show()
+```
+
+Start with the left half of @fig-over-under, the [**4-3 Over**](../../appendices/glossary.qmd#gl-4-3-over).
+On the strong side (the tight end's), the defense puts its two most active linemen: the **3-technique** on
+the strong guard's outside shoulder and the strong end on the tackle, here in a 5 (some teams play him
+tighter, in a 6 or 7 on the tight end, to stop the tight end blocking down). On the weak side it puts the
+**1-technique**, shaded on the center's weak shoulder, and the weak end in a 5. The linebackers fill in
+around them. The Mike stacks behind the line over the strong A gap; the Will stands over the weak guard;
+the Sam is off the ball, a few yards outside the tight end.
+
+Now count the gaps, the way [05-01](05-01-dl-techniques-and-gap-control.qmd) taught. Seven gaps, seven
+men, one each: the four linemen take the gaps they are shaded into (weak C, weak A, strong B, strong C),
+and the three linebackers take the three left over (weak B, strong A, and the D gap outside the tight end).
+This is one-gap football. Every man knows his gap before the snap and can play it at full speed.
+
+**Why lean toward the tight end?** Because that's where the offense has the most to work with. The strong
+side has three blockers on the line (guard, tackle, tight end) and four gaps, and the classic power runs,
+the off-tackle plays of [Gap and Power Runs](../03-the-run-game/03-03-gap-and-power-runs.qmd), go there.
+The Over meets them with linemen. Its strong-side B and C gaps belong to big men with their hands in the
+ground, not to linebackers who have to read and then come downhill, so the runs the offense likes best
+run into the defense's weight. And the Sam, off the ball, is free to do two jobs: fill the D gap on a run,
+or turn and cover the tight end on a pass. Play-action to the tight end is one of the oldest plays in
+football; an off-ball Sam can see it.
+
+**What does it give up?** Look at the green ring. The **weak guard is uncovered**, and an uncovered guard
+on the side away from the tight end is a lineman with a clean path to the Will linebacker. That empty
+patch of the line, with no defensive lineman over a blocker, is what coaches call a **bubble**, and offenses
+aim runs at bubbles: the guard can help double the 1-technique and then climb to the Will, or go
+straight to him. Over teams live with it by asking a lot of the Will, the run-and-hit linebacker who has
+to beat a 300-pound guard to his gap. There is a second, subtler cost: the 3-technique is on the side with
+the most offensive blockers, so it's the side where he is easiest to double-team.
+
+## The 4-3 Under
+
+Flip the lean and you get the right half of @fig-over-under, the
+[**4-3 Under**](../../appendices/glossary.qmd#gl-4-3-under). The 3-technique moves to the *weak* guard. The
+nose slides to a 1-technique on the center's *strong* shoulder. The strong end stays in a 5 on the
+tackle, and the weak end, with no tight end to worry about, widens into a loose 5 or further. Then the
+linebackers shift the other way: **the Sam walks up onto the line**, outside the tight end, and the Mike
+moves over the strong guard.
+
+Count the gaps again. On the strong side, the Sam owns the D gap and the end the C. The Mike, stacked over
+the uncovered strong guard, owns the B gap, and the nose owns the strong A. On the weak side, the Will
+owns the A, the 3-technique the B and the weak end the C. Seven for seven, just distributed differently.
+
+**Why lean away?** Three reasons, and each one is a bet.
+
+1. **A hard strong-side edge.** With the Sam on the line and a big end in the 5, the tight end's side has
+   two defenders on the line of scrimmage outside the tackle. The off-tackle run has to block both, and
+   the edge they set turns everything back inside. Seattle's defensive coordinator in 2011, Gus Bradley,
+   put the whole philosophy in two sentences: "We want to set the edge. Turn everything back inside to our
+   big guys."[^seattlebig]
+2. **A one-on-one 3-technique.** On the weak side there is no tight end, so the offense has fewer ways to
+   double-team the 3-technique without leaving someone else free. The Under puts its best interior pass
+   rusher where he is likeliest to get a guard alone. Monte Kiffin's Tampa Bay defense had a name for him,
+   the **under tackle**, after the side he played, and built its pass rush around Warren Sapp in that spot.
+3. **A clean Mike.** The strong guard is uncovered, but the Mike is right over him, and the nose and end
+   on either side of the guard make it hard for him to get a clean path up to the Mike. A guard who has to
+   help the nose with a double team before he climbs arrives late.
+
+Put the Sam on the line, lean the line away from him, and the Under starts to look like something else.
+Squint at the right half of @fig-over-under: five men on the line, a nose on the center's shoulder, two big
+ends, a stand-up player on the edge, two inside linebackers. That is close to a 3-4 with one outside
+linebacker's hand on the ground, which is why Pete Carroll described his Seattle defense as "a 4-3 with 3-4
+personnel."[^carroll] The labels in this part of football blur at the edges; the alignment is what's real.
+
+**What does it give up?** The bubble is now on the *strong* side, over the right guard, in front of the
+Mike. Runs at that bubble, inside zone and duo toward the tight end, put the uncovered guard on a
+linebacker with a running start. And the Sam on the line is a Sam who can't easily drop into coverage:
+if he rushes or sets the edge, someone else has to take the tight end on play-action, usually a safety.
+
+```{python}
+#| label: fig-attack-bubble
+#| fig-cap: "Where each front is soft: the uncovered guard. Left, inside zone to the weak side (the offense's left) against the Over. The left guard (green ring) has nobody on him, so he helps the center move the 1-technique and then climbs to the Will (dashed green), and the back aims for the weak B gap. Right, inside zone toward the tight end against the Under: now it is the right guard who is free, and he climbs to the Mike, who has to beat a lineman with a running start to the strong B gap. Blocks are simplified (blue bars); the point is which guard is free and where he goes."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.2))
+# Over: inside zone left, at the bubble over the LG
+off = line("full") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -6.6, 0, "R")]
+p = Play(off, over_front(+1), los=35, to_go=None)
+go_to(p, "C", (0.2, -0.75)); go_to(p, "LG", (0.25, -0.95))
+go_to(p, "LT", (0.3, -4.0)); go_to(p, "RG", (0.3, 2.3)); go_to(p, "RT", (0.3, 3.9)); go_to(p, "Y", (2.9, 6.0))
+go_to(p, "RB", (-0.9, -2.4), "run", via=[(-4.4, -0.7)])
+go_to(p, "QB", (-3.2, 0.6), "path", speed=3.0)
+f = draw(p, ax=axes[0], lateral=(-8.2, 8.6), window=(-8.6, 7.0), title=False)
+ring(f, p, "LG", color=GREEN, r=1.05)
+dashed(f, p, [(0.6, -1.4), (2.4, -1.9), (3.65, -2.0)], color=GREEN, lw=1.6)
+say(f, p, 5.9, -3.9, "Will vs a\nclimbing guard", color=GREEN, fontsize=6.8, weight="bold")
+say(f, p, -7.2, -4.1, "zone weak, at\nthe bubble", color=style.OFFENSE_DARK, fontsize=6.6)
+title(axes[0], "Over: the weak guard is free")
+# Under: inside zone right, at the bubble over the RG
+p = Play(off, under_front(+1), los=35, to_go=None)
+go_to(p, "C", (0.2, 0.75)); go_to(p, "RG", (0.25, 1.0))
+go_to(p, "RT", (0.3, 4.0)); go_to(p, "Y", (0.3, 5.7)); go_to(p, "LG", (0.3, -2.3)); go_to(p, "LT", (0.3, -4.6))
+go_to(p, "RB", (-0.9, 2.4), "run", via=[(-4.4, 0.7)])
+go_to(p, "QB", (-3.2, -0.6), "path", speed=3.0)
+f = draw(p, ax=axes[1], lateral=(-8.2, 8.6), window=(-8.6, 7.0), title=False)
+ring(f, p, "RG", color=GREEN, r=1.05)
+dashed(f, p, [(0.6, 1.4), (2.4, 1.8), (3.65, 1.9)], color=GREEN, lw=1.6)
+say(f, p, 5.9, 4.4, "Mike vs a\nclimbing guard", color=GREEN, fontsize=6.8, weight="bold")
+say(f, p, -7.2, 4.1, "zone strong, at\nthe bubble", color=style.OFFENSE_DARK, fontsize=6.6)
+title(axes[1], "Under: the strong guard is free")
+fig.tight_layout(w_pad=0.7)
+plt.show()
+```
+
+::: {.callout-important title="Why it exists"}
+**Over and Under are the same eleven players making opposite bets.** The Over puts its linemen where the
+offense has the most blockers and asks a linebacker to cover the weak side's bubble. The Under puts two
+men on the line on the tight end's side to win the edge, sends its best interior rusher to the side
+where he is hardest to double, and asks the Mike to handle the strong side's bubble. Neither is better.
+A defense that can play both, and switch between them without substituting anyone, gives the offense a
+different blocking problem from the same personnel, which is exactly why most 4-3 teams carry both.
+:::
+
+::: {.callout-note title="Go deeper"}
+**The dialects.** Not every staff means the same thing by "Under." For some, it is enough that the line
+leans away from the tight end: Monte Kiffin's Tampa 2 defenses, and Lovie Smith's Bears after them, set the
+under tackle on the weak side and the nose on the strong A gap but usually kept the Sam off the ball, and
+some coaches call that an Under; others call it an Over from the linebackers' point of view, or give it a
+name of their own. Others reserve "Under" for the version in @fig-over-under, with the Sam on the line.
+Some teams set their ends by side (left and right) rather than by strength, so the ends never move and only
+the tackles and linebackers shift. And the strong end in an Over may play a 5, a 6 or a 7. When a coach
+draws "his" Over or Under on a whiteboard, read the alignments, not the word.
+:::
+
+## When the strength moves
+
+The relative call has a cost, and offenses collect it. If the front is set by the tight end, moving the
+tight end moves the front.
+
+```{python}
+#| label: fig-strength-shift
+#| fig-cap: "A tight-end shift against the 4-3 Over. Left, before: the tight end (Y) lines up on the right, so the Over leans right. He shifts across the formation, behind the tackles, to the left (dashed), and must be set for a full second before the snap. Right, after: the strength is now the left, and the Over has to lean left. The 3-technique and the 1-technique trade sides (dotted outlines are where they started), the Sam and the Will trade sides, and the Mike slides over a gap, all in the second or two between the shift and the snap. Here the ends stay on their sides; their techniques don't change, but which one is the strong end does."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.0))
+p = Play(line("short") + [te(+1)], over_front(+1), los=35, to_go=None)
+f = draw(p, ax=axes[0], lateral=(-8.4, 8.6), window=(-3.6, 6.6), title=False)
+dashed(f, p, [(-1.2, 4.8), (-2.1, 3.0), (-2.1, -3.0), (-1.2, -4.6)], color=style.OFFENSE_DARK, lw=1.4)
+say(f, p, -2.85, 0.0, "the tight end shifts left", color=style.OFFENSE_DARK, fontsize=6.9)
+say(f, p, 5.9, -5.5, "strength:\nright", color=style.INK, fontsize=7, weight="bold")
+title(axes[0], "Before the shift: Over to the right")
+p = Play(line("short") + [te(-1)], over_front(-1), los=35, to_go=None)
+f = draw(p, ax=axes[1], lateral=(-8.6, 8.4), window=(-3.6, 6.6), title=False)
+old = {"DT": (1.0, T("3", 1), "3"), "NT": (1.0, T("1", -1), "1"), "SAM": (4.2, 6.2, "S"), "WILL": (4.5, -2.0, "W"),
+       "MIKE": (4.5, 0.8, "M")}
+for k, (d0, w0, lab) in old.items():
+    ghost(f, p, d0, w0, lab)
+dashed(f, p, [(1.0, T("3", 1) - 0.7), (2.25, 0.6), (1.6, T("3", -1) + 0.75)], color=style.DEFENSE_DARK, lw=1.3)
+dashed(f, p, [(1.0, T("1", -1) + 0.6), (1.0, T("1", 1) - 0.65)], color=style.DEFENSE_DARK, lw=1.3)
+dashed(f, p, [(4.2, 5.3), (5.6, 0.0), (4.4, -5.3)], color=style.DEFENSE_DARK, lw=1.1)
+dashed(f, p, [(4.5, -1.2), (4.5, 1.25)], color=style.DEFENSE_DARK, lw=1.1)
+say(f, p, 5.9, 5.6, "strength:\nleft", color=style.INK, fontsize=7, weight="bold")
+say(f, p, -2.6, 0.0, "3 and 1 trade places; S and W swap", color=style.DEFENSE_DARK, fontsize=6.9)
+title(axes[1], "After: the Over has to lean left")
+fig.tight_layout(w_pad=0.7)
+plt.show()
+```
+
+@fig-strength-shift is why tight-end shifts and motions became so common
+([Motion and Shifts](../02-personnel-and-formations/02-06-motion-and-shifts.qmd) has the offense's side).
+One player jogs a few yards; five defenders have to re-set, and they have about a second and a half to do
+it. Several things can go wrong. A tackle who is still moving at the snap is a tackle who hasn't got his
+stance, and a one-gap lineman without a stance has lost his head start. Two linebackers who don't hear the
+new call fill the same gap. And the offense learns something either way: if the 3-technique crosses the
+center every time the tight end moves, the offense now knows his rule and can put him wherever it wants
+him, for instance on the side away from the play it is about to run.
+
+Defenses have answers, and each one is a trade. Some don't flip the line at all on a late shift and just
+re-set the linebackers, accepting a front that leans the "wrong" way for one snap. Some set the line by
+the field or by the running back instead, so a tight-end shift doesn't move anything. Some teach a
+check-word that kills the movement. Every one of those answers gives up some of the precision the front was
+built on, which is the point of shifting in the first place.
+
+::: {.callout-note title="Madden vs. real life"}
+In Madden you pick "4-3 Over" from a menu and the line appears, already leaning the right way, every time.
+On a real field the front is a *rule*, not a picture. The call says "Over" and the defenders work out
+where that means for this formation, then work it out again when the tight end moves, often while the
+offense is still shifting. A defense whose front is a step late re-setting is a defense the offense has
+already beaten before the ball is snapped.
+:::
+
+## The wide-9: stretch the front to rush the passer
+
+The Over and the Under move the line sideways. The wide-9 front stretches it. You met the
+[wide-9](../../appendices/glossary.qmd#gl-wide-9) end in
+[05-01](05-01-dl-techniques-and-gap-control.qmd): a defensive end set well outside the tight end (or where
+one would be), in a sprinter's stance, built to run around the tackle. Put one on each side of a four-man
+line and the whole front changes shape.
+
+```{python}
+#| label: fig-wide-nine-front
+#| fig-cap: "A wide-9 front against a shotgun offense with a tight end on the right (receivers outside the picture). Orange shading: each rusher's path to the quarterback. The two ends start far outside and arc around the tackles; the tackles (a 1 and a 3) attack their gaps. Blue shading: the price. Between each end and the nearest tackle is a running lane several yards wide (the off-tackle lanes, numbers are their width at the line), and on a run the linebackers have to fill them (dashed orange): the Sam on the right, the Will on the left. The wider the ends, the better the rush angle and the longer the linebackers' trip."
+off = line("full") + [te(+1), O("QB", "QB", -5.0, 0, "Q"), O("RB", "RB", -5.0, -1.6, "R")]
+dfn = [D("LE", "DE", 1.0, -(4.8 + 2.3), "w9"), D("NT", "DT", 1.0, T("1", -1), "1"),
+       D("DT", "DT", 1.0, T("3", 1), "3"), D("RE", "DE", 1.0, T("wide9", 1), "w9"),
+       D("WILL", "LB", 5.0, -2.9, "W"), D("MIKE", "LB", 5.0, 0.6, "M"), D("SAM", "LB", 4.8, 4.6, "S")]
+p = Play(off, dfn, los=35, to_go=None)
+fig, ax = plt.subplots(figsize=(6.0, 5.0))
+f = draw(p, ax=ax, lateral=(-11.0, 11.0), window=(-8.4, 8.2), title=False)
+
+
+def corridor(f, p, pts, width=1.0, color=style.DEFENSE, alpha=0.15):
+    """A shaded band of `width` yards along the polyline pts (absolute (d, w))."""
+    pts = np.array(pts, float)
+    left, right = [], []
+    for i in range(len(pts)):
+        a, b = pts[max(i - 1, 0)], pts[min(i + 1, len(pts) - 1)]
+        v = b - a
+        n = np.array([-v[1], v[0]]) / np.linalg.norm(v) * width / 2
+        left.append(pts[i] + n); right.append(pts[i] - n)
+    poly = np.vstack([left, right[::-1]])
+    xs, ys = _P(f, p, poly[:, 0], poly[:, 1])
+    f.ax.add_patch(Polygon(np.column_stack([xs, ys]), closed=True, fc=color, ec="none", alpha=alpha, zorder=0.9))
+    xs, ys = _P(f, p, pts[:, 0], pts[:, 1])
+    f.ax.plot(xs, ys, color=color, lw=1.4, zorder=1.0)
+    f.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=10,
+                                   color=color, lw=1.4, zorder=1.0))
+
+
+corridor(f, p, [(0.2, -7.1), (-1.6, -6.9), (-4.4, -3.9), (-5.6, -1.4)], width=1.2)
+corridor(f, p, [(0.2, 7.1), (-1.6, 6.9), (-4.4, 3.9), (-5.6, 1.4)], width=1.2)
+corridor(f, p, [(0.2, -0.7), (-1.5, -0.8), (-4.0, -0.4)], width=1.0)
+corridor(f, p, [(0.2, 2.35), (-1.5, 2.3), (-4.0, 0.7)], width=1.0)
+lane(f, p, T("3") + 0.55, 7.1 - 0.55, 0.15, 2.5, color=style.OFFENSE, alpha=0.12)
+lane(f, p, -7.1 + 0.55, T("1", -1) - 0.55, 0.15, 2.5, color=style.OFFENSE, alpha=0.12)
+say(f, p, 1.35, (T("3") + 7.1) / 2, f"{7.1 - T('3') - 1.1:.1f} yd", color=style.OFFENSE_DARK, fontsize=6.8)
+say(f, p, 1.35, (-7.1 + T("1", -1)) / 2, f"{abs(T('1', -1) + 7.1) - 1.1:.1f} yd", color=style.OFFENSE_DARK,
+    fontsize=6.8)
+dashed(f, p, [(4.3, 4.4), (2.6, 4.6)], color=style.DEFENSE_DARK, lw=1.3)
+dashed(f, p, [(4.5, -3.1), (2.6, -3.6)], color=style.DEFENSE_DARK, lw=1.3)
+say(f, p, -2.4, -9.5, "the end's\narc", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, -2.4, 9.5, "the end's\narc", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 6.7, 6.0, "Sam fills the\nlane on a run", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 6.7, -6.0, "Will fills the\nlane on a run", color=style.DEFENSE_DARK, fontsize=6.8)
+plt.show()
+```
+
+**Why play it?** Pass rush, first and last. An end in a wide-9 has the longest runway and the best angle
+to the quarterback of any defensive lineman. The tackle in front of him has to kick-slide a long way to meet
+him, and the tight end, if there is one, can't reach him without help. Rushing from there, a fast end gets
+to the quarterback's depth in fewer steps than he would from a 5, and he gets there on an angle that turns
+the tackle's shoulders. The front also simplifies the linemen's lives: as 05-01's Jim Washburn put it, they
+attack, and think about gaps only as the place they are attacking.
+
+**What does it cost?** Look at the blue shading in @fig-wide-nine-front. With the ends that far out, the
+space between each end and the nearest tackle, the *off-tackle* lane, is three to five yards wide at the
+line, and on a run the ends are going upfield, not closing it. Somebody else has to: on the tight end's
+side the Sam, on the other side the Will, often with a safety coming down behind them. The wide-9 moves
+run defense from the defensive line to the linebackers. A wide-9 team with linebackers who are late, or a
+3-technique who gets moved off the ball and widens the lane from the inside, gives up the long runs that
+gave the front its reputation.
+
+So which is it, a pass-rush front that can't stop the run, or something else? The Philadelphia Eagles
+have played it in two very different seasons, and the numbers tell the story better than the reputation.
+The table is computed from nflverse play-by-play when this book is built.
+
+```{python}
+#| code-summary: "Show the Python (Eagles run defense in two wide-9 seasons, from nflverse play-by-play)"
+from IPython.display import Markdown
+from gridiron.data import pbp
+
+
+def run_defense(season, team="PHI"):
+    """Designed runs only (no scrambles), regular season: team's yards per game and per carry, with ranks."""
+    df = pbp(season, columns=["season_type", "play_type", "defteam", "rushing_yards", "qb_scramble", "game_id"])
+    runs = df[(df.season_type == "REG") & (df.play_type == "run") & (df.qb_scramble == 0)]
+    games = runs.groupby("defteam")["game_id"].nunique()
+    g = runs.groupby("defteam")["rushing_yards"].agg(["sum", "mean"])
+    g["ypg"] = g["sum"] / games
+    rk_ypg = g["ypg"].rank(method="min").astype(int)
+    rk_ypc = g["mean"].rank(method="min").astype(int)
+    return {"Season": season, "Front coach": "", "Rush yd/game": f"{g.loc[team, 'ypg']:.0f}",
+            "Rank (of 32)": int(rk_ypg[team]), "Yd/carry": f"{g.loc[team, 'mean']:.2f}",
+            "Rank (of 32) ": int(rk_ypc[team]), "League yd/carry": f"{runs['rushing_yards'].mean():.2f}"}
+
+
+rows = [run_defense(2011), run_defense(2017)]
+rows[0]["Front coach"] = "Washburn (DL coach)"
+rows[1]["Front coach"] = "Schwartz (coordinator)"
+tbl = pd.DataFrame(rows)
+cols = list(tbl.columns)
+md = ["| " + " | ".join(c.strip() for c in cols) + " |", "|" + "|".join([":--", ":--"] + ["--:"] * (len(cols) - 2)) + "|"]
+md += ["| " + " | ".join(str(v) for v in rw) + " |" for rw in tbl.itertuples(index=False)]
+Markdown("\n".join(md))
+```
+
+The 2011 Eagles, in Jim Washburn's first season, tied for the league lead in sacks and were a below-average
+run defense on a per-carry basis. The 2017 Eagles, under Jim Schwartz, the coordinator who had run the
+wide, attacking front with Washburn in Tennessee, allowed the fewest rushing yards per game in the league
+and won the Super Bowl.[^widedata] Same alignment, opposite results against the run. What changed was mostly
+what stood inside and behind the ends: Fletcher Cox, drafted in 2012, at the 3-technique, and linebackers and
+safeties who arrived in the lanes on time. "It always looked like you should be able to run the ball against
+it," the analyst Charles Davis said of Schwartz's front, "but when you have people like Fletcher Cox inside
+and some of those other guys, it's not as easy to run the ball against it as you think."[^davis]
+
+::: {.callout-caution title="Common misconception"}
+"The wide-9 can't stop the run." It gives the run a bigger target, and it makes the players behind the
+ends more important. With an interior that holds its ground and linebackers who fill fast, it can be the
+best run defense in the league, as the 2017 Eagles were. Judge a wide-9 front by its linebackers.
+:::
+
+## The 46 and the bear front
+
+The even fronts so far lean, or stretch, a four-man line. The last one in this chapter crushes it
+together, and for a few seasons in the 1980s it was the most feared defense in football.
+
+### Buddy Ryan's defense
+
+**Buddy Ryan** was a defensive line coach who had won a Super Bowl with the 1968 Jets and coached
+Minnesota's line after that before the Chicago Bears made him their defensive coordinator in 1978. A
+Korean War veteran from a farm in Oklahoma, he was blunt, combative, loyal to his players and openly
+contemptuous of offenses, including his own team's. His problem in Chicago was the problem every defense of
+that era had: offenses ran the ball out of two-back formations, the I-formation and the split backs, with
+a fullback leading the way and guards pulling, and they ran it well. His answer, worked out over several
+seasons and in full bloom by 1981, was to put more players near the ball than the offense could
+block.[^ryan]
+
+He named it after a player. Doug Plank was a hard-hitting safety whom Ryan moved down from his deep spot
+to play, in effect, as a linebacker. "He circled my number three times," Plank recalled, "and said, 'we're
+going to call this the 46 defense.'"[^plank] So the [**46 defense**](../../appendices/glossary.qmd#gl-46-defense)
+is not a count of anything: it is Plank's jersey number. Plank retired after the 1982 season, three years
+before the defense became famous.
+
+```{python}
+#| label: fig-46-plate
+#| fig-cap: "The 46 against a two-back I-formation (21 personnel). On the line: the weak end a yard or two outside the left tackle, a 3-technique on each guard and a nose head-up on the center, so the center and both guards are covered (green rings): that is the bear front. Both outside linebackers are on the tight end's side, one on his inside shoulder (W) and one outside him (S). The Mike stands over the right tackle, the strong safety (ringed: the original 46) over the left tackle, at linebacker depth. Eight men within five yards of the ball; behind them, two cornerbacks pressed on the receivers and one free safety deep."
+off = line("full") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("FB", "FB", -4.5, 0, "F"), O("RB", "RB", -7.0, 0, "R"),
+                      O("X", "WR", -0.7, -15.0, "X"), O("Z", "WR", -1.5, 15.0, "Z")]
+BEAR = [D("WE", "DE", 1.0, -(3.2 + 1.5), "5w"), D("WT", "DT", 1.0, T("3", -1), "3"), D("NT", "DT", 1.0, 0.0, "0"),
+        D("ST", "DT", 1.0, T("3", 1), "3"), D("WILL", "LB", 1.3, 4.1, "W"), D("SAM", "LB", 1.4, 6.0, "S"),
+        D("MIKE", "LB", 4.5, 3.2, "M"), D("SS", "S", 4.5, -3.2, "SS")]
+SECONDARY = [D("LCB", "CB", 1.2, -15.0, "CB"), D("RCB", "CB", 1.2, 15.0, "CB"), D("FS", "S", 11.0, -1.6, "FS")]
+p = Play(off, BEAR + SECONDARY, los=35, to_go=10)
+f = draw(p, width_in=6.4, lateral=(-17.5, 17.5), window=(-8.6, 13.6), title=False)
+for k in ("LG", "C", "RG"):
+    ring(f, p, k, color=GREEN, r=1.0, lw=1.6)
+ring(f, p, "SS", color=style.DEFENSE_DARK, r=1.25)
+say(f, p, -2.9, 0.0, "center and both guards covered: the bear", color=GREEN, fontsize=7, weight="bold")
+say(f, p, 6.3, -3.4, "SS: the '46'", color=style.DEFENSE_DARK, fontsize=7, weight="bold")
+say(f, p, 3.3, 7.6, "both outside\nlinebackers\non the TE", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 3.8, -15.0, "press, man", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 3.8, 15.0, "press, man", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 12.4, -6.4, "one deep safety", color=style.DEFENSE_DARK, fontsize=6.8)
+plt.show()
+```
+
+Read @fig-46-plate from the middle out. The heart of it is the line: a nose head-up on the center and a
+3-technique on each guard. That interior, three men covering the center and both guards, is called a
+[**bear front**](../../appendices/glossary.qmd#gl-bear-front), after the team that made it famous. Outside
+it, the weak end lines up a yard or two outside the weak tackle. Then Ryan did something no 4-3 did: he
+moved *both* outside linebackers to the tight end's side, one on the tight end's inside shoulder to jam
+his release and one outside him. The Mike stands over the strong tackle, and the strong safety comes down
+to linebacker depth over the weak tackle.[^46wiki] Count them: eight defenders within five yards of the
+ball, against seven blockers. Behind them, the two cornerbacks press the wide receivers in man coverage and
+a single safety plays deep. And on many snaps five, six or seven of those eight came after the quarterback.
+
+(Strictly, a nose head-up on the center makes the bear an *odd*-looking front. It lives in this chapter
+because it was built by a 4-3 team, out of 4-3 personnel, and because it is the logical end of the even
+front's idea: decide which offensive linemen to leave free, and leave none.)
+
+### Why covering the guards breaks the blocking
+
+Every run scheme in [Part 3](../03-the-run-game/03-01-run-game-language.qmd) needs at least one interior
+lineman who isn't covered. Zone needs him to start a double team and climb. Power, counter and the trap need
+him to pull. The iso needs the guards to drive two defensive linemen apart while a fullback hits the
+linebacker. The bear front takes all of that away at once.
+
+```{python}
+#| label: fig-bear-iso
+#| fig-cap: "The bear front against an I-formation iso (a lead play: the fullback leads through the hole onto a linebacker), simulated, in Big Data Bowl tracking coordinates. 1: before the snap the center and both guards are covered (green rings): nobody inside is free. 2: at the snap every offensive lineman has a defender in front of him, so every block is one-on-one; there is no double team to move the nose and no guard free to climb. 3: the fullback, the only blocker left, takes the Mike; the strong safety (orange ring), whom nobody can reach, is already filling. 4: the safety meets the back in the hole, about a yard past the line (X). Against a front that leaves a guard uncovered, that guard would have climbed to the second linebacker."
+def bear_iso():
+    off = line("full") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("FB", "FB", -4.5, 0, "F"), O("RB", "RB", -7.0, 0, "R")]
+    p = Play(off, BEAR, los=35, to_go=None)
+    # every lineman blocks the man on him (a little give and take, no climbing)
+    go_to(p, "C", (0.15, -0.35), speed=1.0); go_to(p, "NT", (0.75, -0.25), "path", speed=0.8)
+    go_to(p, "RG", (0.2, 2.15), speed=1.0); go_to(p, "ST", (0.7, 2.6), "path", speed=0.8)
+    go_to(p, "LG", (0.15, -2.1), speed=1.0); go_to(p, "WT", (0.75, -2.45), "path", speed=0.8)
+    go_to(p, "LT", (0.0, -4.3), speed=1.2); go_to(p, "WE", (-0.2, -5.0), "path", speed=1.2)
+    go_to(p, "RT", (0.4, 3.75), speed=1.4); go_to(p, "WILL", (0.9, 4.1), "path", speed=0.5)
+    go_to(p, "Y", (0.6, 5.6), speed=1.2); go_to(p, "SAM", (1.1, 6.1), "path", speed=0.5)
+    # the fullback leads through the right A gap and up to the Mike, who comes to meet him
+    go_to(p, "FB", (2.9, 2.2), "path", speed=5.0, via=[(-1.0, 0.9)])
+    go_to(p, "MIKE", (3.2, 2.5), "path", speed=2.4, delay=0.25)
+    # the strong safety: unblocked, he reads and fills the hole
+    go_to(p, "SS", (1.3, 0.8), "path", speed=4.6, delay=0.35, via=[(3.0, -0.6)])
+    go_to(p, "QB", (-3.0, -1.2), "path", speed=3.0)
+    go_to(p, "RB", (0.7, 0.85), "run", speed=6.0, via=[(-3.4, 0.6)])
+    p.handoff("RB", t=0.6)
+    go_to(p, "RB", (0.85, 0.85), "run", speed=0.6)
+    return p
+
+
+def bear_marks(fld, play, t, i):
+    if t < 0.05:
+        for k in ("LG", "C", "RG"):
+            d, w = play.position(k, t)
+            x, y = _P(fld, play, d, w)
+            fld.ax.add_patch(Circle((float(x), float(y)), 1.0, fc="none", ec=GREEN, lw=1.5, zorder=7))
+    if t >= 1.4:
+        spot(fld, play, 1.0, 0.85, ms=9)
+
+
+P_BEAR = bear_iso()
+animation_or_strip([(P_BEAR, 0.0, ""), (P_BEAR, 0.45, ""), (P_BEAR, 0.95, ""), (P_BEAR, 1.55, "")],
+                   notes=["center and both guards\ncovered: nobody is free",
+                          "every block one-on-one:\nno double team, no climber",
+                          "the fullback takes the Mike;\nnobody can reach the SS",
+                          "the safety fills the hole\nand makes the tackle"],
+                   rings=(("SS", style.DEFENSE),), lateral=(-7.8, 8.6), window=(-8.4, 6.4), after=bear_marks,
+                   width_in=5.2)
+```
+
+Work through what the bear does to each kind of play.
+
+- **No double teams.** With the center and both guards covered, nobody inside can help a neighbor without
+  leaving his own man free. Every interior block is one-on-one, against three linemen chosen precisely
+  because they win one-on-one. The double team that moves a defensive tackle off the ball, the foundation of
+  inside zone and power alike, never forms.
+- **No climbers.** The linebackers behind a four-man front survive by beating a guard who climbs to them. In
+  the bear, the guards can't climb: a guard who leaves his 3-technique has let a penetrator into the
+  backfield. So the linebackers, and the safety playing linebacker, run to the ball with no one in their way.
+  An offense with a fullback can send him at one of them. There are two, plus a seventh and eighth man on the
+  tight end's side.
+- **No pullers.** Pull a guard on power or a trap, and the 3-technique he was covering has a free run into
+  the backfield before the play has started. The plays that beat aggressive one-gap fronts by letting
+  defenders through and then hitting them from the side need a lineman who can leave; the bear leaves none.
+- **No easy pass protection.** On a pass, the three interior rushers each have a blocker of their own, the
+  center can't slide to help, and the outside linebackers stacked on the tight end's side create more
+  rushers on that side than the offense has blockers. Ryan's defense then decided, every snap, which of the
+  eight to send.
+
+### The 1985 Bears
+
+The result was one of the great defensive seasons in NFL history. The 1985 Bears went 15–1 and allowed
+198 points, the fewest in the league; they also led the league in yards allowed and takeaways. In the
+playoffs they shut out the Giants 21–0 and the Rams 24–0, and then beat the New England Patriots 46–10 in
+Super Bowl XX on January 26, 1986.[^bears85] New England ran the ball 11 times in that game for 7 yards, still
+the Super Bowl record for fewest rushing yards, and the Bears sacked New England's quarterbacks seven times,
+tied for the most in any Super Bowl; the defensive end Richard Dent was the game's MVP.[^sb20] After the game, Ryan's players carried him off the
+field on their shoulders, alongside the head coach, Mike Ditka, with whom he had feuded all season.
+
+### Why it disappeared
+
+The 46's one loss in 1985 told the rest of the league how to beat it. On December 2, on Monday Night
+Football, the Miami Dolphins beat the Bears 38–24. Miami's quarterback, Dan Marino, had one of the
+quickest releases in the game, and the Dolphins' receivers won the one-on-one matchups the 46's man
+coverage gave them (the same source as the alignments above). An eight-man front with three defensive backs behind it is built for a two-back,
+two-receiver offense. Against three receivers and a quarterback who throws before the rush arrives, its
+strength becomes its problem.
+
+```{python}
+#| label: fig-46-quick
+#| fig-cap: "Why the 46 faded: the same eight-man front against three receivers and a quick throw (simulated, BDB-format tracking; the left side of the field). 1: the offense spreads out: a slot receiver (H) inside the split end (X). The 46 has three defensive backs, so the slot receiver is covered by the strong safety, a box player, from inside the box (ringed). 2: at the snap the defense sends six (orange), and the quarterback takes a three-step drop. 3: H runs a quick slant; the safety, starting six yards inside and four yards deep, is a step late. 4: the ball is out in about 1.4 seconds, before any rusher arrives, and H has room in front of him with only the deep safety to beat."
+def quick_vs_46():
+    off = line("full") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -6.5, 0, "R"),
+                          O("X", "WR", -0.7, -15.0, "X"), O("H", "WR", -1.5, -9.0, "H")]
+    dfn = [q for q in BEAR] + [D("LCB", "CB", 1.2, -15.0, "CB"), D("FS", "S", 11.5, -2.0, "FS")]
+    p = Play(off, dfn, los=40, to_go=7)
+    p.route("X", r.slant(2.0, 7.0))
+    p.route("H", r.slant(1.0, 7.0))
+    p.man("LCB", "X")
+    go_to(p, "SS", (6.5, -5.2), "path", speed=4.2, delay=0.3, via=[(4.6, -4.6)])
+    for k in ("WE", "WT", "NT", "ST", "WILL", "SAM"):
+        p.rush(k, speed=3.4)
+    for k, end in [("LT", (-1.6, -4.4)), ("LG", (-1.3, -2.4)), ("C", (-1.3, -0.3)), ("RG", (-1.3, 2.2)),
+                   ("RT", (-1.5, 4.0)), ("Y", (-1.8, 5.4)), ("RB", (-4.6, 1.2))]:
+        go_to(p, k, end, speed=1.6)
+    go_to(p, "MIKE", (5.0, 0.8), "path", speed=2.5, delay=0.4)
+    go_to(p, "FS", (10.0, -4.5), "path", speed=2.5, delay=0.6)
+    p.dropback(3.0)
+    p.pass_to("H", t=1.35)
+    return p
+
+
+P_QUICK = quick_vs_46()
+animation_or_strip([(P_QUICK, 0.0, ""), (P_QUICK, 0.6, ""), (P_QUICK, 1.3, ""), (P_QUICK, 2.0, "")],
+                   notes=["three receivers: a box safety\nmust cover the slot (H)",
+                          "six rush; three-step drop",
+                          "the slant breaks inside;\nthe safety is a step late",
+                          "ball out before the rush\narrives: room to run"],
+                   rings=(("SS", style.DEFENSE), ("H", style.THIRD)), lateral=(-17.5, 4.5), window=(-7.4, 13.6),
+                   width_in=5.4)
+```
+
+Offenses spent the next decade doing to the 46 what @fig-46-quick shows. Three-receiver sets pulled a
+linebacker or the safety out of the box or left a slow man covering a fast one. Quick, timed throws got the
+ball out before the extra rushers arrived. And as the run-and-shoot and the West Coast offense spread
+through the league ([The 1978 Liberation](../11-history/11-02-the-1978-liberation.qmd) tells that story),
+the two-back offense the 46 was designed to strangle became the exception. The full 46 is now a
+curiosity, but its pieces never left. Ryan coached it again in Philadelphia, as head coach from 1986 to
+1990, and in Houston and Arizona; his sons Rex and Rob carried versions of it into the 2000s.
+
+The bear front itself is the part that survives. Near the goal line, against two tight ends or a
+fullback, defenses still cover the center and both guards to take away the interior double teams. And the
+idea behind it, decide which interior linemen to leave uncovered, is alive in the
+[tite front](05-03-odd-and-hybrid-fronts.qmd) that NFL defenses use against inside runs today: the tite
+covers the center and the tackles' inside shoulders, the bear covers the center and the guards, and both
+are answers to the same question.
+
+::: {.callout-caution title="Common misconception"}
+"The 46 means four linemen and six linebackers." The digits in 4-3 and 3-4 count players, so this is a
+natural guess, and it's wrong. The 46 is named for Doug Plank's jersey number. Counted the usual way, it
+has four men with their hands down, three linebackers and a safety playing a fourth, and three defensive
+backs behind them.
+:::
+
+## From two backs to three receivers: the even front in nickel
+
+The fronts in this chapter grew up against offenses with two backs and one tight end, **21 personnel**.
+That offense has nearly disappeared: in 2025, 21 personnel was about 7% of NFL snaps, while 11 personnel,
+one back, one tight end and three wide receivers, was about 59%.[^personnel] The four-man even front didn't
+disappear with it. What changed was everything behind the line.
+
+```{python}
+#| label: fig-under-vs-11
+#| fig-cap: "The same Under line against two offenses. Left, 21 personnel (I-formation): the base 4-3, with the Sam on the line outside the tight end and the strong safety down in the box as an eighth man (shaded: the box). Right, 11 personnel (a slot receiver H on the left in place of the fullback): the four linemen do not move, because the tight end, and so the strength, has not moved. The Sam leaves the field for a nickel back ($), who lines up between the left tackle and the slot receiver; the weak end widens because there is no tight end on his side; and the strong safety rotates down to do the Sam's old job on the tight end. The box goes from eight to seven."
+def box(f, p, w0, w1, d1=5.9):
+    lane(f, p, w0, w1, -0.2, d1, color=style.MUTED, alpha=0.07, ls=(0, (2, 2)))
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.7))
+off21 = line("short") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("FB", "FB", -4.5, 0, "F"), O("RB", "RB", -7.0, 0, "R")]
+dfn = under_front(+1) + [D("SS", "S", 5.3, -4.4, "SS"), D("FS", "S", 11.5, 0.0, "FS")]
+p = Play(off21, dfn, los=35, to_go=None)
+f = draw(p, ax=axes[0], lateral=(-11.2, 9.0), window=(-8.4, 12.8), title=False)
+box(f, p, -5.6, 7.0)
+say(f, p, 7.4, -7.5, "8 in the box", color=style.INK, fontsize=7.2, weight="bold")
+say(f, p, 6.5, 6.2, "Sam on\nthe line", color=style.DEFENSE_DARK, fontsize=6.8)
+title(axes[0], "Under vs 21 personnel (base 4-3)")
+off11 = line("short") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -7.0, 0, "R"), O("H", "WR", -1.5, -9.5, "H")]
+dfn = [q.moved(w=-6.4) if q.key == "WE" else q for q in under_front(+1, sam=False)]
+dfn += [D("NB", "NB", 4.6, -7.4, "$"), D("SS", "S", 5.6, 6.6, "SS"), D("FS", "S", 12.0, -0.5, "FS")]
+p = Play(off11, dfn, los=35, to_go=None)
+f = draw(p, ax=axes[1], lateral=(-11.2, 9.0), window=(-8.4, 12.8), title=False)
+box(f, p, -5.6, 7.9)
+say(f, p, 7.6, -1.4, "7 in the box", color=style.INK, fontsize=7.2, weight="bold")
+say(f, p, 7.9, -8.6, "nickel\nfor the Sam", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 8.2, 6.6, "SS does the\nSam's job", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, -3.1, -7.6, "end widens:\nno TE here", color=style.DEFENSE_DARK, fontsize=6.6)
+title(axes[1], "Same line vs 11 personnel (nickel)")
+fig.tight_layout(w_pad=0.7)
+plt.show()
+```
+
+@fig-under-vs-11 shows the pattern most even-front teams follow.
+
+**The line is set by the run strength, and it stays.** The tight end hasn't moved, so the front's rule
+hasn't changed: the Under still leans away from him, the 3-technique still on the weak guard. The four
+linemen are the same players in the same spots. That's the great practical virtue of a four-man even front.
+It is the same from base to nickel, so the defensive line doesn't need a second set of rules.
+
+**The third linebacker is the part that changes.** Against a third wide receiver, the Sam has three
+choices, and two of them are bad. He can stay in the box, where he can't cover the slot receiver. He can
+walk out over the slot, an [apex](../../appendices/glossary.qmd#gl-apex) alignment between the box and the
+receiver, where a linebacker is now covering a receiver in space. Or he can leave the field for a nickel
+back, a cornerback who can cover and is big enough to tackle. Most NFL defenses choose the third, and the
+[nickel](../../appendices/glossary.qmd#gl-nickel) package that results, four linemen, two linebackers and
+five defensive backs, is the **4-2-5** you will meet as a front family of its own in
+[Odd and Hybrid Fronts](05-03-odd-and-hybrid-fronts.qmd).
+
+**Someone still has to do the Sam's old job.** On the right of @fig-under-vs-11 the strong safety rotates
+down over the tight end to take the D gap, which turns the coverage behind him into a one-deep shell. That
+is roughly how Pete Carroll's Seattle defenses of the 2010s played it, with a big strong safety, Kam
+Chancellor, as a de facto linebacker. The other option is to keep two safeties deep and let the box be
+six against six blockers, the "light box" that [A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)
+measured, and accept that the offense can run. That choice, and its arithmetic, is the subject of
+[Run Fits and Box Math](05-05-run-fits-and-box-math.qmd).
+
+**The ends get wider when the tight end leaves.** With no tight end on his side, there is no D gap there;
+the weak end's job is the C gap and the edge, and on a likely passing down nothing stops him from
+setting up in a wide-9's stance and angle. Watch an even front against 11 personnel on third down and you
+will often see one end in a 5 on the tight end's side and the other as wide as a wide-9 on the open side.
+
+The trend is running the other way again. In 2025 NFL offenses used fewer than three wide receivers on
+41.7% of plays, the highest share since Next Gen Stats began tracking in 2016, and defenses answered by
+playing base personnel on 29.7% of snaps, up from a low of 20.5% in 2023.[^personnel2] The 4-3 Over and
+Under, with a real Sam on the field, are coming back with the tight ends and fullbacks.
+
+## Reading the front from the broadcast
+
+The diagrams in this book look down from above. The broadcast doesn't. The main camera sits high on one
+sideline, near the line of scrimmage, so you see the line from the side, and the one thing a front is
+made of, which shoulder each lineman is on, runs straight away from you into the screen.
+
+```{python}
+#| label: fig-broadcast
+#| fig-cap: "The same 4-3 Under from two cameras. Top, the broadcast's high sideline camera (the offense going left to right, the tight end on the near side). Shoulders line up one behind another, so you can't measure techniques; instead, find two landmarks: the tight end (the end of the line, here nearest the camera), and the gap in the defensive line, the guard with nobody across from him (green). In an Under the empty guard is on the tight end's side; in an Over it is on the other side. Bottom, the end-zone replay camera, looking down the line from behind the offense: now every shoulder is visible and you can read the techniques directly (the 3 on the left guard, the 1 on the center's right shoulder)."
+def project(pts, cam, target, focal=1.0):
+    """Pinhole camera: world points (downfield d, offense's LEFT, height) -> screen (x, y) and depth."""
+    C, Tg = np.asarray(cam, float), np.asarray(target, float)
+    fwd = (Tg - C) / np.linalg.norm(Tg - C)
+    right = np.cross(fwd, [0.0, 0.0, 1.0]); right /= np.linalg.norm(right)
+    up = np.cross(right, fwd)
+    P = np.atleast_2d(np.asarray(pts, float)) - C
+    z = P @ fwd
+    return focal * (P @ right) / z, focal * (P @ up) / z, z
+
+
+def camera_view(ax, players, cam, target, labels, notes=(), green=(), xlim=None, ylim=None):
+    """Draw a 3-D-projected field window and upright players. `players`: (key, side, d, w, label)."""
+    W = lambda d, w, h=0.0: (d, -w, h)   # noqa: E731  offense's right is -left
+    for d in range(-10, 21, 5):           # yard lines
+        xs, ys, _ = project([W(d, w) for w in np.linspace(-26.6, 26.6, 40)], cam, target)
+        ax.plot(xs, ys, color=style.BASELINE, lw=0.8 if d % 10 == 0 else 0.5, zorder=1)
+    xs, ys, _ = project([W(0, w) for w in np.linspace(-26.6, 26.6, 40)], cam, target)
+    ax.plot(xs, ys, color=style.OFFENSE_DARK, lw=1.2, alpha=0.7, zorder=1.5)       # line of scrimmage
+    for w in (-26.6, 26.6):               # sidelines
+        xs, ys, _ = project([W(d, w) for d in np.linspace(-10, 20, 30)], cam, target)
+        ax.plot(xs, ys, color=style.BASELINE, lw=1.0, zorder=1)
+    order = sorted(players, key=lambda q: -project([W(q[2], q[3])], cam, target)[2][0])
+    for key, side, d, w, lab in order:   # far players first
+        (x0,), (y0,), (z0,) = project([W(d, w, 0.0)], cam, target)
+        (x1,), (y1,), _ = project([W(d, w, 1.85)], cam, target)
+        s = 60.0 / z0
+        col = style.OFFENSE if side == "off" else style.DEFENSE
+        ax.plot([x0, x1], [y0, y1], color=col, lw=4.2 * s, solid_capstyle="round", zorder=3 + 1 / z0)
+        mk = "o" if side == "off" else "s"
+        fc = style.OFFENSE if side == "off" else style.DEFENSE_TINT
+        ax.plot([x1], [y1], marker=mk, ms=6.5 * s, mfc=fc, mec=col, mew=1.0, zorder=3.1 + 1 / z0)
+        if key in green:
+            ax.plot([x0], [y0], marker="o", ms=17 * s, mfc="none", mec=GREEN, mew=1.6, zorder=3 + 1 / z0)
+        if key in labels:
+            dx, dy, txt = labels[key]
+            ax.annotate(txt, (x1, y1), xytext=(x1 + dx, y1 + dy), fontsize=6.9, ha="center", va="center",
+                        color=GREEN if key in green else (style.OFFENSE_DARK if side == "off" else style.DEFENSE_DARK),
+                        fontweight="bold", zorder=12,
+                        arrowprops=dict(arrowstyle="-", lw=0.6, color=style.MUTED, shrinkA=1, shrinkB=3),
+                        bbox=dict(boxstyle="round,pad=0.15", fc=style.SURFACE, ec="none", alpha=0.9))
+    for x, y, txt in notes:
+        ax.text(x, y, txt, fontsize=6.9, color=style.INK, ha="center", va="center", zorder=12,
+                bbox=dict(boxstyle="round,pad=0.25", fc=style.SURFACE, ec=style.BASELINE, lw=0.6))
+    ax.set_aspect("equal"); ax.axis("off")
+    if xlim: ax.set_xlim(*xlim)
+    if ylim: ax.set_ylim(*ylim)
+    ax.set_facecolor(style.TURF)
+
+
+SCENE = ([(q.key, "off", q.d, q.w, q.label) for q in line("full") + [te(+1), O("QB", "QB", -1.9, 0, "Q"),
+                                                                      O("RB", "RB", -6.6, 0, "R")]]
+         + [(q.key, "def", q.d, q.w, q.label) for q in under_front(+1)]
+         + [("SS", "def", 8.0, 5.5, "SS"), ("FS", "def", 12.0, -3.0, "FS")])
+fig, axes = plt.subplots(2, 1, figsize=(6.4, 6.6), gridspec_kw={"height_ratios": [1.0, 1.05]})
+side_cam, side_tgt = (1.5, -42.0, 21.0), (2.0, 0.0, 0.0)
+camera_view(axes[0], SCENE, side_cam, side_tgt,
+            labels={"Y": (-0.02, -0.075, "tight end:\nstrong side"), "RG": (-0.11, -0.03, "empty guard"),
+                    "DT": (0.10, 0.05, "the 3, far side"), "SAM": (0.10, -0.06, "Sam on the line")},
+            green=("RG",), xlim=(-0.36, 0.42), ylim=(-0.25, 0.16))
+axes[0].set_title("Broadcast: high sideline camera", fontsize=8.8, loc="left", color=style.INK, fontweight="bold")
+end_cam, end_tgt = (-21.0, 0.0, 10.0), (3.0, 0.0, 0.0)
+camera_view(axes[1], SCENE, end_cam, end_tgt,
+            labels={"DT": (-0.08, 0.06, "3: on the LG's\noutside shoulder"), "NT": (0.0, 0.10, "1: center's\nright shoulder"),
+                    "RG": (0.06, -0.075, "uncovered"), "SAM": (0.07, 0.07, "Sam, outside Y")},
+            green=("RG",), xlim=(-0.44, 0.44), ylim=(-0.30, 0.17))
+axes[1].set_title("End-zone replay: behind the offense", fontsize=8.8, loc="left", color=style.INK, fontweight="bold")
+fig.tight_layout(h_pad=1.0)
+plt.show()
+```
+
+From the high sideline shot, you can't measure a technique. What you can find, every snap, are two
+landmarks.
+
+1. **The tight end.** He is the strength, so find him first: the man at the end of the line, a step
+   off the tackle, often with a hand on his knee. If he is on the near side of the screen, the strong side
+   is near; if he is on the far side, it is far.
+2. **The empty guard.** You can't see shoulders from the sideline, but you can see *holes*. Look along the
+   defensive line for the gap: the guard with nobody across from him. **If the empty guard is on the tight
+   end's side, it's an Under; if it's on the other side, it's an Over.** The 3-technique is on the other
+   guard, and you can say "3-tech away from the tight end" (Under) or "toward" (Over).
+
+Then add the details. A linebacker standing on the line outside the tight end is the Under's Sam. Ends
+lined up so wide they are nearly out of the shot are a wide-9. Three linemen packed across the middle with
+no empty guard at all, and extra men stacked on the tight end's side, is a bear. And when the replay
+comes, from the end-zone camera, check your read: from behind the offense, every shoulder is visible.
+
+## Film room
+
+::: {.callout-note title="Film room: Chicago Bears, Super Bowl XX (1985 season)"}
+**The game:** Bears 46, Patriots 10, January 26, 1986, at the Louisiana Superdome. New England gained 7
+yards on 11 rushes and 123 yards in all, and had negative total yardage at halftime.[^sb20b]
+
+**What to notice:**
+
+- Before each early-down snap, count the defenders within five yards of the ball. Eight is the 46.
+- The interior: a nose on the center and a tackle on each guard. Watch the guards at the snap. Do they ever
+  get to a linebacker?
+- The outside linebackers. Both on the tight end's side, one jamming him at the line. Notice how rarely the
+  tight end gets cleanly into a route.
+- When New England spreads out, watch the safeties and linebackers who have to cover. That is where the
+  46 was always vulnerable, even in its greatest game.
+:::
+
+::: {.callout-note title="Film room: Seattle Seahawks, 2013 season"}
+**The season:** Pete Carroll's fourth year in Seattle, and the best version of his 4-3 Under: a 323-pound
+former defensive tackle, Red Bryant, as the strong-side 5-technique end, the Sam on the line outside the
+tight end, a quick 3-technique on the weak side and a pure pass-rushing weak-side end (Carroll's name for
+him is the *Leo*).[^bryant] Seattle led the NFL in scoring defense from 2012 through 2015, the first team of
+the Super Bowl era to do it four years running, and in Super Bowl XLVIII it beat the Denver Broncos, who had
+just set the league record for points in a season, 43–8.[^seattle4] Carroll traces the scheme to 1977, when he
+was a graduate assistant at Arkansas under the defensive coordinator Monte Kiffin: "It was a one-gap principle
+defense way back then," he said. "He taught me everything I know about defense."[^carrollkiffin]
+
+**What to notice:** find the tight end, then look for the Sam standing on the line outside him and the big
+end in the 5 beside him. On runs to that side, watch the two of them meet the blockers at the line and
+turn the ball back inside, Gus Bradley's "turn everything back inside to our big guys." Then look across
+to the weak side for the 3-technique, alone against a guard.
+:::
+
+::: {.callout-note title="Film room: Philadelphia Eagles, Super Bowl LII (2017 season)"}
+**The game:** Eagles 41, Patriots 33, February 4, 2018, at U.S. Bank Stadium in Minneapolis. Jim Schwartz's
+wide-9 front had been the NFL's best run defense that season, and in the fourth quarter its signature play
+was a pass rush: with about two minutes left and Philadelphia ahead by five, the end Brandon Graham, lined up
+inside over a guard on that snap, beat his man and stripped the ball from Tom Brady, and the Eagles recovered.[^sb52]
+<!-- VERIFY: Graham aligned inside (at defensive tackle) on the Super Bowl LII strip-sack. -->
+
+**What to notice:** the ends' alignment on early downs, well outside the tackles (and the tight end), and
+then, on New England's runs, Fletcher Cox at the 3-technique and the linebackers behind the ends. Watch
+whether the off-tackle lanes the ends leave are open when the back arrives, or already filled.
+:::
+
+::: {.callout-note title="Film room: Chicago Bears, 2004–2012 seasons"}
+**The coach:** Lovie Smith, the Bears' head coach from 2004 to 2012, who had coached linebackers for Tony
+Dungy and Monte Kiffin in Tampa Bay. He brought their four-man, one-gap front and Cover 2 to Chicago, and in
+his first draft took the piece the front depends on, Tommie Harris, with the 14th pick, to play the under
+tackle: the 3-technique on the weak side. Harris made three straight Pro Bowls (2005–2007), and Smith compared
+him to Warren Sapp, the Tampa under tackle he had coached. The 2006 Bears went 13–3 and reached Super Bowl
+XLI.[^harris]
+
+**What to notice:** before each snap, find the tight end and then find Harris (number 91). He should be on
+the guard away from the tight end, every time. Then watch the middle linebacker, Brian Urlacher, behind the
+nose, and how often he reaches the ball without a guard on him.
+:::
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it"}
+**Before the snap: over or under?**
+
+- Find the tight end. That's the strength for the front.
+- Find the 3-technique, the defensive tackle outside a guard, or, from the high sideline camera, the empty
+  guard on the other side of the center. 3-technique *toward* the tight end (empty guard away): **Over**.
+  3-technique *away* (empty guard toward): **Under**.
+- Is a linebacker standing on the line outside the tight end? That's the Under's Sam.
+- How wide are the ends? A couple of yards outside the tight end, or where one would be, in a sprinter's
+  stance: **wide-9**.
+- Center and both guards covered, eight men near the ball: a **bear** front, probably near the goal line
+  or against two tight ends.
+- When the tight end shifts or motions across, watch the defensive tackles. Do they trade places? Is
+  anybody still moving at the snap?
+
+**After the play: where did the run go?**
+
+- At the bubble (the uncovered guard) or away from it? Did that guard reach a linebacker?
+- Against a wide-9, did the run go off-tackle, and did a linebacker or safety fill the lane in time?
+
+For your prediction log ([How to Watch a Broadcast](../01-foundations/01-06-how-to-watch-a-broadcast.qmd)):
+on early downs, write *O* or *U* before the snap and *at* or *away* after the play, for the run's direction
+relative to the 3-technique. After a half, look for a pattern in where each offense runs against each front.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play"}
+**Drill 1. Name the front, find the bubble.** First-and-10. The offense is in a one-back set with its tight
+end on the **left** this time. Name the front. Which offensive lineman is free, and if the offense runs
+inside zone, which side would you expect it to aim for, and which defender has to win?
+
+```{python}
+#| label: fig-drill-1
+#| fig-cap: "Drill 1: the tight end (U) is on the offense's left. On the line, from the left: a linebacker standing outside the tight end, a 5, a 1 on the center's left shoulder, a 3 on the right guard, and a wide end on the right. Two linebackers off the ball."
+off = line("full") + [te(-1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -6.6, 0, "R")]
+p = Play(off, under_front(-1), los=40, to_go=10, title="Drill 1: tight end left. Over or Under?")
+f = draw(p, width_in=5.4, lateral=(-9.0, 8.6), window=(-8.6, 7.6))
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**A 4-3 Under, with the strength on the left.** The tight end is on the left, so the left is strong. The
+3-technique is on the *right* guard, away from the tight end, the nose is shaded toward the tight end, and the
+Sam is standing on the line outside him. Every landmark says Under.
+
+**The free lineman is the left guard**, on the tight end's side: nobody is on him, and the Mike stands over
+him. That's the Under's bubble. Inside zone toward the tight end (to the offense's left) is aimed right at it:
+the left guard helps the center move the nose and then climbs to the Mike. **The Mike has to win**: beat a guard
+who has a head start, to his gap (the strong B), or the back has a crease. The defense's counterweight is the
+edge: the Sam and the 5 on that side should squeeze anything that bounces outside back inside. If the offense
+instead runs to the right, it runs at the 3-technique, alone against the right guard, which is exactly where the
+Under wants it.
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 2. The base defense meets three receivers.** Second-and-6. The defense stayed in its base 4-3
+(no nickel back) after an incomplete pass, and the offense has come out in 11 personnel with three receivers
+to the right. The front is set as an Over to the tight end. What does the Sam do, and what is the offense
+hoping to see?
+
+```{python}
+#| label: fig-drill-2
+#| fig-cap: "Drill 2: 11 personnel, shotgun, tight end and two receivers on the right (H in the slot, Z wide; X wide left, outside the picture). The defense is in its base 4-3, set as an Over to the tight end, with two deep safeties. The Sam (ringed) is still at his base spot outside the tight end; nobody is over the slot receiver."
+off = line("short") + [te(+1), O("QB", "QB", -5.0, 0, "Q"), O("RB", "RB", -5.0, -1.6, "R"),
+                       O("H", "WR", -1.5, 10.5, "H"), O("Z", "WR", -0.7, 16.5, "Z")]
+dfn = over_front(+1) + [D("RCB", "CB", 6.5, 16.5, "CB"), D("SS", "S", 12.0, 8.0, "SS"), D("FS", "S", 12.0, -7.0, "FS")]
+p = Play(off, dfn, los=40, to_go=6, title="Drill 2: base 4-3 against three receivers")
+p.highlight("SAM", color=style.DEFENSE)
+f = draw(p, width_in=5.6, lateral=(-9.4, 18.8), window=(-7.6, 13.6))
+say(f, p, 6.3, 10.5, "nobody here", color=style.OFFENSE_DARK, fontsize=7)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The Sam has to choose, and the offense wins either way he goes, which is the point of the formation.**
+
+- **If the Sam stays in the box**, the defense has seven against the run (four linemen and three linebackers)
+  but nobody near the slot receiver. A quick throw to H, a hitch, a bubble screen or a quick out, gets an easy
+  five or six yards on second-and-6.
+- **If the Sam walks out over the slot** (to an apex, halfway between the tight end and H), the throw is
+  covered, at least by a linebacker. But now the box has six defenders (four linemen, the Mike and the Will)
+  against six blockers (five linemen and the tight end), with two safeties twelve yards deep. That's a light
+  box, and the offense will happily run the ball. Worse, the Over's bubble is still there: the weak guard is
+  free to climb to the Will.
+
+This is why defenses substitute a nickel back against 11 personnel, and why offenses that keep a fullback or a
+second tight end on the field until the defense commits to base personnel can then spread out without
+substituting and force exactly this choice. The quarterback's pre-snap read is simple: count the box, look at the
+slot, and throw or hand off accordingly, the logic of the [RPO](../04-the-passing-game/04-06-rpos.qmd).
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 3. Run against the wide-9.** First-and-10, a shotgun one-back set with the tight end on the right.
+Both defensive ends are in wide-9 alignments, the tackles in a 3 (right) and a 1 (left), with the Sam stacked
+off the ball outside the tight end. Where is the offense's best run, and which defender decides whether it
+works?
+
+```{python}
+#| label: fig-drill-3
+#| fig-cap: "Drill 3: both ends in wide-9 alignments, in sprinter's stances; a 3-technique on the right guard and a 1 on the center's left shoulder; three linebackers, the Sam off the ball outside the tight end."
+off = line("full") + [te(+1), O("QB", "QB", -5.0, 0, "Q"), O("RB", "RB", -5.0, -1.6, "R")]
+dfn = [D("LE", "DE", 1.0, -(4.8 + 2.3), "w9"), D("NT", "DT", 1.0, T("1", -1), "1"),
+       D("DT", "DT", 1.0, T("3", 1), "3"), D("RE", "DE", 1.0, T("wide9", 1), "w9"),
+       D("WILL", "LB", 4.8, -2.6, "W"), D("MIKE", "LB", 4.8, 0.7, "M"), D("SAM", "LB", 4.6, 6.0, "S")]
+p = Play(off, dfn, los=40, to_go=10, title="Drill 3: two wide-9 ends")
+f = draw(p, width_in=5.4, lateral=(-10.6, 10.6), window=(-7.6, 7.6))
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Off tackle, inside the end on the tight end's side, and the Sam decides it.** The C gap between the
+3-technique and the right end is the biggest gap in the front, and the wide-9's whole job on the snap is to go
+upfield, not to close it. The tight end doesn't even need to block the end: he can let him run past and turn
+inside to block the Sam, or climb to the Mike while the tackle takes the 3. A run aimed just outside the right
+tackle, inside zone bending outside or a lead play with the tight end on the Sam, hits the lane the end vacated.
+
+**The Sam has to fill that lane before the back gets there**, ideally meeting the blocker at the line so the
+back has to cut back inside toward the Mike and the 3. If he's late, or gets blocked by the tight end, the next
+defender is a safety ten yards downfield. Two smaller points: the end can help by *squeezing* when he reads run
+(closing down the line behind the play rather than rushing past it), and the weak side has its own big lane
+between the 1 and the left end, so a defense that over-plays the strong side can be hit with a run the other way.
+It's the trade from @fig-wide-nine-front, live: the ends' rush is a bet that the linebackers will be on time.
+:::
+:::
+
+## Back to the huddle
+
+The chapter opened with a defensive tackle jogging across the center when the tight end lined up on the
+right, a linebacker walking up onto the line outside the tight end, and, two plays later, the same defense
+staying put. Now you can read it. On the first play the defense called a **4-3 Under**: the 3-technique
+went to the weak guard, away from the tight end, and the Sam walked up to make the strong-side edge two men
+deep at the line. On the second the call was an **Over**, the 3-technique already on the tight end's side,
+the Sam off the ball. One word, and the formation, set eleven alignments. And each was a bet about which
+guard to leave free and where the run would be met.
+
+## Takeaways
+
+- **An even front sets its linemen in pairs, with nobody head-up on the center.** That leaves the center
+  and at least one guard uncovered, and every even front is a decision about which linemen to leave free and
+  which linebacker answers for them.
+- **Over and Under are the same players, leaning opposite ways from a strength call.** The Over puts the
+  3-technique and its linemen toward the tight end and leaves the weak guard uncovered for the Will; the Under
+  sends the 3-technique to the weak side to rush one-on-one, puts the Sam on the line to harden the strong-side
+  edge, and leaves the strong guard uncovered under the Mike. Runs aim at the uncovered guard: the bubble.
+- **Strength is relative, so offenses move it.** A tight-end shift can make half a front re-set in a second
+  and a half; every defensive answer to that gives something up.
+- **The wide-9 buys pass rush with run lanes.** The ends' wide angle reaches the quarterback faster, and the
+  off-tackle lanes inside them become the linebackers' problem. With a stout interior and fast linebackers
+  (the 2017 Eagles) it can stop the run; without them it gets run through.
+- **The bear front covers the center and both guards, and the 46 built a defense on it.** With no uncovered
+  interior lineman there are no double teams, no climbing guards and no pullers. Buddy Ryan's 1985 Bears
+  smothered two-back offenses with it; three receivers and quick throws made it a goal-line tool.
+- **Against 11 personnel the line stays and the Sam goes.** The four linemen keep their rule; the third
+  linebacker becomes a nickel back, and someone, often a safety, takes his job on the tight end.
+
+## Connections
+
+**Builds on:** [Defensive Line Play: Techniques, One-Gap and Two-Gap](05-01-dl-techniques-and-gap-control.qmd)
+(the technique numbers, one-gap play, the wide-9 end and setting the edge),
+[Formation Rules and Vocabulary](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)
+(formation strength), [The Language of the Run Game](../03-the-run-game/03-01-run-game-language.qmd) (gaps,
+covered and uncovered linemen) and [A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)
+(the 4-3, nickel and the box).
+
+**Sets up:**
+
+- [Odd and Hybrid Fronts](05-03-odd-and-hybrid-fronts.qmd): the 3-4 Okie, the tite front (the bear's cousin,
+  covering the tackles instead of the guards) and the nickel fronts, the 4-2-5 among them.
+- [Linebackers and the Second Level](05-04-linebackers-and-second-level.qmd): the Mike, Will and Sam who own
+  the bubbles and the wide-9's lanes.
+- [Run Fits and Box Math](05-05-run-fits-and-box-math.qmd): how a front, its linebackers and its safeties add up
+  to an answer for every gap, and what happens when the box is light.
+- [The 1978 Liberation](../11-history/11-02-the-1978-liberation.qmd): the passing revolution that the 46 met
+  and lost to.
+
+**See also (case study):** [Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd),
+for what fronts look like when the safeties stay deep and six men have to hold the box.
+
+**If you want to go deeper:** Chris B. Brown's *The Art of Smart Football* and his Smart Football and Grantland
+essays on fronts; Monte Kiffin's and Pete Carroll's clinic talks on the 4-3 Under, many of which circulate as
+video; and Rex Ryan's *Coaching Football's 46 Defense*, written with Jeff Walker, for the 46 from the inside.
+<!-- VERIFY: Rex Ryan and Jeff Walker, "Coaching Football's 46 Defense" (Coaches Choice, 1999?) - confirm title, co-author and year before print. -->
+
+[^broaddus]: Bryan Broaddus, "Breaking down Kiffin's Tampa-2 defense," DallasCowboys.com (January 11, 2013): "An
+    'Under' front is when the defensive line is shaded to the weak side of the formation or an 'Over' front that is
+    shaded to the strong side," with the 3-technique "under tackle" attacking the weak side's B gap:
+    <https://www.dallascowboys.com/news/broaddus-breaking-down-kiffin-s-tampa-2-defense-334091>.
+
+[^seattlebig]: Danny O'Neil, "Lots of beef," *The Seattle Times*, reprinted in *The Spokesman-Review* (November 25,
+    2011), quoting defensive coordinator Gus Bradley, and Pete Carroll on moving Red Bryant from tackle to end:
+    <https://www.spokesman.com/stories/2011/nov/25/lots-of-beef/>.
+
+[^carroll]: Sheil Kapadia, "Pete Carroll's defensive principles stem from 1977 Arkansas experience," ESPN
+    (November 7, 2016), which describes Seattle's fronts as "a 4-3 with 3-4 personnel":
+    <https://www.espn.com/blog/seattle-seahawks/post/_/id/22971/pete-carrolls-defensive-principles-stem-from-1977-arkansas-experience>.
+
+[^carrollkiffin]: The same ESPN article (Kapadia, November 7, 2016) for both Carroll quotations and for Carroll and
+    Kiffin later refining the scheme together on Floyd Peters's Minnesota Vikings staff. Kiffin was Arkansas's
+    defensive coordinator in 1977, with Carroll a graduate assistant: *Arkansas Democrat-Gazette*, "Carroll's run
+    began at Arkansas" (February 2, 2014), <https://www.arkansasonline.com/news/2014/feb/02/carrolls-run-began-arkansas/>.
+
+[^widedata]: Course calculation from nflverse play-by-play (`load_pbp`), regular seasons, designed runs only
+    (`play_type == "run"`, scrambles excluded), shown in the table above. Official team totals include quarterback
+    scrambles and so differ slightly: the Eagles list their 2017 defense as "No. 1 overall against the run (79.2
+    ypg)," Philadelphia Eagles, "Defensive Coordinator Jim Schwartz,"
+    <https://philadelphiaeagles.com/news/defensive-coordinator-jim-schwartz-16724698>. The 2011 sack total (50, tied
+    for the league lead) is from the Eagles source cited in 05-01. Schwartz was Tennessee's defensive coordinator for
+    most of Washburn's years there (2001–2008) and Philadelphia's from 2016 to 2020; Fletcher Cox was the 12th pick of
+    the 2012 draft: <https://en.wikipedia.org/wiki/Jim_Schwartz>, <https://en.wikipedia.org/wiki/Fletcher_Cox>.
+
+[^davis]: Paul Domowitch, "How good is the Eagles' run defense? We'll have a better idea after Sunday," *The
+    Philadelphia Inquirer* (October 9, 2019):
+    <https://www.inquirer.com/eagles/eagles-vikings-run-defense-jim-schwartz-wide-9-dalvin-cook-fletcher-cox-mike-zimmer-20191010.html>.
+
+[^ryan]: "Buddy Ryan," Wikipedia (Jets defensive line coach 1968–1975, Vikings 1976–1977, Bears defensive
+    coordinator 1978–1985, Eagles head coach 1986–1990, Oilers defensive coordinator 1993, Cardinals head coach
+    1994–1995; Army sergeant in the Korean War; the 46 "not fully perfected until 1981"; carried off the field with
+    Ditka after Super Bowl XX): <https://en.wikipedia.org/wiki/Buddy_Ryan>.
+    <!-- VERIFY: "from a farm in Oklahoma" (Ryan was born in Frederick, Oklahoma, and played at Oklahoma State; confirm the farm detail) and the Ryan-Ditka feud characterization. -->
+
+[^plank]: Chicago Bears, "Plank discusses origin of '46' defense," ChicagoBears.com:
+    <https://www.chicagobears.com/news/plank-discusses-origin-of-46-defense-17295836>. Plank played for the Bears
+    from 1975 to 1982: <https://en.wikipedia.org/wiki/Doug_Plank>.
+
+[^46wiki]: "46 defense," Wikipedia (alignments: weak-side end "one to two yards outside the weak side offensive
+    tackle," tackles on the outside shoulders of both guards, nose over the center, one outside linebacker "on the
+    outside shoulder of the strong tight end" and one "on the inside ... shoulder of the tight end," the Mike "in
+    front of the strong offensive tackle," the strong safety "four to four and a half yards off the line of
+    scrimmage" in front of the weak tackle; Miami's 1985 win built on "Dan Marino's quick release of the ball, and
+    their receivers' ability to beat the one-on-one coverage"): <https://en.wikipedia.org/wiki/46_defense>.
+
+[^bears85]: "1985 Chicago Bears season," Wikipedia (15–1; 198 points allowed, the league's fewest, and the league
+    lead in yards allowed and takeaways; playoff wins 21–0 over the Giants and 24–0 over the Rams; the 38–24 loss
+    at Miami on December 2): <https://en.wikipedia.org/wiki/1985_Chicago_Bears_season>.
+
+[^sb20]: "Super Bowl XX," Wikipedia (Bears 46, Patriots 10, January 26, 1986, Louisiana Superdome; New England's
+    7 rushing yards on 11 carries, a Super Bowl record; seven sacks; Richard Dent MVP):
+    <https://en.wikipedia.org/wiki/Super_Bowl_XX>.
+
+[^sb20b]: The same Super Bowl XX source: 123 total yards for New England, and minus 19 yards in the first half.
+    Seven sacks is the most by a team in a Super Bowl, shared by the Steelers (X), Bears (XX), Broncos (50) and Rams
+    (LVI): Guinness World Records, "Most sacks in a Super Bowl by a team,"
+    <https://www.guinnessworldrecords.com/world-records/692382-most-sacks-in-a-super-bowl-by-a-team>.
+
+[^personnel]: Course fact sheet (planning/FACTS-current.md §10), nflverse participation data, regular-season runs
+    and passes: 11 personnel 58.8% and 21 personnel 7.0% of plays in 2025.
+
+[^personnel2]: James Reber (Next Gen Stats), "NFL trend watch: heavy personnel could shape Super Bowl LX showdown
+    between Patriots and Seahawks," NFL.com:
+    <https://www.nfl.com/news/nfl-trend-watch-heavy-personnel-could-shape-super-bowl-lx-showdown-between-patriots-and-seahawks>.
+
+[^bryant]: "Red Bryant," Wikipedia (6-4, 323 pounds; moved from defensive tackle to defensive end by Pete Carroll in
+    2010; Seahawks 2008–2013): <https://en.wikipedia.org/wiki/Red_Bryant>.
+    <!-- VERIFY: Seattle's 2013 weak-side "Leo" and 3-technique starters if names are added; Kam Chancellor's box role in the 2010s (Seattle Cover 3 sources). -->
+
+[^seattle4]: Seattle Seahawks, "Seahawks 'incredibly proud' to lead NFL in scoring defense for fourth straight
+    year" (January 3, 2016), the first team to do it "in the Super Bowl era":
+    <https://www.seahawks.com/news/seahawks-incredibly-proud-to-lead-nfl-in-scoring-defense-for-fourth-strai-147146>.
+    Super Bowl XLVIII (February 2, 2014, MetLife Stadium): Seattle 43, Denver 8; Denver's 606 points in 2013 were
+    an NFL record: <https://en.wikipedia.org/wiki/Super_Bowl_XLVIII>.
+
+[^sb52]: "Super Bowl LII," Wikipedia (Philadelphia 41, New England 33, February 4, 2018, U.S. Bank Stadium; Brandon
+    Graham's strip-sack of Tom Brady, recovered by Derek Barnett, with about two minutes left):
+    <https://en.wikipedia.org/wiki/Super_Bowl_LII>.
+
+[^harris]: "Tommie Harris," Wikipedia (14th pick of the 2004 draft; Pro Bowls 2005–2007; a 3-technique in Smith's
+    scheme, compared by Smith to Warren Sapp): <https://en.wikipedia.org/wiki/Tommie_Harris>. Lovie Smith: Tampa Bay
+    linebackers coach 1996–2000, Bears head coach 2004–2012; the 2006 Bears (13–3) lost Super Bowl XLI to
+    Indianapolis, 29–17: <https://en.wikipedia.org/wiki/Lovie_Smith>.
+    <!-- VERIFY: Harris's jersey number (91) and Urlacher at middle linebacker throughout 2004-2012 (Urlacher retired after 2012). -->
