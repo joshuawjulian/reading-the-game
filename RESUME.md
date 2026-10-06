@@ -8,6 +8,8 @@
 - DONE: pilot chapters 01-04, 03-02, 06-06, 13-02 (19/29/25/42 pp), published. Review logs in planning/reviews/.
   Known: the chapters run long (7.8k-13.8k words vs the 3-7k target); links to unwritten chapters warn until they exist.
 - The user approved the pilots ("THIS IS EXCELLENT"): keep the depth, push straight live.
+- PAUSING ~18:45 (user near token limit): the last two short runs finish, then STOP. Do NOT launch the single
+  follow-on workflow until the user says to continue.
 - RESUMED 17:30 (user: "after they finish only one workflow at a time till reset"):
   4 short runs, one Part 5/6 pair each: wf_1af1b897-6dc (05-02, 06-01), wf_6c5445e6-827 (05-03, 06-02),
   wf_a73773c7-835 (05-04, 06-03), wf_abffd2f3-5a9 (05-05, 06-04).
