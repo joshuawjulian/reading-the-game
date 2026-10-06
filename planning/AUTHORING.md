@@ -24,7 +24,9 @@ takeaway written last → try it yourself → connections.**
 2. **Opening hook (the question)**: a concrete moment on a broadcast that this
    chapter explains ("Third-and-6. The offense sends five receivers out. Why does
    the safety walk down?"). One short paragraph.
-3. **"You'll be able to…"**: 3–6 bullets, observable skills, not topics.
+3. **"You'll be able to…"**: 3–6 bullets, observable skills, not topics. Level 3+ chapters
+   follow it with a **"You'll need"** box: one line of recap plus a link for each prerequisite
+   listed in the curriculum, so a reader arriving from search can catch up.
 4. **Body in small steps**. Each `##` section introduces one idea, shows it (diagram),
    then answers **why it exists**: what problem it solves and what it gives up. Every
    scheme is a trade-off; name the trade.
@@ -40,6 +42,9 @@ takeaway written last → try it yourself → connections.**
 9. **Takeaways**: 3–6 bullets, written last.
 10. **Connections**: what this builds on, what it sets up (links to chapters), and
     an "If you want to go deeper" line (books, coaches' clinics, sites).
+
+Case studies (Part 12) keep every element above and organise the body as: the problem →
+the scheme answer → signature plays → data fingerprint → how opponents responded → what survives.
 
 Length: whatever the concept needs. Most chapters will land at 3,000–7,000 words.
 Being short never excuses skipping a "why".
@@ -61,6 +66,15 @@ Being short never excuses skipping a "why".
   The anchor is the term, lowercased and kebab-cased: `Nickel` → `#gl-nickel`,
   `11 personnel` → `#gl-11-personnel`. Check the curriculum's term index before
   defining a term; define it only in the chapter that owns it.
+- **Aliases.** When a term has other names a reader might look up, use the long form; each
+  alias gets its own glossary anchor and a "see …" entry pointing at the headword:
+  ```yaml
+  glossary:
+    Quarters: {def: "A two-deep coverage in which four defenders each take a deep quarter of the field.", aliases: ["Cover 4"]}
+  ```
+  The curriculum's term index writes these as `quarters | Cover 4` (headword first). Give
+  every alias it lists. Link to an alias with its own anchor (`#gl-cover-4`) when the text
+  uses that name.
 - **Never use a term before it's taught.** If unavoidable, give a one-line gloss and
   a forward link ("we'll build this fully in [Coverages](...)").
 - Use the **Madden bridge** sparingly but deliberately: a callout titled
@@ -76,6 +90,7 @@ Being short never excuses skipping a "why".
   - `callout-caution` **"Common misconception"**
   - `callout-tip` **"Predict the play"** (answer inside a nested collapsed callout)
   - `callout-note` **"Go deeper"** (optional, for advanced side-notes)
+  - `callout-note` **"You'll need"** (Level 3+ prerequisite recap; see §2)
 
 ## 4. Diagrams with `gridiron`
 
@@ -120,7 +135,8 @@ p.draw(legend=True);
 
 ## 5. Code in chapters
 
-- Code is folded on the website ("Show the Python") and hidden in the PDFs.
+- Code is folded on the website ("Show the Python") and hidden in the PDFs. Exception:
+  Part 13 teaches the code, so its cells are shown (`echo: true`) in both formats.
 - Keep code readable: a reader should be able to copy a cell and tweak a route.
 - Analytics chapters: use `nflreadpy` (nflverse) and cache to `data/cache/`. Prefer
   completed seasons through 2025. State the season(s) and filters used.
@@ -138,8 +154,13 @@ p.draw(legend=True);
 - If something is commonly repeated but disputed (e.g., who "invented" a scheme),
   say so and present the main claims.
 - Current through the **2025 season** (today is October 2026). Flag anything
-  that may have changed since.
-- Rules: cite the current NFL rule (e.g., kickoff rules changed in 2024 and 2025).
+  that may have changed since. **Read `planning/FACTS-current.md` first**: it holds the
+  checked 2025 results, 2026 rule changes, 2026 coaching staffs, data caveats (coverage
+  labels exist 2018–2025 only; the 2022→2023 NGS-to-FTN source break; FTN `is_motion` =
+  motion before *or at* the snap; use `is_qb_sneak` for the tush push), and trend numbers with
+  sources. Label every staff, play-caller and rule with its season.
+- Rules: cite the current NFL rule (e.g., kickoff rules changed in 2024, 2025 and again
+  for 2026); say "changed after the 2025 season" when a 2026 rule differs.
 - Never invent a specific game, play, score, quote or stat. If you can't verify it,
   generalize it ("in the 2019 season the 49ers ran outside zone more than any other
   play") or drop it.
