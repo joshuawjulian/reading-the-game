@@ -1,0 +1,1631 @@
+---
+title: "Passing Game Fundamentals: Routes, Timing, and Reads"
+subtitle: "The shared language of routes, the quarterback's feet as a clock, and the one defender every pass play is built to put in a bind."
+description: "The numbered route tree and the routes that live off it (seam, wheel, whip, option, sluggo); how the quarterback's drop (3/5/7 steps under center, 1/3/5 from the shotgun) is timed to the depth of the routes; timing routes; progression reads versus defender reads, half-field versus full-field; the high-low (vertical) and horizontal stretches of a single conflict defender; and the numbers that measure a throw: air yards, YAC and aDOT."
+glossary:
+  "Route tree": "A numbered menu of the basic routes a receiver can run, drawn as branches off one straight stem. In a common version, 1 to 9 run from the flat to the go, odd numbers break toward the sideline, even numbers toward the middle, and the numbers roughly grow with depth. Numbering varies by team."
+  "Flat route": "A route to the flat, the area near the sideline within a few yards of the line of scrimmage. The shallowest outside route (the 1 in many route trees)."
+  Slant: "A route that takes one to three steps upfield, then cuts sharply inside at roughly 45 degrees into the space between defenders a few yards past the line (the 2 in many route trees)."
+  Hitch: {def: "A route that pushes upfield, stops, and turns back to face the quarterback. Short versions (5–6 yards) are usually called hitches; deeper ones (10–14 yards), which turn back toward the middle, are curls, the 4 in many route trees.", aliases: ["Curl route"]}
+  Out: "A route that runs straight upfield, then breaks flat toward the sideline: a quick out at about 5 yards, a deeper out at 10–14 yards (the 5 in many route trees)."
+  Dig: {def: "A route that runs upfield and then breaks flat across toward the middle of the field, usually 10–15 yards deep (the 6 in many route trees). Shallower versions are often just called in routes.", aliases: ["In route"]}
+  "Corner route": "A route that pushes upfield 10–12 yards, then angles toward the sideline and the far corner of the field or end zone (the 7 in many route trees). Also called a flag route."
+  Post: "A route that pushes upfield, then angles deep toward the middle of the field, where the goalposts are (the 8 in many route trees)."
+  "Go route": {def: "A straight sprint upfield to run past the defender (the 9 in many route trees).", aliases: ["Fly route", "9 route"]}
+  Comeback: "A route that sells a deep route for about 15 yards, then stops and comes back toward the sideline and the quarterback (the 3 in many route trees)."
+  Wheel: "A route that starts out toward the flat and then turns up the sideline, usually run by a running back or a slot receiver."
+  Seam: "A vertical route up the seam, the strip of field between the hash marks and the painted numbers, usually by a slot receiver or tight end, aimed at the gaps between deep defenders."
+  Whip: "A short route in which a slot receiver runs at the middle as if on an in-cut, plants, and snaps back toward the sideline. Built to beat a defender who jumps the first move."
+  Sluggo: "A double move: a slant fake ('slant and go'), then straight up the field past the defender who bit on the slant."
+  "Option route": {def: "A route on which the receiver picks the finish after the snap from what the coverage does: against man he breaks away from the defender's leverage; against zone he settles in the hole between defenders. The quarterback has to see the same thing.", aliases: ["Choice route"]}
+  "Drop (3/5/7-step)": "The quarterback's steps backward from the snap to his throwing spot. From under center, 3-, 5- and 7-step drops end roughly 5, 7 and 9 yards deep; from the shotgun, which starts 5 yards back, the same depths take 1, 3 and 5 steps. Each drop is timed to a depth of route."
+  "Timing route": "A route the quarterback throws to a spot at a set moment, as his drop ends and often before the receiver has made his break, so the ball and the receiver arrive together."
+  Progression: "The order in which the quarterback looks at his receivers on a pass play, usually tied to the steps of his drop: if the first is covered he moves to the second, and so on down to the checkdown."
+  "High-low read": {def: "Putting two receivers in one defender's area at two depths, one above him and one below, and throwing to whichever one he leaves.", aliases: ["Vertical stretch"]}
+  "Horizontal stretch": "Putting receivers on both sides of an underneath defender (or spread across the field) at about the same depth, so a zone defender can't cover both and the quarterback throws to the one he leaves."
+  "Conflict defender": "A defender who is responsible for two things at once (two receivers in his area, or a run gap and a pass zone), so that whatever he does leaves one of them open. Pass plays and RPOs are built around him."
+  "Air yards": "How far past the line of scrimmage a pass travels in the air, to the spot where it is caught (or where the target was when it fell incomplete). Throws behind the line have negative air yards."
+  YAC: {def: "Yards after catch: the yards a receiver gains after he catches the ball, from the spot of the catch to the end of the play.", aliases: ["Yards after catch"]}
+  aDOT: {def: "Average depth of target: the average air yards per pass thrown by a quarterback, or per target for a receiver. How far downfield, on average, the ball is aimed.", aliases: ["Average depth of target"]}
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+import os
+import logging
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import FancyArrowPatch, Patch
+from matplotlib.lines import Line2D
+from IPython.display import Markdown
+
+import gridiron.play as gplay
+from gridiron import Play, Player, offense, defense, routes as r, show_animation, style, draw_marker
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+FIELD_W = 160 / 3
+ODD, EVEN = style.OFFENSE_DARK, style.THIRD      # outside-breaking vs inside-breaking routes
+
+
+def no_numbers(ax):
+    """Remove the painted yard-line numbers (they sit where receivers stand and crowd the labels)."""
+    for t in list(ax.texts):
+        if t.get_alpha() == 0.55:
+            t.remove()
+
+
+def ruler(fld, play, top=40, fs=6.5):
+    """Depth labels (yards past the line of scrimmage) down the left edge of the window, so the
+    faint 5-yard lines read as a scale. gridiron has no ruler, so it is drawn here."""
+    x_left = FIELD_W - fld.y1 + 0.4
+    for d in range(5, top + 1, 5):
+        y = play.los + d
+        if fld.x0 + 0.8 <= y <= fld.x1 - 0.8:
+            fld.ax.text(x_left, y, f"{d}" + (" yd" if d == 5 else ""), fontsize=fs, color=style.INK_2,
+                        ha="left", va="center", zorder=12,
+                        bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.85))
+
+
+def tag(fld, play, text, at, ha="center", fs=7.0, ec=style.BASELINE, color=style.INK, bold=False):
+    """A boxed label at (d, w) yards; `ec` colours the box edge (used to key route families)."""
+    x, y = fld.xy(*play.to_abs(*at))
+    fld.ax.text(float(x), float(y), text, ha=ha, va="center", fontsize=fs, color=color, zorder=12,
+                fontweight="bold" if bold else "normal",
+                bbox=dict(boxstyle="round,pad=0.22", fc=style.SURFACE, ec=ec, lw=0.9))
+
+
+def dotted(fld, play, pts, color=style.OFFENSE, lw=1.4, arrow=True):
+    """A dotted optional branch through (d, w) points, with an arrowhead."""
+    xy = [tuple(float(v) for v in fld.xy(*play.to_abs(*q))) for q in pts]
+    xs, ys = zip(*xy)
+    fld.ax.plot(xs, ys, color=color, lw=lw, ls=(0, (1, 1.5)), zorder=4)
+    if arrow:
+        fld.ax.add_patch(FancyArrowPatch(xy[-2], xy[-1], arrowstyle="-|>", mutation_scale=9, color=color,
+                                         lw=0, zorder=4, shrinkA=0, shrinkB=0))
+
+
+def protect(p, rushers=("SDE", "SDT", "WDT", "WDE")):
+    """Five linemen set and four rushers engage them: enough to say 'pass', no more."""
+    for k in ("LT", "LG", "C", "RG", "RT"):
+        if k in p.players:
+            p.block(k, pts=[(-1.2, 0.0)])
+    for k in rushers:
+        if k in p.players:
+            p.rush(k, pts=[(-1.6, 0.0)], speed=2.0)
+
+
+class ball_speed:
+    """Temporarily set gridiron's ball speed (yd/s). Its default, 18, is an average over a whole
+    flight; a firm 20-30 yard line drive to the sideline travels faster, so the timing figures use
+    20-22. Used as `with ball_speed(22): ...` so other figures keep the default."""
+    def __init__(self, v):
+        self.v = v
+
+    def __enter__(self):
+        self.old = gplay.BALL_SPEED
+        gplay.BALL_SPEED = self.v
+
+    def __exit__(self, *a):
+        gplay.BALL_SPEED = self.old
+
+
+# ---------------------------------------------------------------- snapshots (print stand-in for video)
+def snapshot(play, t, ax=None, lateral=(-6, 26.6), window=(-9, 20), width_in=6.5, notes=(), rings=(),
+             show_ruler=False, numbers_off=True):
+    """Everyone where he is at time t, faint trails of where they came from, and the ball in flight."""
+    pos = {k: play.position(k, t) for k in play.players}
+    lo, hi = sorted(lateral)
+    moved = [pl.moved(d=float(pos[k][0]), w=float(pos[k][1])) for k, pl in play.players.items()
+             if lo + 0.8 <= float(pos[k][1]) <= hi - 0.8]          # drop anyone outside the window
+    q = Play([m for m in moved if m.side == "off"], [m for m in moved if m.side == "def"],
+             los=play.los, ball_y=play.ball_y, to_go=play.to_go)
+    q.highlights = dict(play.highlights)
+    for k in rings:
+        q.highlight(k)
+    fld = q.draw(ax=ax, lateral=lateral, window=window, width_in=width_in, title=False)
+    ax, ppy = fld.ax, fld.pts_per_yard()
+    if numbers_off:
+        no_numbers(ax)
+    if show_ruler:
+        ruler(fld, play, fs=5.5)
+    P = lambda d, w: fld.xy(*play.to_abs(d, w))  # noqa: E731
+    t0 = play._compile()[1]
+    for k, pl in play.players.items():
+        if pl.pos in ("LT", "LG", "C", "RG", "RT", "DE", "DT", "NT"):
+            continue
+        pts = np.array([play.position(k, tt) for tt in np.linspace(t0, t, 40)])
+        if np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) < 0.3:
+            continue
+        xs, ys = P(pts[:, 0], pts[:, 1])
+        if pl.side == "off":
+            ax.plot(xs, ys, color=style.OFFENSE, lw=1.2, alpha=0.5, zorder=3)
+        else:
+            ax.plot(xs, ys, color=style.DEFENSE, lw=1.3, ls=(0, (3, 2)), zorder=3)
+    bx, by = P(*play.ball_position(t))
+    for kind, _, t_rel in play.ball_events:
+        if kind == "pass" and t > t_rel:
+            sx, sy = P(*play.ball_position(t_rel))
+            ax.add_patch(FancyArrowPatch((float(sx), float(sy)), (float(bx), float(by)), arrowstyle="-|>",
+                                         mutation_scale=8, color=style.BALL, lw=1.4, ls=(0, (2, 1.5)), zorder=9))
+    draw_marker(ax, float(bx), float(by), "ball", "", ppy)
+    for text, at in notes:
+        tag(fld, play, text, at, fs=6.3)
+    return fld
+
+
+def strip(plays, times, labels, lateral=(-6, 26.6), window=(-9, 20), notes=None, rings=(), width_in=6.5,
+          ncols=3, legend=True, rulers=True):
+    """Panels at chosen moments. `plays` is one Play (used for every panel) or one per row."""
+    n = len(times)
+    nrows = int(np.ceil(n / ncols))
+    if isinstance(plays, Play):
+        plays = [plays] * nrows
+    pw = width_in / ncols
+    h = nrows * (pw * (window[1] - window[0]) / abs(lateral[1] - lateral[0]) + 0.34)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(width_in, h), squeeze=False)
+    for ax in axes.flat[n:]:
+        ax.axis("off")
+    for i, (ax, t, lab) in enumerate(zip(axes.flat, times, labels)):
+        snapshot(plays[i // ncols], t, ax=ax, lateral=lateral, window=window,
+                 notes=(notes or {}).get(i, ()), rings=rings, show_ruler=rulers and (i % ncols == 0))
+        ax.set_title(lab, fontsize=7.8, color=style.INK, loc="left")
+    fig.tight_layout(h_pad=0.5, w_pad=0.3)
+    if legend:
+        h_ = [Line2D([], [], color=style.OFFENSE, lw=1.2, alpha=0.6, label="Receiver's path so far"),
+              Line2D([], [], color=style.DEFENSE, lw=1.3, ls=(0, (3, 2)), label="Defender's path so far"),
+              Line2D([], [], color=style.BALL, lw=1.4, ls=(0, (2, 1.5)), label="Ball in flight")]
+        fig.legend(handles=h_, loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=3, fontsize=7.5, frameon=False)
+    return fig
+
+
+def show_videos(plays, titles):
+    """Web build: several animations side by side in ONE output, so Quarto keeps a single figure
+    (two separate show_animation calls would be split into sub-figures)."""
+    import shutil
+    from IPython.display import HTML, display
+    from gridiron.animate import animate
+    parts = []
+    for pl, ttl in zip(plays, titles):
+        anim = animate(pl, title=ttl, to_go=pl.to_go)
+        if shutil.which("ffmpeg"):
+            html = anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+        else:
+            html = anim.to_jshtml(default_mode="once")
+        plt.close(anim._fig)
+        parts.append(f'<div style="flex:1 1 300px;min-width:0">{html}</div>')
+    display(HTML('<div style="display:flex;gap:8px;flex-wrap:wrap">' + "".join(parts) + "</div>"))
+```
+
+```{python}
+#| label: data-setup
+#| code-summary: "Show the Python (load the passing data used in this chapter)"
+#| output: false
+from gridiron.data import pbp, nfl
+
+SEASONS = range(2021, 2026)          # five completed seasons, 2021-2025
+PCOLS = ["season", "season_type", "game_id", "play_id", "play_type", "pass_attempt", "sack", "air_yards",
+         "yards_after_catch", "receiving_yards", "complete_pass", "interception", "epa", "success",
+         "passer_player_name", "receiver_player_name", "receiver_player_id", "posteam"]
+_raw = pbp(SEASONS, columns=PCOLS)
+# Pass attempts that were actually thrown at someone: regular season, sacks out, and only rows
+# with a charted air-yards value (spikes and most throwaways have none).
+passes = _raw[(_raw.season_type == "REG") & (_raw.play_type == "pass") & (_raw.pass_attempt == 1)
+              & (_raw.sack == 0) & _raw.air_yards.notna()].copy()
+DEPTH_BINS = [-100, -0.5, 4.5, 9.5, 14.5, 19.5, 29.5, 100]
+DEPTH_LABS = ["Behind\nLOS", "0-4", "5-9", "10-14", "15-19", "20-29", "30+"]
+passes["depth"] = pd.cut(passes.air_yards, DEPTH_BINS, labels=DEPTH_LABS)
+
+# FTN charting (2022+) says which read each pass went to; participation gives time to throw.
+ftn = nfl().load_ftn_charting([2022, 2023, 2024, 2025]).to_pandas()
+ftn["read_thrown"] = ftn.read_thrown.astype(str).str.strip()
+part = nfl().load_participation([2022, 2023, 2024, 2025]).to_pandas()[["nflverse_game_id", "play_id", "time_to_throw"]]
+p22 = pbp([2022, 2023, 2024, 2025], columns=PCOLS)
+p22 = p22[(p22.season_type == "REG") & (p22.play_type == "pass") & (p22.pass_attempt == 1) & (p22.sack == 0)]
+reads = (p22.merge(ftn[["nflverse_game_id", "nflverse_play_id", "read_thrown", "is_throw_away", "is_screen_pass",
+                        "is_qb_out_of_pocket"]],
+                   left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "nflverse_play_id"], how="inner")
+         .merge(part, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"], how="left",
+                suffixes=("", "_p")))
+
+# Numbers quoted in the text
+_r25 = reads[reads.season == 2025]
+TTT25 = _r25.time_to_throw.median()                                    # median snap-to-throw, 2025
+_p25 = passes[passes.season == 2025]
+LG_ADOT_25 = _p25.air_yards.mean()
+_c25 = _p25[_p25.complete_pass == 1]
+YAC_SHARE = _c25.yards_after_catch.sum() / _c25.receiving_yards.sum()
+_db = pbp([2025], columns=["season_type", "qb_dropback", "shotgun", "play_type"])
+_db = _db[(_db.season_type == "REG") & (_db.qb_dropback == 1) & _db.play_type.isin(["pass", "run"])]
+GUN_DB_25 = _db.shotgun.mean()                                         # dropbacks from shotgun/pistol
+```
+
+Second-and-8 near midfield. The quarterback takes the snap under center, takes five quick steps
+backward, plants, hops forward once, and throws toward the sideline, to a patch of grass where
+nobody is standing. The receiver he is throwing to is still sprinting straight up the field, with the
+cornerback backpedalling in front of him. A beat later the receiver snaps his head around, cuts hard
+toward the sideline, and the ball arrives at that patch of grass at the same moment he does, a step
+ahead of the cornerback. The analyst says "that's timing." What does that mean? How did the
+quarterback know where to throw before the receiver got there? Why five steps and not three or
+seven? And when the cornerback *does* get there first, how does the quarterback decide to throw
+somewhere else instead? This chapter is about the three things that make every pass play work: the
+**routes** (where the receivers go), the **drop** (when the ball comes out), and the **read** (who
+gets it).
+
+**You'll be able to…**
+
+- Name every route on a replay, by its common name and its number in the route tree, including the
+  routes that live off the tree: seam, wheel, whip, option and sluggo.
+- Count a quarterback's drop, from under center or from the shotgun, and say roughly how deep the
+  throw is meant to be and when it should come out.
+- Tell a progression read from a defender read, and a half-field read from a full-field read.
+- Find the conflict defender in a high-low (vertical) stretch or a horizontal stretch, and say which
+  receiver he left open.
+- Read air yards, YAC and aDOT in a box score or a chart, and say what each one tells you about an
+  offense.
+
+*Reading the diagrams:* offense is blue circles (Q quarterback, R running back, C center; X, Y, Z
+and H are receivers: X the wide receiver on the line, Z the wide receiver off it, Y usually the tight
+end, H the third wide receiver). Defense is orange outlined squares: E and T defensive ends and
+tackles, M and W the Mike and Will linebackers, S the Sam linebacker, \$ the nickel back (the slot
+cornerback), CB a cornerback, FS and SS the free and strong safety. Solid arrows are routes, dashed
+orange arrows are defenders' drops into zones, a dotted line is an optional path, and a T-shaped end
+is a block. The dark blue line across the field is the line of scrimmage, the orange-yellow line is
+the line to gain, the faint lines are 5 yards apart, and the small numbers on the left edge give the
+depth past the line. A green ring marks the player to watch. These conventions are the ones
+[What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd) introduced.
+
+## The passing problem: a race against the rush
+
+A pass play has a clock on it, and the defense controls it. Four or more pass rushers start
+running at the quarterback at the snap. His linemen can hold them off for a while, but not forever.
+In the 2025 regular season the median pass left the quarterback's hand
+`{python} f"{TTT25:.1f}"` seconds after the snap (by the data providers' clock; see the note
+with the timing chart).[^ttt] That is the whole budget: roughly two and a half seconds for
+receivers to get somewhere useful, for the quarterback to decide, and for the ball to leave.
+
+Inside that budget the offense has to solve three problems at once.
+
+1. **Where.** Each receiver needs a path that takes him to open grass, or to a place where the
+   defender guarding him is at a disadvantage. That is his **route**.
+2. **When.** The quarterback needs to be ready to throw at the moment the receiver gets there, not a
+   second before (the defender is still close) and not a second after (the defender has recovered,
+   or the rush has arrived). His footwork, the **drop**, is how the two are synchronised.
+3. **Who.** Five players can go out for a pass, and the defense will cover some of them better than
+   others. The quarterback needs a plan for deciding, in a second or two, which one gets the ball.
+   That plan is the **read**.
+
+Every pass concept in the next seven chapters is a particular answer to those three questions. This
+chapter builds the vocabulary: the routes, the clock, and the two basic ways to put a defender in a
+bind.
+
+::: {.callout-note title="Madden vs. real life"}
+In the video game a pass play is five fixed lines, and you choose a receiver by pressing his button
+whenever you like. In a real offense a route is a set of instructions that can change with the
+coverage, the depth of a route moves with the down and distance (a receiver on third-and-7 runs his
+route past the line to gain, not a yard short of it), and the quarterback can't wait until a receiver
+looks open. By the time a receiver *looks* open on a television screen, it is usually too late to
+throw it to him. Real quarterbacks throw to where a receiver is about to be open, on a count their
+feet keep.
+:::
+
+## Anatomy of a route
+
+Watch one receiver on one play and you can see four parts to his route.
+
+- **The release.** His first steps off the line, getting past the man in front of him. Against a
+  [press](../../appendices/glossary.qmd#gl-press) cornerback standing nose to nose with him, the
+  release is a fight of its own; [The Quick Game](04-03-quick-game.qmd) covers the
+  [release](../../appendices/glossary.qmd#gl-release-vs-press) techniques.
+- **The stem.** The run upfield before the cut. A good
+  [stem](../../appendices/glossary.qmd#gl-stem) looks the same for every route, so the defender
+  can't tell from it which way the receiver will break. Receivers also use the stem to push the
+  defender back, or to steer toward one shoulder of him.
+- **The break.** The cut. Its depth is usually set by rule ("break at 12 yards"), and its direction is
+  what names the route.
+- **The finish.** What happens after the cut: keep running away from the defender, stop and face the
+  quarterback, or settle in a gap between defenders.
+
+The break is the moment that matters. A receiver can't outrun a defender who is backpedalling in
+front of him and watching him, but he can make that defender guess. At the break the receiver knows
+where he is going and the defender doesn't, so for a fraction of a second the receiver is ahead.
+That gap, a yard or two of [separation](../../appendices/glossary.qmd#gl-separation) between receiver and defender, closes fast. Everything about timing is about getting the
+ball there before it does.
+
+## The route tree: a shared language
+
+Receivers and quarterbacks need to talk about routes quickly, in a huddle or with a hand signal at
+the line. Most offenses therefore teach a **[route tree](../../appendices/glossary.qmd#gl-route-tree)**:
+a numbered menu of the basic routes, drawn as branches off one straight stem. Here is one common
+version, for a receiver on the right side of the formation.
+
+```{python}
+#| label: fig-route-tree
+#| fig-cap: "One common numbered route tree, drawn for a wide receiver on the right of the formation (the ball is at the bottom left, the right sideline at the right edge). Every route starts with the same push straight up the field and splits at a break point. Odd numbers (dark blue tags) break toward the sideline, even numbers (green tags) toward the middle, and the numbers roughly grow with depth. The 0, the hitch, is an addition some systems make. The table beside the tree lists each route's typical break depth and direction (an arrow means the route keeps climbing after the break)."
+W0 = 13.0                                    # the receiver: on the line, just inside the numbers
+TREE = [  # number, name, absolute (d, w) waypoints after the start, label spot, label alignment
+    (0, "hitch", [(6.0, W0), (5.2, W0 - 0.5)], (5.6, 15.6), "left"),
+    (1, "flat", [(1.4, W0 + 1.5), (2.4, W0 + 6.5)], (2.4, 20.4), "left"),
+    (2, "slant", [(1.8, W0), (6.6, W0 - 6.2)], (6.6, 6.1), "right"),
+    (3, "comeback", [(16.0, W0), (13.6, W0 + 3.0)], (13.6, 16.8), "left"),
+    (4, "curl", [(12.0, W0), (10.6, W0 - 1.5)], (9.9, 10.6), "right"),
+    (5, "out", [(10.0, W0), (10.0, W0 + 6.5)], (10.0, 20.4), "left"),
+    (6, "dig (in)", [(14.0, W0), (14.0, 2.5)], (15.6, 2.4), "left"),
+    (7, "corner", [(12.0, W0), (22.0, W0 + 7.0)], (23.8, 19.8), "center"),
+    (8, "post", [(12.0, W0), (25.5, W0 - 7.5)], (27.0, 5.5), "center"),
+    (9, "go", [(29.5, W0)], (31.0, W0), "center"),
+]
+off = [Player("C", "C", "off", -0.7, 0.0, label="C"), Player("QB", "QB", "off", -5.0, 0.0, label="Q")]
+off += [Player(f"R{n}", "WR", "off", -0.7, W0, label="") for n, *_ in TREE]
+off[-1] = off[-1].moved(label="Z")          # draw one labelled marker on top of the stack
+tree = Play(off, [], los=35, to_go=None)
+for n, name, pts, *_ in TREE:
+    tree.route(f"R{n}", pts, absolute=True)
+fig = plt.figure(figsize=(6.5, 4.35))
+gs = fig.add_gridspec(1, 2, width_ratios=[1.45, 1.0], wspace=0.04)
+ax, axl = fig.add_subplot(gs[0]), fig.add_subplot(gs[1])
+fld = tree.draw(ax=ax, lateral=(-6, 26.6), window=(-6.5, 32.5), title=False)
+no_numbers(fld.ax)
+ruler(fld, tree, top=30)
+for n, name, pts, at, ha in TREE:
+    tag(fld, tree, f"{n}  {name}", at, ha=ha, ec=ODD if n % 2 else EVEN, bold=True, fs=7.2)
+tag(fld, tree, "toward the middle", (-4.6, 7.0), fs=6.6)
+tag(fld, tree, "toward the sideline", (-4.6, 19.0), fs=6.6)
+# the cheat sheet beside the tree
+CHEAT = [(0, "hitch", "5-6", "stop, face QB"), (1, "flat", "0-3", "out"), (2, "slant", "3-6", "in, 45°"),
+         (3, "comeback", "15 → 12", "back, out"), (4, "curl", "10-14", "stop, face QB"), (5, "out", "10-14", "out, square"),
+         (6, "dig", "10-15", "in, square"), (7, "corner", "10-12 →", "out, deep"), (8, "post", "10-14 →", "in, deep"),
+         (9, "go", "—", "straight")]
+axl.axis("off")
+axl.set_xlim(0, 1)
+axl.set_ylim(0, 1)
+axl.text(0.025, 0.96, "#", fontsize=7.2, fontweight="bold", color=style.INK, va="center", family="DejaVu Sans Mono")
+axl.text(0.11, 0.96, f"{'Route':<12} {'Break (yd)':<13} Direction", fontsize=7.2, fontweight="bold", color=style.INK,
+         va="center", family="DejaVu Sans Mono")
+for i, (n, name, dep, dirn) in enumerate(CHEAT):
+    y = 0.885 - i * 0.07
+    axl.text(0.02, y, f"{n}", fontsize=7.6, fontweight="bold", va="center", color=style.INK,
+             bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec=ODD if n % 2 else EVEN, lw=1.1))
+    axl.text(0.11, y, f"{name:<12} {dep:<13} {dirn}", fontsize=7.2, va="center", color=style.INK,
+             family="DejaVu Sans Mono")
+axl.text(0.02, 0.0, "Box colour: dark blue = odd, breaks toward the\nsideline; green = even, breaks toward the middle.\nDepths in yards past the line; typical, not laws.",
+         fontsize=6.8, color=style.INK_2, va="bottom")
+plt.show()
+```
+
+Two patterns make the tree easy to remember. **Odd numbers break toward the sideline and even numbers
+break toward the middle**, and **the numbers roughly grow with depth**: low numbers are short
+routes, high numbers deep ones. The tree is the same on both sides of the field; a receiver on the
+left simply mirrors it, so "breaks outside" always means "toward his own sideline." Here are the
+branches, each with the reason it exists.
+
+- **1, the [flat route](../../appendices/glossary.qmd#gl-flat-route).** A quick release to the
+  *flat*, the strip of field near the sideline within a few yards of the line. It is the
+  shallowest route there is, and its job is often to pull a defender down and out with it, opening
+  the space above him. From an outside receiver it looks like a very shallow quick out.
+- **2, the [slant](../../appendices/glossary.qmd#gl-slant).** One to three steps upfield, then a sharp
+  cut inside at about 45 degrees. It attacks the space between the defenders near the line and the
+  ones behind them, and it gets the receiver's body between the ball and a defender lined up
+  outside him. It is the quickest-developing route in football and a staple when the defense brings
+  extra rushers.
+- **3, the [comeback](../../appendices/glossary.qmd#gl-comeback).** A hard run upfield for about 15
+  yards to sell a deep route, then a stop and a turn back toward the sideline. It exists because
+  cornerbacks fear being beaten deep: the more convincing the vertical push, the further the
+  cornerback retreats, and the more room the receiver has when he comes back. The throw is long, from
+  the middle of the field to the sideline, so it asks a lot of the quarterback's arm.
+- **0 and 4, the [hitch](../../appendices/glossary.qmd#gl-hitch).** Push upfield, stop, and turn
+  back to face the quarterback. At 5–6 yards it is usually called a hitch (some trees number it 0, and
+  many have no number for it at all); at 10–14 yards, turning back slightly toward the middle, it is a
+  **[curl](../../appendices/glossary.qmd#gl-curl-route)**, the 4. Both attack a defender who is
+  backing up: when a cornerback lines up 7 or 8 yards off a receiver to protect against the deep
+  ball, a 5-yard hitch is open almost by definition.
+- **5, the [out](../../appendices/glossary.qmd#gl-out).** Straight up the field, then a square cut
+  toward the sideline. A *quick out* breaks at about 5 yards; the deeper out breaks at 10–14. It
+  attacks the area outside the defenders who are responsible for the middle, and the sideline stops
+  the clock if he steps out. The deep out is the hardest throw in the tree, because the ball has to
+  travel the full width from the quarterback to the sideline before the cornerback can come down on
+  it.
+- **6, the [dig](../../appendices/glossary.qmd#gl-dig).** Up the field 10–15 yards, then a flat cut
+  across toward the middle. Shallower versions are often called an
+  **[in route](../../appendices/glossary.qmd#gl-in-route)**. The dig attacks the middle of the
+  field behind the linebackers, the area they vacate when they drop or blitz.
+- **7, the [corner route](../../appendices/glossary.qmd#gl-corner-route).** Up the field 10–12 yards,
+  then an angle toward the sideline and the far corner of the field (the pylon at the corner of the
+  end zone, which is why some playbooks call it the *flag*). It attacks the deep area outside, above
+  a cornerback who stays low and inside a safety who stays in the middle.
+- **8, the [post](../../appendices/glossary.qmd#gl-post).** Up the field, then an angle deep toward
+  the middle, where the goalposts stand. It attacks the deep middle, between deep defenders or behind
+  a safety who has come forward. A version that stays more vertical, angling only slightly inside, is the *skinny post*.
+- **9, the [go route](../../appendices/glossary.qmd#gl-go-route).** A straight sprint up the field,
+  also called a **[fly](../../appendices/glossary.qmd#gl-fly-route)** or a
+  **[9 route](../../appendices/glossary.qmd#gl-9-route)**. Its purpose is to outrun the man covering
+  him. Even when it isn't thrown, it does a job: a cornerback who has to run with it is no longer
+  near the short routes underneath. A go route that drifts toward the sideline to make room for the
+  throw is a [fade](../../appendices/glossary.qmd#gl-fade), a red-zone favourite ([Red Zone, Goal Line, Two-Point Plays, and Short Yardage](../10-situational-football/10-03-red-zone-goal-line-and-short-yardage.qmd)).
+
+Read the tree in pairs and you can see that each route is the answer to a defender's choice.
+The comeback and the go both start the same way: if the cornerback stays deep, the comeback is open;
+if he jumps the comeback, the go is. The curl and the corner make the same pair inside a single
+stem. That is the whole idea of route design in miniature: make a defender choose, then throw where
+he didn't go.
+
+::: {.callout-important title="Why it exists"}
+The tree exists to make calls short and practice efficient. If every route has a number and a fixed
+depth, one word or one digit tells a receiver exactly where to go, and a quarterback and receiver
+who have run the 5 a thousand times in practice know, without talking, where the ball will be and
+when. The cost is rigidity. A number says nothing about how two routes work together, and a fixed
+depth is easy for a defense to study. That is why modern playbooks name *combinations* of routes
+(concepts) rather than single routes, and why many routes are taught with rules that change their
+depth or their break against different coverages
+([Offensive Systems and Play-Calling Languages](04-08-offensive-systems-and-languages.qmd) compares
+the approaches).
+:::
+
+### Who numbered the routes
+
+The idea that every route should have a number is usually traced to Don Coryell, who coached San
+Diego State from 1961 to 1972 and the San Diego Chargers from 1978 to 1986. Coryell built on Sid
+Gillman's passing ideas (Gillman coached the Chargers in the 1960s), whose central principle was to
+make a defense cover the whole field, every yard of its width and depth. Coryell's numbering let a
+play-caller describe three receivers' routes in a single three-digit call. His Chargers, the "Air
+Coryell" teams with Dan Fouts at quarterback, led the NFL in passing yards in six straight seasons
+from 1978 to 1983 and again in 1985, and the numbering spread with his assistants and their
+assistants through the league.[^coryell] It never became a standard, though. Trees differ from
+team to team: some reverse the odd-even rule, some number inside receivers' routes separately, some
+call the 3 an out and the 5 a comeback. When you hear "a 9 route," you can be fairly sure it means a
+go; most other numbers depend on who is talking.
+[Offensive Systems and Play-Calling Languages](04-08-offensive-systems-and-languages.qmd) shows how
+Coryell's **[digit system](../../appendices/glossary.qmd#gl-digit-system-route-numbering)**
+turns the tree into a play call. The route names, on the other hand, are close to universal.
+
+::: {.callout-caution title="Common misconception"}
+"The receiver runs the route as drawn." Routes are drawn as lines, but they are taught as rules,
+and the depths in the tree are targets, not laws. A 12-yard out on third-and-14 is run at 14 yards,
+past the line to gain. A receiver who sees the defender sitting on the spot where his route ends
+may be taught to adjust it, and on some routes the adjustment is the whole point (the option
+routes below). The quarterback has to know the rule as well as the receiver does, which is why the
+two spend so much practice time together.
+:::
+
+## Off the tree: seam, wheel, whip and sluggo
+
+The tree describes what one wide receiver can do from the outside. Receivers who line up inside, in
+the [slot](../../appendices/glossary.qmd#gl-slot) or at tight end, and running backs who start in
+the backfield have routes of their own, and so do receivers trying to fool a defender rather than
+simply get past him. Four come up constantly.
+
+```{python}
+#| label: fig-off-tree
+#| fig-cap: "Four routes that live off the tree, from a 2x2 formation (the other routes are left off). Left: the sluggo (X fakes a slant for two steps, then runs straight up the field) and the whip (H runs at the middle as if on a short in-cut, plants, and snaps back out). Right: the seam (Y runs straight up between the hash and the numbers) and the wheel (the back runs to the flat, then turns up the sideline)."
+off = offense("gun_2x2")
+off = [p.moved(w=-17.0) if p.key == "X" else p.moved(w=-8.0) if p.key == "H"
+       else p.moved(w=8.0, label="Y") if p.key == "Y" else p.moved(w=17.0) if p.key == "Z"
+       else p.moved(w=2.2) if p.key == "RB" else p for p in off]
+ot = Play(off, [], los=35, to_go=None)
+ot.route("X", r.path((2.0, 0.0), (4.3, -2.2), (25.0, -2.0)))                 # sluggo: slant fake, then go
+ot.route("H", r.path((3.0, -0.6), (4.6, -3.0), (4.2, 3.4)))                  # whip: in, plant, back out
+ot.route("Y", r.seam(24))                                                      # seam
+ot.route("RB", r.path((0.6, 4.5), (2.2, 8.5), (4.6, 10.6), (7.5, 11.2), (24.0, 11.6)), side=+1)  # wheel
+ot.dropback(2.0)
+fld = ot.draw(lateral=(-22, 20), window=(-7.5, 28.5), title=False)
+no_numbers(fld.ax)
+ruler(fld, ot, top=25)
+tag(fld, ot, "sluggo (slant-and-go)", (26.8, -15.0), bold=True)
+tag(fld, ot, "whip", (1.6, -12.6), bold=True)
+tag(fld, ot, "seam", (24.4, 7.6), bold=True)
+tag(fld, ot, "wheel", (21.0, 13.6), bold=True)
+tag(fld, ot, "hash", (-6.4, -3.1), fs=6.0, color=style.INK_2)
+tag(fld, ot, "hash", (-6.4, 3.1), fs=6.0, color=style.INK_2)
+plt.show()
+```
+
+- **The [seam](../../appendices/glossary.qmd#gl-seam).** A go route from the inside, straight up
+  the strip of field between the hash marks and the painted numbers. That strip is the seam between
+  defenders' areas: in most deep coverages it sits between the safety in the middle and the deep
+  defender outside, so a seam route forces the defense to decide who takes it. It is the slot
+  receiver's and tight end's best way to threaten the deep middle.
+- **The [wheel](../../appendices/glossary.qmd#gl-wheel).** A route that starts out toward the flat
+  and then turns up the sideline. It is usually run by a running back or a slot receiver, and its
+  trick is the change of direction: a defender who sees a back heading for the flat comes forward to
+  cover a short route, and the back turns up the field past him. It is especially dangerous when a
+  linebacker is covering the back man-to-man, because few linebackers can run with a back up the
+  sideline.
+- **The [whip](../../appendices/glossary.qmd#gl-whip).** A slot receiver runs at the middle as if on
+  a shallow in-cut, plants his inside foot, and snaps back toward the sideline. It is built for a
+  defender playing man-to-man who jumps the first move: the harder the defender drives on the in-cut,
+  the more open the receiver is when he reverses.
+- **The [sluggo](../../appendices/glossary.qmd#gl-sluggo).** "Slant and go": a two-step slant fake,
+  then straight up the field. It is the best-known **[double move](../../appendices/glossary.qmd#gl-double-move)**,
+  a route that shows one break and runs another, and it is aimed at a defender who has been
+  breaking on slants all game. Double moves take longer to develop, so they need protection and
+  usually a pump fake from the quarterback to sell them; [The Quick Game](04-03-quick-game.qmd)
+  covers the family.
+
+Two more names are worth having now, though the chapters on concepts develop them. A *drag* or
+*shallow cross* runs flat across the field just past the line, under the linebackers
+([Dropback Concepts](04-04-dropback-concepts.qmd) builds the
+[shallow cross](../../appendices/glossary.qmd#gl-shallow-cross) concept around it). And a deeper
+*crosser* climbs to 12–18 yards on the way across, the route that play-action passes love
+([Play-Action, Bootlegs, and Screens](04-05-play-action-boots-screens.qmd)).
+
+## Option routes: the receiver gets a vote
+
+The tree assumes the receiver knows his route before the snap. On an
+**[option route](../../appendices/glossary.qmd#gl-option-route)** (also called a
+**[choice route](../../appendices/glossary.qmd#gl-choice-route)**) he doesn't: he picks the
+finish after the snap, from what the defense does. The rule is usually something like this:
+"Push to six yards. If one man is following you, break away from him, out if he's inside, in if
+he's outside. If the defenders are guarding areas, find the hole between them and sit down, facing
+the quarterback."
+
+```{python}
+#| label: fig-option-route
+#| fig-cap: "One option route, two defenses. The slot receiver (Y) pushes to about 6 yards, then decides. Left, man coverage: the nickel defender (\\$) lines up on Y's inside shoulder to take away the middle, so Y breaks out, away from him (the dotted line is the in-cut he would run if the defender were outside). Right, zone: the defenders drop to areas and watch the quarterback, so Y settles in the hole between the hook defender (M) and the curl-flat defender (\\$) and turns to face the quarterback."
+def option_play(man):
+    off = [p for p in offense("gun_2x2") if p.key in ("C", "RG", "RT", "QB", "Y", "Z")]
+    off = [p.moved(w=8.5, label="Y") if p.key == "Y" else p.moved(w=16.0) if p.key == "Z" else p for p in off]
+    dfn = [Player("NB", "NB", "def", 1.6 if man else 3.8, 7.6 if man else 11.2, label="$"),
+           Player("MIKE", "MIKE", "def", 4.5, 1.5, label="M"),
+           Player("RCB", "CB", "def", 7.0, 16.5, label="CB")]
+    p = Play(off, dfn, los=35, to_go=None)
+    p.dropback(2.5)
+    if man:
+        p.route("Y", r.path((5.5, 0.0), (6.0, 5.0)))
+        p.path("NB", [(5.6, 9.6), (5.9, 12.0)], absolute=True, speed=6.2, delay=0.1)
+        p.path("RCB", [(16.0, 17.0)], absolute=True, speed=5.5)      # carries Z deep
+        p.route("Z", r.go(18))
+    else:
+        p.route("Y", r.path((6.0, 0.0), (5.6, -0.3)))
+        p.drop("NB", (6.8, 14.2))
+        p.drop("MIKE", (8.0, 3.0))
+        p.drop("RCB", (15.0, 15.5))
+        p.route("Z", r.go(18))
+    return p
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.5, 3.6))
+for ax, man, ttl in ((axes[0], True, "Against man: break away from him"),
+                     (axes[1], False, "Against zone: sit in the hole")):
+    p = option_play(man)
+    fld = p.draw(ax=ax, lateral=(-3, 21), window=(-7, 15.5), title=False)
+    no_numbers(ax)
+    y0 = p.players["Y"]
+    if man:
+        dotted(fld, p, [(4.8, y0.w), (6.2, y0.w - 4.6)], color=style.MUTED)
+        tag(fld, p, "$ sits inside:\nY breaks out", (11.0, 5.0), fs=6.4)
+    else:
+        tag(fld, p, "Y sits in the hole\nbetween M and $", (11.2, 6.0), fs=6.4)
+    ax.set_title(ttl, loc="left", fontsize=8.6, fontweight="bold", color=style.INK)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+Why give the receiver a choice? Because the right route depends on the coverage, and the coverage
+isn't settled until after the snap. Against [man coverage](../../appendices/glossary.qmd#gl-man-coverage),
+the defender's position tells you which way he is protecting. A defender standing on the receiver's
+inside shoulder is taking away the middle, so the open break is outside, and vice versa. That
+position is the defender's [leverage](../../appendices/glossary.qmd#gl-leverage-inside-outside),
+and an option route is built to break away from it: the receiver has what
+[Spread Formations](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd) called a
+[two-way go](../../appendices/glossary.qmd#gl-two-way-go), and he uses it. Against
+[zone coverage](../../appendices/glossary.qmd#gl-zone-coverage), the defenders are watching the
+quarterback rather than the receiver, and nobody follows him, so running away from someone is
+pointless. What works is to stop in the space between two of them. One route call, one receiver,
+and he is right against both.
+
+The cost is that two people must make the same decision in a split second. If the receiver sees
+man and breaks out while the quarterback sees zone and throws to the spot where he should have sat
+down, the ball goes to nobody, or to a defender. Option routes therefore go to the receivers a
+quarterback trusts most, and teams that rely on them practise them endlessly. The Patriots of the
+Tom Brady era were famous for building their passing game around option routes for slot receivers
+such as Wes Welker and Julian Edelman.[^patriots] The same idea appears in
+[What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd), where the tight end's
+route on Stick settles against zone and breaks away against man. More broadly, many routes carry
+smaller conversion rules ("against a two-deep shell, bend the seam into the middle"), which
+[Dropback Concepts](04-04-dropback-concepts.qmd) collects as
+[route conversions](../../appendices/glossary.qmd#gl-route-conversion).
+
+## The drop: the quarterback's feet are a clock
+
+Now the "when." A quarterback doesn't just walk back and look around. His feet follow a
+prescribed pattern called a **[drop](../../appendices/glossary.qmd#gl-drop-3-5-7-step)**, counted
+in steps, and each drop is paired with a depth of route.
+
+From [under center](../../appendices/glossary.qmd#gl-under-center), where he takes the snap with
+his hands under the center and starts about a yard and a half behind the line, the classic menu is:
+
+- **Three-step drop**: about 5 yards deep, finished a little under a second after the snap. It goes
+  with the quick routes that break at 5–6 yards: hitches, slants, quick outs. The ball should leave
+  as his third step lands, more or less as the receiver breaks.
+- **Five-step drop**: about 7 yards deep, finished in roughly a second and a half. It goes with the
+  intermediate routes at 10–14 yards: outs, curls, digs. The quarterback usually adds a short step
+  forward at the end of the drop, a *hitch step* (not to be confused with the hitch route), to
+  gather himself, and throws.
+- **Seven-step drop**: about 9 yards deep, finished in about two seconds. It goes with the deep
+  routes at 15–20 yards and beyond: comebacks, posts, corners, deep digs. It is the slowest drop and
+  the one that most needs the line to hold, which is a big reason it is rarer now than in the 1970s
+  and 80s.
+
+From the [shotgun](../../appendices/glossary.qmd#gl-shotgun), the quarterback starts about five
+yards deep, so he needs fewer steps to reach the same depths. The pairs become **one, three and
+five steps**: a one-step drop (often just a catch, a step and a throw) for the quick game, three
+steps for intermediate routes and five for deep ones. The pairing of depth and time stays the same.
+
+```{python}
+#| label: fig-drop-timing
+#| fig-cap: "Drops and routes are built as pairs. Left: roughly where the quarterback's last step lands for each drop, measured from the line of scrimmage. Shotgun drops are two steps shorter for the same depth because he starts five yards back. Right: the textbook timing of each pair, in seconds after the snap: the quarterback's drop (blue), the receiver's run to his break (green, diamond = the break), and the moment the ball should leave (brown ball). The black tick on each row is the real median time to throw for passes of that depth, 2023-2025, which runs later than the textbook because many throws are not first-read, on-time throws (the chart on progressions shows why). Textbook depths and times are typical values; they vary by team and quarterback."
+_tt = reads[(reads.season >= 2023) & reads.air_yards.notna()].dropna(subset=["time_to_throw"])
+TTT_MED = {"quick": _tt.loc[_tt.air_yards.between(0, 9), "time_to_throw"].median(),
+           "mid": _tt.loc[_tt.air_yards.between(10, 14), "time_to_throw"].median(),
+           "deep": _tt.loc[_tt.air_yards >= 15, "time_to_throw"].median()}
+
+fig = plt.figure(figsize=(6.5, 3.3))
+gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 2.6], wspace=0.08)
+axd, axt = fig.add_subplot(gs[0]), fig.add_subplot(gs[1])
+
+# --- left: drop depths
+axd.axhline(0, color=style.OFFENSE_DARK, lw=1.4, alpha=0.75)
+axd.text(1.0, 0.35, "line of scrimmage", ha="center", va="bottom", fontsize=6.6, color=style.INK_2)
+DEPTHS = {0: [("start", 1.5), ("3-step", 5.0), ("5-step", 7.0), ("7-step", 9.0)],
+          2: [("start", 5.0), ("1-step", 6.0), ("3-step", 7.5), ("5-step", 9.0)]}
+for x, lst in DEPTHS.items():
+    axd.plot([x, x], [-lst[0][1], -lst[-1][1]], color=style.BASELINE, lw=3, solid_capstyle="round", zorder=1)
+    for name, d in lst:
+        start = name == "start"
+        axd.scatter([x], [-d], s=55 if start else 34, color=style.OFFENSE if start else style.SURFACE,
+                    edgecolor=style.OFFENSE, lw=1.4, zorder=3)
+        axd.text(x + 0.22, -d, name if not start else "QB starts", fontsize=6.6, va="center", ha="left",
+                 color=style.INK if not start else style.INK_2)
+axd.set_xticks([0, 2], ["Under\ncenter", "Shotgun"], fontsize=7.2)
+axd.set_yticks([0, -3, -6, -9], ["LOS", "3 yd", "6 yd", "9 yd"], fontsize=7)
+axd.set_xlim(-0.5, 3.6)
+axd.set_ylim(-10.2, 1.4)
+axd.grid(False)
+axd.spines["bottom"].set_visible(False)
+axd.tick_params(axis="x", length=0)
+axd.set_title("Where the drop ends", fontsize=8.6)
+
+# --- right: timing
+ROWS = [  # key, label, drop end, set/hitch end, throw, break time, route text
+    ("quick", "Quick: 3-step\n(gun: 1-step)", 0.85, 1.0, 1.0, 1.05, "routes at 5-6 yd: hitch, slant, quick out"),
+    ("mid", "Intermediate: 5-step\n(gun: 3-step)", 1.45, 1.85, 1.85, 1.95, "routes at 10-14 yd: out, curl, dig"),
+    ("deep", "Deep: 7-step\n(gun: 5-step)", 1.95, 2.45, 2.45, 2.6, "routes at 15-20 yd: comeback, post, corner"),
+]
+for i, (key, lab, drop, hitch, throw, brk, txt) in enumerate(ROWS):
+    y = -i * 1.25
+    axt.barh(y + 0.2, drop, height=0.26, color=style.OFFENSE, alpha=0.9)
+    axt.barh(y + 0.2, hitch - drop, left=drop, height=0.26, color=style.OFFENSE_TINT, edgecolor=style.OFFENSE, lw=0.6)
+    axt.barh(y - 0.17, brk, height=0.2, color=style.THIRD, alpha=0.75)
+    axt.scatter([brk], [y - 0.17], marker="D", s=30, color=style.THIRD, edgecolor="white", zorder=4)
+    axt.scatter([throw], [y + 0.2], marker="o", s=60, color=style.BALL, edgecolor="white", zorder=5)
+    axt.plot([TTT_MED[key]] * 2, [y - 0.38, y + 0.42], color=style.INK, lw=1.6, zorder=6)
+    axt.text(0.03, y - 0.48, txt, fontsize=6.6, color=style.INK_2, va="center")
+axt.set_yticks([-i * 1.25 for i in range(3)], [r[1] for r in ROWS], fontsize=7.2)
+axt.set_xlim(0, 3.4)
+axt.set_ylim(-3.15, 0.65)
+axt.set_xlabel("Seconds after the snap", fontsize=7.5)
+axt.tick_params(axis="x", labelsize=7)
+axt.grid(axis="y", visible=False)
+axt.yaxis.tick_right()
+axt.spines["left"].set_visible(False)
+axt.spines["right"].set_visible(True)
+axt.set_title("When the ball should come out", fontsize=8.6)
+h = [Patch(color=style.OFFENSE, label="QB drop"), Patch(fc=style.OFFENSE_TINT, ec=style.OFFENSE, label="hitch / set"),
+     Patch(color=style.THIRD, alpha=0.75, label="receiver to break"),
+     Line2D([], [], marker="o", ls="", color=style.BALL, label="ball out"),
+     Line2D([], [], color=style.INK, lw=1.6, label="real median, 2023-25")]
+fig.legend(handles=h, loc="upper center", bbox_to_anchor=(0.5, 0.02), ncol=5, fontsize=6.8, frameon=False,
+           handlelength=1.4, columnspacing=1.0)
+plt.show()
+```
+
+Why are drops and routes paired this way? Because both are clocks, and the offense wants them to
+ring together. A receiver running at full speed covers 5 yards in about a second and 12 yards in
+about two (he starts from a standstill and has to fight a defender on the way). A quarterback
+backing up covers 5 yards of drop in about a second and 7 to 9 yards in one and a half to two
+seconds. If the two are matched, the quarterback's back foot hits the ground at the moment the
+receiver is making his cut, and the ball can leave without a pause. If they are mismatched, one of
+them waits. A quarterback who takes a seven-step drop to throw a hitch hands the cornerback two free
+seconds to close; a quarterback who takes a three-step drop to throw a post has to stand and hold
+the ball while the rush arrives.
+
+::: {.callout-important title="Why it exists"}
+Drops turn a judgment ("is he open yet?") into a rhythm ("throw on the fifth step"). A quarterback
+who waits to *see* a receiver open is late, because a receiver who looks open has usually been open
+for half a second already, and the ball needs another second to get there. A quarterback whose feet
+tell him when the receiver will be at his spot can throw before the defender has reacted to the
+break. The cost is that a rhythm can be disrupted: a pass rusher in his face, a receiver knocked off
+his path at the line, or a defender sitting on the spot breaks the timing, and the quarterback then
+has to improvise.
+:::
+
+Three complications are worth knowing. **The shotgun changed the picture.** In 2025 about
+`{python} f"{GUN_DB_25:.0%}"` of NFL dropbacks started from the shotgun or the pistol.[^gun] A shotgun quarterback sees the
+defense better at the snap and reaches his throwing depth sooner, which suits the quick passing game
+that dominates the modern NFL. **Play-action changes the footwork.** On a play-action pass the
+quarterback fakes a handoff first, often turning his back to the defense, so the "drop" is a fake
+plus a setup, and the routes are timed to that longer clock
+([Play-Action, Bootlegs, and Screens](04-05-play-action-boots-screens.qmd)). **Not every throw comes
+off a drop.** Quarterbacks also roll out, throw on the move, and escape a collapsing
+[pocket](../../appendices/glossary.qmd#gl-pocket), the protected area the line forms around them;
+the routes then follow the scramble rules covered in [Quarterback Play](04-07-quarterback-play.qmd).
+
+### Timing routes: throw it before he breaks
+
+Put the pieces together and you get a **[timing route](../../appendices/glossary.qmd#gl-timing-route)**:
+a route the quarterback throws to a spot at a set moment, as his drop ends and often before the
+receiver has made his break. This is the play from the opening paragraph.
+
+```{python}
+#| label: fig-timing-route
+#| fig-cap: "A timing route: the 12-yard out from a five-step drop under center, against an off cornerback playing a deep third. The ball leaves the quarterback's hand as his back foot settles, a beat before Z has broken toward the sideline, and is thrown to a spot, not to the man. The cornerback can only drive on the ball once Z breaks, so he arrives a step after it. Panels are seconds after the snap (simulated play; Z and the cornerback are ringed)."
+def timing_out():
+    off = [p for p in offense("singleback") if p.key not in ("H",)]
+    dfn = defense("nickel", "single_high", off)
+    keep = {"SDE", "SDT", "WDT", "WDE", "MIKE", "WILL", "FS", "SS", "RCB", "LCB"}
+    dfn = [p for p in dfn if p.key in keep]
+    mv = {"RCB": (7.5, 15.5), "SS": (6.5, 8.0), "FS": (13.0, 0.0)}
+    dfn = [p.moved(d=mv[p.key][0], w=mv[p.key][1], label="CB" if p.key == "RCB" else None) if p.key in mv
+           else p.moved(label="CB") if p.key == "LCB" else p for p in dfn]
+    p = Play(off, dfn, los=40, to_go=10)
+    protect(p)
+    p.block("Y", pts=[(-0.4, 0.3)])
+    p.block("RB", pts=[(1.5, 2.2)])
+    p.dropback(5.5)                                    # five steps from under center
+    p.path("QB", [(0.8, 0.0)], speed=2.0)              # the hitch step: set and throw
+    p.route("Z", r.path((13.5, 0.0), (13.5, 9.5)), speed=6.8)
+    p.route("X", r.go(20))
+    p.path("RCB", [(15.0, 16.0)], absolute=True, speed=5.0)           # bail to the deep third
+    p.path("RCB", [(12.8, 22.6)], absolute=True, speed=6.5, delay=0.75)  # drive once Z breaks
+    p.drop("SS", (9.0, 11.0))                          # curl-flat defender gets depth
+    p.drop("FS", (16.0, 1.0))
+    p.drop("MIKE", (8.0, 2.0))
+    p.highlight("Z", "RCB")
+    p.pass_to("Z", t=1.75)
+    return p
+
+
+tp = timing_out()
+TIMES = [0.9, 1.75, 2.2, 3.05]
+if PDF:
+    with ball_speed(22):
+        strip(tp, TIMES,
+              ["+0.9 s: Z still looks like a go route", "+1.75 s: back foot down, ball out",
+               "+2.2 s: Z breaks, the corner drives", "+3.05 s: catch; the corner is a step late"],
+              lateral=(-3, 26.6), window=(-9.5, 18.5), rings=("Z", "RCB"), ncols=2, rulers=False, width_in=5.6)
+        plt.show()
+else:
+    with ball_speed(22):
+        show_animation(tp, times=TIMES)
+```
+
+Follow the cornerback. At 0.9 seconds he is backpedalling, watching Z run straight at him: as far as
+he can tell, this could still be a go route, and if he stops he gets beaten deep. At 1.75 seconds the
+quarterback's back foot lands at the end of his five-step drop and he throws, at a spot near the
+sideline, 13 or so yards downfield. Z still hasn't cut. Only when Z breaks, at about 2.2 seconds,
+can the cornerback stop and drive toward the sideline, and by then the ball is already well on its
+way. The receiver catches it about a second later with the cornerback a step behind.
+
+The throw is to a *spot*, not to a man, and it leaves before the receiver gets there. That is what
+makes it hard to defend and also what makes it hard to execute: it needs the receiver to be at the
+spot on time, at the right depth, every time. A receiver who is jammed at the line and arrives late,
+or who rounds his cut and arrives a yard short, turns a completion into an incompletion or, if the
+cornerback guessed right, into an interception returned the other way. Coaches use related
+words for throws like this: a [rhythm throw](../../appendices/glossary.qmd#gl-rhythm-throw) comes out
+on the last step of the drop, with no hitch ([The Quick Game](04-03-quick-game.qmd)), and an
+[anticipation throw](../../appendices/glossary.qmd#gl-anticipation-throw) is any throw released
+before the receiver is open ([Quarterback Play](04-07-quarterback-play.qmd)).
+
+### The clock in real games
+
+The black ticks on the timing chart are a reality check. In 2023–2025 the median throw to a
+receiver 10–14 yards downfield left the quarterback's hand about
+`{python} f"{TTT_MED['mid']:.1f}"` seconds after the snap, and the median deep throw (15 yards or
+more) about `{python} f"{TTT_MED['deep']:.1f}"`. That is later than the textbook, for good reasons.
+The medians include every throw: the ones made on time, but also throws to a second or third option
+after the first was covered, throws after a scramble, and throws to a back released late. Short
+throws are slowest of all relative to their textbook time, because "short" includes
+[checkdowns](../../appendices/glossary.qmd#gl-checkdown), the short throws to a safe receiver a
+quarterback makes after everything else was covered. The textbook clock describes the *plan*; the
+data describe the plan plus everything that happened when the plan didn't work. The section on
+progressions below measures that difference directly.
+
+### A short history: Walsh and the three-step game
+
+The modern emphasis on timing owes a lot to Bill Walsh. In 1970, Walsh was an assistant on Paul
+Brown's Cincinnati Bengals staff, and his starting quarterback, Virgil Carter, was mobile and
+accurate but did not have a strong arm. Rather than ask Carter to throw deep, Walsh built a passing
+game around short, quick, precisely timed throws, many of them off three-step drops, spread across
+the whole width of the field, so that a pass could do the work of a running play. Carter led the NFL
+in completion percentage in 1971.[^walsh] Walsh took the approach, much refined, to San Francisco as
+head coach in 1979 and won three Super Bowls with it. The family of offenses descended from his work
+became known as the **[West Coast offense](../../appendices/glossary.qmd#gl-west-coast-offense)**,
+the subject of [Offensive Systems and Play-Calling Languages](04-08-offensive-systems-and-languages.qmd)
+and of the case study [Case Study: Bill Walsh's 49ers and the West Coast Offense](../12-case-studies/12-01-walsh-49ers-west-coast.qmd).
+The underlying idea is the one in this section: if the quarterback's feet and the receiver's route
+run on the same clock, the ball can leave before the defense has time to react.
+
+## Reads: what the quarterback is looking at
+
+The routes put receivers in places and the drop sets the moment. The quarterback still has to choose.
+He makes that choice with a [read](../../appendices/glossary.qmd#gl-read-post-snap), a decision made
+after the snap by watching something specific, in the form "if this, then that." Pass plays use two
+kinds of read, and nearly every play mixes them.
+
+- **A progression read** asks *which receiver is open*, looking at receivers one at a time, in order.
+- **A defender read** asks *what is this defender doing*, watching one defender and throwing to the
+  receiver he can't cover.
+
+### Progressions
+
+A **[progression](../../appendices/glossary.qmd#gl-progression)** is the order in which the
+quarterback looks at his receivers. The play call gives him a first read, usually the route the play
+was designed around; if that receiver is covered, he moves his eyes to the second, then the third,
+and finally to the checkdown, the short, safe throw to a back or tight end that keeps the play from
+losing yards. Coaches often tie each read to the footwork: the first read is thrown on the last step
+of the drop, the second on the hitch step, the third after a second hitch, so the progression runs
+on the same clock as the drop.
+
+```{python}
+#| label: fig-progressions
+#| fig-cap: "Two ways to order the quarterback's looks. The numbers are the progression: the order in which he checks receivers. Left, a half-field read: the play is a two-man combination on the right (a corner route over a hitch, both reading the same cornerback) with the back as the outlet; the routes on the left (faded) are only there to occupy defenders, so he can throw from a short drop. Right, a full-field read: he starts deep on the left and works across the field to the checkdown, which needs a deeper drop and more time from the line."
+def prog_play(full):
+    off = offense("gun_2x2")
+    off = [p.moved(w=-16.0) if p.key == "X" else p.moved(w=-8.5) if p.key == "H" else
+           p.moved(w=8.5, label="Y") if p.key == "Y" else p.moved(w=16.0) if p.key == "Z" else p for p in off]
+    p = Play(off, [], los=35, to_go=None)
+    if full:
+        p.dropback(4.0)
+        p.route("X", r.post(12))
+        p.route("H", r.dig(12, 12))
+        p.route("Y", r.curl(12))
+        p.route("Z", r.comeback(15))
+        p.route("RB", r.path((2.0, 5.5), (6.0, 6.5)), side=+1)
+        order = [("1", (23.5, -11.0)), ("2", (13.8, 2.0)), ("3", (8.4, 5.4)), ("4", (10.4, 20.2)),
+                 ("5", (3.0, 6.0))]
+    else:
+        p.dropback(2.5)
+        p.route("Y", r.corner(10))
+        p.route("Z", r.hitch(5))
+        p.route("RB", r.path((3.0, 4.0), (6.0, 8.5)), side=+1)
+        p.route("X", r.slant(2, 7))
+        p.route("H", r.stick(6))
+        order = [("1", (22.6, 19.6)), ("2", (6.6, 17.6)), ("3", (3.0, 4.6))]
+    return p, order
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.5, 2.75))
+for ax, full, ttl in ((axes[0], False, "Half-field: one side, 1-2-3"), (axes[1], True, "Full-field: left to right, 1-5")):
+    p, order = prog_play(full)
+    fld = p.draw(ax=ax, lateral=(-21.5, 21.5), window=(-8, 26), title=False)
+    no_numbers(ax)
+    if not full:   # fade the routes that are not part of the read
+        for ln in ax.lines:
+            xs = ln.get_xdata()
+            if len(xs) and np.mean(xs) < FIELD_W - p.ball_y - 3.5:   # plot-x left of the ball = offense's left
+                ln.set_alpha(0.25)
+        for pa in ax.patches:
+            if isinstance(pa, FancyArrowPatch):
+                x_end = pa._posA_posB[1][0] if pa._posA_posB else 0
+                if x_end < FIELD_W - p.ball_y - 3.5:
+                    pa.set_alpha(0.25)
+    for n, at in order:
+        x, y = fld.xy(*p.to_abs(*at))
+        ax.text(float(x), float(y), n, ha="center", va="center", fontsize=7.5, fontweight="bold", color="white",
+                zorder=13, bbox=dict(boxstyle="circle,pad=0.18", fc=style.THIRD, ec="white", lw=0.8))
+    ax.set_title(ttl, loc="left", fontsize=8.6, fontweight="bold", color=style.INK)
+fig.tight_layout(w_pad=0.5)
+plt.show()
+```
+
+Progressions come in two sizes.
+
+- **Half-field reads.** The quarterback reads only one side of the field, usually a combination of
+  two or three routes built to work together on that side. The other side's routes exist to keep
+  defenders busy, or as an emergency answer if the defense blitzes. Half-field reads are fast and
+  simple: the quarterback can decide before the snap which side gives the best matchup and then look
+  only there. Most of the quick passing game works this way.
+- **Full-field reads.** The quarterback starts on one side, often with a deep route, and works across
+  the whole field to the checkdown on the other. A full-field progression gives him more options and
+  more chances to find the one mistake the defense made, but it needs a deeper drop and more time,
+  and moving his eyes and feet across the field takes time the rush may not allow. Full-field reads
+  are a mark of experienced quarterbacks and good offensive lines.
+
+The trade between the two is speed versus flexibility. A half-field read gets the ball out quickly,
+and a full-field read can beat more coverages. A play-caller picks between them partly on the
+situation and partly on the quarterback: a rookie gets more half-field reads; a veteran with a good
+line gets the whole field.
+
+#### What the data says about progressions
+
+Since 2022, the charting company FTN has recorded, for every NFL pass, which read in the progression
+the ball went to. The nflverse project republishes that charting, so we can see how often
+quarterbacks really get past their first look.
+
+```{python}
+#| label: fig-reads
+#| fig-cap: "Where the ball actually goes in a progression: FTN's charting of 2022-2025 regular-season pass attempts (sacks excluded) by the read the quarterback threw to. Bar length is the share of attempts; the labels give EPA per attempt and the median time from snap to throw. More than half of all throws go to the first read, and they are both the quickest and the most valuable. Every later look costs time and value; checkdowns are completed most often but are worth about nothing. Designed throws (mostly screens) and scramble-drill throws sit outside the progression. Read codes are interpreted as described in the text."
+READ_NAMES = {"1": "First read", "2": "A later read", "CHK": "Checkdown", "DES": "Designed throw (screens)",
+              "SD": "Scramble drill", "0": "No read (mostly throwaways)"}
+rd = (reads[reads.read_thrown.isin(READ_NAMES)]
+      .groupby("read_thrown").agg(n=("epa", "size"), epa=("epa", "mean"), ttt=("time_to_throw", "median"),
+                                  comp=("complete_pass", "mean")))
+rd["share"] = rd.n / rd.n.sum()
+rd = rd.loc[["1", "2", "CHK", "DES", "SD", "0"]]
+fig, ax = plt.subplots(figsize=(6.5, 2.9))
+ys = np.arange(len(rd))[::-1]
+cols = [style.SERIES[0], style.SERIES[0], style.SERIES[0], style.MUTED, style.MUTED, style.MUTED]
+ax.barh(ys, rd.share, color=cols, height=0.62)
+for y, (k, row) in zip(ys, rd.iterrows()):
+    ax.text(row.share + 0.008, y, f"{row.share:.0%}   EPA {row.epa:+.2f}   median {row.ttt:.1f} s   "
+            f"completed {row.comp:.0%}", va="center", fontsize=6.9, color=style.INK)
+ax.set_yticks(ys, [READ_NAMES[k] for k in rd.index], fontsize=7.4)
+ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+ax.set_xlim(0, 1.0)
+ax.set_xticks([0, 0.2, 0.4, 0.6])
+ax.tick_params(axis="x", labelsize=7)
+ax.grid(axis="y", visible=False)
+ax.set_xlabel("Share of pass attempts", fontsize=7.4)
+ax.set_title("The progression in the data: early reads are quicker and worth more", fontsize=9)
+plt.show()
+```
+
+The progression shows up clearly. More than half of all throws go to the first read, they come out
+fastest, and they are worth the most: the first read is the receiver the play was built to get open,
+thrown on time. Each later look costs about half a second and a good chunk of the value, and the
+checkdown, while completed most often, is worth roughly nothing on average. (The other categories,
+designed throws such as screens and throws made in a scramble, sit outside the progression
+altogether.) That is the case for timing in one chart: the offense is at its best when the plan works
+the first time.[^ftn]
+
+### Defender reads and the conflict defender
+
+The other kind of read watches one defender instead of a sequence of receivers. The idea is to find
+a **[conflict defender](../../appendices/glossary.qmd#gl-conflict-defender)**, a defender who is
+responsible for two things at once, and put two receivers in his area. Whatever he does, he is wrong
+about one of them, so the quarterback watches only him and throws to the receiver he leaves. You met
+this idea in [What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd), where the
+quarterback on Stick reads the slot defender. The run game uses the same trick on a defender who is
+responsible for both a run gap and a pass zone, which is how
+[RPOs](../../appendices/glossary.qmd#gl-rpo) work ([Run-Pass Options](04-06-rpos.qmd)).
+
+Defender reads are fast, because the quarterback looks at one man, not five, and they don't depend on
+the receivers beating anyone. They depend on geometry: a defender can only be in one place. The
+offense creates the conflict in one of two directions, up and down or side to side.
+
+## The vertical stretch: high and low
+
+A **[high-low read](../../appendices/glossary.qmd#gl-high-low-read)** (also called a
+**[vertical stretch](../../appendices/glossary.qmd#gl-vertical-stretch)**) puts two receivers in one
+defender's area at two depths, one above him and one below. The animation below shows the most common
+version, a curl over a flat route, against the defender who guards both in a
+[Cover 3](../../appendices/glossary.qmd#gl-cover-3) zone, the
+[curl-flat defender](../../appendices/glossary.qmd#gl-curl-flat-defender). (Cover 3 has three deep
+defenders, each guarding a third of the field's width, and four underneath; you'll meet it properly in
+[Cover 3](../06-pass-coverage/06-03-cover-3-family.qmd). For now all that matters is the
+one defender.)
+
+```{python}
+#| label: fig-high-low
+#| fig-cap: "A high-low read of one defender, both branches (simulated play, Cover 3, the right half of the field). Z runs a curl at about 12 yards (high); Y runs to the flat (low). The ringed nickel defender (\\$) is responsible for both areas, so the quarterback watches only him. Top row: he sinks under the curl, so the ball goes to the flat. Bottom row: he jumps the flat, so the ball goes to the curl, behind him and in front of the deep-third cornerback. Times are seconds after the snap."
+def high_low(sink):
+    off = offense("gun_2x2")
+    off = [p.moved(w=8.5, label="Y") if p.key == "Y" else p.moved(w=15.5) if p.key == "Z" else p for p in off]
+    dfn = defense("nickel", "single_high", off)
+    mv = {"RCB": (7.5, 16.0), "NB": (4.5, 10.0), "MIKE": (4.5, 2.0), "FS": (13.0, 0.0), "SS": (5.0, -11.0),
+          "LCB": (7.5, -16.0), "WILL": (4.5, -4.0)}
+    dfn = [p.moved(d=mv[p.key][0], w=mv[p.key][1]) if p.key in mv else p for p in dfn if p.key != "DB"]
+    dfn = [p.moved(label="CB") if p.pos == "CB" else p for p in dfn]
+    p = Play(off, dfn, los=35, to_go=10)
+    protect(p)
+    p.dropback(2.5)
+    p.path("QB", [(0.5, 0.0)], speed=2.0)
+    p.route("Z", r.path((12.5, 0.0), (11.2, -1.3)))                     # curl: high
+    p.route("Y", r.path((1.0, 3.0), (2.4, 7.5), (3.2, 12.0)), speed=6.4)  # flat: low
+    p.path("NB", [(6.5, 11.5)], absolute=True, speed=3.5)               # first steps: shuffle, read
+    if sink:
+        p.path("NB", [(10.0, 14.0)], absolute=True, speed=4.5)          # sinks under the curl
+        p.pass_to("Y", t=1.3)
+    else:
+        p.path("NB", [(3.8, 17.0)], absolute=True, speed=6.5)           # jumps the flat
+        p.pass_to("Z", t=1.7)
+    p.path("RCB", [(16.0, 17.0)], absolute=True, speed=5.2)             # deep third
+    p.drop("MIKE", (9.0, 4.0))
+    p.route("X", r.go(18))                                              # the left side: just occupying
+    p.route("H", r.seam(16))                                            # defenders on the web animation
+    p.drop("LCB", (15.0, -16.0))
+    p.drop("WILL", (8.5, -4.0))
+    p.drop("SS", (7.0, -12.0))
+    p.drop("FS", (17.0, 0.5))
+    p.highlight("NB")
+    return p
+
+
+HL_SINK, HL_JUMP = high_low(True), high_low(False)
+if PDF:
+    with ball_speed(22):
+        strip([HL_SINK, HL_JUMP], [0.7, 1.3, 2.35, 0.7, 1.7, 2.7],
+              ["+0.7 s: $ reads the QB", "+1.3 s: $ sinks; ball to the flat", "+2.35 s: Y catches it",
+               "+0.7 s: the same start", "+1.7 s: $ jumps the flat", "+2.7 s: Z catches the curl"],
+              lateral=(-2, 26.6), window=(-9.5, 18.5), rings=("NB",), rulers=False,
+              notes={1: [("high", (14.3, 11.6)), ("low", (-3.8, 15.5))],
+                     4: [("high", (14.3, 11.6)), ("low", (-3.8, 15.5))]})
+        plt.show()
+else:
+    with ball_speed(22):
+        show_videos([HL_SINK, HL_JUMP], ["He sinks: throw the flat", "He jumps the flat: throw the curl"])
+```
+
+The ringed nickel defender's job in this zone is to guard the area from the sideline in toward the
+hash, from the line of scrimmage out to about 12 yards. That is two receivers' worth of field. If he
+gets depth to stand under the curl, the flat route is alone in front of him, and the ball goes there
+for a few easy yards with room to run. If he comes forward to cover the flat route, the curl settles
+in the hole behind him, in front of the cornerback, who is busy guarding the deep third, and the ball
+goes there for 10 or 12. The quarterback doesn't need to know the whole coverage; he needs to watch
+one man.
+
+Why does this work? Because zone defenders are taught to stay between the ball and the deepest
+threat in their area, and to break on the ball when it's thrown. A curl-flat defender who sinks
+under the curl is doing his job; he is just losing the flat. The trade is built in. The defense has
+three good answers. It can **change who covers what**: in
+[man coverage](../../appendices/glossary.qmd#gl-man-coverage), each receiver has his own defender, and
+there's no one to put in conflict (that is why offenses want to know whether the coverage is man or
+zone before they choose a read). It can **pattern-match**: zone defenders who are taught to pick up a
+receiver who enters their area and stay with him, so the curl-flat defender takes the flat route and a
+linebacker gets under the curl ([Cover 3](../06-pass-coverage/06-03-cover-3-family.qmd) covers the
+match rules). Or it can **bait**: show a soft flat, then drive on it once the ball is in the air,
+hoping to catch a quarterback who decided too early.
+
+The high-low idea is everywhere. A corner route over a hitch puts a cornerback who plays the flats in
+[Cover 2](../../appendices/glossary.qmd#gl-cover-2) in the same bind (that is the concept called
+[smash](../../appendices/glossary.qmd#gl-smash)), and three receivers at three depths on one sideline
+make it a three-level stretch (the [flood](../../appendices/glossary.qmd#gl-flood) concept). Both
+are built in full in [Dropback Concepts](04-04-dropback-concepts.qmd).
+
+## The horizontal stretch: inside and outside
+
+A **[horizontal stretch](../../appendices/glossary.qmd#gl-horizontal-stretch)** does the same thing
+side to side: it puts receivers on both sides of an underneath defender at about the same depth, so he
+can't stand in front of both.
+
+```{python}
+#| label: fig-horizontal-stretch
+#| fig-cap: "A horizontal stretch. Five receivers settle at 4-6 yards, spread across the field, against the four underneath zone defenders of a Cover 3 defense (dashed arrows are their drops; the two cornerbacks and the free safety bail into the three deep zones). Every underneath defender has a receiver on each side of him. The quarterback watches the ringed Mike: he can't stand in front of both the back (R) and Y, so whichever way he leans (dotted), the man on the other side is open."
+off = offense("gun_2x2")
+off = [p.moved(w=-16.0) if p.key == "X" else p.moved(w=-8.5) if p.key == "H" else
+       p.moved(w=8.5, label="Y") if p.key == "Y" else p.moved(w=15.5) if p.key == "Z" else p for p in off]
+dfn = defense("nickel", "single_high", off)
+mv = {"LCB": (8.0, -16.5), "RCB": (8.0, 16.0), "FS": (13.0, 0.0), "SS": (5.5, -11.0),
+      "WILL": (4.5, -4.0), "MIKE": (4.5, 1.5), "NB": (4.5, 10.0)}
+dfn = [p.moved(d=mv[p.key][0], w=mv[p.key][1], label="CB" if p.pos == "CB" else None) if p.key in mv else p
+       for p in dfn if p.key != "DB"]
+hz = Play(off, dfn, los=35, to_go=8)
+protect(hz)
+hz.dropback(2.5)
+hz.route("X", r.hitch(5))
+hz.route("H", r.path((5.5, -0.8), (5.5, -0.2)))
+hz.route("RB", r.path((3.6, -0.6), (9.4, 0.6)), side=+1)       # back checks, then sits over the ball
+hz.route("Y", r.path((5.5, 2.5), (5.5, 3.0)), side=-1)        # Y sits just inside, at the hash
+hz.route("Z", r.hitch(5))
+for k, to in (("LCB", (14.0, -16.5)), ("RCB", (14.0, 16.0)), ("FS", (15.5, 0.0)),
+              ("SS", (6.5, -12.0)), ("WILL", (7.0, -5.0)), ("MIKE", (7.0, 1.6)), ("NB", (6.5, 11.5))):
+    hz.drop(k, to)
+hz.highlight("MIKE")
+fld = hz.draw(lateral=(-21.5, 21.5), window=(-8, 16.5), title=False)
+no_numbers(fld.ax)
+ruler(fld, hz, top=15)
+dotted(fld, hz, [(7.0, 1.6), (7.4, 4.6)], color=style.DEFENSE)
+dotted(fld, hz, [(7.0, 1.6), (7.4, -1.4)], color=style.DEFENSE)
+tag(fld, hz, "M leans to Y:\nthrow to R", (10.6, 6.8), fs=6.6)
+tag(fld, hz, "M leans to R:\nthrow to Y", (10.6, -4.0), fs=6.6)
+plt.show()
+```
+
+The arithmetic is the heart of it. A zone defense has only so many underneath defenders: four in
+Cover 3, five in Cover 2, after it has spent players on the pass rush and the deep zones. If the
+offense puts five receivers across the field at the same depth against four underneath defenders, at
+least one receiver has nobody in front of him, and every defender has a receiver on each side. Each
+defender who tries to cover two receivers is a conflict defender. The Mike in the figure stands in his
+[hook zone](../../appendices/glossary.qmd#gl-hook-zone), the area just past the line in the middle,
+with the back sitting on one side of him and Y sitting on the other. If he leans toward Y, the back is
+open; if he stays home, Y is.
+
+Horizontal stretches tend to be short throws, because they work underneath, in front of the deep
+defenders. That makes them reliable and quick, the backbone of the quick game's
+[spacing](../../appendices/glossary.qmd#gl-spacing) and [stick](../../appendices/glossary.qmd#gl-stick)
+concepts ([The Quick Game](04-03-quick-game.qmd)). What they give up is depth: a horizontal stretch
+rarely produces a big play by itself, and it needs the receiver to make yards after the catch.
+Combine a horizontal stretch with a vertical one and you get a triangle of three receivers around one
+defender, the [triangle read](../../appendices/glossary.qmd#gl-triangle-read) of
+[Dropback Concepts](04-04-dropback-concepts.qmd).
+
+::: {.callout-important title="Why it exists"}
+Stretches are how an offense beats zone coverage without needing to win a one-on-one race. Against
+zone the defenders aren't following anyone; they are guarding areas, and areas have edges. Put two
+receivers inside one defender's area, one above him or beside him, and he has to choose. This is
+Gillman's old principle of making the defense cover the whole field, applied one defender at a time.
+Against man coverage, stretches matter less, because there's no area to overload, and the offense's
+answer is different: routes that win one-on-one, double moves, and routes that cross so defenders get
+in each other's way (the [man-beaters](../../appendices/glossary.qmd#gl-man-beater) of
+[Dropback Concepts](04-04-dropback-concepts.qmd)). Which is why the question "man or zone?" sits
+behind every read, and why the matrix of which concepts beat which coverages waits until the coverages
+are taught, in [What Beats What](../08-the-chess-match/08-01-concepts-versus-coverages.qmd).
+:::
+
+## Measuring a throw: air yards, YAC and aDOT
+
+Once the ball is caught, the yards come from two places: the distance the ball traveled in the air,
+and the distance the receiver ran after he caught it. Analytics splits them, and the three numbers it
+uses appear in broadcasts, box scores and almost every article about a quarterback.
+
+- **[Air yards](../../appendices/glossary.qmd#gl-air-yards)** measure how far past the line of
+  scrimmage the ball traveled in the air, to the spot where it was caught, or where the target was
+  when it fell incomplete. Only the distance downfield counts, not the sideways distance. A screen
+  caught 3 yards behind the line has −3 air yards.
+- **[YAC](../../appendices/glossary.qmd#gl-yac)**, **[yards after catch](../../appendices/glossary.qmd#gl-yards-after-catch)**,
+  is what the receiver adds from the catch to the end of the play.
+- **[aDOT](../../appendices/glossary.qmd#gl-adot)**, **[average depth of target](../../appendices/glossary.qmd#gl-average-depth-of-target)**,
+  is the average air yards per pass, for a quarterback (per throw) or a receiver (per target),
+  completed or not. It describes *where* a quarterback throws or a receiver is used, not how well.
+
+An example. A slant is caught 6 yards past the line, and the receiver runs 14 more before he is
+tackled: a 20-yard gain, 6 air yards and 14 YAC. A post caught 35 yards downfield and tackled at once:
+a 35-yard gain, all of it air yards. An incomplete deep out aimed at a receiver 14 yards downfield:
+0 yards, but 14 air yards for the quarterback's aDOT. Across the NFL in 2025, the average throw
+traveled about `{python} f"{LG_ADOT_25:.1f}"` yards past the line, and about
+`{python} f"{YAC_SHARE:.0%}"` of all receiving yards came after the catch, so the two halves are close to
+equal in total.[^airyards]
+
+```{python}
+#| label: fig-depth-value
+#| fig-cap: "What each depth of throw is worth, 2021-2025 regular seasons (all pass attempts with a charted target depth; sacks excluded). Short throws are the most common and the easiest to complete, but a completion behind the line of scrimmage loses expected points on average. Completion rate falls steadily with depth, yet EPA per attempt rises through about 15-19 yards and then levels off: the deep ball fails often but pays a lot when it hits. The bottom-right panel splits the yards on a completion into the air yards and the yards after the catch."
+dv = passes.groupby("depth", observed=True).agg(n=("epa", "size"), comp=("complete_pass", "mean"),
+                                                epa=("epa", "mean"), succ=("success", "mean"))
+dv["share"] = dv.n / dv.n.sum()
+cmp_ = passes[passes.complete_pass == 1]
+dv["air"] = cmp_.groupby("depth", observed=True).air_yards.mean()
+dv["yac"] = cmp_.groupby("depth", observed=True).yards_after_catch.mean()
+xs = np.arange(len(dv))
+fig, axes = plt.subplots(2, 2, figsize=(6.5, 4.9), sharex=True)
+specs = [(axes[0, 0], "share", "Share of all attempts", lambda v: f"{v:.0%}"),
+         (axes[0, 1], "comp", "Completion rate", lambda v: f"{v:.0%}"),
+         (axes[1, 0], "epa", "EPA per attempt", lambda v: f"{v:+.2f}")]
+for ax, col, ttl, fmt in specs:
+    vals = dv[col].values
+    cols = [style.SERIES[0] if v >= 0 else style.SERIES[1] for v in vals]
+    ax.bar(xs, vals, color=cols, width=0.7)
+    for x, v in zip(xs, vals):
+        ax.text(x, v + (0.012 if col != "epa" else (0.015 if v >= 0 else -0.015)) * (1 if col != "share" else 0.6),
+                fmt(v), ha="center", va="bottom" if v >= 0 else "top", fontsize=6.6, color=style.INK)
+    ax.set_title(ttl, fontsize=8.6)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _, c=col: f"{v:.0%}" if c != "epa" else f"{v:+.1f}"))
+    ax.tick_params(labelsize=7)
+axes[1, 0].axhline(0, color=style.BASELINE, lw=1)
+axes[1, 0].set_ylim(-0.3, 0.55)
+axes[0, 1].set_ylim(0, 0.92)
+axes[0, 0].set_ylim(0, 0.31)
+ax = axes[1, 1]
+ax.bar(xs, dv.air, color=style.SERIES[0], width=0.7, label="air yards")
+ax.bar(xs, dv.yac, bottom=dv.air.clip(lower=0), color=style.SERIES[2], width=0.7, label="yards after catch")
+for x, a, y in zip(xs, dv.air, dv.yac):
+    ax.text(x, max(a, 0) + y + 0.8, f"{a + y:.0f}", ha="center", va="bottom", fontsize=6.6, color=style.INK)
+ax.axhline(0, color=style.BASELINE, lw=1)
+ax.set_ylim(-6, 48)
+ax.set_title("Yards per completion: in the air + after the catch", fontsize=8.6)
+ax.legend(fontsize=6.8, loc="upper left")
+ax.tick_params(labelsize=7)
+for a in axes[1]:
+    a.set_xticks(xs, list(dv.index), fontsize=6.8)
+    a.set_xlabel("Target depth (air yards)", fontsize=7.2)
+fig.tight_layout(h_pad=0.8, w_pad=1.0)
+plt.show()
+```
+
+The chart is the passing game's central trade. **Short throws are reliable but don't gain much in the
+air, so they live on YAC.** Throws behind the line of scrimmage, mostly screens and flips to backs,
+are completed four times in five, average about nine yards after the catch, and still lose expected
+points on average: a completion that gains four yards on first-and-10 is a step backward in
+[EPA](../../appendices/glossary.qmd#gl-epa) terms, the course's measure of how much a play changed
+the offense's expected points ([Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd)).
+**Throws of 5–9 yards are the most dependable winners:** completed about two times in three, they
+have the highest [success rate](../../appendices/glossary.qmd#gl-success-rate) of any depth
+(`{python} f"{dv.loc['5-9', 'succ']:.0%}"`). **Deep throws fail most of the time and pay anyway.**
+Throws of 20 yards or more are completed less than half the time and carry the highest interception
+rate, yet each attempt is worth about as much as a 15-yard throw, because a completion moves the ball
+so far. The bottom-right panel shows how a completion's yards split: almost all YAC on the shortest
+throws, mostly air on the long ones, and a surprisingly steady 3–6 yards after the catch for anything
+thrown past the line.
+
+::: {.callout-caution title="Common misconception"}
+"High aDOT good, low aDOT bad." aDOT describes a style, not a level of play. A quarterback in a quick,
+horizontal offense built on YAC can have a low aDOT and an excellent season; a quarterback with a high
+aDOT may be taking shots because his team is always behind. YAC has the same problem. It depends on
+the play design (screens and crossing routes produce YAC; comebacks and corners rarely do), on the
+receiver, and on the throw itself, since a ball placed in stride lets a receiver keep running. To
+judge a passer, the course uses measures built on top of these, such as
+[CPOE](../../appendices/glossary.qmd#gl-cpoe) (completion percentage over expected, which accounts
+for depth) in [Quarterback Play](04-07-quarterback-play.qmd), and EPA per play.
+:::
+
+The same split shows up in receivers. The table lists the 2025 receivers whose targets were deepest
+and the ones who gained the most after each catch.
+
+```{python}
+#| label: adot-yac-table
+#| output: asis
+p25 = passes[passes.season == 2025]
+rec = (p25.groupby(["receiver_player_id", "receiver_player_name"])
+       .agg(team=("posteam", "last"), targets=("air_yards", "size"), adot=("air_yards", "mean"),
+            catches=("complete_pass", "sum"), yac=("yards_after_catch", "sum"))
+       .reset_index())
+rec = rec[rec.targets >= 80]
+rec["yac_per"] = rec.yac / rec.catches
+hi_adot = rec.nlargest(5, "adot")
+hi_yac = rec.nlargest(5, "yac_per")
+nm = lambda row: f"{row.receiver_player_name.replace('.', '. ', 1)} ({row.team})"  # noqa: E731
+lines = ["| Highest aDOT | aDOT | YAC/catch | Most YAC per catch | aDOT | YAC/catch |",
+         "|:---|---:|---:|:---|---:|---:|"]
+for (_, a), (_, b) in zip(hi_adot.iterrows(), hi_yac.iterrows()):
+    lines.append(f"| {nm(a)} | {a.adot:.1f} | {a.yac_per:.1f} | {nm(b)} | {b.adot:.1f} | {b.yac_per:.1f} |")
+LG_ADOT, LG_YAC = p25.air_yards.mean(), p25.loc[p25.complete_pass == 1, "yards_after_catch"].mean()
+lines.append(f"| *League average* | *{LG_ADOT:.1f}* | *{LG_YAC:.1f}* | | | |")
+print("\n".join(lines))
+print("\n: Two kinds of pass catcher, 2025 regular season: players at any position with at least 80 targets with a charted "
+      "depth. aDOT is the average air yards per target; YAC/catch is the average yards gained after the catch. "
+      "{#tbl-adot-yac}\n")
+```
+
+The two columns are different jobs. The deep-aDOT players are mostly outside receivers who run
+posts, gos and comebacks and gain little after the catch, because a ball caught 20 yards downfield
+is usually caught with a defender close by. The YAC leaders are mostly running backs whose catches
+come at or behind the line, in the open field, where they can make a defender miss: the offense gets
+them the ball cheaply and lets them work. Neither is "better"; a passing game needs both, and the
+quarterback's aDOT is mostly a mix of who he is throwing to.
+
+## Film room
+
+::: {.callout-note title="Film room: 49ers 1988 season, Super Bowl XXIII — a progression to the third option"}
+January 22, 1989, Miami. The Bengals led the 49ers 16–13 with a little over three minutes left, and
+San Francisco took over at its own 8-yard line. Joe Montana drove the 49ers 92 yards in 11 plays,
+mostly on short and intermediate throws to the sidelines and the middle: Walsh's timing game, run
+under pressure in the season's last minutes. On the final play, from the Bengals' 10 with about 40
+seconds left, the call (usually reported as "20 Halfback Curl, X-Up") was designed for the halfback,
+Roger Craig. Craig and Jerry Rice were both covered, so Montana moved on in his progression and found
+John Taylor in the middle of the end zone for the touchdown with 34 seconds left. San Francisco won
+20–16.[^sb23]
+
+**What to notice:** the winning throw went to the receiver the play was *not* designed for. That is
+what a progression is for. The first read was taken away, and the quarterback had a pre-set order of
+where to look next and the time, from his protection, to look there. It was also Walsh's last game as
+the 49ers' head coach. The drive is the best-known demonstration of the offense he built: short,
+precise, on time, and with an answer when the first answer was covered.
+:::
+
+::: {.callout-note title="Film room: Buccaneers and Chiefs 2022 — rhythm against improvisation"}
+The 2022 season gives the cleanest contrast in modern quarterback timing: Tom Brady's last season in
+Tampa Bay and Patrick Mahomes's second MVP season in Kansas City. Both threw for a lot of yards, and
+they did it on very different clocks.
+
+```{python}
+#| label: fig-brady-mahomes
+#| fig-cap: "Two ways to beat the clock, 2022 regular season (Brady's last season, Mahomes's second MVP season). Each line is the share of a quarterback's pass attempts thrown in each quarter-second after the snap; the dashed grey line is the league. Brady's throws pile up early, in rhythm. Mahomes throws on time too, but he has a long right-hand tail: about a quarter of his throws left after 3.5 seconds, most of them when the play had moved past its design, and they still produced positive EPA."
+q22 = reads[reads.season == 2022]
+BM = {}
+for _qb in ("T.Brady", "P.Mahomes"):
+    _z = q22[q22.passer_player_name == _qb]
+    _late = _z[_z.time_to_throw >= 3.5]
+    BM[_qb] = {"lt25": (_z.time_to_throw < 2.5).mean(), "first": (_z.read_thrown == "1").mean(),
+               "late": len(_late) / len(_z), "late_epa": _late.epa.mean(),
+               "late_oop": ((_late.is_qb_out_of_pocket == True) | (_late.read_thrown == "SD")).mean()}  # noqa: E712
+fig, ax = plt.subplots(figsize=(6.5, 2.9))
+edges = np.arange(0.5, 6.01, 0.25)
+for lab, sel, col, ls in (("League", q22, style.MUTED, (0, (3, 2))),
+                          ("T. Brady (TB)", q22[q22.passer_player_name == "T.Brady"], style.SERIES[1], "-"),
+                          ("P. Mahomes (KC)", q22[q22.passer_player_name == "P.Mahomes"], style.SERIES[0], "-")):
+    tt = sel.time_to_throw.dropna().clip(upper=5.99)
+    ax.hist(tt, bins=edges, weights=np.full(len(tt), 1 / len(tt)), histtype="step", lw=2 if ls == "-" else 1.4,
+            color=col, ls=ls, label=f"{lab}: median {tt.median():.2f} s")
+ax.axvline(3.5, color=style.BASELINE, lw=1)
+ax.text(3.55, ax.get_ylim()[1] * 0.92, "3.5 s", fontsize=7, color=style.INK_2)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+ax.set_xlabel("Seconds from snap to throw (throws after 6 s piled into the last bin)", fontsize=7.4)
+ax.set_ylabel("Share of attempts", fontsize=7.4)
+ax.tick_params(labelsize=7)
+ax.set_title("Brady threw in rhythm; Mahomes also won late", fontsize=9)
+ax.legend(fontsize=7, loc="center right")
+plt.show()
+```
+
+Brady was the league's model of a rhythm passer: `{python} f"{BM['T.Brady']['lt25']:.0%}"` of his
+throws left in under 2.5 seconds, and he threw to his first read on
+`{python} f"{BM['T.Brady']['first']:.0%}"` of his attempts. The ball came out where the play said
+it would, when the play said it would, and when it didn't (only
+`{python} f"{BM['T.Brady']['late']:.0%}"` of his throws came after 3.5 seconds) the results were poor,
+an average of `{python} f"{BM['T.Brady']['late_epa']:+.2f}"` EPA. Mahomes threw on time too, but his
+distribution has a long tail: `{python} f"{BM['P.Mahomes']['late']:.0%}"` of his throws came after
+3.5 seconds, most of them after he had left the pocket or the play had broken down
+(`{python} f"{BM['P.Mahomes']['late_oop']:.0%}"`), and they averaged
+`{python} f"{BM['P.Mahomes']['late_epa']:+.2f}"` EPA, better than the league's average throw.
+Only `{python} f"{BM['P.Mahomes']['first']:.0%}"` of his attempts went to his first read.[^bm]
+
+**What to notice:** these are two answers to the same clock. Brady beat the rush by being done
+before it arrived. Mahomes beat it by being able to keep the play alive after the design ran out,
+throwing from awkward platforms (on the run, off one foot, sidearm) to receivers who had been
+taught where to go when the play broke down (the
+[scramble drill](../../appendices/glossary.qmd#gl-scramble-drill) of
+[Quarterback Play](04-07-quarterback-play.qmd)). The improviser's style has a cost of its own. In
+Super Bowl LV, two seasons earlier, Brady's Buccaneers beat Mahomes's Chiefs 31–9; with both starting
+tackles out, Mahomes spent the night running from pressure, and Next Gen Stats measured him traveling
+497 yards before his throws or sacks, the most for any quarterback in a game since its tracking began
+in 2016.[^sb55] Watch a replay of either quarterback and count: on a Brady throw you can usually match
+the release to the end of the drop; on many Mahomes throws, the drop is long over.
+:::
+
+::: {.callout-tip title="Watch for it on Sunday: be the route caller"}
+Pick one drive. On every pass play, try to call it in three passes: before the snap, at the snap, and
+on the replay.
+
+- **Before the snap: count and number.** How many receivers on each side? Number them from the
+  sideline in: #1, #2, #3 ([Spread Formations](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)).
+  Note their splits: a wide receiver lined up tight to the formation has room to break outside
+  (corners, outs, whips); one lined up near the sideline mostly has room to break inside (slants,
+  digs, posts).
+- **At the snap: watch the quarterback's feet.** From under center, count three, five or seven steps;
+  from the shotgun, one, three or five. Three (or one) means the ball should be out at once to a
+  5-yard route; five (or three) means a 10–14-yard route; seven (or five), or extra hitch steps, means
+  deep routes or a quarterback working past his first read. If he looks one way and throws the other,
+  he moved through his progression.
+- **On the replay: name every route.** Use the wide replay angle, which shows the receivers and the
+  defenders deep. For each receiver say the name and the number: "Z ran a 9, H a 5 at twelve, Y a
+  flat, X a slant." Then look for the stretch: which defender had two receivers in his area, one above
+  and one below or one on each side? Which way did he go, and where did the ball go?
+- **In the box score:** a receiver with lots of yards on few catches has a high aDOT (deep routes); a
+  back with lots of yards on short catches is a YAC player. Many broadcasts now show Next Gen Stats
+  graphics with air yards and time to throw.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: count the steps"}
+```{python}
+#| label: fig-predict-drop
+#| fig-cap: "Second-and-10. The quarterback takes the snap under center and drops back (his footsteps are the dotted line: five steps, about seven yards). The cornerback across from Z plays 8 yards off. Z's three possible routes are lettered: A, a hitch at 5 yards; B, an out at 12; C, a post breaking at 14."
+off = [p for p in offense("singleback") if p.key not in ("H", "X")]
+off = [p.moved(d=-6.5, w=-2.2) if p.key == "RB" else p for p in off]
+dfn = [p for p in defense("4-3_over", "single_high", off) if p.key in ("SDE", "SDT", "WDT", "WDE", "SAM", "MIKE", "WILL", "RCB", "FS", "SS")]
+dfn = [p.moved(d=8.0, w=15.5, label="CB") if p.key == "RCB" else p for p in dfn]
+pr1 = Play(off, dfn, los=45, to_go=10)
+pr1.dropback(5.5)
+pr1.highlight("Z")
+fld = pr1.draw(lateral=(-9, 26.6), window=(-9.5, 27), title=False)
+no_numbers(fld.ax)
+ruler(fld, pr1, top=25)
+z = pr1.players["Z"]
+dotted(fld, pr1, [(z.d, z.w), (5.5, z.w), (4.8, z.w - 0.6)])
+dotted(fld, pr1, [(z.d, z.w), (12.0, z.w), (12.0, z.w + 6.5)])
+dotted(fld, pr1, [(z.d, z.w), (14.0, z.w), (24.0, z.w - 6.5)])
+tag(fld, pr1, "A", (5.0, z.w - 2.4), bold=True)
+tag(fld, pr1, "B", (13.6, z.w + 6.0), bold=True)
+tag(fld, pr1, "C", (24.0, z.w - 8.4), bold=True)
+tag(fld, pr1, "5-step drop", (-8.0, 3.2), fs=6.6)
+plt.show()
+```
+
+**You can't see Z's route yet, but you can see the quarterback's feet. Which of Z's three routes is
+the ball most likely meant for, and roughly when should it come out?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**B, the out at 12 yards, thrown at about 1.8–2 seconds, around the moment Z breaks.** A five-step
+drop from under center ends about 7 yards deep, and it is the drop paired with routes that break at
+10–14 yards: outs, curls, digs. The hitch (A) goes with a three-step drop; by the time the quarterback
+finishes five steps, a 5-yard hitch has been sitting still for a second and the cornerback has had
+time to close on it. The post (C) breaks at 14 and needs another second to get open deep, which is why
+it usually goes with a seven-step drop or with play-action. The off cornerback helps too: playing 8
+yards off and backing up, he is protecting against the deep ball, which leaves room in front of him
+for a ball thrown to the sideline on time. Footwork is not a guarantee. A quarterback can take five
+steps, hitch, and then work to a deeper route as his second read, but the drop tells you where the
+*plan* was.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: the cornerback who stopped"}
+```{python}
+#| label: fig-predict-corner
+#| fig-cap: "Third-and-8, 1.9 seconds after the snap, against Cover 2 (two deep safeties; the cornerbacks play the short zones near the sideline). On the left, X has run a 5-yard hitch and the slot (H) has pushed to 11 yards and is breaking toward the sideline on a corner route. The ringed cornerback has stopped about 4 yards deep, just inside X, squatting on the hitch; the safety on that side is in the middle of his deep half, 16 yards deep."
+off = offense("gun_2x2")
+off = [p.moved(w=-16.0) if p.key == "X" else p.moved(w=-9.0) if p.key == "H" else p for p in off]
+dfn = defense("nickel", "two_high", off)
+mv = {"LCB": (5.5, -14.5), "FS": (12.5, -10.0), "WILL": (4.5, -5.0), "MIKE": (4.5, 1.5), "NB": (4.5, 8.0),
+      "RCB": (5.5, 15.0), "SS": (12.5, 10.0)}
+dfn = [p.moved(d=mv[p.key][0], w=mv[p.key][1], label="CB" if p.pos == "CB" else None) if p.key in mv else p
+       for p in dfn if p.key != "DB"]
+pp = Play(off, dfn, los=40, to_go=8)
+protect(pp)
+pp.dropback(2.5)
+pp.route("H", r.path((11.0, 0.0), (15.5, 6.0)))
+pp.block("RB", pts=[(0.8, -1.5)])
+pp.route("X", r.hitch(5))                                           # low
+pp.path("LCB", [(4.0, -13.8)], absolute=True, speed=3.0)          # squats on the hitch
+pp.drop("FS", (16.0, -11.0))
+pp.drop("WILL", (8.5, -6.0))
+pp.drop("MIKE", (10.0, 0.0))
+pp.highlight("LCB")
+snapshot(pp, 1.9, lateral=(-26.6, 6), window=(-9, 23), show_ruler=True)
+plt.show()
+```
+
+**The quarterback is reading the ringed cornerback. Where should the ball go, and why does it have to
+go now?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The corner route, to H, thrown now toward the sideline about 15–18 yards downfield.** This is a
+high-low read of the cornerback: X's hitch is the low route, H's corner route the high one. In Cover 2
+the cornerback is responsible for the short area near the sideline, and he has done his job, squatting
+on the hitch. But that leaves the area above him empty until the safety gets there. The safety is 16
+yards deep in the middle of his half of the field, and he has to run toward the sideline and back to
+cover the corner route, so the window is open only for a moment: the ball has to leave as H makes his
+break, thrown over the cornerback's head and in front of the safety. If the cornerback had sunk under
+the corner route instead, the hitch would have been open in front of him. This pairing is the
+[smash](../../appendices/glossary.qmd#gl-smash) concept, one of the oldest answers to Cover 2
+([Dropback Concepts](04-04-dropback-concepts.qmd)).
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: name the routes"}
+```{python}
+#| label: fig-predict-routes
+#| fig-cap: "Name the routes. Trips right (Z is #1, H #2 and the tight end Y #3), X alone on the left; the back stays in to block. Defense omitted."
+off = offense("gun_trips")
+off = [p.moved(d=-1.5, w=6.5) if p.key == "Y" else p.moved(d=-0.7) if p.key == "Z" else p for p in off]
+off = [p.moved(w=17.0) if p.key == "Z" else p.moved(w=11.0) if p.key == "H" else p for p in off]
+pr3 = Play(off, [], los=30, to_go=10)
+pr3.route("Z", r.go(24))
+pr3.route("H", r.out(12, 9.5))
+pr3.route("Y", r.path((2.5, 3.0), (4.5, 14.0)))
+pr3.route("X", r.slant(2, 8))
+pr3.block("RB", pts=[(0.5, 1.0)])
+pr3.dropback(2.5)
+fld = pr3.draw(lateral=(-20, 25), window=(-7.5, 25.5), title=False)
+no_numbers(fld.ax)
+ruler(fld, pr3, top=25)
+for key, at in (("Z", (24.0, 19.5)), ("H", (13.8, 22.2)), ("Y", (4.8, 21.8)), ("X", (7.3, -7.0))):
+    tag(fld, pr3, "?", at, bold=True)
+plt.show()
+```
+
+**Name each route and give its number in the tree from this chapter. Which defender is the play
+designed to put in conflict, and how should the quarterback read him?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Z: a go route (9). H: an out (5) at about 12 yards. Y: a flat route (1). X, on the backside: a
+slant (2).** The three routes on the right are a three-level vertical stretch along one sideline. Z's
+go carries the cornerback deep (if he doesn't go with Z, Z is open deep). That leaves the out and the
+flat as a high-low of the defender who guards the short zone on that side, in Cover 3 the curl-flat
+defender, often the nickel. He is the conflict defender. If he sinks under the out, the flat is open
+in front of him; if he comes up for the flat, the out is open behind him. This combination is the
+[flood](../../appendices/glossary.qmd#gl-flood) concept (also called sail). X's slant is the backside
+answer: if the defense rolls its coverage toward the trips side or blitzes, the quarterback can throw
+it quickly to the side the defense left.
+:::
+:::
+
+## Takeaways
+
+- **A route has a stem and a break, and the break is where it wins.** The numbered route tree (1 flat,
+  2 slant, 3 comeback, 4 curl, 5 out, 6 dig, 7 corner, 8 post, 9 go; odd numbers out, even numbers in)
+  is a shared vocabulary; the numbers vary by team, the names much less. The seam, wheel, whip, sluggo
+  and option route live off the tree.
+- **The drop is a clock.** Three, five and seven steps from under center (one, three and five from the
+  shotgun) end at about 5, 7 and 9 yards and pair with routes at 5–6, 10–14 and 15–20 yards. Matched,
+  the ball leaves as the receiver breaks; a timing route is thrown to a spot before he gets there.
+- **Reads come in two kinds.** A progression checks receivers in order, over half the field (fast,
+  simple) or the whole field (flexible, slower). A defender read watches one conflict defender and
+  throws where he isn't. In the data, first reads are the quickest and most valuable throws.
+- **Stretch the defender, up and down or side to side.** A high-low puts receivers above and below
+  one defender; a horizontal stretch puts them on either side. Both beat zone by geometry; against man
+  the offense needs different answers.
+- **Short throws live on YAC, deep throws on air yards.** Air yards, YAC and aDOT describe where and
+  how an offense gains its yards, not how good it is. Throws behind the line lose value on average,
+  5–9-yard throws succeed most often, and deep throws fail more but pay.
+
+## Connections
+
+**Builds on:** [What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd) (a play is
+rules, not paths; the first read), [Spread Formations](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)
+(numbering receivers, splits and the two-way go) and
+[A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) (man and
+zone, one-high and two-high).
+
+**Sets up:** the rest of Part 4. [Pass Protection](04-02-pass-protection.qmd) explains how the line
+buys the time this chapter spends; [The Quick Game](04-03-quick-game.qmd) builds the one- and
+three-step concepts and the release against press; [Dropback Concepts](04-04-dropback-concepts.qmd)
+combines routes into smash, flood, levels and mesh; [Play-Action, Bootlegs, and Screens](04-05-play-action-boots-screens.qmd)
+changes the clock with a fake; [Run-Pass Options](04-06-rpos.qmd) uses the conflict defender in the run game; and
+[Quarterback Play](04-07-quarterback-play.qmd) covers footwork, anticipation and improvisation. On
+defense, [Coverage Fundamentals](../06-pass-coverage/06-01-coverage-fundamentals.qmd) names the zones
+these routes attack, and [What Beats What](../08-the-chess-match/08-01-concepts-versus-coverages.qmd)
+puts the two sides together. **Case study:** [Case Study: Bill Walsh's 49ers and the West Coast Offense](../12-case-studies/12-01-walsh-49ers-west-coast.qmd).
+
+::: {.callout-note title="Go deeper"}
+- Bill Walsh with Brian Billick and James Peterson, *Finding the Winning Edge* (1997): Walsh's own
+  account of his passing game, including drops, timing and the progression.
+- Chris B. Brown, *The Essential Smart Football* (2012) and *The Art of Smart Football* (2015): short,
+  clear essays on route combinations, stretches and the history of the passing game.
+- Tim Layden, *Blood, Sweat and Chalk* (2010): the stories behind Coryell's numbers and Walsh's timing.
+- Matt Bowen's route-tree primer at the National Football Post (cited below) and his later columns
+  for ESPN: a former NFL defensive back explaining routes from the defender's side.
+:::
+
+[^ttt]: Course calculation from nflverse play-by-play joined to `load_participation()`'s
+    `time_to_throw` ("duration (in seconds) between the time of the ball being snapped and the time of
+    release of a pass attempt"), 2025 regular season, pass attempts with a recorded time (sacks
+    excluded). Participation data come from NFL Next Gen Stats through 2022 and from FTN from 2023, so
+    times from different eras are not strictly comparable. Dictionary:
+    https://nflreadr.nflverse.com/articles/dictionary_participation.html
+
+[^coryell]: "Air Coryell," Wikipedia: https://en.wikipedia.org/wiki/Air_Coryell (Coryell's 12
+    seasons at San Diego State before the NFL; his offense "based on Sid Gillman's offense, which
+    required the defense to defend the entire field"; the Chargers led the league in passing yards
+    from 1978 to 1983 and in 1985). Matt Bowen, "Inside the playbook: the NFL route tree," National
+    Football Post (June 30, 2011): https://www.nationalfootballpost.com/inside-the-playbook-the-nfl-route-tree
+    (1 flat, 2 slant, 3 comeback, 4 curl, 5 out, 6 dig, 7 corner, 8 post, 9 fade or go, with typical
+    depths). Pro Football Hall of Fame biographies of Gillman and Coryell:
+    https://www.profootballhof.com/players/sid-gillman/ and https://www.profootballhof.com/players/don-coryell/ .
+    <!-- VERIFY: the attribution of route numbering to Coryell is widely repeated (and his three-digit calls are well documented), but a primary source for who first numbered routes was not found; Hall of Fame URLs not checked. -->
+
+[^patriots]: Chris B. Brown, "Speak My Language," *Grantland* (2013), on the Erhardt-Perkins
+    system and the Patriots' option routes:
+    https://grantland.com/features/how-terminology-erhardt-perkins-system-helped-maintain-dominance-tom-brady-patriots/
+    <!-- VERIFY: confirm the article names Welker and Edelman and the option routes specifically. -->
+
+[^gun]: Course calculation from nflverse 2025 regular-season play-by-play: the share of dropbacks
+    with `shotgun == 1` (nflverse marks pistol snaps as shotgun). FTN charting's quarterback-location
+    field gives a similar picture (under center on about a third of all 2025 snaps, runs included);
+    see `planning/FACTS-current.md` §10.
+
+[^walsh]: "West Coast offense," Wikipedia: https://en.wikipedia.org/wiki/West_Coast_offense (Walsh
+    developed the approach as a Bengals assistant under Paul Brown, 1968–1975; Carter, mobile and
+    accurate but without a strong arm, "would be the first player to successfully implement Walsh's
+    system, leading the NFL in pass completion percentage in 1971"; the three-step drop). "Bill Walsh,"
+    Wikipedia: https://en.wikipedia.org/wiki/Bill_Walsh (49ers head coach 1979–1988; Super Bowls
+    XVI, XIX and XXIII). <!-- VERIFY: spot-check Carter's 1971 completion-percentage title on Pro Football Reference. -->
+
+[^ftn]: Course calculation from nflverse's republication of FTN charting (`load_ftn_charting()`,
+    field `read_thrown`) joined to play-by-play and participation, 2022–2025 regular seasons, pass
+    attempts (sacks excluded). The nflverse data dictionary describes the codes as "0" = first read,
+    "1" = second read and "2" = third read or later, but that does not match the released files: "0"
+    appears on only about 2–3% of 2023–2025 attempts, most of them throwaways, while "1" covers more
+    than half of all attempts with the quickest release. This chapter therefore reads "1" as the first
+    read, "2" as a later read and "0" as no read, and labels the chart accordingly
+    (https://nflreadr.nflverse.com/articles/dictionary_ftn_charting.html).
+    <!-- VERIFY: confirm FTN's read_thrown coding with FTN or nflverse before print. -->
+
+[^airyards]: nflverse play-by-play definitions: `air_yards` is the "distance in yards perpendicular
+    to the line of scrimmage at where the targeted receiver either caught or didn't catch the ball";
+    `yards_after_catch` is the distance "from the yard line where the receiver made the reception to
+    where the play ended" (https://nflreadr.nflverse.com/articles/dictionary_pbp.html). Course
+    calculation, 2025 regular season: mean `air_yards` over all pass attempts with a charted depth, and
+    the sum of `yards_after_catch` divided by the sum of `receiving_yards` on completions.
+
+[^sb23]: San Francisco 49ers, "75 for 75: The Drive" (49ers.com):
+    https://www.49ers.com/news/75-for-75-the-drive-joe-montana-super-bowl-xxiii-cincinnati-bengals ;
+    Pro Football Hall of Fame, "Just a 92-Yard Walk in the Park" (2001): 92 yards in 11 plays, the
+    touchdown to John Taylor with 34 seconds left; the call "20 Halfback Curl, X-Up," designed for Roger
+    Craig, is also described in *The Philadelphia Inquirer*, "Taylor makes amends with the winning catch"
+    (Jan. 25, 2008):
+    https://www.inquirer.com/philly/online_extras/20080125_TAYLOR_MAKES_AMENDS_WITH_THE_WINNING_CATCH.html
+    <!-- VERIFY: the exact play call and who it was designed for vary between accounts (Taylor himself described Craig, Rice and himself as "the three options"); the start of the drive "a little over three minutes left" and the snap "about 40 seconds" are from memory; spot-check on PFR. -->
+
+[^bm]: Course calculation from nflverse play-by-play, FTN charting and participation (Next Gen
+    Stats time to throw), 2022 regular season, pass attempts by Brady and Mahomes (sacks excluded).
+    "Left the pocket or the play broke down" counts throws charted by FTN as out of the pocket or as
+    scramble-drill throws.
+
+[^sb55]: NFL.com, "Chiefs' repeat bid doomed by struggles up front in Super Bowl LV loss to
+    Buccaneers" (Feb. 2021): https://www.nfl.com/news/chiefs-repeat-bid-doomed-by-struggles-up-front-in-super-bowl-lv-loss-to-buccanee
+    ("According to Next Gen Stats, Mahomes traveled 497 yards before throwing the ball or being sacked
+    Sunday night, the most scramble yards in a game by any quarterback in the Next Gen era (since 2016)").
+    Super Bowl LV was played Feb. 7, 2021; Tampa Bay won 31–9.

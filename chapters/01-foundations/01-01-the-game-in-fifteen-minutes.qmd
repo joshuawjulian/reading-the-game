@@ -13,11 +13,11 @@ glossary:
   "Touchdown": "Six points, scored by carrying the ball into the opponent's end zone, or by catching or recovering it there."
   "Extra point": {def: "The one-point kick after a touchdown. In the NFL it has been snapped from the 15-yard line since 2015, which makes it a 33-yard kick.", aliases: ["PAT"]}
   "Two-point conversion": "The alternative to the extra point: one play from the 2-yard line, worth two points if the ball is run or caught into the end zone."
-  "Field goal": "Three points for kicking the ball, held on the ground by a holder, through the goal posts on a play from scrimmage. It can be tried from anywhere, on any down."
+  "Field goal": "Three points for kicking the ball, held on the ground by a holder, through the goal posts on a play from scrimmage. It can be tried from anywhere, on any down; a miss gives the other team the ball at the spot of the kick (or at its own 20, if the kick was from inside it)."
   "Safety (score)": "Two points for the defense when the offense's ball carrier is downed in his own end zone (or the offense fouls there). The team scored on must then kick the ball away from its own 20."
   "Possession": "Control of the ball. The team that has it is the offense; one unbroken stretch of having the ball is also called a possession."
   "Quarter": "One of the four 15-minute periods of game-clock time in an NFL game. Teams switch ends after the first and third."
-  "Two-minute warning": "An automatic timeout when the game clock passes 2:00 in the second and fourth quarters."
+  "Two-minute warning": "An automatic timeout in the second and fourth quarters, taken after the last play that started with more than 2:00 on the game clock."
   "Timeout": "A stoppage a team calls to stop the clock (and to talk). Each team gets three per half, and two in a regular-season overtime."
   "Game clock": "The scoreboard clock that counts down each 15-minute quarter. It runs during plays and, depending on how the last play ended, between them."
   "Play clock": "The countdown between plays: 40 seconds from the end of the last play, or 25 after certain stoppages. The offense must snap the ball before it reaches zero."
@@ -139,6 +139,36 @@ def clip_texts(ax):
     """Hide any field number or label that falls outside a cropped field window."""
     for t in ax.texts:
         t.set_clip_on(True)
+
+
+def hide_numbers(ax):
+    """Hide the painted yard numbers where they would sit under a formation or a note."""
+    for t in ax.texts:
+        if t.get_text().strip().isdigit():
+            t.set_visible(False)
+
+
+def ch1(players):
+    """This chapter's marker letters. The linemen (center included) stay blank, so 'C' only ever
+    means a cornerback here, and every running back is 'R' (never 'T', which is a defensive tackle)."""
+    out = []
+    for q in players:
+        if q.side == "off" and q.key in ("LT", "LG", "C", "RG", "RT"):
+            q = q.moved(label="")
+        elif q.side == "off" and q.pos in ("RB", "TB"):
+            q = q.moved(label="R")
+        out.append(q)
+    return out
+
+
+def time_pass(p, key, catch_t):
+    """Throw so the ball arrives when `key` is where he is at catch_t (the catch, not the run after it)."""
+    from gridiron.play import BALL_SPEED
+    target = np.asarray(p.position(key, catch_t))
+    t = catch_t - 1.0
+    for _ in range(6):
+        t = catch_t - float(np.linalg.norm(target - np.asarray(p.ball_position(t)))) / BALL_SPEED
+    p.pass_to(key, t=t)
 ```
 
 ```{python}
@@ -183,9 +213,23 @@ fg_tab = fg.groupby("bucket", observed=True).agg(n=("field_goal_result", "size")
                                                  made=("field_goal_result", lambda s: (s == "made").mean()))
 fg25 = reg[reg.field_goal_result.notna() & (reg.season == 2025)]
 made60_25 = int(((fg25.kick_distance >= 60) & (fg25.field_goal_result == "made")).sum())
+
+# fourth-and-goal from the 1 or 2, 2016-2025: how often a run or pass scores
+g4 = reg[reg.season.between(2016, 2025) & (reg.down == 4) & (reg.goal_to_go == 1) & (reg.yardline_100 <= 2)]
+goal_td = g4[g4.play_type.isin(["run", "pass"])].touchdown.mean()
+
+# after a safety: where the scoring team's next snap is, 2016-2025 (yards from its own goal line)
+r16 = reg[reg.season.between(2016, 2025)].reset_index(drop=True)
+after_safety = []
+for i in r16.index[r16.safety == 1]:
+    nxt = r16.iloc[i + 1:i + 8]
+    nxt = nxt[(nxt.game_id == r16.game_id[i]) & nxt.play_type.isin(["run", "pass"])]
+    if len(nxt):
+        after_safety.append(100 - nxt.yardline_100.iloc[0])
+safety_start = float(np.median(after_safety))
 ```
 
-Two minutes left in the first half. A receiver catches a pass over the middle, gets tackled,
+Ninety seconds left in the first half. A receiver catches a pass over the middle, gets tackled,
 and everyone sprints back to the line while the clock keeps ticking. One play later a
 different receiver catches the *same* length of pass at the sideline and dives out of bounds,
 and the broadcaster says "smart, he stopped the clock." A few drives after that, a team facing
@@ -196,8 +240,10 @@ right side on the next? This chapter is the skeleton everything else in the book
 the field, the scoring and the clock.
 
 Here is a fact to keep in mind as you read. An NFL broadcast lasts about three hours, the
-game clock covers sixty minutes, and the ball is actually live for only about **eleven**.[^wsj]
-Stitch every snap together and a whole game fits inside one fifteen-minute quarter, with
+game clock covers sixty minutes, and the ball is actually live for only about **11 minutes**.[^wsj]
+Every play starts with a *snap*, the center handing the ball back between his legs (the full
+anatomy of a play is in [What a Play Really Is](01-04-what-a-play-really-is.qmd)). Stitch every
+snap-to-whistle together and a whole game fits inside one fifteen-minute quarter, with
 time to spare. The other 49 minutes of game clock and two-plus hours of broadcast are what
 the rest of this book is about: the decisions, the preparation and the waiting between
 those few seconds of action. Most of what makes those decisions hard comes from the three
@@ -218,29 +264,42 @@ things in this chapter.
 
 ## The field: a 120-yard grid
 
-An NFL field is a rectangle 120 yards long and 53⅓ yards (160 feet) wide.[^field] It's
-easiest to learn as three pieces: a 100-yard **field of play** in the middle and a 10-yard
+An NFL field is a rectangle 120 yards long and 53⅓ yards (160 feet) wide.[^field] The odd width
+is a fossil: the college rules convention of 1881 set the field at 110 by 53⅓ yards, and the
+width has never changed since.[^width] It's easiest to learn as three pieces: a 100-yard **field of play** in the middle and a 10-yard
 end zone at each end. Everything painted on it exists for one of three reasons: to measure
 progress, to mark where the ball must start, or to mark where the game stops.
 
 ```{python}
 #| label: fig-field
-#| fig-cap: "An NFL field from above, every marking labelled. The offense is attacking to the right, and the ball sits on the hash to the offense's left, at its own 35. The tinted bands show what that does to the field: 23.6 yards of room between the ball and the near sideline (the boundary, or short, side, top) and 29.75 yards to the far one (the field, or wide, side, bottom)."
+#| fig-cap: "An NFL field from above, every marking labelled. The offense is attacking to the right, and the ball sits on the hash to the offense's left, at its own 35. The two outlined, tinted bands show what that does to the field: 23.6 yards of room between the ball and the near sideline (the boundary, or short, side, top) and 29.8 yards to the far one (the field, or wide, side, bottom). The numbers are painted with their bottoms toward the nearer sideline, so the far row reads upside down from this side; the small arrow beside each one points to the nearer goal line."
 fig, ax = plt.subplots(figsize=(6.6, 4.9))
 fld = Field(ax=ax, orient="horizontal", window=None, los=45, to_go=None)
 field_extras(fld)
 ball_x, ball_y = 45.0, HASH_FAR      # offense's own 35, on its LEFT hash (offense moving right)
 
-ax.add_patch(Rectangle((33, ball_y), 54, FIELD_WIDTH - ball_y, facecolor=BOUNDARY_TINT, edgecolor="none",
-                       alpha=0.75, zorder=0.5))
-ax.add_patch(Rectangle((33, 0), 54, ball_y, facecolor=FIELD_TINT, edgecolor="none", alpha=0.75, zorder=0.5))
+ax.add_patch(Rectangle((33, ball_y), 54, FIELD_WIDTH - ball_y, facecolor=BOUNDARY_TINT, edgecolor=style.DEFENSE_DARK,
+                       lw=0.8, alpha=0.75, zorder=0.5))
+ax.add_patch(Rectangle((33, 0), 54, ball_y, facecolor=FIELD_TINT, edgecolor=style.OFFENSE_DARK, lw=0.8, alpha=0.75,
+                       zorder=0.5))
+hide_numbers(ax)                                  # redraw them as painted: far row upside down, with arrows
+for x in range(20, 101, 10):
+    yl = x - 10 if x <= 60 else 110 - x
+    for yn, rot in ((13.0, 0), (FIELD_WIDTH - 13.0, 180)):
+        ax.text(x, yn, str(yl), fontsize=8, fontweight="bold", color=style.MUTED, alpha=0.75, ha="center",
+                va="center", rotation=rot, zorder=1)
+        if yl != 50:                                # arrow beside the top of the number, pointing goalward
+            s = -1 if x < 60 else 1
+            ytop = yn + (0.7 if rot == 0 else -0.7)
+            ax.add_patch(Polygon([[x + s * 4.6, ytop], [x + s * 3.3, ytop - 0.55], [x + s * 3.3, ytop + 0.55]],
+                                 closed=True, fc=style.MUTED, ec="none", alpha=0.85, zorder=1))
 football(ax, ball_x, ball_y, w=2.6, h=1.5)
 for x in np.arange(11, 110, 1):                 # darker hash marks so they read at full-field scale
     if x % 5:
         for yh in (HASH_NEAR, HASH_FAR):
             ax.plot([x, x], [yh - 0.6, yh + 0.6], color=style.INK_2, lw=0.6, zorder=1.2)
 for (ya, yb, lab, ty) in [(ball_y, FIELD_WIDTH, "boundary (short) side:\n23.6 yd to the sideline", 47.6),
-                          (0, ball_y, "field (wide) side:\n29.75 yd to the sideline", 7.4)]:
+                          (0, ball_y, "field (wide) side:\n29.8 yd to the sideline", 7.4)]:
     ax.annotate("", xy=(ball_x + 7, ya + 0.4), xytext=(ball_x + 7, yb - 0.4),
                 arrowprops=dict(arrowstyle="<->", color=style.INK_2, lw=0.9), zorder=7)
     ax.text(ball_x + 9, ty, lab, fontsize=7, ha="left", va="center", color=style.INK, zorder=8, linespacing=1.15,
@@ -259,7 +318,7 @@ callout(ax, "goal line", (10, top - 1), (17, 66))
 callout(ax, "pylon", (10, FIELD_WIDTH), (26, 60.5))
 callout(ax, "yard line\n(every 5 yd)", (30, top - 1), (39, 66))
 callout(ax, "sideline", (80, FIELD_WIDTH), (78, 64))
-callout(ax, "numbers (every 10 yd)", (100, 43), (96, 69))
+callout(ax, "numbers every 10 yd; arrows\npoint to the nearer goal line", (104.2, FIELD_WIDTH - 13.7), (100, 69.5))
 callout(ax, "6-ft white border\n(out of bounds)", (116, FIELD_WIDTH + 1.2), (122, 62))
 callout(ax, "hash marks: one every yard,\n70 ft 9 in from each sideline", (17, HASH_NEAR - 0.6), (-12, -10),
         ha="left")
@@ -283,7 +342,9 @@ and 40 on each half, and only one 50. That's why a broadcaster never says "the 7
 line." A spot is named by its distance from the nearer goal line *and* by whose half it's in:
 "first down at their own 25," "first-and-goal at the Chiefs' 8." The rulebook puts it the same
 way: the line 19 yards from team A's goal line is "A's 19," and the line 51 yards from it is
-"B's 49." The tops of the numbers, about 14 yards in from each sideline, are also a landmark
+"B's 49." Beside every number except the 50, a small white arrow points toward the nearer goal
+line: on a tight camera shot it's the quickest way to tell which side of midfield the ball is on.
+The tops of the numbers, about 14 yards in from each sideline, are also a landmark
 receivers line up on, which you'll meet as
 [the numbers](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd).
 
@@ -293,7 +354,8 @@ grid lets 22 players, 7 officials and a television audience agree on where the b
 the yard, without a tape measure. The basic bargain, in one sentence: the offense gets four
 tries, called *downs*, to move the ball 10 yards; make it and it earns a fresh set (a *first
 down*), fail on *fourth down* and the ball goes to the other team. Every play starts from the
-*line of scrimmage*, the yard line where the ball sits before the snap. All of that, plus the
+*line of scrimmage*, the yard line where the ball sits before the snap; any snapped play (a run,
+a pass, a punt or a field-goal try, but not a kickoff) is a *play from scrimmage*. All of that, plus the
 yellow line you see on TV, is the subject of
 [Downs, Distance, and Field Position](01-02-downs-distance-and-field-position.qmd).
 
@@ -358,6 +420,8 @@ for num, (bx, by), ang, good in cases:
         football(ax, px, py, w=1.5, h=0.9, angle=ang)
     if num == 3:        # his shoulder is over the line, the ball is not
         draw_marker(ax, *(float(v) for v in P(110.7, 4.5)), "off", "", 10, r=0.8)
+        sx, sy = (float(v) for v in P(110.7, 4.5))
+        callout(ax, "his shoulder", (sx - 0.8, sy), (sx - 4.6, sy - 2.6), fs=6.2)
     col = style.THIRD if good else style.DEFENSE_DARK
     ax.text(px + offs[num][0], py + offs[num][1], str(num), fontsize=8, fontweight="bold", color="white",
             ha="center", va="center", zorder=13, bbox=dict(boxstyle="circle,pad=0.18", fc=col, ec="none"))
@@ -366,7 +430,7 @@ clip_texts(ax)
 key = [(True, "Touchdown.", "Any part of the ball, held by a runner, breaks the plane of the goal line."),
        (True, "Touchdown.", "The ball is on the line. The goal line belongs to the end zone."),
        (False, "Not yet.", "His shoulder is over the line, but the ball is short of it. Only the ball counts."),
-       (True, "Touchdown.", "Ball over the pylon. The pylon is in the end zone too."),
+       (True, "Touchdown.", "Ball over the pylon. The pylon is in the end zone too (a ball that crosses outside the pylon is out of bounds)."),
        (False, "Out of bounds.", "A foot on the sideline: he is out where the ball was, at the 4."),
        (False, "Incomplete.", "A receiver's foot on the end line. The end line is out of bounds.")]
 y = 0.97
@@ -414,28 +478,31 @@ was declared dead. If it ends outside them, say a runner is tackled 4 yards from
 sideline or runs out of bounds, the officials carry the ball in to the nearer hash. So most
 snaps start on one hash or the other, and the ball's position across the field changes from
 play to play. Watch for it: the camera will show the ball sitting on the left or the right
-hash far more often than dead center.
+hash far more often than dead center. There are two exceptions. On the try after a touchdown and
+on the first snap after a touchback, the offense may put the ball anywhere on or between the
+hashes, so a team can snap its extra point from wherever its kicker likes best.[^spot]
 
 ### Why it exists: the indoor game of 1932
 
-The NFL didn't always have hash marks. Before 1933, the next play started wherever the last one
-ended, so a runner tackled a yard from the sideline left his team snapping the ball a yard from
-the sideline, with almost no room on one side of the formation. Teams often wasted a down just
-running toward the middle to get room back.
-<!-- VERIFY: pre-1933 practice of snapping from where the ball was downed (some accounts say a ball out of bounds was brought in a set distance); confirm the exact pre-1933 rule before print. -->
+The NFL didn't always have hash marks. Before 1933, the next play generally started where the
+last one ended, so a runner tackled a yard from the sideline left his team snapping the ball a
+yard from the sideline, with almost no room on one side of the formation. Teams were stuck with a
+lopsided formation and often spent a play just running back toward the middle to get room back.
 The fix came from an accident. The 1932 season ended with the Chicago Bears and the Portsmouth
 Spartans tied for first, and a blizzard drove the playoff game indoors to Chicago Stadium, onto
-a makeshift field only 80 yards long and 30 feet narrower than normal, with a hockey rink's
-boards right at the sideline. For safety the officials put the ball in play away from the walls
-after every play that ended near them. The game worked so well that for 1933 the league wrote
-the idea into the rulebook: the ball would be spotted on the hash marks on every play.[^firstplayoff]
+a makeshift field only 80 yards long and 30 feet narrower than normal, with the stands right up
+against the sidelines. A special rule for that game let the ball be moved in from the walls after
+plays that ended near them (accounts differ on the details). The game worked so well that for
+1933 the league wrote the idea into the rulebook: the ball would be spotted on the hash marks on
+every play.[^firstplayoff]
 
 The hashes then crept toward the middle of the field. They were 10 yards from the sidelines in
 1933, 15 yards from 1935, 20 yards from 1945, and in 1972 the NFL moved them to 23 yards, 1 foot
 and 9 inches, the same width as the goal posts.[^hash72] Each move gave the offense more room
-to the short side and made the field more symmetrical. The 1972 change was one of a string of
-rule changes meant to help offenses at a time when scoring was falling, a story told in<!-- VERIFY: the 1972 hash move as an offense-boosting change; PFHOF 1972 page gives the move, not the motive. -->
-[From the Single Wing to the Scoring Drought](../11-history/11-01-single-wing-to-scoring-drought.qmd).
+to the short side and made the field more symmetrical. The 1972 change was made to help
+offenses after a drop in scoring, one of a string of 1970s rule changes with the same aim, a
+story told in
+[From the Single Wing to the Scoring Drought](../11-history/11-01-single-wing-to-scoring-drought.qmd).[^offense72]
 
 ### Field side and boundary side
 
@@ -445,27 +512,37 @@ formation are different sizes. The side with more room is the
 [**wide side**](../../appendices/glossary.qmd#gl-wide-side). The side closer to the sideline
 is the [**boundary side**](../../appendices/glossary.qmd#gl-boundary-side), or
 [**short side**](../../appendices/glossary.qmd#gl-short-side). In the NFL the difference is
-23.6 yards versus 29.75 yards: about 6 yards. When the ball is in the middle of the field,
-neither side is the field side, and teams use some other rule (usually the formation's strong
-side) to decide which way to call things.
+23.6 yards versus 29.8 yards: about 6 yards. When the ball is in the middle of the field,
+neither side is the field side, and teams use some other rule to decide which way to call
+things, usually the side with more receivers (the formation's *strength*, built out in
+[Formation Rules and Vocabulary](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)).
 
-Six yards may not sound like much, but the sideline acts like a twelfth defender: a runner or
-receiver headed toward it runs out of room, and the defense can use it to trap him. So the hash
-changes the plan on both sides of the ball:
+Six yards may not sound like much, but with eleven players a side, the sideline acts like a
+twelfth defender: a runner or receiver headed toward it runs out of room, and the defense can use
+it to trap him. The difference matters most for plays that stretch to the edge (sweeps, throws
+toward the sideline, screens to the outside) and hardly at all for plays between the hashes. So
+the hash changes the plan on both sides of the ball:
 
 - **Offense.** Plays that need room to run sideways (sweeps, wide runs, screens to the
   outside, receivers breaking toward the sideline) usually go to the field. Throws to the
   boundary are shorter, because the quarterback is closer to that sideline, so quick throws
-  outside are safer there. Many offenses line up their bunched receivers to the wide side so they
-  have room to spread out, and leave one receiver alone to the boundary.
+  outside are safer there. Many offenses line up most of their receivers to the wide side so
+  they have room to spread out, and leave one receiver alone to the boundary.
 - **Defense.** Many defenses assign roles by side rather than by left and right: a "field
   corner" and a "boundary corner," a field safety and a boundary safety. The boundary corner
-  can play more aggressively, because the sideline guards half of his space; the field corner
-  has acres to defend. Playing a different coverage to each side is a whole family of schemes, which
-  you'll meet in [Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd).
-- **Kickers.** A field goal from a hash is kicked at a slight angle. Because NFL hashes are
-  only as wide as the uprights, the angle is mild, which is one reason NFL teams rarely spend a
-  down moving the ball to the middle before a kick.
+  can play more aggressively, because the sideline takes away his outside; the field corner
+  has acres to defend. So teams that play this way cast the parts to fit: the boundary corner is
+  often the bigger, more physical player who presses and tackles, the field corner the better
+  cover man in space, and the boundary safety the one who comes up to stop the run. When the
+  offense stacks receivers to the wide side, these defenses slide their safeties that way too,
+  leaving the boundary corner alone against the single receiver. This is mostly a college habit:
+  with the NFL's narrow hashes, many pro defenses set their calls by the formation's strength
+  instead. Playing a different coverage to each side is a whole family of schemes, which you'll
+  meet in [Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd).
+- **Kickers.** A field goal is snapped from wherever the last play ended, so one from a hash is
+  kicked at a slight angle. Because NFL hashes are only as wide as the uprights, the angle is
+  mild, which is one reason NFL teams rarely spend a down centering the ball (running a play
+  toward the middle so it is spotted there) before a kick, a habit you'll see more in college.
 
 ### NFL versus college versus high school
 
@@ -474,22 +551,30 @@ College hashes are 40 feet apart, 60 feet from each sideline; high school hashes
 inches apart, splitting the field into thirds.[^collegehash] The fields are the same size. The
 only thing that changes is where the ball can start.
 
+The next picture is the chapter's first with players in it, so here is how to read every
+diagram in this book. Blue circles are the offense, orange squares the defense, and the offense
+always moves up the page (or, in a wide picture, to the right). The letters name positions:
+Q is the quarterback, R a running back, and X, Z, H and Y are receivers. The five blank circles
+in a row are the offensive linemen. You don't need the letters yet; they're decoded in
+[The Twenty-Two](01-03-the-twenty-two.qmd).
+
 ```{python}
 #| label: fig-hash-compare
-#| fig-cap: "Same formation, same splits from the ball, three sets of hash marks. With the ball on the left hash, the NFL field is nearly symmetrical (23.6 yards to one sideline, 29.8 to the other). College gives the wide side two-thirds more room than the short side, and high school gives it twice as much. Look at the lone receiver on the left: on a high-school field he is almost standing on the sideline."
+#| fig-cap: "The same four-receiver formation (two receivers on each side) with the ball on the left hash, on three sets of hash marks. Receivers line up by landmarks, not by fixed distances from the ball: the receiver to the short side (X) won't stand much closer than about 7 yards to the sideline, so he has room to run toward it. On the NFL field (23.6 yards to one sideline, 29.8 to the other) he can stand at his normal spot. On the college and high-school fields he has to cut in toward the ball, squeezing everything on the short side, while the wide side has more room than anyone can use."
 LEVELS = [("NFL", HASH_NEAR, "hashes 18 ft 6 in apart (the width of the goal posts)"),
           ("College", 20.0, "hashes 40 ft apart"),
           ("High school", FIELD_WIDTH / 3, "hashes 53 ft 4 in apart: the field split in thirds")]
-fig, axes = plt.subplots(3, 1, figsize=(6.5, 5.6))
+fig, axes = plt.subplots(3, 1, figsize=(6.5, 5.9))
 for ax, (name, near, sub) in zip(axes, LEVELS):
     far = FIELD_WIDTH - near
+    x_w = -min(15.0, near - 7.0)               # X: on his normal spot, or 7 yd off the sideline
+    off = [q.moved(w=x_w) if q.key == "X" else q.moved(w=x_w * 0.6) if q.key == "H" else q
+           for q in ch1(offense("gun_2x2"))]
     with hashes_at(near):
-        p = Play(offense("gun_2x2"), None, los=40, ball_y=far, to_go=None)
+        p = Play(off, None, los=40, ball_y=far, to_go=None)
         fld = p.draw(ax=ax, window=(-6.5, 7.0), lateral="full", title=False)
     P = fld.xy
-    for t in ax.texts:            # the yard-line numbers would sit on top of the formation here
-        if t.get_text().strip().isdigit():
-            t.set_visible(False)
+    hide_numbers(ax)              # the yard-line numbers would sit on top of the formation here
     for (y0, y1, side) in [(far, FIELD_WIDTH, "short (boundary) side"), (0.0, far, "wide (field) side")]:
         (ax0, ay0), (ax1, ay1) = P(43.5, y0), P(43.5, y1)
         ax.annotate("", xy=(float(ax0), float(ay0)), xytext=(float(ax1), float(ay1)),
@@ -497,15 +582,18 @@ for ax, (name, near, sub) in zip(axes, LEVELS):
         ax.text((float(ax0) + float(ax1)) / 2, float(ay0) + 0.9, f"{side}: {abs(y1 - y0):.1f} yd", fontsize=7.5,
                 ha="center", va="bottom", color=style.INK, zorder=10,
                 bbox=dict(boxstyle="round,pad=0.15", fc=style.SURFACE, ec="none", alpha=0.9))
-    for key, col in (("X", style.DEFENSE_DARK), ("Z", style.OFFENSE_DARK)):   # room outside each wideout
+    for key in ("X", "Z"):                     # room outside each outside receiver
         pl = p.players[key]
         bx, by = (float(v) for v in P(*p.to_abs(pl.d, pl.w)))
         edge = 0.0 if key == "X" else FIELD_WIDTH
         x_in = bx - 1.0 if key == "X" else bx + 1.0
         ax.annotate("", xy=(x_in, by - 2.2), xytext=(edge + (0.2 if key == "X" else -0.2), by - 2.2),
-                    arrowprops=dict(arrowstyle="<->", color=col, lw=0.8), zorder=9)
+                    arrowprops=dict(arrowstyle="<->", color=style.INK_2, lw=0.8), zorder=9)
         ax.text(edge + (1.6 if key == "X" else -1.6), by - 3.0, f"{abs(bx - edge):.0f} yd outside {key}",
-                fontsize=6.5, ha="left" if key == "X" else "right", va="top", color=col, zorder=10)
+                fontsize=6.5, ha="left" if key == "X" else "right", va="top", color=style.INK_2, zorder=10)
+    xb, yb = (float(v) for v in P(*p.to_abs(0.0, x_w)))
+    ax.text(xb + 1.5, yb + 2.4, f"X is {abs(x_w):.0f} yd from the ball", fontsize=6.5, ha="left", va="bottom",
+            color=style.INK, zorder=10, bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.9))
     ax.text(0.0, 1.02, name, transform=ax.transAxes, fontsize=9.5, fontweight="bold", color=style.INK,
             ha="left", va="bottom")
     ax.text(0.16 if name != "High school" else 0.22, 1.02, sub, transform=ax.transAxes, fontsize=7.5,
@@ -520,7 +608,7 @@ side, so the field itself tells everyone where the space is, and college schemes
 "to the field" and "into the boundary" rules. An NFL field is close to symmetrical, so
 alignment and play design depend less on the hash and more on the formation and the defense.
 It's also why an NFL quarterback has to make the throw outside to *both* sides of the field:
-there is no cramped short side where every out route is a short toss, and the boundary throw is
+there is no cramped short side where every throw toward the sideline is a short toss, and the boundary throw is
 almost as long as the field throw.
 The college game as the sport's laboratory is a recurring thread in
 [The College Laboratory](../11-history/11-03-the-college-laboratory.qmd).
@@ -532,7 +620,7 @@ two kinds of try that follow it.[^scorevalues]
 
 ```{python}
 #| label: fig-scoring-card
-#| fig-cap: "The five scores and where each one happens, offense attacking to the right. Four happen at the end the offense is attacking. The safety happens at the other end, in the offense's own end zone, and it counts for the defense. Field goals and extra points are measured to the goal posts, which stand on the end line, so a kick is about 18 yards longer than the line of scrimmage."
+#| fig-cap: "The five scores and where each one happens, offense attacking to the right. Four happen at the end the offense is attacking (the touchdown is shown as a run in progress; the two tries start between the hash marks, where the offense chooses). The safety happens at the other end, in the offense's own end zone, and it counts for the defense. Field goals and extra points are measured to the goal posts, which stand on the end line, so a kick is about 18 yards longer than the line of scrimmage."
 fig, ax = plt.subplots(figsize=(6.6, 4.6))
 fld = Field(ax=ax, orient="horizontal", window=None, los=60, to_go=None)
 field_extras(fld)
@@ -555,34 +643,35 @@ def lead(p0, p1):
     ax.plot([p0[0], p1[0]], [p0[1], p1[1]], color=style.INK_2, lw=0.7, zorder=7)
 
 
-TD, KICK, TRY, SAF = style.OFFENSE_DARK, style.THIRD, "#7a5cc4", style.DEFENSE_DARK
-ax.plot([97, 113], [42, 42], color=style.OFFENSE_DARK, lw=2.4, zorder=5, solid_capstyle="round")   # a TD run
-arrow(ax, (110, 42), (114, 42), color=style.OFFENSE_DARK, lw=2.4, head=12)
-football(ax, 97, 42, w=2.4, h=1.4)
-football(ax, 87, MID - 3.5, w=2.2, h=1.3)                       # extra point: snap from the 15, hold at the 23
-arrow(ax, (87, MID - 3.5), (121, MID - 0.6), color=KICK, lw=1.2, ls=(0, (3, 2)), rad=0.1)
-ax.text(87, MID - 6.4, "snap from the 15, hold at\nthe 23: a 33-yard kick", fontsize=5.8, color=style.INK_2,
-        ha="center", va="top", zorder=6, bbox=dict(boxstyle="round,pad=0.1", fc=style.TURF, ec="none"))
-football(ax, 108, 14, w=2.2, h=1.3)                             # two-point try from the 2
-arrow(ax, (108, 14), (114.5, 14), color=TRY, lw=2.0, head=11)
+TD, KICK, PATC, TRY, SAF = style.OFFENSE_DARK, style.THIRD, "#c2477a", "#7a5cc4", style.DEFENSE_DARK
+ax.plot([95, 113], [46, 46], color=TD, lw=2.4, zorder=5, solid_capstyle="round")      # a TD run, mid-play
+arrow(ax, (110, 46), (114, 46), color=TD, lw=2.4, head=12)
+football(ax, 95, 46, w=2.4, h=1.4)
+football(ax, 87, MID, w=2.2, h=1.3)               # extra point: snapped from the middle (a try may be spotted anywhere between the hashes)
+arrow(ax, (87, MID), (121, MID), color=PATC, lw=1.2, ls=(0, (3, 2)))
+ax.text(84.5, MID, "snap from the 15, hold at\nthe 23: a 33-yard kick", fontsize=5.8, color=style.INK_2,
+        ha="right", va="center", zorder=6, bbox=dict(boxstyle="round,pad=0.1", fc=style.TURF, ec="none"))
+football(ax, 108, HASH_NEAR, w=2.2, h=1.3)        # two-point try from the 2, on a hash
+arrow(ax, (108, HASH_NEAR), (114.5, HASH_NEAR), color=TRY, lw=2.0, head=11)
 ax.plot([75, 75], [0, FIELD_WIDTH], color=style.OFFENSE_DARK, lw=1.0, alpha=0.6, zorder=2)   # field goal
-football(ax, 67, MID + 3.0, w=2.2, h=1.3)
-arrow(ax, (67, MID + 3.0), (121, MID + 0.6), color=KICK, lw=1.2, ls=(0, (3, 2)), rad=-0.1)
-ax.text(74, MID + 9.0, "line of scrimmage: opp. 35\nhold at the 43: a 53-yard kick", fontsize=5.8,
-        color=style.INK_2, ha="right", va="bottom", zorder=6, bbox=dict(boxstyle="round,pad=0.1", fc=style.TURF, ec="none"))
-draw_marker(ax, 5.2, 20.0, "off", "R", 6, r=1.5)                # safety: tackled in his OWN end zone
+football(ax, 67, HASH_FAR, w=2.2, h=1.3)
+arrow(ax, (67, HASH_FAR), (121, MID + 0.6), color=KICK, lw=1.2, ls=(0, (3, 2)), rad=-0.1)
+ax.text(63.5, HASH_FAR + 0.3, "line of scrimmage: opp. 35\nhold at the 43: a 53-yard kick", fontsize=5.8,
+        color=style.INK_2, ha="right", va="center", zorder=6, bbox=dict(boxstyle="round,pad=0.1", fc=style.TURF, ec="none"))
+draw_marker(ax, 5.2, 20.0, "off", "", 6, r=1.5)                 # safety: ball carrier tackled in his OWN end zone
 draw_marker(ax, 8.2, 22.0, "def", "", 6, r=1.4)
 football(ax, 5.2, 17.6, w=1.8, h=1.1)
-ax.text(11.5, 21.0, "tackled in his\nown end zone", fontsize=5.8, color=style.INK_2, ha="left", va="center", zorder=6)
+ax.text(11.5, 21.0, "ball carrier tackled\nin his own end zone", fontsize=5.8, color=style.INK_2, ha="left", va="center",
+        zorder=6)
 
 badge(104, 66, 6, "TOUCHDOWN", "ball breaks the plane\nof the goal line", TD)
-lead((103, 59.6), (105, 42.8))
-badge(60, 66, 1, "EXTRA POINT (PAT)", "kick after a TD,\nsnapped from the 15", KICK)
-lead((76, 59.6), (87, MID - 2.4))
+lead((103, 59.6), (103, 46.9))
+badge(60, 66, 3, "FIELD GOAL", "kick through the uprights,\nfrom anywhere", KICK)
+lead((64, 59.6), (67, HASH_FAR + 1.0))
 badge(104, -13, 2, "TWO-POINT TRY", "a run or pass from\nthe 2 after a TD", TRY)
-lead((108, -6.6), (108, 13))
-badge(62, -13, 3, "FIELD GOAL", "kick through the uprights,\nfrom anywhere", KICK)
-lead((66, -6.6), (67, MID + 1.8))
+lead((108, -6.6), (108, HASH_NEAR - 0.9))
+badge(62, -13, 1, "EXTRA POINT (PAT)", "kick after a TD,\nsnapped from the 15", PATC)
+lead((70, -6.6), (86.5, MID - 0.9))
 badge(20, -13, 2, "SAFETY", "for the defense, plus the\nball on a free kick", SAF)
 lead((8, -6.6), (5.2, 16.8))
 arrow(ax, (20, 64), (36, 64), color=style.OFFENSE_DARK, lw=1.4)
@@ -608,7 +697,9 @@ ended with one.
 ### The try: one point or two
 
 After every touchdown, the scoring team gets one more snap, called the *try*, and the clock
-doesn't run during it. It chooses between two very different plays:
+doesn't run during it. It's played even if time ran out on the touchdown, and skipped only when
+it can't matter, as after a touchdown that wins the game in overtime. The team chooses between
+two very different plays:
 
 - The [**extra point**](../../appendices/glossary.qmd#gl-extra-point) (also the
   [**PAT**](../../appendices/glossary.qmd#gl-pat), for "point after touchdown") is a kick
@@ -628,7 +719,7 @@ makes the choice depend on the *score*, not on the play.
 
 ```{python}
 #| label: fig-try-value
-#| fig-cap: "Expected points per try, NFL regular seasons 2010–2025: the success rate times the points. Before 2015 the extra point, kicked from the 2, was a near-certain 1 point. Moving it back to the 15 cut its success to about 94–96%. The two-point try succeeds roughly half the time, so it is worth about the same; it bounces from year to year because there are only about 100–150 attempts a season."
+#| fig-cap: "Average points per try, NFL regular seasons 2010–2025: the success rate times the points. Before 2015 the extra point, kicked from the 2, was a near-certain 1 point. Moving it back to the 15 cut its success to about 93–96%. The two-point try succeeds roughly half the time, so it is worth about the same; it bounces from year to year because there are only about 90–150 attempts a season."
 fig, ax = plt.subplots(figsize=(6.4, 3.0))
 ax.plot(xp_rate.index, xp_rate.values, color=style.SERIES[2], marker="o", ms=3.5,
         label="Extra-point kick (1 point × success rate)")
@@ -637,7 +728,7 @@ ax.plot(tp_rate.index, 2 * tp_rate.values, color=style.SERIES[1], marker="o", ms
 ax.axvline(2014.5, color=style.MUTED, lw=1, ls=(0, (3, 2)))
 ax.text(2014.6, 1.13, "2015: kick moved\nback to the 15", fontsize=7.5, color=style.INK_2, ha="left", va="top")
 ax.set_ylim(0.75, 1.15)
-ax.set_ylabel("expected points per try")
+ax.set_ylabel("average points per try")
 ax.set_xticks(range(2010, 2026, 3))
 ax.legend(loc="lower left", fontsize=7.5)
 plt.show()
@@ -657,8 +748,7 @@ The real reason to go for two is the scoreboard. A team that trails by 2 after s
 the tie, and only the two-pointer gives it. A team that trails by 8 needs a touchdown *and* a
 two-pointer to tie. A team that is down 14 late and scores faces a classic question: kick to
 get within 7, or go for two now, so that it knows whether the next touchdown will tie or win?
-Analysts have argued that one for a decade, and we'll do the arithmetic in
-[Clock and Game Management](../10-situational-football/10-04-clock-and-game-management.qmd).
+Analysts have argued that one for a decade; the arithmetic is in chapter 10.
 
 ### Field goal: three points from anywhere
 
@@ -667,11 +757,14 @@ offense snaps the ball back about 7 or 8 yards to a holder, who sets it on the g
 kicker kicks it through the goal posts. It can be tried from anywhere on the field, on any
 down, but in practice teams try it on fourth down, when the alternative is giving the ball
 away. Because the posts stand on the end line, add about 18 yards to the line of scrimmage to
-get the length of the kick: a field goal tried from the opponent's 30 is a 48-yarder.
+get the length of the kick: a field goal tried from the opponent's 30 is a 48-yarder. A miss
+isn't free. The other team takes over at the spot of the kick, where the holder set the ball
+(or at its own 20, if the kick came from inside it), so a missed 53-yarder hands it the ball at
+its own 43.[^missedfg]
 
 ```{python}
 #| label: fig-fg-distance
-#| fig-cap: "How often NFL field goals are made, by distance, 2021–2025 regular seasons. Inside 40 yards the kick is close to certain; past 50 it is still made about seven times in ten. That reliability is new: in 2016 and again in 2019, kicks of 50 yards or more were made fewer than six times in ten."
+#| fig-cap: "How often NFL field goals are made, by distance, 2021–2025 regular seasons. Inside 30 yards the kick is close to certain, and from 30–39 yards it is good more than nine times in ten; past 50 it is still made about seven times in ten. That reliability is new: in 2016 and again in 2019, kicks of 50 yards or more were made fewer than six times in ten."
 fig, ax = plt.subplots(figsize=(6.4, 2.8))
 ax.bar(fg_tab.index.astype(str), fg_tab.made * 100, color=style.SERIES[2], width=0.62)
 for i, (n, m) in enumerate(zip(fg_tab.n, fg_tab.made)):
@@ -683,8 +776,9 @@ ax.grid(axis="x", visible=False)
 plt.show()
 ```
 
-Modern kickers are remarkable. Kicks from under 40 yards almost never miss, and 50-yard
-kicks that were risky a decade ago are now routine: in 2025 alone kickers made
+Modern kickers are remarkable. Kicks from under 30 yards almost never miss, those from 30–39
+miss only about one time in fifteen, and kicks of 50 yards or more, made fewer than six times in
+ten as recently as 2019, are now made about seven times in ten: in 2025 alone kickers made
 `{python} f"{made60_25}"` field goals of 60 yards or more.[^fgcalc] That shifts strategy, because
 the farther out a team can count on three points, the sooner a stalled drive still scores.
 
@@ -705,12 +799,14 @@ quarterback there). The usual picture is a quarterback sacked a yard deep in his
 
 The safety comes with a second penalty. The team that gave it up must then *kick the ball
 away* from its own 20-yard line, a free kick that is usually punted. So the defense gets two
-points **and** the ball, often around midfield. That makes a safety worth more than its two
+points **and** the ball, usually near its own 40 (the median first snap after a safety in
+2016–2025 was at the scoring team's own `{python} f"{safety_start:.0f}"`). That makes a safety worth more than its two
 points suggest, and it's why offenses backed up against their own goal line play so
 carefully. Safeties are rare: there were `{python} f"{safeties_25}"` in the whole 2025 regular
 season, about one every 23 games.[^safety] (One oddity for trivia night: the rulebook
-even allows a *one-point* safety, which can happen only on a try. You will probably never see
-one.)
+even allows a *one-point* safety, which can happen only on a try. If a defender intercepts a
+two-point pass, runs it out of his own end zone and is tackled back inside it, the offense gets
+one point. You will probably never see one.)
 
 The word "safety" also names a defensive position, the deepest defenders on the field. That
 one is covered in [The Twenty-Two](01-03-the-twenty-two.qmd).
@@ -742,9 +838,10 @@ ax.tick_params(axis="y", length=0, labelsize=8.5, labelcolor=style.INK)
 plt.show()
 ```
 
-Here's why that gap matters so much. An NFL team gets only about
-`{python} f"{per_team_game:.0f}"` possessions (turns with the ball, the subject of the next section) a game (`{python} f"{per_team_game:.1f}"` in 2025)
-and scores about `{python} f"{pts_per_team:.0f}"` points.[^drives] Each one is precious. When a
+Here's why that gap matters so much. A *possession* is one turn with the ball (the next
+section is about them), and an NFL team gets only about `{python} f"{per_team_game:.1f}"` of
+them a game, scoring about `{python} f"{pts_per_team:.0f}"` points in all (2025 figures).[^drives]
+Each one is precious. When a
 drive reaches the opponent's 20, the area called the
 [red zone](01-02-downs-distance-and-field-position.qmd), it ended in a touchdown
 `{python} f"{rz_td:.0%}"` of the time in 2025 and a field goal `{python} f"{rz_fg:.0%}"` of the time. A
@@ -755,7 +852,9 @@ team from a playoff team.
 So the choice between 7 and 3 runs through every chapter that follows:
 
 - It's why **fourth down near the goal line** is the most second-guessed call in football, and
-  why the crowd at the top of this chapter booed the kicker. You'll do the math yourself in the
+  why the crowd at the top of this chapter booed the kicker. On fourth down from the 1- or
+  2-yard line, a single run or pass scored a touchdown
+  `{python} f"{goal_td:.0%}"` of the time in 2016–2025.[^goalline] You'll use that number in the
   third Predict-the-play drill below.
 - It's why offenses build whole playbooks for the red zone, where the field shrinks and the
   defense has less ground to cover
@@ -767,9 +866,11 @@ So the choice between 7 and 3 runs through every chapter that follows:
 Because almost all points come in chunks of 7 and 3, some margins matter far more than others.
 Leading by 3 means a field goal ties you; by 4, the opponent needs a touchdown; by 8, it needs
 a touchdown *and* a two-point conversion; by 9, two scores. Broadcasters call a 9-point lead
-"a two-score game" for exactly this reason. Listen for the margins 3, 7, 8, 14 and 17 late in a
-game; they're the ones coaches plan around, and they're why a team up by 7 sometimes kicks a
-late field goal (to go up 10, two scores) instead of trying for a touchdown.
+"a two-score game" for exactly this reason. The same logic runs up the scale: 14 is two
+touchdowns with extra points, 16 is the most two touchdowns can cover (both with two-point
+conversions), and at 17 you need three scores. Listen for the margins 3, 7, 8, 14, 16 and 17
+late in a game; they're the ones coaches plan around, and they're why a team up by 7 sometimes
+kicks a late field goal (to go up 10, two scores) instead of trying for a touchdown.
 :::
 
 ## Possession: football is a game of turns
@@ -782,19 +883,19 @@ swap the ball back and forth in a flowing way; they take *turns*, and each turn 
 ends it:
 
 - **The offense scores.** After a touchdown and try, or after a field goal, the scoring team
-  *kicks off* to the other team. This is football's built-in fairness: score, and you have to
-  give the ball back.
-- **The offense gives it up on purpose,** by punting on fourth down because it doesn't want to
-  risk failing to keep the ball deep in its own territory.
-- **The offense loses it:** an interception, a lost fumble, or failing on fourth down (all
-  defined in [Downs, Distance, and Field Position](01-02-downs-distance-and-field-position.qmd)).
+  *kicks off* (kicks the ball downfield to the other team, described below). This is football's
+  built-in fairness: score, and you have to give the ball back.
+- **The offense gives it up on purpose,** by punting on fourth down: it trades the ball for 40-odd
+  yards of field position rather than handing it over at the line of scrimmage.
+- **The offense loses it:** an interception, a lost fumble, failing on fourth down (all
+  defined in [Downs, Distance, and Field Position](01-02-downs-distance-and-field-position.qmd)),
+  or a missed field goal.
 - **The defense scores a safety** and then receives the free kick.
 - **The half ends.** Possession does *not* carry across halftime.
 
-The chart above is really a census of how turns end. A third of possessions end in a punt; a
-quarter end with a touchdown. Notice how few turns there are: about eleven per team, so each one
-is a scarce resource. That scarcity is what makes the clock matter. A team that can't stop the
-clock can't buy itself another turn.
+The drive-outcome chart above is a census of exactly these endings. With so few turns, each
+one is a scarce resource, and that scarcity is what makes the clock matter: a team that can't
+stop the clock can't buy itself another turn.
 
 ## The shape of a game
 
@@ -825,7 +926,7 @@ for q in (2, 4):
     ax.plot([x, x], [12, 24.5], color=style.DEFENSE_DARK, lw=1.4, zorder=4)
     ax.text(x, 25.3, "two-minute\nwarning", fontsize=6.5, color=style.DEFENSE_DARK, ha="center", va="bottom",
             linespacing=1.05)
-for x, lab in ((starts[1], "coin toss,\nkickoff"), (starts[3], "kickoff\n(roles usually flip)")):
+for x, lab in ((starts[1], "coin toss,\nkickoff"), (starts[3], "kickoff, usually by\nthe first receivers")):
     ax.add_patch(Polygon([[x + 0.3, 22.4], [x + 2.1, 22.4], [x + 1.2, 24.0]], closed=True, fc=style.THIRD,
                          ec="none", zorder=4))
     ax.text(x + 0.3, 25.3, lab, fontsize=6.5, color=style.INK, ha="left", va="bottom", linespacing=1.05)
@@ -848,21 +949,20 @@ plt.show()
 
 **The coin toss.** A few minutes before kickoff the referee tosses a coin at midfield, and
 the visiting captain calls it. The winner chooses to kick off or receive, or which goal to
-defend, and the loser gets the other choice. The winner can also *defer* his choice to the
-second half, and most coaches now do: they kick off to start the game and are guaranteed the
-ball to start the second half, which can turn into back-to-back possessions if they score just
-before halftime.[^timing]
-<!-- VERIFY: "most coaches now defer" is widely reported but no league-wide count was checked; confirm with a source or soften. -->
+defend, and the loser gets the other choice. For the second half the order flips: the team that
+lost the toss gets first choice, and the other team takes the remaining one. The winner can also *defer* his choice to the second half, and most coaches now
+do:[^defer] they kick off to start the game and are guaranteed the ball to start the second half.
+That matters because the end of a half is when a possession is worth the most. A team that has
+the ball as the first half runs out and then receives the second-half kickoff gets two turns in a
+row.[^timing]
 
 **The kickoff.** Each half, and every possession after a score, starts with a kickoff: the
 kicking team kicks from its own 35-yard line and the other team catches the ball and tries to
-run it back. The kickoff has been rebuilt three times in three seasons (a new "dynamic"
-alignment in 2024, made permanent with a touchback to the 35 in 2025, and tweaked again for
-2026, when an onside kick may be declared at any time) and has its own chapter,
-[Kickoffs and Returns](../09-special-teams-and-the-rules-that-shape-strategy/09-02-kickoffs-and-returns.qmd).[^kickoff]
+run it back. Its rules have changed every season since 2024, which is why it has its own
+chapter, [Kickoffs and Returns](../09-special-teams-and-the-rules-that-shape-strategy/09-02-kickoffs-and-returns.qmd).[^kickoff]
 For now: a kickoff that lands in the end zone and isn't run out is a
 [touchback](../09-special-teams-and-the-rules-that-shape-strategy/09-01-kicking-and-punting.qmd),
-and the receiving team starts at its own 35.
+and the receiving team starts at its own 35 (the spot since 2025).
 
 **Quarters.** The game is 60 minutes of game-clock time, split into four
 [**quarters**](../../appendices/glossary.qmd#gl-quarter) of 15 minutes. After the first and
@@ -875,28 +975,28 @@ the Super Bowl, for the show). Halftime is a hard reset. Possession doesn't carr
 timeouts disappear, and the second half starts with a fresh kickoff, usually by the team that
 received the first one.
 
-**The two-minute warning.** When the game clock passes 2:00 in the second and fourth quarters,
-the officials stop the game: the [**two-minute warning**](../../appendices/glossary.qmd#gl-two-minute-warning).
-It's an automatic timeout that belongs to neither team. It began as a real warning: until the
-NFL merged with the AFL in 1970, the official time was kept on an official's watch on the
-field and the scoreboard clock was only an estimate, so the referee told both benches exactly
-how much time was left.[^twomin] The stadium clock has been official for more than fifty years,
-and the warning survives because it's useful: for strategy (it's a free stoppage for a team
-trying to save time) and for television (it's a guaranteed commercial break at the most tense
-moment of each half).
+**The two-minute warning.** In the second and fourth quarters, the officials stop the game
+after the last play that *started* with more than 2:00 on the clock: the
+[**two-minute warning**](../../appendices/glossary.qmd#gl-two-minute-warning). Snap at 2:04,
+tackle at 1:57, and the warning comes after that play, which is why an offense hurries to get a
+snap off just before 2:00. It's an automatic timeout that belongs to neither team, and coaches
+count it as a free fourth timeout. It began as a real warning, when official time was kept on
+the field rather than on the scoreboard (until 1970); it survives because it's useful, for
+strategy and for a guaranteed commercial break at the tensest moment of each half.[^twomin]
 
-**Overtime.** If the score is tied after four quarters, the game goes to overtime. The rules
-are different for the regular season and the playoffs, and both changed recently. Since 2025,
-both teams get at least one possession in regular-season overtime too (the playoffs adopted this
-in 2022); after that, the next score wins. Regular-season overtime is one 10-minute period, and
-a game still tied after it ends a tie. Playoff overtime uses 15-minute periods and continues
-until someone wins.[^ot] Overtime strategy, and what changed when the "first touchdown wins"
-rule went away, is in
+**Overtime.** If the score is tied after four quarters, the game goes to overtime, which starts
+with a new coin toss. The rules are different for the regular season and the playoffs, and both
+changed recently. Since 2025, both teams get at least one possession in regular-season overtime
+too (the playoffs adopted this in 2022); after that, the next score wins. Regular-season overtime
+is one 10-minute period, and a game still tied after it ends a tie. Playoff overtime uses
+15-minute periods and continues until someone wins.[^ot] Until 2022 in the playoffs (2025 in
+the regular season), a touchdown on the first possession ended the game; the Chiefs film room below shows the game that changed that, and
+overtime strategy is in
 [Clock and Game Management](../10-situational-football/10-04-clock-and-game-management.qmd).
 
 Put together, a game is a long chain of turns: about 150 snaps in all, roughly
 `{python} f"{scrimmage_per_game:.0f}"` of them runs and passes and the rest kicks.[^plays]
-Sixty minutes of clock, about eleven of action, and the clock rules decide how the sixty are
+Sixty minutes of clock, about 11 minutes of action, and the clock rules decide how the sixty are
 spent.
 
 ## The game clock: when it runs and when it stops
@@ -1034,7 +1134,7 @@ drill* and the *four-minute offense*, and both are built out in
 "The clock stops on a first down." Not in the NFL, and that's a habit carried over from college
 football, where for decades the clock stopped briefly after every first down. Even college
 dropped that in 2023, except in the last two minutes of each half, to shorten games.[^ncaa] In the
-NFL a first down has never stopped the clock. The chains move and the clock keeps running.
+NFL a first down doesn't stop the clock. The chains move and the clock keeps running.
 :::
 
 ### Timeouts
@@ -1409,7 +1509,7 @@ Andy Reid's Chiefs, on both ends of this chapter's film rooms, are the subject o
   posts and scoring rules got where they are.
 :::
 
-[^wsj]: David Biderman, "11 Minutes of Action," *The Wall Street Journal* (Jan. 15, 2010), which timed four broadcasts and found an average of about 11 minutes of live play in broadcasts averaging just over three hours: https://www.wsj.com/articles/SB10001424052748704281204575002852055561406 <!-- VERIFY: exact WSJ URL and the "just over three hours" broadcast length; the 11-minute figure is widely cited from this piece. -->
+[^wsj]: David Biderman, "11 Minutes of Action," *The Wall Street Journal* (Jan. 15, 2010), which timed four broadcasts from one late-December weekend and found an average of about 11 minutes of live play (10 minutes 43 seconds) in broadcasts of about three hours (174 minutes): https://www.wsj.com/articles/SB10001424052748704281204575002852055561406 (paywalled; the same study is summarized in a Fox Sports repost, "Football games have 11 minutes of action," Jan. 18, 2010: https://www.foxsports.com/stories/nfl/football-games-have-11-minutes-of-action).
 
 [^field]: NFL, *Official Playing Rules of the National Football League* (2026 edition), Rule 1, Sections 1–2 (a field 360 by 160 feet; end lines, sidelines and goal lines; the 6-foot white border; yard-line markings every 5 yards; inbounds lines "70 feet, 9 inches" from each sideline; 1-yard marks; field numerals whose bottoms begin 12 yards in from each sideline and that are 2 yards tall; the 1-yard-long marks two yards from each goal line), and Rule 3, Section 11, Article 9 (yard lines are named "A's 19," "B's 49"): https://operations.nfl.com/the-rules/nfl-rulebook/
 
@@ -1417,11 +1517,13 @@ Andy Reid's Chiefs, on both ends of this chapter's film rooms, are the subject o
 
 [^posts]: NFL rulebook (2026), Rule 1, Section 3: a crossbar 18 feet 6 inches long whose top is 10 feet above the ground, "in the plane of each end line," and uprights that "extend 35 feet above the crossbar": https://operations.nfl.com/the-rules/nfl-rulebook/
 
-[^firstplayoff]: Pro Football Hall of Fame, "The First Playoff Game": the December 18, 1932 Bears–Spartans game was moved into Chicago Stadium on a field "only 80 yards long and 30 feet narrower" than regulation; for 1933 the league required "the ball be spotted on the hashmarks on every play" and moved the goal posts "from the end line to the goal line": https://profootballhof.com/football-history/the-first-playoff-game
+[^firstplayoff]: Pro Football Hall of Fame, "The First Playoff Game": the December 18, 1932 Bears–Spartans game was moved into Chicago Stadium on a field "only 80 yards long and 30 feet narrower" than regulation, with "the sidelines butted up against the stands"; for 1933 the league required "the ball be spotted on the hashmarks on every play" and moved the goal posts "from the end line to the goal line": https://profootballhof.com/football-history/the-first-playoff-game . Accounts of the game's special sideline rule differ (some say the ball went to inbounds lines 10 yards from the walls, others that it could be brought in 15 yards at the cost of a down): "1932 NFL Playoff Game," Wikipedia: https://en.wikipedia.org/wiki/1932_NFL_Playoff_Game . Before 1933, "all plays began where the ball was declared dead": "Hash mark (sports)," Wikipedia: https://en.wikipedia.org/wiki/Hash_marks
 
-[^hash72]: Pro Football Hall of Fame, NFL history by year, 1972: "The inbounds lines or hashmarks were moved nearer the center of the field, 23 yards, 1 foot, 9 inches from the sidelines": https://www.profootballhof.com/football-history/football-history/1960-1979/1972 . Intermediate distances (30 feet in 1933, 45 feet in 1935, 60 feet in 1945) from "Hash marks (sports)," Wikipedia: https://en.wikipedia.org/wiki/Hash_marks <!-- VERIFY: 1935 and 1945 hash distances against a primary source (PFHOF chronology for those years). -->
+[^hash72]: Pro Football Hall of Fame, NFL history by year: 1933 ("inbounds line or hashmarks ... adopted" from the 1932 game), https://www.profootballhof.com/football-history/football-history/1869-1939/1933 ; 1935 ("moved nearer the center of the field, 15 yards from the sidelines"), https://www.profootballhof.com/football-history/football-history/1869-1939/1935 ; 1945 ("moved from 15 yards away from the sidelines to nearer the center of the field - 20 yards from the sidelines"), https://www.profootballhof.com/football-history/football-history/1940-1959/1945 ; 1972 ("moved nearer the center of the field, 23 yards, 1 foot, 9 inches from the sidelines"), https://www.profootballhof.com/football-history/football-history/1960-1979/1972 . The 1933 distance (10 yards, i.e. 30 feet) is from "Hash mark (sports)," Wikipedia: https://en.wikipedia.org/wiki/Hash_marks
 
-[^collegehash]: "Hash marks (sports)," Wikipedia (college hashes 40 feet apart since 1993, the spacing the NFL used from 1945 to 1971; high-school hashes 53 feet 4 inches from each sideline): https://en.wikipedia.org/wiki/Hash_marks <!-- VERIFY: confirm college (NCAA Rule 1-2) and high-school (NFHS Rule 1-2) hash dimensions and the 1993 college change against the current rule books. -->
+[^offense72]: The motive: the Associated Press report of the owners' vote ran as "Owners give offense big seven-yard boost" (*Rome News-Tribune*, Mar. 24, 1972, p. 6A, cited in "1972 NFL season," Wikipedia: https://en.wikipedia.org/wiki/1972_NFL_season); *Sports Illustrated*, "High on the Hash" (Aug. 28, 1972), tied it to the low scoring of 1971: https://vault.si.com/vault/1972/08/28/high-on-the-hash
+
+[^collegehash]: NFL Football Operations, 2026 rulebook page, field markings: "The location of the inbounds hash marks is 70' 9" for professional football, 60' for college football": https://operations.nfl.com/the-rules/nfl-rulebook/ (the NCAA rules, Rule 1-2, likewise put the inbounds lines 60 feet from the sidelines). College hashes have been 40 feet apart since 1993, the spacing the NFL used from 1945 to 1971, and high-school hashes are 53 feet 4 inches from each sideline: "Hash mark (sports)," Wikipedia, citing the *Milwaukee Journal* (Mar. 26, 1993): https://en.wikipedia.org/wiki/Hash_marks
 
 [^scorevalues]: NFL rulebook (2026), Rule 11, Section 1, Article 2 (touchdown 6, field goal 3, safety 2, try 1 or 2); Rule 11, Section 3 (the try: snapped "15 yards from the defensive team's goal line for a Try kick" or "two yards" for a run or pass; the game clock does not run; two points for a touchdown by either team; one point for what would ordinarily be a safety): https://operations.nfl.com/the-rules/nfl-rulebook/
 
@@ -1433,13 +1535,15 @@ Andy Reid's Chiefs, on both ends of this chapter's film rooms, are the subject o
 
 [^fgcalc]: Course calculation from nflverse play-by-play, regular seasons: all field-goal attempts by `kick_distance`, 2021–2025 for the chart; 2025 alone for the count of made kicks of 60+ yards. Kicks of 50+ yards were made 57% of the time in 2016 and 58% in 2019, against 69–70% in every season from 2022 to 2025.
 
-[^goalposts74]: Pro Football Hall of Fame, "Evolution of the Game: Goal Posts": the goal posts moved from the end line to the goal line in 1933 and back to the end line in 1974, "in an effort to force offenses to play for touchdowns instead of field goals": https://profootballhof.com/blogs/stories-from-the-pro-football-hall-of-fame-archives/evolution-of-the-game-goal-posts <!-- VERIFY: this PFHOF URL returned an error when checked; the 1974 move and its purpose are also in the PFHOF 1974 chronology page. -->
+[^goalposts74]: Pro Football Hall of Fame, NFL history by year, 1974 ("the goal posts were moved from the goal line to the end lines," part of a package of changes adopted "to add action and tempo to games"): https://www.profootballhof.com/football-history/football-history/1960-1979/1974 . On the purpose, Nexstar Media, "NFL goalposts used to look very different: What changed, and why they moved" (2025), citing the Hall of Fame: the move was made "in an effort to force offenses to play for touchdowns instead of field goals," and attempts fell from more than 860 the season before to 553: https://www.abc27.com/news/nfl-goalposts-used-to-look-very-different-what-changed-and-why-they-moved/
 
 [^safety]: NFL rulebook (2026), Rule 11, Section 5 (what is a safety; after a safety, "the team scored upon must put the ball in play by a free kick (punt, drop kick, or place kick) from its 20-yard line"): https://operations.nfl.com/the-rules/nfl-rulebook/ . The count is a course calculation from nflverse play-by-play (`safety == 1`), 2025 regular season, 272 games.
 
 [^drives]: Course calculation from nflverse play-by-play, 2025 regular season (272 games): one row per drive (`fixed_drive`), classified by `fixed_drive_result`; a red-zone trip is a drive with `drive_inside20 == 1`; points per team are final scores averaged over both teams.
 
 [^timing]: NFL rulebook (2026), Rule 4, Section 1 (four 15-minute periods; at least two minutes between the first and second and the third and fourth periods; a 13-minute halftime) and Section 2 (the visiting captain calls the coin toss; the winner may defer; teams change goals after the first and third periods with possession, down, ball position and line to gain unchanged): https://operations.nfl.com/the-rules/nfl-rulebook/
+
+[^defer]: The option to defer was added in 2008. Coin-toss winners deferred 8% of the time in 2008 and 76% in the first half of the 2015 season (Ben Goessling, ESPN, Nov. 5, 2015, "For NFL teams, deferring after winning coin toss is more than a 50-50 choice": https://www.espn.com/blog/nfcnorth/post/_/id/72630/for-nfl-teams-deferring-after-winning-coin-toss-is-more-than-a-50-50-choice) and about five times in six by 2018 (Zach Barnett, FootballScoop, "The number of NFL coaches deferring the kickoff has skyrocketed in the past decade," Sept. 7, 2018: https://footballscoop.com/news/number-nfl-coaches-deferring-kickoff-skyrocketed-past-decade).
 
 [^kickoff]: NFL.com, "NFL owners vote to make dynamic kickoff permanent, adjust ball spot on touchbacks to 35-yard line" (2025): https://www.nfl.com/news/nfl-owners-vote-to-make-dynamic-kickoff-permanent-adjust-ball-spot-on-touchbacks-to-35-yard-line ; Seattle Seahawks, "NFL announces approved rule changes for 2026 season" (onside kick declarable at any time): https://www.seahawks.com/news/nfl-announces-approved-rule-changes-for-2026-season . The kicker's restraining line is the kicking team's 35 (2026 rulebook, Rule 6, Section 1, Article 2).
 
@@ -1451,7 +1555,7 @@ Andy Reid's Chiefs, on both ends of this chapter's film rooms, are the subject o
 
 [^clockrules]: NFL rulebook (2026), Rule 4, Section 3 (starting the game clock: after a free kick "when the ball is legally touched in the field of play"; after a runner goes out of bounds, "on the Referee's signal that a ball has been returned to play," except on the snap after a change of possession, after the two-minute warning of the first half, or inside the last five minutes of the second half; after fouls, generally "as if the foul had not occurred," with late-game exceptions) and Section 4 (stopping the game clock): https://operations.nfl.com/the-rules/nfl-rulebook/
 
-[^ncaa]: ESPN, "NCAA approves rule change to run clock after first downs" (Apr. 2023): https://www.espn.com/college-football/story/_/id/36255797/ncaa-approves-rule-change-run-clock-first-downs
+[^ncaa]: ESPN, "NCAA approves rule change to run clock after first downs" (Apr. 21, 2023; the change applies in every division except Division III, and the clock still stops after first downs in the last two minutes of each half): https://www.espn.com/college-football/story/_/id/36255797/ncaa-approves-rule-change-run-clock-first-downs
 
 [^timeouts]: NFL rulebook (2026), Rule 4, Section 5, Article 1: "three charged team timeouts during each half and two timeouts during an overtime period in the regular season"; a second timeout by the defense to "freeze" a kicker is unsportsmanlike conduct (Item 4): https://operations.nfl.com/the-rules/nfl-rulebook/
 
