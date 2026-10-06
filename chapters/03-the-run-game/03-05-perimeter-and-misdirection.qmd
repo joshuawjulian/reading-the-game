@@ -1,0 +1,1677 @@
+---
+title: "Perimeter Runs and Misdirection: Jet Sweeps, Reverses, and the Wing-T's Children"
+subtitle: "How offenses win the race to the sideline, and how they punish a defense that runs too hard to win it back"
+description: "The outside run game and its mirror image: why the edge is a race, the two perimeter blocks (crack and seal) and the crack-toss, the jet sweep and what it does to linebackers, the end-around and the reverse, the Delaware Wing-T's buck sweep, series football and the waggle, 'eye candy' that freezes a linebacker for half a second, how defenses answer, what the numbers say about receivers carrying the ball, and why all of it is a constraint on everything else an offense does."
+glossary:
+  "Jet sweep": "A run in which a receiver (or back) in jet motion takes a handoff, or a tiny forward flip, from the quarterback at full speed as he crosses the formation, and races for the edge on the side he is running toward."
+  "End-around": "A run in which a receiver who lined up outside comes back behind the line and takes a handoff from the quarterback, carrying the ball toward the other side of the field. One exchange; often paired with a fake run the opposite way."
+  "Reverse": "A run in which the ball is first given to a player running one way and then handed or pitched to a teammate running the other way, so the ball changes direction behind the line. Two exchanges; a double reverse adds a third."
+  "Crack-toss": "A toss sweep on which a receiver lined up outside the play blocks back inside (a crack block) on the defender responsible for the edge, while a pulling lineman replaces him on the cornerback."
+  "Crack-and-replace": "The pairing of blocks on a perimeter run in which a receiver leaves the defender he would normally block (usually the cornerback) to crack inside, and a pulling lineman replaces him on that defender."
+  "Crack block": "A block by a player lined up outside the play, usually a wide receiver or wingback, who comes back toward the ball and hits a defender (often a linebacker or safety watching the ball) from the side. In the NFL it must be above the waist and not to the head or neck."
+  "Seal block": "A block whose job is to wall a defender off from the ball carrier's path rather than to move him: usually pinning an inside defender inside so the run can go outside him."
+  "Buck sweep": "The signature play of the Wing-T: the halfback sweeps toward the wingback's side behind both guards, who pull (one kicks out the end man, the other turns up inside him), while the tight end and wingback block down and the fullback fakes a plunge ('buck') up the middle."
+  "Series football": "Building an offense from groups of plays that begin with the same backfield action and end differently, each one designed to beat the defense's reaction to another, so the defense cannot tell which play it is from the first second."
+  Misdirection: "Any play design that gets the defense to commit in one direction, with motion, fakes or the flow of the line, while the ball goes another way."
+  "Eye candy": "Motion and fakes by players who will not get the ball, designed to pull defenders' eyes and first steps the wrong way so the real play gains a fraction of a second or a gap."
+  Waggle: "The Wing-T's play-action bootleg: the quarterback fakes a run one way (classically the buck sweep) and rolls out the other way behind both guards, who pull to that side to protect him, with receivers at short, medium and deep levels on that side, so he can run or throw. The ancestor of the NFL bootleg."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared helpers for this chapter's diagrams)"
+#| output: false
+import os
+import shutil
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, FancyBboxPatch, RegularPolygon
+from matplotlib.lines import Line2D
+from gridiron import Play, Player, Field, technique, style
+
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+GREEN = "#0f7a55"          # darker step of the aqua highlight, for text on the light field
+PURPLE = style.SERIES[6]   # a ring colour that is neither offense blue nor defense orange
+LINE_D, OFF_D = -0.7, -1.5  # "on the line" and "a yard off it" (only the ends of the line may be receivers)
+
+
+# ------------------------------------------------------------------ building plays by hand
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=label if label is not None else key)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line():
+    """The five offensive linemen, labelled so the reader can follow the pullers."""
+    return [O(k, k, LINE_D, w) for k, w in (("LT", -3.2), ("LG", -1.6), ("C", 0.0), ("RG", 1.6), ("RT", 3.2))]
+
+
+def check_legal(players):
+    """Seven on the line, and only the two end men of the line may be receivers."""
+    off = [p for p in players if p.side == "off"]
+    on = sorted([p for p in off if p.d > -1.0], key=lambda p: p.w)
+    assert len(off) == 11 and len(on) == 7, f"{len(off)} players, {len(on)} on the line"
+    for p in on[1:-1]:
+        assert p.pos in ("LT", "LG", "C", "RG", "RT"), f"{p.key} is covered up but is a receiver"
+    return players
+
+
+def front(pe=("9", 5.7), pt=("3", 2.35), bt=("1", -0.7), be=("5", -4.0), lbs=(("WILL", 4.5, -2.4, "W"),
+          ("MIKE", 4.5, 1.6, "M")), extra=(), cb=(-12.0, 12.0), safeties=((12.0, -8.0), (12.0, 8.0))):
+    """A generic four-man front, linemen labelled by technique number (03-01), plus linebackers and DBs.
+    Fronts get their names in Part 5; here they are just people to block."""
+    out = [D("DE_L", "DE", 1.0, be[1], be[0]), D("DT_L", "DT", 1.0, bt[1], bt[0]),
+           D("DT_R", "DT", 1.0, pt[1], pt[0]), D("DE_R", "DE", 1.0, pe[1], pe[0])]
+    out += [D(k, k, d, w, lab) for k, d, w, lab in lbs]
+    out += [D(k, pos, d, w, lab) for k, pos, d, w, lab in extra]
+    out += [D("LCB", "CB", 6.5, cb[0], "CB"), D("RCB", "CB", 6.5, cb[1], "CB"),
+            D("FS", "FS", *safeties[0], "FS"), D("SS", "SS", *safeties[1], "SS")]
+    return out
+
+
+def go_to(p, key, end, kind="block", delay=0.0, speed=None, via=()):
+    """Move `key` through absolute (d, w) points `via` to `end`, as a block, pull, path or run."""
+    start = np.array(p._cur(key))
+    pts = [tuple(np.array(q) - start) for q in (*via, end)]
+    if kind == "block":
+        return p.block(key, pts=pts, delay=delay, speed=speed)
+    if kind == "pull":
+        return p.pull(key, pts, delay=delay, speed=speed)
+    if kind == "route":
+        return p.route(key, pts, delay=delay, speed=speed, frame="field")
+    return {"path": p.path, "run": p.run}[kind](key, pts, delay=delay, speed=speed)
+
+
+def motion_to(p, key, via, end, speed=6.0):
+    """Pre-snap motion through absolute points, ending where the player is when the ball is snapped."""
+    start = np.array(p._cur(key))
+    return p.motion(key, pts=[tuple(np.array(q) - start) for q in (*via, end)], speed=speed)
+
+
+# ------------------------------------------------------------------ drawing helpers
+def _P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def clean(ax):
+    """Box-zoomed diagrams: drop hash ticks and yard numbers, clip text to the window."""
+    for ln in list(ax.lines):
+        xs, ys = ln.get_data()
+        if len(xs) == 2 and ln.get_linewidth() == 0.5 and np.hypot(xs[1] - xs[0], ys[1] - ys[0]) < 1.0:
+            ln.remove()
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, width_in=6.2, ax=None, **kw):
+    fld = p.draw(width_in=width_in, ax=ax, **kw)
+    clean(fld.ax)
+    return fld
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.2, ha="center", weight="normal"):
+    """A short on-field label at (d, w)."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=12, fontweight=weight,
+                linespacing=1.15, bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.92))
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=7.0):
+    """A label with a thin leader line to the player or spot it names."""
+    (xt, yt), (xp, yp) = _P(fld, p, *text_at), _P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha="center", va="center", zorder=12, linespacing=1.15,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=6),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.92))
+
+
+def flow(fld, p, pts, color=style.DEFENSE, lw=1.6, alpha=0.9, ls=(0, (2.5, 1.8))):
+    """A defender's reaction, drawn as a dashed orange arrow through absolute (d, w) points."""
+    xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    fld.ax.plot(xs[:-1], ys[:-1], color=color, lw=lw, ls=ls, zorder=5, alpha=alpha)
+    fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=10,
+                                     color=color, lw=lw, zorder=5, alpha=alpha))
+
+
+def dashed(fld, p, pts, color=style.OFFENSE, lw=1.4):
+    """Hand-drawn pre-snap motion: dashed blue with a solid head."""
+    xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    fld.ax.plot(xs[:-1], ys[:-1], color=color, lw=lw, ls=(0, (3, 2)), zorder=5)
+    fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=9,
+                                     color=color, lw=lw, zorder=5))
+
+
+def ghost(fld, p, d, w, label, side="def"):
+    """A hollow dashed marker: where a player was, or would have been."""
+    x, y = (float(v) for v in _P(fld, p, d, w))
+    col = style.DEFENSE if side == "def" else style.OFFENSE
+    if side == "def":
+        pat = RegularPolygon((x, y), 4, radius=0.94, orientation=np.pi / 4, fc="none", ec=col, lw=1.1,
+                             ls=(0, (2, 1.2)), zorder=6)
+    else:
+        pat = Circle((x, y), 0.75, fc="none", ec=col, lw=1.1, ls=(0, (2, 1.2)), zorder=6)
+    fld.ax.add_patch(pat)
+    fld.ax.text(x, y, label, ha="center", va="center", color=col, fontweight="bold", zorder=6, fontsize=6.3)
+
+
+# ------------------------------------------------------------------ frame strips (PDF) and video (web)
+MARK_R = 0.78   # frame-strip marker radius in yards
+
+
+def tracking(play):
+    df = play.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    return df
+
+
+def panel(ax, play, df, t, lateral, window, rings=(), ghosts=None, decorate=None):
+    """One moment of a simulated play: markers, faint trails, rings, and optional hollow 'ghosts'
+    (players from a second version of the play, at the same moment)."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    ylo, yhi = sorted((play.ball_y - lateral[0], play.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=play.los, window=window, numbers=False, hashes=False,
+                lateral=(ylo, yhi), to_go=play.to_go)
+    cur = df[df["frameId"] == fid]
+    shown = cur[cur["x"].between(play.los + window[0] + 1.0, play.los + window[1] - 1.0)
+                & cur["y"].between(ylo + 1.0, yhi - 1.0)]
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(set(shown["_id"])) & (df["side"] != "ball")]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=0.9, alpha=0.4, zorder=3)
+    ppy = fld.pts_per_yard()
+    if ghosts is not None and t > 0.05:
+        gplay, gkeys = ghosts
+        for k in gkeys:
+            x, y = (float(v) for v in fld.xy(*play.to_abs(*gplay.position(k, t))))
+            ax.add_patch(RegularPolygon((x, y), 4, radius=MARK_R * 1.3, orientation=np.pi / 4, fc="none",
+                                        ec=style.DEFENSE, lw=1.1, ls=(0, (2, 1.2)), zorder=6))
+            glab = str(gplay.players[k].label)
+            ax.text(x, y, glab, ha="center", va="center", color=style.DEFENSE, fontweight="bold", zorder=6,
+                    fontsize=max(4.5, min(8.0, ppy * (0.95 if len(glab) <= 1 else 0.75))))
+    if decorate is not None:
+        decorate(ax, fld, t)
+    for _, r in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(r["x"], r["y"]))
+        if r["side"] == "ball":
+            ax.add_patch(Ellipse((x, y + 0.45), 0.7, 0.42, fc=style.BALL, ec="white", lw=0.5, zorder=11))
+            continue
+        lab = str(r.get("label", "") or "")
+        if r["side"] == "off":
+            ax.add_patch(Circle((x, y), MARK_R, fc=style.OFFENSE, ec="white", lw=0.6, zorder=8))
+            tc = "white"
+        else:
+            ax.add_patch(RegularPolygon((x, y), 4, radius=MARK_R * 1.3, orientation=np.pi / 4,
+                                        fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0, zorder=8))
+            tc = style.INK
+        fs = max(4.5, min(8.5, ppy * (0.95 if len(lab) <= 1 else 0.75)))
+        ax.text(x, y, lab, ha="center", va="center", fontsize=fs, color=tc, fontweight="bold", zorder=10)
+    for key, col in rings:
+        rr = cur[cur["displayName"] == key].iloc[0]
+        x, y = fld.xy(rr["x"], rr["y"])
+        ax.add_patch(Circle((float(x), float(y)), 1.3, fc="none", ec=col, lw=1.7, zorder=7))
+    return fld
+
+
+def strip(play, times, notes, lateral, window, ncols=2, rings=(), ghosts=None, width_in=6.5, decorate=None):
+    """The print version of an animation: numbered panels with a caption under each."""
+    df = tracking(play)
+    nrows = int(np.ceil(len(times) / ncols))
+    pw = width_in / ncols
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False, figsize=(width_in, nrows * (pw * span_d / span_w + 0.6)))
+    for ax in axes.flat[len(times):]:
+        ax.axis("off")
+    for i, (ax, t) in enumerate(zip(axes.flat, times)):
+        panel(ax, play, df, t, lateral, window, rings, ghosts, decorate)
+        ax.set_title(f"{i + 1}.  " + ("snap" if abs(t) < 1e-6 else f"{t:+.1f} s"), fontsize=8.5,
+                     color=style.INK_2, loc="left")
+        ax.text(0.5, -0.03, notes[i], transform=ax.transAxes, ha="center", va="top", fontsize=7.5,
+                color=style.INK, linespacing=1.15)
+    fig.tight_layout(h_pad=2.4, w_pad=0.8)
+    return fig
+
+
+def video(play, times, notes, lateral, window, rings=(), ghosts=None, width_in=5.6, decorate=None):
+    """Web version of the strip: the same panel at every frame, the strip's notes as running captions."""
+    from matplotlib import animation
+    from IPython.display import HTML, display
+    df = tracking(play)
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w + 0.4))
+    tmap = df.groupby("frameId")["time"].first()
+
+    def update(fid):
+        ax.clear()
+        t = float(tmap[fid])
+        panel(ax, play, df, t, lateral, window, rings, ghosts, decorate)
+        cur = [n for tt, n in zip(times, notes) if tt <= t + 1e-6]
+        txt = ("snap" if abs(t) < 0.05 else f"{t:+.1f} s") + (("   " + cur[-1].replace("\n", " ")) if cur else "")
+        ax.set_title(txt, fontsize=8, color=style.INK, loc="left")
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=sorted(df["frameId"].unique()), interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def animated(play, times, notes, **kw):
+    """Video on the website; a numbered, captioned frame strip in the PDF."""
+    if PDF:
+        strip(play, times, notes, **kw)
+        plt.show()
+    else:
+        video(play, times, notes, **kw)
+```
+
+Third quarter, second-and-8. For the fourth time today a receiver sprints across the formation in
+jet motion just as the ball is snapped. The first time he got the ball and ran around the left end
+for eleven yards. The next two times the quarterback stuck the ball in his belly and pulled it out,
+and both linebackers took three hard steps toward him anyway, while the running back went the other
+way. This time both linebackers sprint left again, the safety on that side races up to meet the
+receiver at the corner, and the quarterback hands the ball to the running back going right, into a
+hole where a linebacker stood a moment ago. Nobody on the left side of the field touched the ball,
+and every one of them helped make the play. This chapter is about why the defense keeps chasing a
+receiver who mostly doesn't get the ball, and what happens to defenses that stop.
+
+**You'll be able to:**
+
+- Explain why runs to the edge are a race, and name the defender each one is trying to outrun or
+  wall off.
+- Recognize the jet sweep, the end-around, the reverse, the crack-toss and the buck sweep, and say
+  what each one punishes.
+- Spot the two perimeter blocks (the **crack** and the **seal**) and say why a receiver blocking back
+  toward the ball is one of the most effective blocks in football.
+- Explain the Wing-T's series logic (buck sweep, trap, waggle, counter, and the belly series) and point to its NFL
+  descendants on a Sunday broadcast.
+- Watch the linebackers on jet motion and say whether the motion did its job, even when the ball went
+  somewhere else.
+- Explain why a play that gains a lot when it's run rarely can't simply be run more often.
+
+::: {.callout-note title="You'll need"}
+- **[Gap Schemes](03-03-gap-and-power-runs.qmd)**: a [**pull**](../../appendices/glossary.qmd#gl-pull)
+  is a lineman leaving his spot at the snap to block somewhere else; a
+  [puller](03-03-gap-and-power-runs.qmd) either **kicks out** the end man (hits him from the inside and
+  pushes him toward the sideline) or **logs** him (gets outside him and pins him in). The
+  [toss](03-03-gap-and-power-runs.qmd) is a pitch to a back already running wide, and
+  [pin-and-pull](03-03-gap-and-power-runs.qmd) is the modern outside run in which the linemen nearest
+  the play block down (pin) and the ones farther away pull around them.
+  [Trap](03-03-gap-and-power-runs.qmd) lets a defender in and hits him from the side with a pulling
+  lineman; [counter](03-03-gap-and-power-runs.qmd) starts the backfield one way and pulls blockers back
+  the other.
+- **[Motion and Shifts](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)**:
+  [**jet motion**](../../appendices/glossary.qmd#gl-jet-motion) is a receiver sprinting flat across the
+  formation with the snap timed just before he reaches the quarterback, and
+  [fly motion](../../appendices/glossary.qmd#gl-fly-motion) is the Wing-T coaches' name for the same thing
+  (the fly sweep was born outside the Wing-T and adopted by it; more below).
+  Against motion the defense can *travel* (one defender follows), *bump* (everyone slides a spot) or
+  *spin* (a safety comes down toward the motion and the other goes to the middle).
+- From earlier chapters: [play side and backside](03-01-run-game-language.qmd) (the half of the
+  formation the run is aimed at, and the other half), the [technique numbers](03-01-run-game-language.qmd)
+  used to label defensive linemen (a 1 or 3 is on a guard's shoulder, a 5 outside a tackle, a 7 on the
+  tight end's inside shoulder, a 9 outside him), the
+  [Wing-T formation](../02-personnel-and-formations/02-03-classic-formations.qmd) (a wingback just outside
+  and behind the tight end), and the [condensed formation](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)
+  (receivers lined up close to the line, where they can block back inside).
+:::
+
+**How to read the diagrams.** Offense is blue circles, defense orange squares; *left* and *right* are
+always the offense's. LT, LG, C, RG and RT are the five offensive linemen, Q the quarterback, R the
+running back, Y the tight end, and X, Z and H receivers (each caption says where they line up). In the
+Wing-T pictures F is the fullback, H the halfback and WB the wingback. Defensive linemen are labelled by
+technique number; W and M are the Will and Mike linebackers, S the Sam, NB the nickel back, CB a
+cornerback, FS and SS the safeties. Lines ending in a short bar are blocks, arrows are paths, the thick
+dark arrow is the ball carrier, and dashed orange arrows are how the defense reacts.
+
+## The edge is a race
+
+Everything you have seen in the run game so far has been a fight in a phone booth. On
+[inside zone](03-02-zone-running.qmd) or [power](03-03-gap-and-power-runs.qmd), blockers and defenders
+start a yard apart, and the run hits before the defense can move very far. Runs to the **perimeter**,
+the edge of the formation and the open grass outside it, are a different contest. The ball carrier
+has 10 or 15 yards of sideways running to do before he can turn upfield, and every defender on the
+field has time to see where he is going and run there too. An outside run is a race between the
+ball and the defense's **pursuit**, the whole team running to the ball.
+
+The defense organizes that race with two jobs. One defender on each side is the **force** player
+(more on him in [Run Fits](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd)): his
+job is to get outside the ball and turn it back inside, toward everyone else. Everyone else pursues,
+each on an [angle](../05-defensive-fronts-and-run-defense/05-04-linebackers-and-second-level.qmd) aimed
+at where the ball carrier *will be*, not where he is. If the force player holds and the pursuit is
+fast, an outside run dies for no gain or a loss, and losing yards behind the line is the outside run's
+signature failure.
+
+Who is the force player? The coverage decides, so it changes from snap to snap, but a rule of thumb
+gets you most of the way: **he is usually the outermost defender standing near the line on that side.**
+That is often an outside linebacker or a nickel back lined up outside the tight end or slot. If a safety
+has walked down to about seven or eight yards deep outside the formation, it's probably him. If the
+cornerback is squatting at five yards with a safety deep behind him (the look of
+[Cover 2](../06-pass-coverage/06-04-cover-2-and-tampa-2.qmd)), the corner is the force. You'll hear a
+close cousin, [*contain*](../05-defensive-fronts-and-run-defense/05-01-dl-techniques-and-gap-control.qmd).
+Both mean "nothing gets outside me." Coaches say *force* for the defender who meets a run coming at him
+and turns it in, and *contain* for the man whose rule is to keep the ball, or a scrambling quarterback,
+from ever getting outside him. That matters most on the side the play is leaving, as you'll see.
+
+So the defense wants to pursue *fast*. And that is the opening for everything else in this chapter.
+A defense that flows hard to stop the sweep leaves the other side of the field empty and its
+linebackers a step out of place. The offense can punish that in two ways: run the ball back where the
+defense came from, or simply make the defense *think* the ball is going somewhere it isn't.
+
+```{python}
+#| label: fig-edge-dilemma
+#| fig-cap: "The defense's dilemma on an outside run to the right (here a toss from under center; the two receivers, X and Z, are split wide). Left: if the defenders read and react slowly, the back gets outside the end before the linebackers and the safety arrive, and the race is lost. Right: if they all sprint to the ball at the snap (dashed orange arrows), the Sam and the safety beat the back to the edge and he is tackled behind the line (red X). But the left side of the field is now empty (green shading) and the linebackers have run themselves out of the middle. Plays that go back that way, or fake one way and go the other, exist to punish the fast defense."
+def dilemma(ax, fast):
+    off = check_legal(line() + [O("QB", "QB", -1.9, 0.0, "Q"), O("RB", "RB", -6.5, 0.0, "R"),
+                                O("Y", "TE", LINE_D, 4.8), O("U", "TE", LINE_D, -4.8),
+                                O("X", "WR", OFF_D, -12.0), O("Z", "WR", OFF_D, 12.0)])
+    dfn = front(pe=("9", 5.7), be=("9", -5.7), lbs=(("WILL", 4.5, -2.4, "W"), ("MIKE", 4.5, 1.4, "M"),
+                                                    ("SAM", 4.5, 4.9, "S")),
+                safeties=((12.0, -6.0), (8.0, 8.0)), cb=(-12.0, 12.0))
+    p = Play(off, dfn, los=35, to_go=None)
+    p.pitch("RB", t=0.3)
+    if fast:   # caught at the edge, a yard and a half behind the line
+        go_to(p, "RB", (-1.6, 8.4), "run", via=[(-5.6, 3.5), (-3.6, 7.0)])
+    else:
+        go_to(p, "RB", (8.0, 10.0), "run", via=[(-5.6, 3.5), (-3.8, 7.5), (-0.5, 9.5)])
+    go_to(p, "QB", (-2.6, 0.9), "path")
+    for k in ("LT", "LG", "C", "RG", "RT", "Y", "U"):
+        q = p.players[k]
+        go_to(p, k, (0.1, q.w + 1.1))
+    fld = draw(p, ax=ax, lateral=(-14.5, 14.5), window=(-8.8, 12.5), title=False)
+    if fast:
+        for pts in ([(4.5, -2.4), (3.6, 1.0), (2.6, 5.6)], [(4.5, 1.4), (3.4, 5.3), (2.2, 7.6)],
+                    [(4.5, 4.9), (0.0, 8.3)], [(8.0, 8.0), (1.4, 9.4)], [(12.0, -6.0), (10.5, 2.0), (7.5, 7.0)],
+                    [(1.0, -5.7), (-1.8, -5.2), (-3.8, -1.4)]):
+            flow(fld, p, pts)
+        xm, ym = _P(fld, p, -1.0, 9.3)
+        fld.ax.text(float(xm), float(ym), "\u2715", color=style.SERIES[7],
+                    fontsize=13, fontweight="bold", ha="center", va="center", zorder=13)
+        x0, y0 = _P(fld, p, 3.0, -6.0)
+        fld.ax.add_patch(Ellipse((float(x0), float(y0)), 8.0, 12.0, fc=GREEN, alpha=0.13, ec=GREEN, lw=1.0,
+                                 ls=(0, (3, 2)), zorder=1.5))
+        say(fld, p, 9.6, -5.6, "left side:\nnobody home", color=GREEN, fontsize=7.2, weight="bold")
+        say(fld, p, -5.6, -8.4, "the end chases\nfrom behind", color=style.DEFENSE_DARK, fontsize=6.8)
+        say(fld, p, -6.4, 9.6, "caught behind\nthe line", color=style.DEFENSE_DARK, fontsize=6.8)
+    else:
+        for pts in ([(4.5, -2.4), (4.3, -0.6)], [(4.5, 1.4), (4.2, 3.2)], [(4.5, 4.9), (4.0, 6.6)],
+                    [(8.0, 8.0), (7.2, 9.0)], [(12.0, -6.0), (11.7, -4.2)]):
+            flow(fld, p, pts)
+        say(fld, p, 9.6, 3.0, "linebackers wait\nto be sure", color=style.DEFENSE_DARK, fontsize=7)
+        say(fld, p, -6.6, 9.4, "the back\nwins the edge", color=GREEN, fontsize=7, weight="bold")
+    ax.set_title("Defense reacts slowly" if not fast else "Defense flies to the ball", fontsize=9, loc="left",
+                 color=style.INK, fontweight="bold")
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.5))
+dilemma(axes[0], False)
+dilemma(axes[1], True)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+**Perimeter runs** punish a defense that is slow to the edge. **[Misdirection](../../appendices/glossary.qmd#gl-misdirection)**, any play design that gets
+the defense to commit in one direction while the ball goes another, punishes a defense that is fast
+to it. The two families need each other: misdirection only works if the defense has a reason to run
+hard, and the only reason it has is that the perimeter run will beat it if it doesn't.
+
+## The perimeter blocks: crack and seal
+
+Outside runs need two kinds of block that you haven't met yet, because inside runs rarely need them.
+
+A [**crack block**](../../appendices/glossary.qmd#gl-crack-block) is a block thrown by a player lined
+up *outside* the play, usually a wide receiver or a wingback, who comes back *toward the ball* and hits
+a defender from the side. The usual target is a linebacker or safety who is watching the ball carrier
+and running to the edge, which is why the block is so effective: the defender's eyes are on the ball,
+his momentum is going outside, and the blocker arrives from a direction he isn't looking. You saw one
+animated in [02-04](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd), where a
+condensed split put the receiver close enough to crack in a step or two.
+
+A [**seal block**](../../appendices/glossary.qmd#gl-seal-block) is any block whose job is to *wall a
+defender off* from the ball's path, rather than to move him. On an outside run that usually means
+pinning an inside defender inside: the tight end steps down onto an end lined up on his inside
+shoulder, gets his body between that end and the sideline, and the back runs outside the wall. A seal
+doesn't need to drive the defender back a yard; it only needs to stay in the way while the ball goes by.
+Coaches use the word loosely (a [log block](03-03-gap-and-power-runs.qmd) by a puller who gets outside a
+defender and pins him in is a kind of seal), but the idea is always the same: *you don't move him, you
+shut him off.*
+
+The two blocks together make the classic outside run of the modern NFL, the
+[**crack-toss**](../../appendices/glossary.qmd#gl-crack-toss). 02-04's animation showed the crack and the
+puller. Here are the parts it skipped: the seal, exactly who replaces whom, and (after the figure) the
+rule that governs the crack and the defense's answer to it.
+
+```{python}
+#| label: fig-crack-seal
+#| fig-cap: "Crack-toss right from a condensed two-tight-end set (12 personnel; Z lines up only about 8½ yards from the ball, a yard off the line). The quarterback tosses to the back (R) heading right. Z (green ring) cracks back inside on the Sam linebacker (S), the force player. The purple rings are the two blockers who make the crack possible: the tight end Y seals the 7-technique end lined up on his inside shoulder, and the right guard pulls behind the line and replaces Z on the cornerback, kicking him out as he comes up. The right tackle blocks down on the 3-technique so the guard can leave (pin-and-pull). The back turns up in the lane between the crack and the kick-out; the safety (SS) is the defender left over. Backside, the linemen and the second tight end (U) cut off pursuit."
+off = check_legal(line() + [O("QB", "QB", -1.9, 0.0, "Q"), O("RB", "RB", -6.5, -0.5, "R"),
+                            O("Y", "TE", LINE_D, 4.8), O("U", "TE", LINE_D, -4.8),
+                            O("Z", "WR", OFF_D, 8.6), O("X", "WR", OFF_D, -9.5)])
+dfn = front(pe=("7", 4.2), pt=("3", 2.35), bt=("1", -0.7), be=("5", -4.0),
+            lbs=(("WILL", 4.5, -2.6, "W"), ("MIKE", 4.5, 1.4, "M"), ("SAM", 4.2, 7.0, "S")),
+            cb=(-11.0, 12.6), safeties=((12.0, -6.5), (11.0, 7.0)))
+p = Play(off, dfn, los=35, to_go=10, title="Crack-toss: the crack, the seal and the replace")
+p.pitch("RB", t=0.3)
+go_to(p, "QB", (-2.7, 1.0), "path", speed=3.0)
+go_to(p, "RB", (12.5, 10.3), "run", via=[(-5.8, 3.0), (-5.2, 6.2), (-4.2, 8.6), (-2.6, 10.1)])
+go_to(p, "Z", (3.4, 7.5), via=[(-0.2, 8.2)])                       # the crack, from the side
+go_to(p, "Y", (0.2, 4.5), via=[(-0.3, 5.0)])                       # the seal: step down, stay outside him
+go_to(p, "RG", (3.8, 12.0), "pull", via=[(-1.9, 2.6), (-2.8, 6.0), (-2.9, 8.6), (-1.4, 11.0)])   # pull and replace
+go_to(p, "RT", (0.4, 2.6), via=[(-0.4, 3.0)])                      # pin the 3
+go_to(p, "C", (3.2, 1.4), via=[(-0.2, 0.7)])                       # climb to the Mike
+go_to(p, "LG", (0.5, -0.1), via=[(-0.4, -0.9)])                    # cut off the 1
+go_to(p, "LT", (3.2, -1.8), via=[(-0.4, -2.6)])                    # climb to the Will
+go_to(p, "U", (0.4, -3.4), via=[(-0.5, -4.4)])                     # cut off the backside end
+go_to(p, "X", (8.0, -10.0), "route")                               # run the corner off
+p.highlight("Y", color=PURPLE); p.highlight("RG", color=PURPLE)
+fld = draw(p, lateral=(-14.0, 17.5), window=(-8.5, 14.5))
+zx, zy = _P(fld, p, -1.5, 8.6)                                     # a snug ring on Z, clear of the pull path
+fld.ax.add_patch(Circle((float(zx), float(zy)), 0.98, fc="none", ec=GREEN, lw=2.0, zorder=3.5))
+flow(fld, p, [(6.5, 12.6), (4.8, 12.5)], lw=1.3)                   # the corner comes up
+point_to(fld, p, (8.4, 4.4), (3.6, 7.3), "crack", color=GREEN, fontsize=7.4)
+point_to(fld, p, (3.3, 4.5), (0.5, 4.5), "seal", color=style.OFFENSE_DARK, fontsize=7.4)
+point_to(fld, p, (8.4, 15.6), (3.9, 12.1), "replace\n(kick-out)", color=style.OFFENSE_DARK, fontsize=7.2)
+point_to(fld, p, (-6.4, 13.4), (-2.8, 7.4), "RG's pull", color=style.OFFENSE_DARK, fontsize=6.8)
+say(fld, p, -6.6, -6.8, "backside: cut off\nthe pursuit", fontsize=6.8)
+plt.show()
+```
+
+Read @fig-crack-seal as a list of problems and answers. The Sam linebacker lined up outside the tight
+end is the defense's force player: if he gets outside the ball, the toss is dead. Nobody on the line
+can reach him in time, but Z, lined up just outside him, can hit him from the side before he gets
+going. The end is lined up on the tight end's inside shoulder (a 7-technique), so Y only has to keep him
+there: one step down, body between the end and the sideline, and hold. (If the end were lined up
+*outside* Y, in a 9, keeping him inside would take a *reach*, the hardest block a tight end is asked to
+make, and offenses usually build a different answer for that look.) The cornerback is now unblocked, so
+a lineman pulls around both blocks to get him. That's
+[**crack-and-replace**](../../appendices/glossary.qmd#gl-crack-and-replace): the receiver leaves his
+usual man to crack inside, and a puller replaces him.
+
+Who pulls varies, and this is why the 02-04 animation pulled the guard. Here the right tackle blocks
+down on the 3-technique and the right guard pulls behind him, the [pin-and-pull](03-03-gap-and-power-runs.qmd)
+logic of 03-03: the tackle has the better angle on the 3, the guard is free to go. Some teams pull the
+tackle instead, which is a shorter trip, as long as the guard can handle the 3 on his own; some pull
+both, and the second puller goes after the safety who is left over here. Every block on the play is an
+angle the defender wasn't expecting.
+
+The cost is that crack-toss is fragile in two specific ways. If the cracked defender sees it coming, he
+can duck under the crack and be in the backfield, and the puller has to choose between him and the
+corner. And the cornerback has an answer of his own: when he sees the receiver go inside, he yells
+"crack!" and comes up hard to take the force job himself. The puller still has him to block, but he now
+meets him sooner and tighter than planned, can only kick him out, and the back is forced to cut up
+inside, back toward the pursuit, instead of getting around the edge.
+
+::: {.callout-caution title="Common misconception"}
+"A crack block is a cheap shot." A *legal* crack is a hands-first block, from the side and chest-high,
+aimed at the defender's near number or armpit on the side he's facing. Receivers practise it the way
+linemen practise down blocks. What's illegal is hitting him low, hitting him in the head or neck, or
+leading with the shoulder, and if all the blocker can see is the back of the defender's jersey, it isn't
+a crack at all but a block in the back (10 yards), so a well-coached receiver lets that man go and finds
+another.[^backblock]
+
+The rules are strict because a defender hit from the side by a player running at him can't protect
+himself. The crackback rule (Rule 12, Section 2, Article 6) covers a player who lines up more than two
+yards outside the tackle, or starts in the backfield and is in motion or moves out that wide, and then
+blocks back toward the spot of the snap: within five yards of the line of scrimmage he may not hit a
+defender below the waist, nor in the head or neck (or in any other way banned against a defenseless
+player). It costs 15 yards.[^crackrule] Since 2019 a separate rule has also banned any *blindside* block,
+a forcible hit with the helmet, forearm or shoulder thrown while the blocker's path is toward or parallel
+to his own end line, outside the tight area around the snap,[^blindside] and from the 2026 season
+blindside blocks are one of the five fouls in the league's three-strike suspension policy (three in a
+season means a one-game suspension).[^threestrike] A crack runs parallel to the line, which is why the
+shoulder shot is gone and the hands-first block is the only kind you'll see.
+:::
+
+## The jet sweep: a running start at the edge
+
+The [**jet sweep**](../../appendices/glossary.qmd#gl-jet-sweep) is the purest perimeter play: a
+receiver in [jet motion](../../appendices/glossary.qmd#gl-jet-motion) takes the ball from the
+quarterback without slowing down and races for the edge on the side he's heading toward. You met the
+motion and the defense's three answers to it (travel, bump, spin) in
+[02-06](../02-personnel-and-formations/02-06-motion-and-shifts.qmd). This section is about the run itself,
+and about what it does to the linebackers.
+
+Three things make it work:
+
+- **The running start.** The receiver is already at full speed when the ball is snapped; the
+  defenders start from a standstill. The simple model in 02-06 put the gap at about three yards after
+  one second. On a play that is a race to the corner, three yards is the race.
+- **The angle.** He takes the ball roughly in front of the quarterback, and within a stride or two he
+  is past the far guard, already outside the box and heading for the edge. The defense's force player
+  has to cover more ground than he does.
+- **What it does to everyone else.** Linebackers are taught to read *keys*: usually a guard, the
+  running back, or the backfield as a whole, depending on the defense
+  ([05-04](../05-defensive-fronts-and-run-defense/05-04-linebackers-and-second-level.qmd) covers which).
+  But no key-reading rule lets a linebacker ignore a man crossing the backfield at full speed who might
+  have the ball, so his first steps tend to go with him. Whether or not the receiver gets the ball, the
+  defense's whole second level is now moving sideways, which is exactly what the rest of this chapter
+  takes advantage of.
+
+The mechanics vary. In some offenses the quarterback hands the ball off in front of himself; in others
+(Kansas City's, for one) he flips it forward a foot or two to a receiver passing in front of him, a
+"pop" or [shovel](../10-situational-football/10-03-red-zone-goal-line-and-short-yardage.qmd) toss that
+counts as a forward pass in the record books. The flip has a hidden advantage: if the exchange is
+botched, the ball on the ground is an incomplete pass, not a fumble.[^popPass] (It also means those
+plays won't appear in the run data later in this chapter.) Either way, the runner is gone before the
+defense has finished its first step.
+
+Some offenses go one step further and make the jet an [option](03-04-option-football.qmd). The
+quarterback reads a defender on the jet side, usually the end or whoever is responsible for the edge,
+exactly as 03-04's read option reads an end: if that defender widens to take the jet, the quarterback
+hands the ball inside; if he sits inside, the jet man gets it. The motion man's job is the same either
+way, which is why the defense can't tell from his speed or his path.
+
+```{python}
+#| label: fig-jet-sweep
+#| fig-cap: "A jet sweep left against a nickel defense playing zone (simulated, BDB-format tracking; faint lines are each player's path so far). 1: Z (green ring) sprints across in jet motion; nobody follows him, so the defense is in zone. 2: Z takes the handoff at full speed, and both linebackers (orange rings) are already moving toward him. 3: the linebackers and the nickel back run hard to the jet side; H blocks the nickel and X the cornerback, while the offensive line steps left and engages the defensive linemen. 4: Z is outside and past the linebackers, with the deep safety (FS) coming down as the last man to beat. The shaded area on the right, where the running back (R) faked a run, has no linebacker left in it: that is where the plays later in this chapter attack."
+def jet_formation():
+    """11 personnel from the gun: X on the line far left, H in the left slot (off the line), the tight end
+    attached on the right and Z off the line outside him. Seven on the line: the five linemen, X and Y."""
+    return check_legal(line() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -1.8, "R"),
+                                 O("X", "WR", LINE_D, -15.0), O("H", "WR", OFF_D, -8.5),
+                                 O("Y", "TE", LINE_D, 4.8), O("Z", "WR", OFF_D, 12.0)])
+
+
+def nickel(cb_l=-15.0, cb_r=12.5):
+    return front(pe=("9", 5.7), pt=("3", 2.35), bt=("1", -0.7), be=("5", -4.0),
+                 lbs=(("WILL", 4.5, -2.2, "W"), ("MIKE", 4.5, 1.8, "M")),
+                 extra=(("NB", "NB", 5.0, -8.0, "NB"),), cb=(cb_l, cb_r))
+
+
+def jet_sweep_play():
+    p = Play(jet_formation(), nickel(), los=35, to_go=10)
+    motion_to(p, "Z", [(-2.8, 7.5)], (-3.0, 2.2), speed=6.5)          # jet motion: ball snapped 2 yd short of Q
+    go_to(p, "Z", (13.0, -15.2), "run", speed=9.0,
+          via=[(-3.1, -0.5), (-2.6, -6.0), (-0.8, -11.0), (3.0, -13.6), (7.5, -14.6)])
+    p.handoff("Z", t=0.3)
+    go_to(p, "QB", (-4.4, -0.3), "path", speed=2.5)
+    go_to(p, "QB", (-5.6, 1.2), "path", speed=3.0, delay=0.1)          # then carry out a fake
+    go_to(p, "RB", (-1.4, 6.6), "path", delay=0.3, speed=5.5, via=[(-4.0, 0.6), (-2.8, 3.8)])  # fake a run right
+    # the line steps left (zone steps toward the sweep) and engages the down linemen
+    go_to(p, "LT", (0.4, -4.7), via=[(-0.4, -3.9)], speed=2.4)        # reach the 5
+    go_to(p, "LG", (1.1, -2.6), via=[(-0.4, -2.0)], speed=2.2)        # step, then climb through the gap
+    go_to(p, "C", (0.4, -1.4), via=[(-0.4, -0.8)], speed=2.2)         # reach the 1
+    go_to(p, "RG", (0.3, 1.6), speed=1.6)                             # cut off the 3
+    go_to(p, "RT", (0.2, 3.5), speed=1.6)
+    go_to(p, "Y", (0.3, 5.1), via=[(-0.5, 4.7)], speed=1.6)
+    go_to(p, "H", (2.6, -10.4), via=[(-0.6, -9.6)], speed=4.5)        # arc to the nickel
+    go_to(p, "X", (4.4, -16.6), speed=4.0, via=[(1.5, -15.4)])         # stalk the corner
+    # the defense: the down linemen fight the blocks; the second level flows hard to the jet
+    go_to(p, "DE_L", (1.3, -5.3), "path", speed=1.2)
+    go_to(p, "DT_L", (1.3, -1.9), "path", speed=1.0)
+    go_to(p, "DT_R", (1.2, 1.7), "path", speed=0.8)
+    go_to(p, "DE_R", (1.6, 4.4), "path", speed=1.0)
+    go_to(p, "WILL", (5.2, -11.2), "path", speed=5.5, via=[(4.0, -5.0), (4.4, -8.6)])
+    go_to(p, "MIKE", (5.6, -8.6), "path", speed=5.5, delay=0.05, via=[(4.2, -1.0), (4.6, -5.0)])
+    go_to(p, "NB", (3.2, -10.9), "path", speed=4.5, delay=0.15)
+    go_to(p, "LCB", (5.6, -16.9), "path", speed=2.8, via=[(7.6, -15.6)])
+    go_to(p, "FS", (9.6, -13.4), "path", speed=5.0, delay=0.3, via=[(11.0, -10.0)])
+    go_to(p, "SS", (10.4, -5.0), "path", speed=4.0, delay=0.4, via=[(11.5, 0.0)])
+    go_to(p, "RCB", (8.5, 8.8), "path", speed=2.5, delay=0.6)
+    return p
+
+
+def jet_empty(ax, fld, t):
+    """Last panel: shade the side the running back faked to, now empty of linebackers."""
+    if t < 2.0:
+        return
+    x0, y0 = (float(v) for v in fld.xy(*JET_PLAY.to_abs(5.0, 4.4)))
+    ax.add_patch(Ellipse((x0, y0), 9.0, 6.4, fc=GREEN, alpha=0.12, ec=GREEN, lw=0.9, ls=(0, (3, 2)), zorder=1.5))
+    ax.text(x0, y0 + 1.0, "empty", ha="center", va="center", fontsize=7.5, color=GREEN, fontweight="bold",
+            zorder=12)
+
+
+JET_PLAY = jet_sweep_play()
+JET_T = [-1.0, 0.5, 1.3, 2.6]
+JET_NOTES = ["Jet motion: Z sprints across;\nnobody follows him (zone)",
+             "Handoff at full speed; both\nlinebackers' first steps go with him",
+             "Linebackers and nickel fly to the\njet; H and X block on the edge",
+             "Z is around the corner. The right\nside, where R faked, is empty"]
+animated(JET_PLAY, JET_T, JET_NOTES, lateral=(-19.5, 14.0), window=(-7.0, 13.5),
+         rings=(("Z", style.THIRD), ("MIKE", style.DEFENSE), ("WILL", style.DEFENSE)), decorate=jet_empty)
+```
+
+Look at the third and fourth panels of @fig-jet-sweep, not at Z. Five defenders (both linebackers, the
+nickel back, the cornerback and the free safety) are all running toward the left sideline, and the
+defense's right side is down to two defensive linemen held at the line, a cornerback out wide and a
+safety rotating over the top, around grass nobody is using. That is the
+jet sweep's second job. Even when it gains four yards, it teaches the defense that the left sideline
+is where the danger is, and a defense that has learned that lesson will run there faster next time.
+
+**What it gives up.** The jet sweep is a high-variance play. When the force player holds the edge, the
+runner is caught going sideways behind the line, and the loss can be large because he started deep.
+The exchange happens at full speed between two players moving in different directions, which adds
+fumble risk (the forward flip is one answer). The risk is real but small: over the ten seasons
+2016–2025, receivers lost a fumble on about 0.65% of their carries, against 0.46% for running backs, a
+difference of roughly one extra lost fumble every 500 carries (course calculation from nflverse
+play-by-play; the receivers' figure rests on only 26 lost fumbles). And it uses a receiver as a runner, so every jet sweep is a play on which that receiver
+isn't running a route. Coaches accept all of that because of what the motion does to the defense when
+the ball goes somewhere else, which is the subject of the rest of the chapter.
+
+## End-arounds and reverses: sending the ball back
+
+If the defense is going to run hard one way, the obvious punishment is to give the ball to someone
+running the other way. There are two classic ways to do it, and broadcasters mix up their names all
+the time.
+
+An [**end-around**](../../appendices/glossary.qmd#gl-end-around) gives the ball to a receiver who comes
+back behind the line from his spot outside and runs toward the other side of the field. The quarterback
+hands it to him directly: one exchange. Usually the play starts with a fake the opposite way, so the
+defense flows toward the fake while the receiver runs away from it. (The name is older than the modern
+receiver: the "end" in end-around is the end of the line, the position that became the wide receiver
+and the tight end.)
+
+A [**reverse**](../../appendices/glossary.qmd#gl-reverse) has two exchanges. The ball first goes to a
+player running one way, usually a running back on a sweep, and he hands or pitches it to a teammate
+running the other way. The ball's direction *reverses* behind the line. A double reverse does it again.
+
+```{python}
+#| label: fig-reverse
+#| fig-cap: "Two ways to send the ball back against a defense flowing right (dashed orange arrows). Left, an end-around: the quarterback fakes a handoff to the running back going right, then hands the ball to Z, who came behind the line from his spot on the right and runs left. One exchange (football icon), about four yards deep. Right, a reverse: the quarterback hands off to the back going right, and the back hands the ball to Z coming the other way. Two exchanges, about six yards deep. In both, the play depends on the backside end (ringed). Here he does his job and stays home, so the left tackle has to get outside him and wall him inside, and the quarterback, once the ball is gone, leads up the field for the first defender who turns back."
+def reverse_play(kind):
+    off = check_legal(line() + [O("QB", "QB", -1.9, 0.0, "Q"), O("RB", "RB", -6.5, 0.0, "R"),
+                                O("X", "WR", LINE_D, -11.0), O("H", "WR", OFF_D, -7.0),
+                                O("Y", "TE", LINE_D, 4.8), O("Z", "WR", OFF_D, 9.0)])
+    dfn = front(pe=("9", 5.7), be=("5", -4.0), lbs=(("WILL", 4.5, -2.6, "W"), ("MIKE", 4.5, 1.6, "M")),
+                extra=(("NB", "NB", 5.0, -8.2, "NB"),), cb=(-11.0, 10.0))
+    p = Play(off, dfn, los=35, to_go=10)
+    if kind == "end-around":
+        go_to(p, "QB", (-3.4, 0.6), "path", speed=2.5)                         # fake to the back ...
+        go_to(p, "RB", (-1.0, 5.2), "path", speed=6.0, via=[(-5.0, 2.6)])      # ... who runs the fake right
+        go_to(p, "Z", (9.0, -11.8), "run", speed=7.5,
+              via=[(-3.2, 6.5), (-4.1, 2.0), (-4.2, -2.5), (-3.4, -6.4), (-0.4, -9.4)])
+        p.handoff("Z", t=1.1)
+        go_to(p, "QB", (2.8, -5.4), "path", speed=4.5, delay=0.5, via=[(-2.4, -3.2), (0.4, -4.6)])   # then lead
+        swaps = [("QB", 1.1)]
+    else:
+        go_to(p, "QB", (-4.0, 1.0), "path", speed=4.5)
+        p.handoff("RB", t=0.4)
+        go_to(p, "RB", (-4.8, 4.6), "run", speed=6.0, via=[(-4.6, 1.8)])
+        go_to(p, "Z", (8.5, -11.8), "run", speed=7.5,
+              via=[(-3.4, 7.0), (-5.0, 5.0), (-5.4, 0.0), (-4.4, -5.8), (-0.4, -9.4)])
+        p.handoff("Z", t=0.85)
+        go_to(p, "QB", (2.8, -5.4), "path", speed=4.5, delay=0.3, via=[(-2.6, -2.8), (0.4, -4.6)])
+        swaps = [("QB", 0.4), ("RB", 0.85)]
+    for k, end in (("C", (0.2, 0.8)), ("RG", (0.3, 2.6)), ("RT", (0.3, 4.2)), ("Y", (0.4, 6.0)),
+                   ("LG", (0.2, -0.6))):
+        go_to(p, k, end)                                                       # the line shows flow right
+    go_to(p, "LT", (0.7, -4.6), via=[(-0.6, -3.9)])                            # get outside the end, wall him in
+    go_to(p, "X", (5.0, -11.0))                                                # stalk the corner
+    go_to(p, "H", (3.8, -8.4))                                                 # block the nickel
+    p.highlight("Z")
+    return p, swaps
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.9))
+for ax, kind, ttl in [(axes[0], "end-around", "End-around: one exchange"),
+                      (axes[1], "reverse", "Reverse: two exchanges")]:
+    p, swaps = reverse_play(kind)
+    f = draw(p, ax=ax, lateral=(-14.5, 12.5), window=(-9.6, 12.0), title=False)
+    for pts in ([(4.5, -2.6), (3.6, 1.5), (3.0, 4.0)], [(4.5, 1.6), (3.4, 5.4)], [(12.0, -8.0), (9.6, -1.0)],
+                [(12.0, 8.0), (8.6, 9.6)]):
+        flow(f, p, pts)
+    x, y = _P(f, p, 1.0, -4.0)
+    ax.add_patch(Circle((float(x), float(y)), 1.25, fc="none", ec=style.DEFENSE, lw=1.8, zorder=7))
+    for who, t in swaps:                                                       # mark each exchange point
+        bx, by = (float(v) for v in _P(f, p, *p.position(who, t)))
+        ax.add_patch(Ellipse((bx, by), 1.2, 0.75, fc=style.BALL, ec="white", lw=0.6, zorder=11))
+    if kind == "end-around":
+        say(f, p, -6.8, 6.0, "fake", color=style.OFFENSE_DARK, fontsize=7)
+        point_to(f, p, (-8.2, -3.6), p.position("QB", 1.1), "Q to Z", color=style.OFFENSE_DARK, fontsize=6.8)
+    else:
+        point_to(f, p, (-8.0, -3.6), p.position("QB", 0.4), "1st: Q to R", color=style.OFFENSE_DARK, fontsize=6.8)
+        point_to(f, p, (-8.2, 7.0), p.position("RB", 0.85), "2nd: R to Z", color=style.OFFENSE_DARK, fontsize=6.8)
+    say(f, p, 7.8, 2.2, "defense flows right", color=style.DEFENSE_DARK, fontsize=6.8)
+    ax.set_title(ttl, fontsize=9, loc="left", color=style.INK, fontweight="bold")
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+Both plays bet on the same thing: that the defense will chase the first action hard enough to leave
+the other side empty. Both are beaten by the same defender, the end on the *backside* (the side away
+from the first action). He is the contain player on that side, and his rule in most defenses is not to
+chase flat down the line after the fake. He shuffles along behind the line at about the depth of the
+ball, trailing the play, and checks the three things that can come back his way before he commits:
+a bootleg, a counter, a reverse.[^backside] If he stays home like that, the reverse runs straight into
+him six yards behind the line of scrimmage. So the offense has to account for him. In @fig-reverse the
+left tackle's job is to get outside him and wall him inside, and the quarterback, once the ball is gone,
+leads up the field for the first pursuer who turns back. It is one of the few plays on which a
+quarterback is asked to block at all, and most coaches ask only that he get in the way of somebody.
+
+They are also rare. The NFL's play-by-play descriptions mention a reverse on only about 60 runs in the
+ten regular seasons 2016–2025, and on just one each in 2023 and 2024. Scorers don't always note a
+reverse, so treat those counts as a floor, but the trend is real enough. Those flagged runs averaged
+about eight and a half yards (course calculation), which is the pattern this chapter ends on: a play
+that pays well *because* it's called only when the defense has been caught chasing.
+
+**When you see one**, ask two questions. Which defender was responsible for the backside, and did he
+chase? And how deep was the exchange? A reverse handed off seven yards behind the line has to gain
+seven yards just to get back to zero. It's a play for a defense that has been caught chasing on film,
+not a play to run every week.
+
+## The Wing-T: an order of football
+
+Most of the ideas in this chapter were organized into a system long before the NFL adopted them. The
+[Wing-T](../02-personnel-and-formations/02-03-classic-formations.qmd), the formation with a wingback
+just outside and behind the tight end, was built by Dave Nelson at Maine and then the University of
+Delaware, where he coached from 1951 to 1965. His assistant Harold "Tubby" Raymond succeeded him and
+ran it for 36 more seasons, until 2001, winning 300 games, a total few coaches have reached at one
+school.[^raymond] Raymond, a Michigan graduate famous for painting a portrait of each of his senior players, and
+his assistant Ted Kempski wrote the book on it, and the title says what it is about: *The Delaware
+Wing-T: An Order of Football*.[^orderbook]
+
+The problem Nelson is usually said to have faced is the one every underdog coach faces: his players were usually not bigger
+or faster than the other team's. He couldn't win by blocking every defender one-on-one, so he built an
+offense that made defenders block *themselves*, by running to the wrong place.
+
+### The buck sweep
+
+The Wing-T's signature play is the [**buck sweep**](../../appendices/glossary.qmd#gl-buck-sweep). Its
+name tells you its two halves: the fullback fakes the *buck* (an old word for a straight plunge up the
+middle) and the halfback runs the *sweep*.
+
+The buck sweep is power football, the same family as the [gap schemes](03-03-gap-and-power-runs.qmd)
+of 03-03: down blocks to wall off the inside, pullers to add blockers at the point of attack. It is
+also a close relative of the most famous run in NFL history, Vince Lombardi's Packers sweep of the
+1960s, which also pulled both guards around a down-blocking line, and an ancestor of today's
+[pin-and-pull](03-03-gap-and-power-runs.qmd).
+
+```{python}
+#| label: fig-buck-sweep
+#| fig-cap: "The Wing-T buck sweep, right (wingback WB just outside and behind the tight end Y; halfback H, green ring, behind the left tackle; fullback F behind the quarterback; split end X on the left). Everything on the play side blocks down: the wingback on the end, Y on the Sam, the right tackle on the 3-technique. Both guards pull (purple rings), the right guard on the shallower path. He kicks out the first defender outside the wingback's block, here the cornerback, who is the force player because the defense is in a two-deep look with the safety (SS) deep behind him. The left guard follows and turns up inside the kick-out on the Mike, who has scraped outside (dashed outline: where the Mike gets to). The center blocks back into the hole the left guard left, and the fullback fakes the buck into the gap the right guard left. The halfback takes the handoff and follows the guards; the quarterback fakes a bootleg the other way."
+def wing_t():
+    """The Wing-T: Q under center, F behind him, H behind the left tackle, WB just outside and behind Y,
+    X split on the left. Seven on the line: five linemen, X and Y."""
+    return check_legal(line() + [O("QB", "QB", -1.9, 0.0, "Q"), O("FB", "FB", -4.5, 0.0, "F"),
+                                 O("HB", "RB", -4.5, -3.2, "H"), O("Y", "TE", LINE_D, 4.8),
+                                 O("WB", "WR", -1.6, 6.5, "WB"), O("X", "WR", LINE_D, -12.0)])
+
+
+def wing_t_d():
+    """Four-man front, three linebackers, two deep: the right corner squats at 5 yards (he is the force)."""
+    return front(pe=("9", 5.7), pt=("3", 2.35), bt=("1", -0.7), be=("5", -4.0),
+                 lbs=(("WILL", 4.5, -2.6, "W"), ("MIKE", 4.5, 1.3, "M"), ("SAM", 4.3, 4.6, "S")),
+                 cb=(-12.0, 10.8), safeties=((13.0, -6.0), (13.0, 7.5)))
+
+
+p = Play(wing_t(), wing_t_d(), los=35, to_go=10, title="Buck sweep right")
+p.players["RCB"] = p.players["RCB"].moved(d=5.0)                                   # squatting corner
+go_to(p, "QB", (-2.8, -0.9), "path", speed=3.0)                                  # reverse pivot
+go_to(p, "QB", (-5.4, -7.6), "path", speed=4.0, delay=0.25, via=[(-3.0, -1.6), (-3.6, -4.8)])  # fake a boot
+p.handoff("HB", t=0.8)
+go_to(p, "HB", (12.5, 8.9), "run", via=[(-5.6, -1.0), (-5.8, 3.0), (-5.0, 6.6), (-3.2, 8.8), (1.0, 9.0)])
+go_to(p, "FB", (-1.0, 1.0), "path", via=[(-2.6, 0.9)])                           # fake the buck, fill
+p.block("WB", target="DE_R"); p.block("Y", target="SAM"); p.block("RT", target="DT_R")
+go_to(p, "RG", (3.6, 10.2), "pull", via=[(-1.8, 2.6), (-2.0, 6.0), (-1.2, 9.6)])   # kick out the force
+go_to(p, "LG", (3.0, 7.4), "pull", via=[(-2.9, -0.7), (-3.2, 4.6), (-2.2, 7.4)])  # turn up inside
+go_to(p, "C", (0.2, -1.0), via=[(-0.4, -0.6)])                                   # block back
+go_to(p, "LT", (0.3, -3.4), via=[(-0.6, -3.8)])                                  # cut off
+go_to(p, "X", (8.0, -12.0), "route")
+p.highlight("HB"); p.highlight("RG", color=PURPLE); p.highlight("LG", color=PURPLE)
+fld = draw(p, lateral=(-14.5, 16.0), window=(-10.0, 14.0))
+flow(fld, p, [(5.0, 10.8), (4.1, 10.6)], lw=1.3)                                 # the corner comes up
+flow(fld, p, [(4.5, 1.3), (5.7, 3.4), (5.6, 6.2), (4.7, 7.3)], lw=1.3)          # the Mike scrapes, behind the Sam
+ghost(fld, p, 4.0, 7.9, "M")
+point_to(fld, p, (1.0, 13.6), (3.7, 10.3), "kick-out", color=style.OFFENSE_DARK, fontsize=7)
+point_to(fld, p, (8.6, 3.2), (3.1, 7.4), "LG turns up\non the Mike", color=style.OFFENSE_DARK, fontsize=6.8)
+point_to(fld, p, (-8.2, 9.4), (-1.9, 5.0), "RG pull", color=style.OFFENSE_DARK, fontsize=6.6)
+point_to(fld, p, (-8.2, 3.6), (-3.2, 2.6), "LG pull", color=style.OFFENSE_DARK, fontsize=6.6)
+say(fld, p, -7.9, -8.0, "Q: fake\nthe boot", color=style.OFFENSE_DARK, fontsize=6.8)
+plt.show()
+```
+
+What makes it a Wing-T play rather than just a sweep is everything that happens in the backfield
+*before* the ball goes outside. The quarterback *reverse-pivots*: instead of turning toward the
+sweep, he spins the other way, turning his back to the line of scrimmage, so for a moment nobody on the
+defense can see the ball. In that first second the defense sees the fullback plunge at the middle, the
+quarterback's back, the halfback run across, and both guards pull. Then, a
+beat later, the quarterback rolls the other way without the ball. A linebacker who reads the fullback
+steps up; one who reads the guards flies outside; one who reads the quarterback drifts backside. Only
+one of them is right. That is what the buck sweep punishes: a defense that respects the fullback. Every
+linebacker who takes a step up to stop the buck is a step late to the edge, where two guards are about
+to arrive.
+
+You'll rarely hear "buck sweep" on an NFL broadcast, but you'll see its shape. From the high sideline
+camera, look for two offensive linemen leaving the line at the snap and running *sideways* behind it
+toward one sideline while everyone in front of them blocks down toward the ball. When the back follows
+them around the end, that's the buck sweep's descendant, usually called a pull sweep or
+[pin-and-pull](03-03-gap-and-power-runs.qmd) in the modern game.
+
+### Series football: every play is the answer to the last one
+
+That first second is the point. Raymond's Wing-T was built as
+[**series football**](../../appendices/glossary.qmd#gl-series-football): groups of plays that begin with
+the *same* backfield action and end differently, each one designed to beat the defense's reaction to
+another. Chris Brown, writing about Raymond's influence, put the idea in one line: "each time a team
+tries to stop one thing, it opens itself up to something else."[^brown] The buck series is the
+classic example.
+
+```{python}
+#| label: fig-buck-series
+#| fig-cap: "The buck series as a conversation. Every play starts with the same first second (blue box, left). Each orange arrow is something the defense might do to stop the buck sweep, and the box it leads to is the play in the series that punishes that reaction. The plays are illustrative of the Wing-T's logic; real playbooks have more members and different names."
+fig, ax = plt.subplots(figsize=(6.6, 3.5))
+ax.set_xlim(0, 100); ax.set_ylim(0, 66); ax.axis("off")
+
+
+def box(x, y, w, h, title, body, ec, fc, title_fs=8.4, gap=6.4):
+    ax.add_patch(FancyBboxPatch((x - w / 2, y - h / 2), w, h, boxstyle="round,pad=0.4,rounding_size=1.4",
+                                fc=fc, ec=ec, lw=1.3, zorder=2))
+    ax.text(x - w / 2 + 2, y + h / 2 - 2.0, title, ha="left", va="top", fontsize=title_fs, fontweight="bold",
+            color=style.INK, zorder=3)
+    ax.text(x - w / 2 + 2, y + h / 2 - gap, body, ha="left", va="top", fontsize=7.0, color=style.INK_2,
+            zorder=3, linespacing=1.2)
+
+
+box(15, 31, 27, 30, "Buck sweep\n(the base play)", "F fakes up the\nmiddle; both guards\npull; H sweeps\nbehind them; Q\nfakes the boot away",
+    style.OFFENSE, style.OFFENSE_TINT, title_fs=8.6, gap=10.0)
+rows = [(54.5, "Buck trap", "F keeps it up the middle; a guard traps\nthe lineman left unblocked", "linebackers run\nwith the guards"),
+        (39.0, "Waggle", "Q keeps it and boots away behind the\npulling guards: run or throw", "backside end\nchases the sweep"),
+        (23.5, "Counter or reverse", "WB comes back the other way,\nagainst the flow", "whole defense\nflows to the sweep"),
+        (8.0, "Play-action deep", "same fake; the ends run past the\nsafety who came up to stop it", "a safety flies up\nto force")]
+for y, title, body, why in rows:
+    box(78, y, 42, 12.5, title, body, GREEN, style.SURFACE)
+    ax.add_patch(FancyArrowPatch((29.5, 31 + (y - 31) * 0.35), (56.0, y), arrowstyle="-|>", mutation_scale=11,
+                                 color=style.DEFENSE, lw=1.3, zorder=1))
+    ax.text(43.5, 31 + (y - 31) * 0.68 + 2.6, why, ha="center", va="center", fontsize=6.6,
+            color=style.DEFENSE_DARK, style="italic", zorder=3, linespacing=1.15,
+            bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none"))
+ax.text(43.5, 64, "if the defense...", ha="center", va="center", fontsize=7, color=style.DEFENSE_DARK)
+ax.text(78, 64, "...the series answers with", ha="center", va="center", fontsize=7, color=GREEN)
+plt.show()
+```
+
+Read @fig-buck-series from left to right. If the linebackers learn to fly outside with the pulling
+guards, the fullback, who faked into the middle on the sweep, keeps the ball this time, and the middle
+they just vacated is where he runs: the **buck trap**, a [trap](03-03-gap-and-power-runs.qmd) in which
+the defensive lineman left unblocked at the snap gets hit from the side by a pulling guard. If the
+backside end chases the sweep, the quarterback keeps the ball and rolls out behind him. If the whole
+defense flows, the wingback comes back the other way on a counter or reverse. If a safety races up to
+make the tackle on the sweep, the receivers run past him on
+[play-action](../04-the-passing-game/04-05-play-action-boots-screens.qmd) (a fake handoff followed by a pass).
+
+None of those plays is clever on its own. A trap is a trap. What makes the series work is that each
+play *looks like the others for the first second*, and that the defender's correct reaction to one is
+his wrong reaction to another.
+
+"Looks like" needs one honest qualification. The backfield is identical on the sweep and the trap, but
+the guards aren't. On the sweep both guards pull toward the sweep side. On the buck trap the far guard
+(the left guard here) still pulls toward that side, only a short distance, to trap the first defensive
+lineman past the center, while the near guard blocks straight ahead to the linebacker. So a linebacker
+who reads the backfield, or who reads the far guard, sees the sweep starting and flies outside; one
+who reads the *near* guard sees him coming straight at him and knows. That is why the series has more
+than one answer. The trap beats linebackers who chase the backfield and the pulling guard. The waggle
+beats the backside end. The [counter](03-03-gap-and-power-runs.qmd) beats a whole defense that flows: the wingback, who starts toward
+the sweep side as if to block, turns back and takes the ball going the other way, against the flow. The defense can't stop all of them by being fast or
+by being patient; it has to be right, play after play, about a fake it can't see through. That is what
+"an order of football" means: plays called in a deliberate order, each one asking the defense a
+question the previous one made it answer.
+
+The buck series is the most famous, not the only one. The Wing-T's other base family is the *belly*
+series. The fullback, instead of faking up the middle, takes the ball off tackle behind down blocks,
+often with a guard pulling to kick out the end man (a close cousin of 03-03's
+[power](03-03-gap-and-power-runs.qmd)). When the defense starts collapsing on the fullback, the
+quarterback fakes to him and keeps it, or runs an option to the outside off the same fake, and there is
+a waggle off belly action too, for teams that have learned to key the fullback. Buck and belly are two
+conversations running at once: one starts by threatening the middle and goes outside, the other starts
+off tackle and goes wider still.[^belly]
+
+### The waggle
+
+One member of the series reaches straight into the modern NFL. The
+[**waggle**](../../appendices/glossary.qmd#gl-waggle) is the Wing-T's play-action bootleg: the
+quarterback fakes the buck sweep (or another run) one way and rolls out the other, behind both guards,
+who pull to that side to protect him, with receivers spread at three depths on that side. Notice which
+way the guards go: *opposite* the backfield's flow. A linebacker who reads the backs runs one way while
+the blockers go the other.
+
+```{python}
+#| label: fig-waggle
+#| fig-cap: "The waggle, from the same Wing-T look and the same first second as the buck sweep. The halfback and fullback carry out their fakes to the right, and the linebackers flow with them (dashed orange). The quarterback keeps the ball and rolls left. Both guards pull left, the opposite way from the backfield's flow: the left guard kicks out the backside end (ringed), who is the first defender outside the tackle, and the right guard pulls flat behind him as the quarterback's personal protector, turning up on the first defender who comes for the edge. The quarterback has three receivers on his side at three depths: the fullback slipping into the flat (the area near the sideline just past the line) after his fake, the tight end Y on a crossing route from the other side, and the split end X running deep to clear out, taking the cornerback with him and emptying the space underneath. If nobody comes up to stop him, he runs."
+p = Play(wing_t(), wing_t_d(), los=35, to_go=10, title="Waggle left")
+p.players["RCB"] = p.players["RCB"].moved(d=5.0)
+go_to(p, "QB", (-2.8, -0.9), "path", speed=3.0)
+go_to(p, "QB", (-4.6, -10.4), "run", speed=5.0, delay=0.35, via=[(-4.0, -1.6), (-5.8, -2.6), (-5.6, -6.0)])
+go_to(p, "HB", (-3.0, 7.0), "path", via=[(-5.4, -1.0), (-5.0, 3.2)])            # fake the sweep
+go_to(p, "FB", (0.6, -10.8), "route", via=[(-2.6, 0.9), (-2.7, -0.8), (-2.8, -5.0), (-1.6, -8.6)])  # fake the buck, then the flat
+go_to(p, "LG", (0.3, -4.1), "pull", via=[(-1.4, -2.4)])                          # kick out the end
+go_to(p, "RG", (-0.9, -6.4), "pull", via=[(-1.8, 0.4), (-2.3, -4.4)])  # protect the quarterback
+go_to(p, "Y", (13.0, -9.0), "route", via=[(1.6, 3.6), (6.5, 2.4)])               # crosser, released inside the Sam
+go_to(p, "X", (18.5, -12.4), "route")                                            # clear out deep
+go_to(p, "WB", (2.0, 4.0), via=[(-1.0, 5.8)])
+for k, end in (("C", (0.2, 0.8)), ("RT", (0.3, 4.1)), ("LT", (0.2, -2.2))):
+    go_to(p, k, end)
+p.highlight("QB"); p.highlight("RG", color=PURPLE); p.highlight("LG", color=PURPLE)
+fld = draw(p, lateral=(-16.0, 13.0), window=(-11.0, 20.5))
+flow(fld, p, [(1.0, -4.0), (0.7, -3.3)], lw=1.3)
+x, y = _P(fld, p, 1.0, -4.0)
+fld.ax.add_patch(Circle((float(x), float(y)), 1.25, fc="none", ec=style.DEFENSE, lw=1.8, zorder=7))
+for pts in ([(4.5, -2.6), (3.8, 0.4)], [(4.5, 1.3), (3.6, 4.6)], [(4.3, 4.6), (3.6, 6.6)]):
+    flow(fld, p, pts, lw=1.3)
+say(fld, p, -2.6, 9.6, "the sweep fake", color=style.OFFENSE_DARK, fontsize=6.8)
+say(fld, p, 2.8, -10.6, "short:\nflat", color=GREEN, fontsize=7, weight="bold")
+say(fld, p, 14.2, -4.2, "medium: crossing route", color=GREEN, fontsize=7, weight="bold")
+say(fld, p, 17.4, -8.6, "deep: clear-out", color=GREEN, fontsize=7, weight="bold")
+say(fld, p, -9.0, -9.4, "Q: run\nor throw", color=style.OFFENSE_DARK, fontsize=6.8)
+plt.show()
+```
+
+If that picture looks familiar, it should. Replace the Wing-T backfield with a single back running
+[outside zone](03-02-zone-running.qmd) and you have the bootleg that Mike Shanahan's and Kyle Shanahan's
+offenses, and Sean McVay's, built on (taught in full in
+[Play-Action, Bootlegs, and Screens](../04-the-passing-game/04-05-play-action-boots-screens.qmd), where
+the version with no pulling guard at all, the *naked* bootleg, gets its own treatment). The waggle's
+idea, fake hard one way and put the quarterback on the edge the other way with three receivers at three
+depths, survived when the formation that invented it disappeared.
+
+## The Wing-T's children
+
+You will almost never see a true Wing-T in the NFL. You will see its children every Sunday.
+
+**The jet sweep.** Wing-T offenses already sent the wingback in motion, and the *fly sweep*, a
+handoff to a wingback or slot in full-speed motion behind an under-center quarterback, grew up beside
+them. Its exact origin is murky: many coaches credit Gene Beck's Delano High School teams in California
+in the 1950s. In the 1980s and 1990s coaches such as Mark Speckman built whole offenses around it, with
+a trap, a bootleg and passes off the same motion, and spread it through high school clinics; Dan
+Hawkins carried it from small-college Willamette to Boise State, where it helped launch the Broncos'
+run of winning offenses in 1999 and 2000.[^fly] So the fly sweep is the Wing-T's adopted child, not its
+own: Wing-T coaches, who already had the motion, took the play in, and the two are now usually taught
+together.
+Move the quarterback back to the shotgun, call the motion "jet," and you have the NFL play. Pro Football Focus counted 174 jet sweep
+runs across the league in 2017 and 309 in 2018, when they averaged 6.1 yards a carry and Sean McVay's
+Rams ran 48 of them, playoffs included.[^pffjet]
+
+**Gus Malzahn's Auburn.** The clearest line from Delaware to modern football runs through Gus Malzahn.
+As a young high school coach in Arkansas in the early 1990s, he taught himself offense from Raymond
+and Kempski's book; by the late 1990s he had moved to an up-tempo shotgun spread, but kept the
+Wing-T's plays and its series logic, and at Auburn he ran the buck sweep from the shotgun with pulling
+linemen and a receiver faking an end-around the other way.[^brownmalzahn] His 2013 team averaged more
+than 300 rushing yards a game, the first SEC team to do it in almost thirty years.
+
+**The NFL's misdirection revival.** When the McVay Rams and Kyle Shanahan's 49ers made jet motion a
+weekly staple in the late 2010s, they were doing what Raymond did with his backfield: one
+picture, several plays. Shanahan went a step further with Deebo Samuel, a receiver he lined up in the
+backfield, put in motion and handed the ball on sweeps, reverses and runs between the tackles, so that
+"which player is the runner" became one more question the defense had to get right. Andy Reid's Chiefs
+used jet and orbit motion to set up flips, shovels and screens back the other way. The formations are
+modern; the logic is the Wing-T's.
+
+## Eye candy: half a second is a gap
+
+Here is the payoff from @fig-jet-sweep. Once the defense has learned to fly at jet motion, the motion
+itself becomes a weapon even when the ball goes somewhere else. Coaches call this
+[**eye candy**](../../appendices/glossary.qmd#gl-eye-candy): motion and fakes by players who won't get
+the ball, designed to pull defenders' eyes and first steps the wrong way.
+
+How much can a fake buy? Not much, and that's enough. A linebacker who takes one hard step toward a jet
+fake and then has to come back has lost about half a second. Linebackers move at something like 5 to 7
+yards a second when they're trying to fill a hole; half a second is three yards. A hole on an inside
+run is a yard or two wide and stays open for less than a second. A linebacker three yards out of place
+doesn't fill it.
+
+```{python}
+#| label: fig-eye-candy
+#| fig-cap: "Eye candy: a jet fake left, an inside zone run right (simulated, BDB-format tracking). The dashed outlines are where the Mike linebacker (M) and the backside end (5) would be at the same moment if there had been no jet motion (a second simulation of the same play without the motion). 1: Z in jet motion; every defender's eyes go to him. 2: at half a second the quarterback has faked to Z and is handing to R (green ring). The Mike (orange ring) stepped toward the jet; without the fake he would already be filling the hole. 3: the right guard climbs to the Mike, who is only now coming back. 4: the back is through the hole. The backside end widened for the jet; his dashed outline, near the ball, shows where he would have been chasing the back from behind."
+def eye_candy_play(jet=True):
+    p = Play(jet_formation(), front(pe=("7", 4.0), pt=("1", 0.7), bt=("3", -2.35), be=("5", -4.0),
+                                    lbs=(("WILL", 4.5, -2.4, "W"), ("MIKE", 4.5, 1.2, "M")),
+                                    extra=(("NB", "NB", 5.0, -8.0, "NB"),), cb=(-15.0, 12.5)),
+             los=35, to_go=10)
+    if jet:
+        motion_to(p, "Z", [(-2.8, 7.5)], (-3.0, 2.2), speed=6.5)
+        go_to(p, "Z", (2.0, -15.5), "path", speed=8.0, via=[(-3.1, -0.5), (-2.6, -6.0), (-1.0, -11.0)])
+        go_to(p, "QB", (-4.5, -0.6), "path", speed=2.4)                 # ride the fake to Z ...
+        go_to(p, "QB", (-4.9, -0.1), "path", speed=2.0)                 # ... then turn to hand off
+        go_to(p, "MIKE", (4.4, -1.2), "path", speed=4.4)                # first steps: toward the jet
+        go_to(p, "MIKE", (3.6, 1.4), "path", speed=4.6)                 # then back to the run, late
+        go_to(p, "WILL", (4.3, -4.6), "path", speed=3.6)
+        go_to(p, "WILL", (3.6, -1.0), "path", speed=4.5)
+        go_to(p, "DE_L", (1.4, -6.6), "path", speed=2.2)                # widens to respect the jet
+        go_to(p, "NB", (3.6, -10.2), "path", speed=3.5)
+        go_to(p, "FS", (10.0, -10.5), "path", speed=3.0, delay=0.2)
+    else:
+        go_to(p, "MIKE", (2.5, 2.4), "path", speed=5.2)                 # no fake: he reads the run and fills
+        go_to(p, "WILL", (3.2, -0.5), "path", speed=4.5)
+        go_to(p, "DE_L", (-1.8, -0.6), "path", speed=2.4, delay=0.3, via=[(0.4, -3.2)])  # no fake: he chases from behind
+    p.handoff("RB", t=0.6)
+    go_to(p, "RB", (10.5, 3.8), "run", delay=0.15, speed=6.5,
+          via=[(-4.6, -0.4), (-2.6, 1.8), (0.4, 3.0), (5.0, 3.7)])
+    # inside zone right: the double teams and the climbs (03-02)
+    go_to(p, "C", (0.5, 0.6), speed=2.0); go_to(p, "DT_R", (1.5, 0.3), "path", speed=1.0)
+    go_to(p, "RG", (3.0, 1.1), via=[(-0.2, 1.1), (0.3, 1.2)], speed=2.6)
+    go_to(p, "RT", (0.6, 3.8), speed=2.0); go_to(p, "DE_R", (1.6, 4.2), "path", speed=0.9)
+    go_to(p, "Y", (3.6, 6.2), via=[(-0.2, 4.4), (0.4, 4.6)], speed=2.6)
+    go_to(p, "LT", (0.5, -2.6), speed=2.0); go_to(p, "DT_L", (1.4, -2.4), "path", speed=0.9)
+    go_to(p, "LG", (3.3, -1.3), via=[(-0.2, -1.9), (0.3, -2.0)], speed=2.6)
+    go_to(p, "H", (2.4, -9.8), speed=3.5)
+    go_to(p, "X", (10.0, -15.0), "route")
+    go_to(p, "SS", (9.0, 4.0), "path", speed=3.5, delay=0.5)
+    return p
+
+
+EYE_T = [-0.9, 0.5, 1.0, 2.2]
+EYE_NOTES = ["Jet motion: every defender's\neyes go to Z",
+             "Jet fake. The Mike stepped toward Z;\ndashed outline: where he'd be without it",
+             "The guard climbs to the Mike,\nwho is only now coming back",
+             "R is through the hole. The end (5) widened\nfor the jet; his outline shows where he'd be"]
+animated(eye_candy_play(True), EYE_T, EYE_NOTES, lateral=(-11.5, 10.5), window=(-7.0, 10.5),
+         rings=(("MIKE", style.DEFENSE), ("RB", style.THIRD)), ghosts=(eye_candy_play(False), ["MIKE", "DE_L"]))
+```
+
+Two defenders were taken out of @fig-eye-candy without being blocked. The Mike linebacker's first
+step went the wrong way, so the guard who climbed to him got there in time. And the backside end, who
+on a normal inside zone run is the unblocked defender who can chase the back down from behind (03-02
+spent a whole section on him), widened to protect against the jet sweep, so he was out of the play. One
+receiver running across the formation did the work of two blockers.
+
+That is the trade eye candy makes. The receiver in motion isn't blocking anybody, so the offense
+starts a man short at the point of attack, and the motion has to hold *more* than one defender for the
+play to come out ahead. It usually does only when the defense believes the motion. **Eye candy is only
+as good as the last time the ball actually went there.** Robert Woods, one of the 2018 Rams' two main
+jet-sweep runners, carried the ball only 19 times in the regular season,[^woods] but the Rams faked the jet
+constantly; the defense had to treat every fake as real because some of them weren't.
+
+How often is "sometimes"? Nobody publishes a count of jet *fakes*, so there is no clean ratio, but the
+shape is clear. In 2018 NFL offenses shifted or motioned before the snap on 43% of their plays, roughly
+27 plays a game, while even the Rams, the heaviest jet-sweep team in the league, handed the ball off on a
+jet sweep about twice a game.[^motion] Not every motion is jet motion, but the proportions tell you the
+real thing can be rare. It just can't be absent.
+
+Jet motion is the most common kind of eye candy, not the only one. An orbit motion behind the
+quarterback, a running back faking a sweep one way while the ball goes the other, a tight end running
+across the formation as though he's going to block, the quarterback carrying out a bootleg fake after
+he hands the ball off: all of them are designed to make a linebacker's eyes and feet do something
+for a fraction of a second that they shouldn't.
+
+::: {.callout-caution title="Common misconception"}
+"The jet motion was wasted; the guy didn't even get the ball." On most plays with jet motion the
+ball goes to someone else, by design. Judge the motion by what the defenders near it did. If two
+linebackers took a step toward the motion man and the run went through the gap one of them left, the
+motion was the most important "block" on the play.
+:::
+
+## How defenses fight back
+
+None of this is free for the offense, because good defenses train against every trick in this chapter.
+
+- **Keep the backside honest.** The backside end and the backside cornerback have rules on outside
+  runs, and the first rule is "don't chase until the ball has crossed the formation": check boot,
+  counter, reverse first. That kills reverses and end-arounds and makes bootlegs and waggles harder, at
+  the price of one fewer defender pursuing the play that really does go outside.
+- **Answer the crack.** When a receiver cracks inside, the cornerback over him yells "crack!" and
+  steps up to replace the man who was cracked as the force player. The puller still has him to block,
+  but meets him sooner and tighter than planned and can only kick him out, so the back has to cut
+  inside, back toward the pursuit. This is a zone rule: a cornerback playing man coverage on that
+  receiver follows him inside, so in man the defense needs someone else, usually a safety, to take
+  over the force.
+- **Spin to the motion.** Rotating a safety down toward the jet side at the snap (the *spin* of 02-06)
+  puts an extra defender at the edge, so the linebackers don't have to chase. The offense's counter is
+  to run the other way, into the side the safety left.
+- **Read your keys, not the motion.** This is the hard-line version of the keys idea from the jet
+  sweep section: tell the linebackers to read their guard (or the running back) and to leave the motion
+  man entirely to the safeties and corners. A guard stepping right means the run is going right,
+  whatever the jet man is doing. The problem is that the jet man is going *very fast*, and if nobody on
+  the second level gives him a thought, the edge belongs to him.
+
+Every one of these answers is @fig-edge-dilemma again from the defense's side: what stops misdirection
+makes the defense slower to the perimeter, and the reverse. The full catalog of run fits, including who
+forces and who *spills* (makes the ball bounce wider, toward help), is in
+[Run Fits](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd).
+
+## Constraint plays: why you can't just run it more
+
+Here is a puzzle in the numbers. When an NFL wide receiver carries the ball on a run, almost always on
+a jet sweep, an end-around or a reverse, the play works much better on average than a running back's
+carry. So why do teams hand it to receivers less than once a game?
+
+```{python}
+#| code-summary: "Show the Python (load 2016-2025 runs and tag the ball carrier's position)"
+#| output: false
+from gridiron.data import pbp, nfl
+
+YEARS = list(range(2016, 2026))
+runs = pbp(YEARS, columns=["season", "season_type", "play_type", "rusher_player_id", "epa", "success",
+                           "yards_gained", "qb_kneel", "down", "game_id", "posteam", "fumble_lost", "desc"])
+runs = runs[(runs["season_type"] == "REG") & (runs["play_type"] == "run") & (runs["qb_kneel"] == 0)
+            & runs["down"].notna()]
+rosters = nfl().load_rosters(YEARS).to_pandas()[["season", "gsis_id", "position"]]
+rosters = rosters.drop_duplicates(["season", "gsis_id"])
+runs = runs.merge(rosters, left_on=["season", "rusher_player_id"], right_on=["season", "gsis_id"], how="left")
+rb_wr = runs[runs["position"].isin(["RB", "WR"])]
+by_season = rb_wr.groupby(["season", "position"])["epa"].mean().unstack()
+team_games = runs.groupby("season")["game_id"].nunique() * 2
+wr_per_game = rb_wr[rb_wr["position"] == "WR"].groupby("season").size() / team_games
+profile = rb_wr.groupby("position").agg(
+    carries=("epa", "size"), epa=("epa", "mean"), success=("success", "mean"),
+    lost=("yards_gained", lambda s: (s < 0).mean()), big=("yards_gained", lambda s: (s >= 10).mean()))
+fumbles = rb_wr.groupby("position")["fumble_lost"].agg(["mean", "sum"])          # lost fumbles per carry
+wr = rb_wr[rb_wr["position"] == "WR"]
+wr_se = wr.groupby("season")["epa"].agg(lambda e: e.std() / np.sqrt(len(e)))     # noise in one season's mean
+team_wr = wr.groupby(["season", "posteam"])["epa"].agg(["size", "mean"])          # volume vs value, by team-season
+vol_r = team_wr["size"].corr(team_wr["mean"])
+la18 = runs[(runs["season"] == 2018) & (runs["posteam"] == "LA")]
+reverses = runs[runs["desc"].str.contains(r"\breverse\b", case=False, na=False)]  # scorer flagged a reverse
+```
+
+```{python}
+#| echo: false
+#| output: false
+# guard the numbers quoted in the text against a data refresh
+assert abs(profile.loc["WR", "epa"] - 0.10) < 0.02 and abs(profile.loc["RB", "epa"] + 0.07) < 0.02
+assert abs(profile.loc["WR", "success"] - 0.51) < 0.02 and abs(profile.loc["RB", "success"] - 0.39) < 0.02
+assert abs(profile.loc["WR", "lost"] - 0.15) < 0.02 and abs(profile.loc["RB", "lost"] - 0.10) < 0.02
+assert abs(profile.loc["WR", "big"] - 0.22) < 0.02 and abs(profile.loc["RB", "big"] - 0.10) < 0.02
+assert wr_per_game.max() < 0.95 and wr_per_game.min() > 0.55
+assert (by_season["WR"] > by_season["RB"]).all()
+assert abs(fumbles.loc["WR", "mean"] - 0.0065) < 0.001 and abs(fumbles.loc["RB", "mean"] - 0.0046) < 0.001
+assert fumbles.loc["WR", "sum"] == 26
+assert wr_se.between(0.04, 0.08).all() and abs(vol_r) < 0.15
+assert (la18["position"] == "WR").sum() == 35 and len(la18) == 437 and team_wr["size"].max() <= 72
+assert 55 <= len(reverses) <= 65 and abs(reverses["yards_gained"].mean() - 8.5) < 0.4
+assert (reverses["season"].isin([2023, 2024]).sum() == 2)
+```
+
+```{python}
+#| label: fig-wr-runs
+#| fig-cap: "Wide receivers as runners, NFL regular seasons 2016–2025. Left: expected points added (EPA) per carry by the ball carrier's position. A running back's average carry loses a little expected value every season; a wide receiver's is worth more than a running back's in every season, and is positive in eight of the ten. Right: the shape of the outcomes, all ten seasons pooled. Receiver runs are more often successful and twice as often go for 10 or more yards, but they also lose yards more often. League-wide there were only 0.6 to 0.9 receiver carries per team per game. Runs only (jet flips scored as forward passes are not included); kneel-downs removed; position from nflverse season rosters. Data: nflverse play-by-play via nflreadpy; course calculation."
+fig, (a1, a2) = plt.subplots(1, 2, figsize=(6.6, 3.0), gridspec_kw={"width_ratios": [1.35, 1]})
+WR_C, RB_C = style.OFFENSE, style.MUTED
+a1.axhline(0, color=style.BASELINE, lw=0.9, zorder=1)
+for pos, col, lab in (("WR", WR_C, "Wide receivers"), ("RB", RB_C, "Running backs")):
+    a1.plot(by_season.index, by_season[pos], color=col, lw=2, marker="o", ms=4.5, mec=style.SURFACE, mew=1.2)
+    a1.text(2025.35, by_season[pos].iloc[-1], lab, color=style.INK_2, fontsize=7.5, va="center", ha="left")
+a1.set_xlim(2015.5, 2028.6)
+a1.set_xticks([2016, 2018, 2020, 2022, 2024])
+a1.set_ylabel("EPA per carry", fontsize=8)
+a1.set_title("Value per carry, by season", fontsize=9)
+a1.tick_params(labelsize=7.5)
+labels = ["Lost yards", "Successful (EPA > 0)", "Gained 10+ yards"]
+cols = ["lost", "success", "big"]
+yy = np.arange(len(cols))
+for off_, pos, col in ((-0.19, "WR", WR_C), (0.19, "RB", RB_C)):
+    vals = profile.loc[pos, cols].values * 100
+    a2.barh(yy + off_, vals, height=0.36, color=col, edgecolor=style.SURFACE, linewidth=1.5)
+    for y_, v in zip(yy + off_, vals):
+        a2.text(v + 1.0, y_, f"{v:.0f}%", va="center", fontsize=7.2, color=style.INK_2)
+a2.set_yticks(yy, labels, fontsize=7.5)
+a2.invert_yaxis()
+a2.set_xlim(0, 64)
+a2.set_xlabel("share of carries (%)", fontsize=8)
+a2.tick_params(axis="x", labelsize=7.5)
+a2.grid(axis="y", visible=False)
+a2.set_title("Outcomes, 2016–2025", fontsize=9)
+fig.legend(handles=[Line2D([], [], color=WR_C, lw=6, label="Wide receivers"),
+                    Line2D([], [], color=RB_C, lw=6, label="Running backs")],
+           loc="lower center", ncol=2, fontsize=7.5, bbox_to_anchor=(0.5, -0.02), frameon=False)
+fig.tight_layout(rect=(0, 0.07, 1, 1), w_pad=1.5)
+plt.show()
+```
+
+The numbers in @fig-wr-runs are striking. Across ten seasons, a running back's carry was worth about
+**−0.07** expected points on average and succeeded (gained expected points) 39% of the time. A
+receiver's carry was worth about **+0.10** and succeeded 51% of the time, and it gained ten or more
+yards on 22% of carries, more than twice the running backs' rate. That gap, 0.17 expected points a
+play, is enormous. In [01-02](../01-foundations/01-02-downs-distance-and-field-position.qmd)'s terms, a
+tenth of a point per play is the difference between a good offense and an average one; the receiver's
+edge over the back is nearly twice that.
+
+But notice the other bar: receivers *lose* yards on 15% of their carries, against 10% for backs. That
+is the jet sweep and reverse caught behind the line. And notice the volume: well under one receiver
+carry per team per game, every season. Teams aren't ignoring free yards. The yards come *from* the
+rarity.
+
+Coaches call plays like these [**constraint plays**](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd),
+plays whose main job is to punish the defense for overplaying the offense's *base* plays, the bread-and-butter
+runs and passes it calls most. The idea is developed fully in
+[Constraint Theory](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd), but the shape is
+already visible here. A jet sweep gains a lot when the defense isn't ready for it, and the defense
+isn't ready for it because the offense mostly runs something else. Run it twenty times a game and the
+defense would stop playing the inside run and start sitting on the edge, the jet sweep would turn into a
+two-yard loss, and the inside run would get worse too, because the linebackers would no longer be
+taking those hard first steps toward the motion. The value of a misdirection play lives partly in
+the plays it *isn't*.
+
+You may be thinking of the 2018 Rams, who ran the jet sweep twice as often as anyone and still got
+about +0.44 expected points per receiver carry (more in the Film room). Fair objection, and the data
+answers part of it. Across the ten seasons, the teams that handed the ball to receivers more often did
+not do worse with it: the correlation between a team's receiver carries in a season and their average
+value is close to zero (about 0.07). But "more often" is relative. The Rams' 35 receiver carries were 8%
+of their 437 runs, about two a game, and no team in those ten seasons went much beyond four a game.
+Nobody has tried twenty, so the data can't show the collapse. What it shows is that every team, the
+Rams included, stayed in the range where the play still surprises. Their trick was keeping the
+*motion* constant and the *carry* rare.
+
+The same caution applies when you read the chart. Some of the receivers' edge is selection: coaches
+call these plays when the film says the defense is vulnerable to them, and the defense often isn't
+expecting a receiver run at all. That is not a flaw in the numbers; it's the point. A constraint play's
+average looks great *because* it's called at the right moments. And don't read much into one season's
+wiggle, such as 2024's dip below zero: with only 300 to 500 receiver carries a season, any single
+season's average is uncertain by about a tenth of a point either way.
+
+::: {.callout-important title="Why it exists"}
+Misdirection exists because pursuit works. A defense that runs to the ball fast and together is the
+best answer to almost every run in football, so the offense needs plays that make running fast to the
+ball a mistake: plays that go back the other way (reverses, counters, waggles) and motion that makes the
+defense run to the wrong place (eye candy). The price is risk and blockers: misdirection plays lose
+yards more often, take longer to develop, and use players as decoys who could have been blocking. They
+work only in the right dose, which is why the best offenses build them into series, so the base play and
+its answers look the same until it's too late.
+:::
+
+## Film room
+
+::: {.callout-note title="Film room: Delaware, 1966-2001 (Tubby Raymond's Wing-T)"}
+There is no tracking data for Raymond's Delaware teams, and you don't need it. If you can find old
+Blue Hens film, watch the backfield and not the ball for the first second of any play: the fullback
+plunging, the quarterback spinning with his back to the line, the halfback crossing, both guards
+pulling. Then watch the linebackers. On the buck sweep they are a step slow to the outside because
+the fullback's fake made them look inside first; on the trap and the waggle they are a step out of the
+middle because the sweep has been killing them. The plays changed little for decades. Delaware kept
+winning with them because the defense's problem never went away: a defense has to react to *something*,
+and everything it can react to is a fake on most plays.
+:::
+
+::: {.callout-note title="Film room: Auburn 2013 (Gus Malzahn)"}
+Malzahn's 2013 Auburn team, led by quarterback Nick Marshall and running back Tre Mason, ran for more
+than 300 yards a game and reached the national championship game. What to notice: the buck sweep from
+the shotgun. The guards pull exactly as in @fig-buck-sweep, but the quarterback is five yards deep and
+the "halfback" is lined up beside him. A receiver often runs across the backfield the other way, faking
+the end-around, the Wing-T's buck fake moved to a different player. And the series is there too: the
+same look produces the sweep, an inside run and a quarterback keep.[^auburn]
+:::
+
+::: {.callout-note title="Film room: Los Angeles Rams 2018 (Sean McVay)"}
+The 2018 Rams made the jet sweep an NFL staple: PFF counted 48 of them, playoffs included, twice as
+many as any other team.[^pffjet2] In the nflverse play-by-play, Rams wide receivers carried the ball 35
+times in the regular season, and those carries averaged about +0.44 expected points, among the best in
+the league that year (course calculation). The two counts differ because a charting service tags the
+*play*, while play-by-play records who carried the ball, and some jet plays are scored as passes.
+What to notice: the jet sweep is blocked like [outside zone](03-02-zone-running.qmd), the whole line
+stepping toward the sweep, so for the first second it looks exactly like the Rams' base run going the
+same direction. Then watch the next play with the same motion: often the ball goes the other way, or the
+quarterback fakes it and throws.
+:::
+
+::: {.callout-note title="Film room: San Francisco 49ers, Super Bowl LIV (2019 season)"}
+Deebo Samuel was a rookie receiver in 2019 who ran the ball 14 times for 159 yards and three
+touchdowns in the regular season.[^deebo] In Super Bowl LIV against Kansas City he carried three times
+for 53 yards, two of them gains of 32 and 14 yards around the ends, at the time the most rushing yards
+by a wide receiver in a Super Bowl.[^deebosb]
+What to notice: the 49ers didn't hide that Samuel might get the ball. They moved him around so the
+defense had to decide, on every snap, whether the receiver crossing the formation was a decoy. When
+linebackers stayed home to stop the inside run, he got the ball at the edge; when they chased him, the
+49ers handed the ball to Raheem Mostert on their zone run going away from the motion. By 2021, as [02-06](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)
+showed, Samuel was effectively a second running back.
+:::
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it"}
+**Watch the second level.** On every play with jet or orbit motion:
+
+*Before the snap*
+
+- Find the motion man and the side he's heading to. Does anyone travel with him (man coverage), does
+  everyone slide a spot (zone), or does a safety spin down toward his side?
+- Find the two linebackers and the backside end. These are the players whose reaction you'll grade.
+
+*At the snap: forget the ball for one second*
+
+- Watch the linebackers' eyes and feet. Did they take a step toward the motion? Did they keep going?
+- Did the backside end chase flat down the line after the motion, or stay home, trailing at the depth
+  of the ball and watching for a boot, counter or reverse?
+
+*After the play*
+
+- Where did the ball go? If it went *with* the motion: did the force player hold the edge, or did
+  the runner beat him? Was there a crack block on the edge?
+- If it went *away* from the motion: were the linebackers late because they chased? That's eye candy
+  working.
+- If the defense has been chasing all game, start expecting the play that goes back the other way: a
+  counter, a reverse, a bootleg.
+
+For your prediction log ([01-06](../01-foundations/01-06-how-to-watch-a-broadcast.qmd)): on every jet
+motion, write **G** (the motion man gets it) or **F** (fake) before the snap, then **C** if the
+linebackers chased, **H** if they held. Count a forward flip to the motion man as **G**: to the defense
+it's the same play. After a game you'll have a small table of what this defense does
+with motion, which is exactly what offensive coordinators study during the week.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play"}
+**Drill 1.** First-and-10, ball on the offense's own 35. The offense has run three jet sweeps to the
+left today, for 9, 12 and 7 yards, and on all three the defensive end on the right (the 9, ringed) chased
+the jet flat down the line from the backside. Here Z goes in jet motion again, right to left. This time,
+as he crosses, the free safety (FS, ringed) comes down hard toward the left edge and the strong safety
+rotates to the deep middle. The two linebackers (W and M) don't move. Should the quarterback give Z the
+jet sweep? If not, what would you run off the same motion, and why?
+
+```{python}
+#| label: fig-predict-1
+#| fig-cap: "Drill 1, at the snap. Z (green ring) is in jet motion from the right (dashed blue path). The free safety (FS, ringed) has spun down toward the left edge and the strong safety (SS) has rotated to the deep middle; hollow outlines show where they started. The linebackers (W, M) haven't moved. The right end (the 9, ringed) is the player who chased the last three jets (dashed orange)."
+p = Play(jet_formation(), nickel(), los=35, to_go=10, title="Drill 1: jet motion, safety spins down")
+p.players["Z"] = p.players["Z"].moved(d=-3.0, w=2.2)
+p.players["FS"] = p.players["FS"].moved(d=7.0, w=-11.0)
+p.players["SS"] = p.players["SS"].moved(d=13.5, w=0.5)
+p.highlight("Z", color=style.THIRD); p.highlight("FS", color=style.DEFENSE); p.highlight("DE_R", color=style.DEFENSE)
+fld = draw(p, lateral=(-19.0, 15.0), window=(-8.0, 16.0))
+dashed(fld, p, [(-1.5, 12.0), (-2.8, 7.5), (-3.0, 3.3)])
+ghost(fld, p, 12.0, -8.0, "FS"); ghost(fld, p, 12.0, 8.0, "SS")
+flow(fld, p, [(11.3, -8.6), (7.7, -10.6)], lw=1.2)
+flow(fld, p, [(12.2, 7.0), (13.4, 1.6)], lw=1.2)
+flow(fld, p, [(2.0, 5.9), (2.5, 4.2), (2.5, 0.2)], lw=1.2, alpha=0.6)
+say(fld, p, -5.4, 9.4, "jet motion", color=style.OFFENSE_DARK, fontsize=7)
+say(fld, p, 9.6, -15.2, "free safety\nspins down", color=style.DEFENSE_DARK, fontsize=7)
+say(fld, p, 3.2, 9.6, "the 9 chased the\nlast three jets", color=style.DEFENSE_DARK, fontsize=6.8)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**No jet sweep. Fake it, and come back right: a bootleg or a quarterback keep to the right, or an outside
+run that way.** The free safety's spin has done the job the linebackers usually do: the defense now has
+an extra player at the left edge before the play starts, so the jet sweep would run into the cornerback,
+the nickel *and* a safety coming downhill. Meanwhile the linebackers stayed home, so a fake to the jet
+won't move them either.
+
+The space is on the **right**. The strong safety has left it for the deep middle, and the one defender
+whose job is to guard that side against plays coming back, the backside end, has chased the jet three
+times in a row. If he chases the fake again, nobody contains the quarterback: fake the jet left and
+boot right, with the tight end and the running back releasing to that side (the waggle's descendant).
+That is the series idea from the Wing-T section applied to one defender. If the end stays home this time,
+the outside run right, into the side the strong safety left, is the safer call.
+
+Compare this with the jet drill in [02-06](../02-personnel-and-formations/02-06-motion-and-shifts.qmd),
+where the linebackers didn't move and *nobody* replaced them at the edge, so the jet was the right
+answer. Same linebackers, different safety, opposite call. An offense that runs the jet as an option
+(see the jet sweep section) lets the quarterback make the first half of that decision at the snap.
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 2.** Second-and-4. The offense is in the Wing-T and has run the buck sweep right twice in a row
+from this look. Both times, at the snap, the Mike and Will linebackers (ringed) ran hard to the right with
+the pulling guards (their paths from those plays are shown in orange). The offense lines up in the same
+formation again. What does series football call now, and why?
+
+```{python}
+#| label: fig-predict-2
+#| fig-cap: "Drill 2: the Wing-T look again (wingback WB outside the tight end on the right, halfback H behind the left tackle, fullback F behind the quarterback). Dashed orange arrows show where the two linebackers (ringed) ran on the last two buck sweeps, as soon as they saw the guards pull."
+p = Play(wing_t(), wing_t_d(), los=35, to_go=None, title="Drill 2: same look, third time")
+p.players["RCB"] = p.players["RCB"].moved(d=5.0)
+p.highlight("MIKE", color=style.DEFENSE); p.highlight("WILL", color=style.DEFENSE)
+fld = draw(p, lateral=(-14.5, 14.5), window=(-7.0, 15.5))
+flow(fld, p, [(4.5, 1.3), (5.7, 4.4), (5.0, 8.2)], lw=1.4)
+flow(fld, p, [(4.5, -2.6), (3.3, 0.2), (3.0, 3.8)], lw=1.4)
+say(fld, p, 8.6, 4.6, "last two plays: the\nlinebackers flew to\nthe pulling guards", color=style.DEFENSE_DARK,
+    fontsize=6.8)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The buck trap: the fullback keeps the ball up the middle.** The first second will look the same as
+the sweep: the quarterback reverse-pivots, the halfback runs across, the fullback heads for the middle,
+and the far (left) guard pulls toward the right exactly as he did on the sweep. But this time the
+fullback has the ball, and the left guard's pull is a short one: he traps the first defensive lineman
+past the center, who was left unblocked at the snap, hitting him from the side. The fullback runs
+through the gap where that lineman *was*, straight into the space the two linebackers are about to
+vacate by chasing the pull. The more the linebackers trust what they saw on the last two plays, the
+bigger the hole.
+
+Why not something else? The waggle punishes the *backside end* for chasing, and the drill told you
+about the linebackers. A reverse or counter punishes the *whole defense* flowing, and here only the
+second level is flowing hard. Series football means picking the member of the series that beats the
+specific reaction you saw. On second-and-4 an inside run that only needs four yards is also exactly
+the right risk.
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 3.** First-and-10. The offense is in a condensed two-tight-end set, this time with X lined up
+tight on the *left*, about eight yards from the ball and inside the cornerback. It has run the
+crack-toss to the left twice from this look. Both times the cornerback (ringed) read X stepping inside,
+yelled "crack!" and came flying up to take the force (his paths are shown in orange), and the tosses
+gained 1 yard and lost 2. Same alignment again. You're the offensive coordinator. What do you call, and
+what is X's job?
+
+```{python}
+#| label: fig-predict-3
+#| fig-cap: "Drill 3: a condensed two-tight-end set to the left. X (green ring) is about 8½ yards from the ball, a yard off the line and inside the cornerback (CB, ringed). The Sam linebacker (S) is between the tight end U and X. Dashed orange: the cornerback's reaction on the last two crack-tosses, straight up to the line as soon as X stepped inside."
+off = check_legal(line() + [O("QB", "QB", -1.9, 0.0, "Q"), O("RB", "RB", -6.8, 0.0, "R"),
+                            O("Y", "TE", LINE_D, 4.8), O("U", "TE", LINE_D, -4.8),
+                            O("X", "WR", OFF_D, -8.6), O("Z", "WR", OFF_D, 10.5)])
+dfn = front(pe=("5", 4.0), pt=("1", 0.7), bt=("3", -2.35), be=("7", -4.2),
+            lbs=(("WILL", 4.5, 2.6, "W"), ("MIKE", 4.5, -1.4, "M"), ("SAM", 4.2, -7.0, "S")),
+            cb=(-12.4, 12.0), safeties=((11.0, -7.0), (12.0, 6.5)))
+p = Play(off, dfn, los=35, to_go=10, title="Drill 3: same look, third time")
+p.highlight("X", color=style.THIRD); p.highlight("LCB", color=style.DEFENSE)
+fld = draw(p, lateral=(-17.0, 14.0), window=(-8.5, 14.5))
+flow(fld, p, [(6.0, -12.4), (2.4, -11.2), (0.8, -9.8)], lw=1.3)
+say(fld, p, -3.6, -11.4, "X: inside\nthe corner", color=GREEN, fontsize=7)
+say(fld, p, 8.6, -12.6, "last two plays:\ncorner flies up", color=style.DEFENSE_DARK, fontsize=6.8)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Fake the crack and throw it over the cornerback, or switch the blocks.** The corner has learned that
+X stepping inside means "crack-toss," and he is now reacting to that first step before he knows what
+it is. Use it:
+
+- **The pass.** Run the same toss fake. X takes his crack step inside, the corner flies up, and X
+  turns upfield behind him. The deep safety on that side is the only defender who can help, and he has
+  been watching two tosses too. This is a play-action pass, the family taught in
+  [Play-Action, Bootlegs, and Screens](../04-the-passing-game/04-05-play-action-boots-screens.qmd).
+- **The run.** Keep the toss, but swap jobs. A corner who sprints to the line is the easiest man on
+  the field for X to block, because he is running straight at him, so X blocks the corner and the
+  puller takes the Sam instead.
+
+Either way the offense is doing to one cornerback what the Wing-T does to a whole defense: his correct
+answer to the last play is his wrong answer to this one. The defense's counter-counter is to have the
+corner hold his ground for a count and let a safety take the force, which is why you'll see crack
+looks answered differently from week to week.
+:::
+:::
+
+## Takeaways
+
+- Outside runs are a **race** between the ball and the defense's pursuit. The defense wins it with a
+  **force** player (usually the outermost defender near the line) who turns the ball back inside and
+  everyone else pursuing fast. Perimeter plays punish
+  a slow defense; misdirection punishes a fast one, and each family needs the other.
+- Two blocks make outside runs work: the **crack block**, a receiver or wing hitting an inside defender
+  from the side (above the waist, by rule), and the **seal block**, walling a defender off rather than
+  moving him. Together with a puller replacing the cracking receiver, they make the **crack-toss**.
+- The **jet sweep** turns jet motion's running start into a race the defense starts a step behind, and
+  pulls the linebackers sideways even when the ball goes elsewhere. **End-arounds** (one exchange) and
+  **reverses** (two) send the ball back against the flow and live or die on the backside end, whose
+  rule is to stay home and check boot, counter, reverse.
+- The **Wing-T** organized all of this as **series football**: the **buck sweep** and the plays that
+  look the same for one second and punish each reaction to it (the trap, the **waggle**, the counter),
+  with the belly series as a second conversation. Its children are the NFL's jet sweeps, pull sweeps
+  and bootlegs.
+- **Eye candy** is motion or a fake that holds defenders without blocking them. Half a second is about
+  three yards, which is a gap. It works only as long as the motion is sometimes real.
+- Receiver runs are rare (under one per team-game) and, on average, much more valuable than running back
+  carries, with more lost-yardage plays. They are **constraint plays**: their value comes from the base
+  plays they punish, which is why you can't simply run them more.
+
+## Connections
+
+**Builds on:** [Gap Schemes](03-03-gap-and-power-runs.qmd) (pullers, kick-outs, logs, trap, toss and
+pin-and-pull), [Motion and Shifts](../02-personnel-and-formations/02-06-motion-and-shifts.qmd) (jet, fly and
+orbit motion, and the defense's travel, bump and spin), [Zone Running](03-02-zone-running.qmd) (outside zone,
+the backside end, the bootleg), [Classic Formations](../02-personnel-and-formations/02-03-classic-formations.qmd)
+(the Wing-T formation) and [Spread and Modern Formations](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)
+(condensed splits and the first look at the crack).
+
+**Sets up:**
+
+- [Play-Action, Bootlegs, and Screens](../04-the-passing-game/04-05-play-action-boots-screens.qmd): the
+  waggle's descendants, the bootleg and the naked bootleg, and the play-action passes that live off jet
+  motion.
+- [Run-Pass Options](../04-the-passing-game/04-06-rpos.qmd): jet motion and quick screens attached to
+  inside runs, the modern way to put a defender in a bind on every snap.
+- [Linebackers and the Second Level](../05-defensive-fronts-and-run-defense/05-04-linebackers-and-second-level.qmd)
+  and [Run Fits](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd): keys, flow, force
+  and spill, the defense's side of everything in this chapter.
+- [Constraint Theory and Sequencing](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd):
+  base plays, constraint plays and why the best offenses call them in a deliberate order.
+- [The College Laboratory](../11-history/11-03-the-college-laboratory.qmd): the Wing-T, the wishbone and
+  the spread option, and how college football keeps feeding the NFL ideas.
+
+**See also (case studies):** [The Shanahan Tree](../12-case-studies/12-03-shanahan-wide-zone-tree.qmd)
+(wide zone, boots and jet motion as one system) and [Andy Reid's Chiefs](../12-case-studies/12-04-reid-chiefs.qmd)
+(motion, shovels and the creative run game).
+
+**If you want to go deeper:** Raymond and Kempski's *The Delaware Wing-T: An Order of Football* is still
+the clearest statement of series football. Chris B. Brown's *The Art of Smart Football* and his
+Grantland piece on Gus Malzahn trace the Wing-T into the modern spread. For the NFL version, watch a 2018
+Rams or 2019–2021 49ers game on the All-22 and count the linebackers' first steps on every jet motion.
+
+::: {.callout-note title="Go deeper"}
+**From diagrams to real tracking data.** The two animations in this chapter are gridiron simulations in
+Big Data Bowl (BDB) coordinates, so real tracking data drops into the same drawing code. The 2025 Big
+Data Bowl release (2022 season, weeks 1–9) flags, for every player on every play, whether he was in
+motion at the snap, and records who carried the ball, so you can pull every run by a wide receiver who
+was moving at the snap (most of them jet sweeps) and watch the linebackers' first steps for yourself.
+The data is hosted on Kaggle and needs a free login, so this code is not run when the book is built.
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (real Big Data Bowl tracking; not run in the build)"
+import pandas as pd
+from gridiron import bdb, show_animation
+
+plays = pd.read_csv("data/bdb/plays.csv")
+player_play = pd.read_csv("data/bdb/player_play.csv")
+players = pd.read_csv("data/bdb/players.csv")
+
+# ball carriers on designed runs, with their roster position
+carriers = player_play[player_play["hadRushAttempt"] == 1].merge(players[["nflId", "position"]], on="nflId")
+jets = carriers[(carriers["position"] == "WR") & (carriers["inMotionAtBallSnap"] == True)]  # noqa: E712
+print(len(jets), "runs by a wide receiver in motion at the snap")
+
+g, pl = jets.iloc[0][["gameId", "playId"]]
+trk = bdb.load_tracking("data/bdb/tracking_week_*.csv")
+one = bdb.prepare(trk, plays, game_id=g, play_id=pl)
+show_animation(one, times=[-1.0, 0.0, 0.6, 1.4])   # same call as the simulated plays
+```
+:::
+
+[^backblock]: An offensive player may not block an opponent from behind, in the back, above the waist
+    (illegal block above the waist, a 10-yard foul; contact from behind below the waist is clipping):
+    NFL rulebook, Rule 12, Section 1, linked from <https://operations.nfl.com/the-rules/nfl-rulebook/>;
+    summary at <https://en.wikipedia.org/wiki/Block_in_the_back>. "Aim at the near number" is the
+    common coaching cue for a legal crack.
+
+[^backside]: On why defenses now keep the backside end home against bootlegs rather than letting him
+    crash down the line, and how he "slow plays" the fake and then breaks on the boot: Dusty Evely, "When
+    Open Isn't Open Part 2: PA Boot," March 4, 2023, <https://dustyevely.substack.com/p/when-open-isnt-open-part-2-pa-boot>.
+    "Boot, counter, reverse" is the usual coaching checklist for this player; the run-fit details are in
+    [05-05](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd).
+
+[^belly]: The belly series (fullback off tackle with down blocks or a guard's kick-out, and a speed option
+    off the fullback fake when the force player and safety collapse on him) and a waggle "from the belly
+    series instead of the buck series" as a "key breaker for teams who key the fullback": Youth Football
+    Online, "Wing T Belly Series," <https://youthfootballonline.com/wing-t-belly-series-in-youth-football/>.
+    Buck sweep, trap and belly as the Wing-T's base plays: Bobby Peters, "Reflections from a Wing T guru,
+    Part 1," USA Football, Sept. 20, 2018, <https://blogs.usafootball.com/blog/6633/reflections-from-a-wing-t-guru-part-1>.
+
+[^motion]: Pre-snap shift or motion on 43.0% of plays in 2018: Daire Carragher, "NFL pre-snap motion usage
+    reaches new highs across the NFL," Pro Football Focus, Feb. 23, 2026,
+    <https://www.pff.com/news/nfl-pre-snap-motion-usage-reaches-new-highs-across-the-nfl>. About 62 offensive
+    plays per team-game in 2018 (nflverse play-by-play, course calculation). The Rams' 48 jet sweeps including the
+    playoffs, 2.3 a game by PFF's count: Daniel Rymer, PFF, May 13, 2019 (cited in full above).
+
+[^crackrule]: *2026 Official Playing Rules of the National Football League*, Rule 12, Section 2,
+    Article 6, "Crackback Block": the block occurs within five yards on either side of the line of
+    scrimmage by a player moving toward the spot of the snap who was set more than two yards outside a
+    tackle, or was in the backfield and moved that wide or was in motion at the snap; prohibited contact
+    is below the waist or any contact banned against a defenseless player (Article 9(b)(1–3)); loss of
+    15 yards. Rulebook PDF linked from <https://operations.nfl.com/the-rules/nfl-rulebook/>.
+
+[^blindside]: NFL, "Health and safety-related rules changes since 2002." A 2009 rule had already
+    banned blindside blocks to the head or neck; the 2019 change made it a foul if a player "initiates a
+    block when his path is toward or parallel to his own end line and makes forcible contact to his
+    opponent with his helmet, forearm, or shoulder." The current text (Rule 12-2-7) exempts contact in the
+    close-line area before the ball has left it:
+    <https://www.nfl.com/playerhealthandsafety/equipment-and-innovation/rules-changes/nfl-health-and-safety-related-rules-changes-since-2002>.
+
+[^threestrike]: The 2026 NFL/NFLPA three-strike policy (hip-drop tackles, horse-collar tackles, launching,
+    hits on a defenseless player and blindside blocks; three in a season means a one-game suspension):
+    <https://www.nbcsports.com/nfl/profootballtalk/rumor-mill/news/nfls-new-three-strike-system-doesnt-apply-until-the-2026-regular-season>.
+    Agreed by the league and the players' union in August 2026; it begins with the 2026 regular season,
+    and preseason fouls do not count.
+
+[^popPass]: A pass is forward if the ball is thrown toward the opponent's goal line, however short the
+    distance (NFL Rule 8, Section 1); a flip that travels forward to a receiver crossing in front of the
+    quarterback is therefore a forward pass and is scored as a completion, not a run, and a forward pass
+    that hits the ground before anyone catches it is incomplete (Rule 8), so a dropped flip is not a fumble. Example: Tyreek
+    Hill's 1-yard touchdown on a jet-motion shovel at the Chargers on Sept. 9, 2018 is recorded in the
+    play-by-play as "P.Mahomes pass short middle to T.Hill," with the throw 3 yards behind the line
+    (nflverse; course check).
+
+[^raymond]: University of Delaware, "Blue Hens Rewind: Tubby Raymond wins 300th career game" (Raymond's
+    300th win came on Nov. 10, 2001, 10–6 over Richmond; he retired at 300–119–3):
+    <https://bluehens.com/news/2020/10/17/football-blue-hens-rewind-tubby-raymond-wins-300th-career-game-in-defensive-battle.aspx>;
+    Nelson's years (1951–1965) and the Wing-T's origins: <https://en.wikipedia.org/wiki/Delaware_Fightin%27_Blue_Hens_football>;
+    College Football Hall of Fame: <https://cfbhall.com/inductees/tubby-raymond-2003>. Raymond's Michigan
+    degree (1950), his years as Nelson's assistant, and his acrylic portraits of Delaware seniors:
+    University of Delaware, "In memoriam: Tubby Raymond," UDaily, December 2017,
+    <https://www.udel.edu/udaily/2017/december/in-memoriam-tubby-raymond-football-coach.html>. Nelson began
+    developing the Wing-T at Maine (1949–50): <https://en.wikipedia.org/wiki/David_M._Nelson>.
+
+[^orderbook]: Harold R. "Tubby" Raymond and Ted Kempski, *The Delaware Wing-T: An Order of Football*
+    (West Nyack, NY: Parker Publishing, 1986), ISBN 0-13-198326-1 (Open Library record:
+    <https://openlibrary.org/isbn/0131983261>).
+
+[^brown]: Chris B. Brown, "The Making of a Modern-Day Guru," Grantland, January 3, 2014:
+    <https://grantland.com/features/gus-malzahn-offensive-evolution/>. The line is Brown's summary;
+    Raymond's own phrase, which Brown quotes, was "The Wing-T is more than a formation. It is sequence
+    football."
+
+[^fly]: Ross Dellenger, "With an Offense Learning to Fly, BYU Is One of 2018's Biggest Surprises,"
+    *Sports Illustrated*, Sept. 25, 2018 (Beck at Delano High School, "many believe" the first; Speckman as
+    the system's "modern father" through clinics; Hawkins from the College of the Siskiyous to Willamette
+    to Boise State): <https://www.si.com/college/2018/09/25/byu-cougars-fly-sweep-offense-jeff-grimes>.
+
+[^pffjet]: Daniel Rymer, "Examining the jet sweep revolution of the 2018 NFL season," Pro Football Focus,
+    May 13, 2019 (174 jet sweep runs for 5.1 yards a carry in 2017; 309 for 6.1 in 2018; the Rams 48,
+    including playoffs): <https://www.pff.com/news/pro-examining-the-jet-sweep-revolution-of-the-2018-nfl-season>.
+
+[^brownmalzahn]: Brown, "The Making of a Modern-Day Guru" (Malzahn learning the offense from Raymond and
+    Kempski's book "word for word" as offensive coach at Hughes High School after the 1991 season; his
+    offense an up-tempo spread by 1999; adapting the buck sweep to the shotgun; Auburn 2013 as the first
+    SEC team in almost 30 years to average more than 300 rushing yards a game). The Grantland article is
+    the source for this paragraph; see also Malzahn's own *The Hurry-Up, No-Huddle: An Offensive
+    Philosophy* (Coaches Choice, 2003).
+
+[^pffjet2]: Rymer, PFF (as above): the Rams' 48 jet sweeps (2.3 a game, 6.8 yards a carry, three
+    touchdowns), with the Patriots and Chargers next at 24. The nflverse figures are a course calculation:
+    regular-season runs by players listed as wide receivers on the Rams' 2018 roster.
+
+[^woods]: nflverse play-by-play, 2018 regular season: Robert Woods 19 carries, 157 yards, 1 touchdown
+    (course calculation; matches Pro Football Reference's season line). PFF's charting, which also counts
+    jet plays scored as passes, credits Woods with 16 jet sweeps including the playoffs (Rymer, above).
+
+[^deebo]: nflverse play-by-play, 2019 regular season: Deebo Samuel 14 carries, 159 yards, 3 touchdowns
+    (course calculation; matches Pro Football Reference,
+    <https://www.pro-football-reference.com/players/S/SamuDe00.htm>).
+
+[^deebosb]: nflverse play-by-play, Super Bowl LIV (Feb. 2, 2020): Samuel carries of 32, 7 and 14 yards
+    (course calculation). The 53 yards broke Percy Harvin's Super Bowl record for a receiver (45, Super
+    Bowl XLVIII): NBC Sports Bay Area, "49ers' Deebo Samuel sets Super Bowl record for rushing yards by
+    receiver," Feb. 2, 2020,
+    <https://www.nbcsportsbayarea.com/nfl/49ers-deebo-samuel-sets-super-bowl-record-for-rushing-yards-by-receiver/1249161/>.
+
+[^auburn]: Auburn led the nation at 328.3 rushing yards a game in 2013; Tre Mason ran for 1,816 yards
+    and Nick Marshall played quarterback; the Tigers won the SEC and reached the BCS National Championship
+    Game, losing 34–31 to Florida State on Jan. 6, 2014. Brown, "The Making of a Modern-Day Guru" (above);
+    Saturday Down South, <https://www.saturdaydownsouth.com/news/college-football/searching-for-clarity-auburn-running-backs/>.
