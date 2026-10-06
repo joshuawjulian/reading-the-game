@@ -473,13 +473,13 @@ def draw_marker(ax, x, y, side, label, ppy, ring=None, r=MARKER_R):
                                facecolor=style.DEFENSE_TINT, edgecolor=style.DEFENSE, lw=1.3, zorder=8)
         tcolor = style.INK
     else:  # football
-        patch = Ellipse((x, y), 0.7, 0.45, facecolor=style.BALL, edgecolor="white", lw=0.5, zorder=9)
+        patch = Ellipse((x, y), 1.1, 0.7, facecolor=style.BALL, edgecolor="white", lw=0.7, zorder=11)
         ax.add_patch(patch)
         return [patch]
     ax.add_patch(patch)
     arts.append(patch)
     if ring:
-        rp = Circle((x, y), r * 1.55, facecolor="none", edgecolor=ring, lw=2.0, zorder=7)
+        rp = Circle((x, y), r * 1.55, facecolor="none", edgecolor=ring, lw=2.0, zorder=3.5)  # under paths
         ax.add_patch(rp)
         arts.append(rp)
     if label:
@@ -505,13 +505,16 @@ def _draw_action(ax, kind, xs, ys, side, ppy):
     }[kind]
     if len(xs) < 2:
         return
-    ax.plot(xs[:-1] if spec["end"] == "arrow" else xs, ys[:-1] if spec["end"] == "arrow" else ys,
-            color=spec["color"], lw=spec["lw"], ls=spec["ls"], solid_capstyle="round", zorder=4)
+    # draw the whole path in the kind's line style, then a short solid arrowhead on the last bit
+    ax.plot(xs, ys, color=spec["color"], lw=spec["lw"], ls=spec["ls"], solid_capstyle="round", zorder=4)
     if spec["end"] == "arrow":
-        ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>",
+        x0, y0 = xs[-2] + 0.8 * (xs[-1] - xs[-2]), ys[-2] + 0.8 * (ys[-1] - ys[-2])
+        seg = float(np.hypot(xs[-1] - x0, ys[-1] - y0))
+        if seg < 0.6:  # very short last segment: start the head from the previous point
+            x0, y0 = xs[-2], ys[-2]
+        ax.add_patch(FancyArrowPatch((x0, y0), (xs[-1], ys[-1]), arrowstyle="-|>",
                                      mutation_scale=8 + spec["lw"] * 2, color=spec["color"], lw=spec["lw"],
-                                     ls=spec["ls"] if kind != "motion" else "-",
-                                     shrinkA=0, shrinkB=0, zorder=4))
+                                     ls="-", shrinkA=0, shrinkB=0, zorder=4))
     elif spec["end"] == "tee":
         v = np.array([xs[-1] - xs[-2], ys[-1] - ys[-2]])
         n = np.linalg.norm(v)

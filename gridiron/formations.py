@@ -226,7 +226,7 @@ def defense(front: str, shell: str = "two_high", off: list[Player] | None = None
     players = _front(front, s)
     n_db = 11 - len(players)
     left, right = _receivers(off)
-    cb_d = 1.0 if press else 6.5
+    cb_d = 1.0 if press else 7.0
     out: list[Player] = []
 
     def over(rec_list, sgn, default_w):

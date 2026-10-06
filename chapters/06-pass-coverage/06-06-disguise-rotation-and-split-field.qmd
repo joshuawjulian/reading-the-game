@@ -1,0 +1,1838 @@
+---
+title: "Disguise, Rotation, and Split-Field Coverage"
+subtitle: "Why the defense you see before the snap is often not the defense you get, how safeties change the picture in the last half-second, and how one coverage can be two."
+description: "Coverage disguise and post-snap rotation (two-high to one-high and back), the tells that leak through a disguise, late rotation and why it forces quarterbacks to read after the snap, split-field coverage and the 3x1 checks (poach, solo, stubbie), how offenses fight back with motion, tempo and hard counts, and how tracking data measures the lie."
+glossary:
+  Disguise: "Lining up in a way that hides or misrepresents the coverage (or pressure) the defense will actually play, so the quarterback's pre-snap read is wrong or useless."
+  "Post-snap rotation": "Defenders, usually the safeties, moving at or just after the snap from the shell they showed into a different one: two-high into one-high, or one-high into two-high."
+  "Late rotation": "A rotation timed to start at the snap or just after it, not during the cadence, so the quarterback gets no clean look at the real coverage before the play begins."
+  "Split-field coverage": "Playing a different coverage on each half of the field (for example quarters to the wide side and Cover 2 to the short side), with each half following its own rules for the receivers on its side."
+  "Cover 7 (match family)": "A label whose meaning depends on the staff. In Nick Saban's vocabulary it names a split-field, quarters-based pattern-match family built from a separate call for each side; other teams use 'Cover 7' for different coverages."
+  Poach: "A check against a 3x1 formation in which the backside safety leaves the lone receiver to his cornerback and works across the field to take the trips side's inside receiver (#3) if he goes deep."
+  "3x1 check (solo / stubbie)": {def: "A pre-planned adjustment of a two-high coverage to a 3x1 (trips) formation. In one common version of Solo the backside corner plays the lone receiver by himself and a linebacker takes #3 deep, freeing the backside safety; in Stubbie four defenders handle the three trips receivers and the backside safety stays home with the corner. Names and details vary by staff (some playbooks use 'Solo' for what this book calls poach).", aliases: ["Solo", "Stubbie"]}
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+import os
+import logging
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import RegularPolygon, FancyBboxPatch, FancyArrowPatch
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+
+from gridiron import Play, Player, offense, defense, routes as r, show_animation, style, draw_marker
+from gridiron.play import MARKER_R
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+FPS = 10
+
+# Predict-the-play answers: collapsed under each drill on the web, collected after Connections in print
+ANSWERS = []
+
+
+def answer(md):
+    ANSWERS.append(md.strip())
+    if PDF:
+        print('\n*Answer: try it first, then see "Answers to Predict the play" at the end of the chapter.*\n')
+    else:
+        print('\n::: {.callout-tip title="Answer" collapse="true"}\n\n' + md.strip() + "\n\n:::\n")
+
+
+# ---------------------------------------------------------------- alignments used all chapter
+def nickel_vs_2x2(shell="two_high", safety_w=7.5):
+    """11 personnel 2x2 against a nickel (4-2-5) defense. The Will apexes the left slot, the
+    corners play 7 yards off, and two-high safeties sit 13 deep a few yards outside the hashes."""
+    off = offense("gun_2x2")
+    dfn = defense("nickel", shell, off)
+    out = []
+    for p in dfn:
+        if p.key == "WILL":
+            p = p.moved(d=5.0, w=-6.0)
+        elif p.pos == "CB":
+            p = p.moved(d=7.0, w=p.w + (0.8 if p.w > 0 else -0.8), label="CB")
+        elif p.key in ("FS", "SS") and shell == "two_high":
+            p = p.moved(d=13.0, w=safety_w if p.w > 0 else -safety_w)
+        out.append(p)
+    return off, out
+
+
+def protect(p, rushers=("SDE", "SDT", "WDT", "WDE")):
+    """Five linemen set, four rushers engage them: enough to show it is a pass, no more."""
+    for k in ("LT", "LG", "C", "RG", "RT"):
+        p.block(k, pts=[(-1.2, 0.0)])
+    for k in rushers:
+        p.rush(k, pts=[(-1.6, 0.0)], speed=2.0)
+
+
+def trips(detached=False):
+    """11 personnel 3x1: X alone to the left; Z (#1), H (#2) and the tight end Y (#3) to the right.
+    attached: Y in-line as the end on the line (a "trey" set). detached: Y flexed off the ball as a
+    third slot and Z steps up to be the end on the line, so seven are still on the line."""
+    off = offense("gun_trips")
+    if detached:   # a real third slot: about 4 yards outside the tackle, a step off the ball
+        off = [p.moved(d=-1.5, w=7.0) if p.key == "Y" else p.moved(d=-0.7) if p.key == "Z" else p
+               for p in off]
+    return off
+
+
+def trips_defense(off, fs_w=-6.5):
+    """Two-high nickel against 3x1. The backside corner presses X with a one-yard inside shade."""
+    dfn = defense("nickel", "two_high", off)
+    moves = {"FS": (12.0, fs_w), "SS": (12.0, 9.0), "LCB": (1.5, -14.0), "RCB": (7.0, 17.5),
+             "NB": (5.0, 10.5), "MIKE": (4.5, 3.0), "WILL": (4.5, -2.0)}
+    dfn = [p.moved(d=moves[p.key][0], w=moves[p.key][1]) if p.key in moves else p for p in dfn]
+    return [p.moved(label="CB") if p.pos == "CB" else p for p in dfn]
+
+
+def number_receivers(p, d=-3.2, extra=None):
+    """Label the trips receivers #1-#3 (outside in); `extra` adds a second label below, e.g. {"Y": "detached"}."""
+    for key, txt in (("Z", "#1"), ("H", "#2"), ("Y", "#3")):
+        pl = p.players[key]
+        p.note(txt, at=(pl.d + d, pl.w))
+        if extra and key in extra:
+            p.note(extra[key], at=(pl.d + d - 1.8, pl.w - 1.0))
+
+
+def no_numbers(ax):
+    """Remove the painted yard-line numbers (they sit where wide receivers and safeties stand)."""
+    for t in list(ax.texts):
+        if t.get_alpha() == 0.55:
+            t.remove()
+
+
+FIELD_W = 160 / 3
+
+
+def ruler(fld, play, widths=False, fs=6.5):
+    """Depth labels (yards past the line of scrimmage) down the left edge of the field window, so
+    the faint 5-yard lines can be read as a scale. widths=True also marks where the hash marks and
+    the painted numbers are, along the bottom edge. Drawn on the Field's ax: gridiron has no ruler."""
+    ax = fld.ax
+    x_left = FIELD_W - fld.y1 + 0.35                     # plot x of the window's left edge
+    for d in range(5, 41, 5):
+        y = play.los + d
+        if fld.x0 + 0.8 <= y <= fld.x1 - 0.8:
+            ax.text(x_left, y, f"{d}" + (" yd" if d == 5 else ""), fontsize=fs, color=style.INK_2,
+                    ha="left", va="center", zorder=12,
+                    bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.85))
+    if widths:
+        y = fld.x0 + 0.9
+        for yb, txt in ((23.58, "hash"), (FIELD_W - 23.58, "hash"), (13.0, "numbers"), (FIELD_W - 13.0, "numbers")):
+            if fld.y0 + 1.5 <= yb <= fld.y1 - 1.5:
+                ax.text(FIELD_W - yb, y, txt, fontsize=fs, color=style.INK_2, ha="center", va="center",
+                        zorder=12, style="italic",
+                        bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.85))
+
+
+# ---------------------------------------------------------------- two-time-state drawing
+def ghost_marker(ax, x, y, label, ppy, color=style.DEFENSE):
+    """A hollow, dashed defender: where he stood before the snap (the disguise)."""
+    ax.add_patch(RegularPolygon((x, y), 4, radius=MARKER_R * 1.25, orientation=np.pi / 4,
+                                facecolor="none", edgecolor=color, lw=1.2, ls=(0, (2, 1.2)), zorder=6))
+    if label:
+        ax.text(x, y, label, ha="center", va="center", color=color, fontweight="bold", zorder=6,
+                fontsize=max(4.0, min(8.5, ppy * 0.75)))
+
+
+def snapshot(play, t, ax=None, ghosts=(), ghost_t=None, lateral="full", window=(-8.5, 19.5),
+             width_in=6.5, notes=(), show_ruler=False):
+    """Everyone where he is at time t; `ghosts` also keep a hollow marker where they stood at
+    `ghost_t` and a dashed trail from there, so the pre-snap picture survives in print."""
+    pos = {k: play.position(k, t) for k in play.players}
+    moved = [pl.moved(d=float(pos[k][0]), w=float(pos[k][1])) for k, pl in play.players.items()]
+    q = Play([m for m in moved if m.side == "off"], [m for m in moved if m.side == "def"],
+             los=play.los, ball_y=play.ball_y, to_go=play.to_go)
+    q.highlights = dict(play.highlights)
+    for n in notes:
+        q.note(*n)
+    fld = q.draw(ax=ax, lateral=lateral, window=window, width_in=width_in, title=False)
+    ax, ppy = fld.ax, fld.pts_per_yard()
+    no_numbers(ax)
+    if show_ruler:
+        ruler(fld, play, fs=5.5)
+    P = lambda d, w: fld.xy(*play.to_abs(d, w))  # noqa: E731
+    start = ghost_t if ghost_t is not None else play._compile()[1]
+    for k, pl in play.players.items():
+        if pl.side == "off" and pl.pos not in ("WR", "TE", "RB"):
+            continue
+        pts = np.array([play.position(k, tt) for tt in np.linspace(start, t, 30)])
+        if np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) < 0.3:
+            continue
+        xs, ys = P(pts[:, 0], pts[:, 1])
+        if pl.side == "off":
+            ax.plot(xs, ys, color=style.OFFENSE, lw=1.0, alpha=0.45, zorder=3)
+        else:
+            ax.plot(xs, ys, color=style.DEFENSE, lw=1.3, ls=(0, (3, 2)), zorder=3)
+    if ghost_t is not None and t > 0.05:
+        for k in ghosts:
+            x0, y0 = P(*play.position(k, ghost_t))
+            ghost_marker(ax, float(x0), float(y0), play.players[k].label, ppy)
+    bx, by = P(*play.ball_position(t))
+    for kind, _, t_rel in getattr(play, "ball_events", []):
+        if kind == "pass" and t > t_rel:          # a thrown ball: draw its flight so far
+            sx, sy = P(*play.ball_position(t_rel))
+            ax.add_patch(FancyArrowPatch((float(sx), float(sy)), (float(bx), float(by)), arrowstyle="-|>",
+                                         mutation_scale=8, color=style.BALL, lw=1.4, ls=(0, (2, 1.5)), zorder=9))
+    draw_marker(ax, float(bx), float(by), "ball", "", ppy)
+    return fld
+
+
+def strip(play, times, labels, ghosts=(), ghost_t=None, lateral=(-21, 21), window=(-8.5, 19.5),
+          notes_at=None, width_in=6.5, ncols=2):
+    """The print version of an animation: panels at chosen moments, ghosts kept on every
+    post-snap panel so 'what was shown' and 'what was played' sit side by side."""
+    n = len(times)
+    nrows = int(np.ceil(n / ncols))
+    pw = width_in / ncols
+    h = nrows * (pw * (window[1] - window[0]) / abs(lateral[1] - lateral[0]) + 0.32)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(width_in, h), squeeze=False)
+    for ax in axes.flat[n:]:
+        ax.axis("off")
+    for i, (ax, t, lab) in enumerate(zip(axes.flat, times, labels)):
+        snapshot(play, t, ax=ax, ghosts=ghosts, ghost_t=ghost_t, lateral=lateral, window=window,
+                 notes=(notes_at or {}).get(i, ()), show_ruler=(i == 0))
+        ax.set_title(lab, fontsize=8.5, color=style.INK, loc="left")
+    fig.tight_layout(h_pad=0.6, w_pad=0.4)
+    h = [Patch(facecolor="none", edgecolor=style.DEFENSE, lw=1.2, ls=(0, (2, 1.2)),
+               label="Dashed outline: where he stood before the snap (the disguise)"),
+         Patch(facecolor=style.DEFENSE_TINT, edgecolor=style.DEFENSE, lw=1.3, label="Solid, filled: where he is now"),
+         Line2D([], [], color=style.DEFENSE, lw=1.3, ls=(0, (3, 2)), label="Defender's path"),
+         Line2D([], [], color=style.OFFENSE, lw=1.0, alpha=0.6, label="Receiver's path")]
+    fig.legend(handles=h, loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=2, fontsize=7.5, frameon=False)
+    return fig
+
+
+def pointer(fld, play, text, text_at, to, ha="center"):
+    """A labelled arrow from a text box to a spot on the field (both in (d, w) yards)."""
+    tx, ty = fld.xy(*play.to_abs(*text_at))
+    px, py = fld.xy(*play.to_abs(*to))
+    fld.ax.annotate(text, xy=(px, py), xytext=(tx, ty), ha=ha, va="center", fontsize=7.5, color=style.INK,
+                    zorder=12, arrowprops=dict(arrowstyle="-|>", color=style.INK_2, lw=0.9, shrinkB=7),
+                    bbox=dict(boxstyle="round,pad=0.25", fc=style.SURFACE, ec=style.BASELINE, lw=0.6))
+
+
+def divider(fld, play, text_l, text_r, d_top=22.0, d_bot=-7.0):
+    """A dashed line down the ball, captioning the two halves of a split-field call."""
+    (x0, y0), (x1, y1) = fld.xy(*play.to_abs(d_bot, 0.0)), fld.xy(*play.to_abs(d_top, 0.0))
+    fld.ax.plot([x0, x1], [y0, y1], color=style.INK_2, lw=1.0, ls=(0, (6, 4)), zorder=2)
+    for txt, ww, ha in ((text_l, -5.0, "right"), (text_r, 4.0, "left")):
+        x, y = fld.xy(*play.to_abs(d_bot + 1.2, ww))
+        fld.ax.text(x, y, txt, ha=ha, va="center", fontsize=8, color=style.INK, fontweight="bold", zorder=9,
+                    bbox=dict(boxstyle="round,pad=0.25", fc=style.SURFACE, ec=style.BASELINE, lw=0.6))
+```
+
+Third-and-7 from midfield. As the offense breaks the huddle, the broadcast's high camera shows
+two safeties standing 13 yards deep, one on each side of the field, with a wide-open patch of
+grass between them. The quarterback sees it too. Two deep safeties usually mean the deep middle
+is empty, so he plans to throw a deep in-cut right into that patch. He takes the snap, sets his
+feet, and lets it go, and a safety who had been standing 13 yards deep and 7 yards to the side
+is suddenly sitting at 11 yards, right in the throwing lane. Interception. On the replay the
+analyst circles both safeties and says "the coverage rotated." What does that mean? Why did one
+safety sprint to the middle while the other one came forward? And if defenses can do that, why
+does anyone bother to read the defense before the snap? This chapter is about the gap between
+what a defense **shows** and what it **plays**, and about the last half-second in which that gap
+closes.
+
+**You'll be able to…**
+
+- Say what a defense is doing when it disguises, and name the price it pays for it.
+- Spot the common tells (safety depth and width, corner technique and leverage, weight and eyes,
+  the timing of movement) and say before the snap which way a shell is likely to rotate.
+- Call the two big rotations on the replay (and, with practice, live from the wide shot):
+  two-high turning into one-high (often with a robber) and one-high turning into Cover 2.
+- Recognise split-field coverage, read a Cover 6 call by its two halves, and explain how a defense
+  answers a 3x1 formation with poach, solo or stubbie.
+- Explain how offenses fight disguise with motion, tempo and hard counts, and why late rotation
+  forces the quarterback to read after the snap.
+- Read a tracking-data chart of safeties around the snap, and add *shell → rotation → leverage* to
+  your pre-snap checklist.
+
+::: {.callout-note title="You'll need"}
+This chapter sits on top of the whole coverage part and a good deal before it. One line each:
+
+- **Shells and the two families** ([A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)):
+  the [shell](../../appendices/glossary.qmd#gl-shell-coverage-shell) is the safeties' picture
+  before the snap: [one-high](../../appendices/glossary.qmd#gl-one-high) (one deep safety in the
+  middle) or [two-high](../../appendices/glossary.qmd#gl-two-high) (two deep safeties, one per side).
+  [Man](../../appendices/glossary.qmd#gl-man-coverage) means each defender has a receiver;
+  [zone](../../appendices/glossary.qmd#gl-zone-coverage) means each defender has an area.
+- **Formations** ([Spread Formations](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)):
+  [2x2](../../appendices/glossary.qmd#gl-2x2) is two receivers on each side;
+  [3x1](../../appendices/glossary.qmd#gl-3x1) (trips) is three to one side and one to the other.
+  Receivers are numbered from the sideline in: #1 is the widest on his side, then #2, then #3.
+- **Motion** ([Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)):
+  offenses move a player before the snap partly to make the defense react. A defender who
+  [travels](../../appendices/glossary.qmd#gl-travel-man-defender-follows-motion) with him suggests
+  man; defenders who [bump](../../appendices/glossary.qmd#gl-bump-defensive-adjustment) over
+  suggest zone; a safety who [spins](../../appendices/glossary.qmd#gl-spin-safety-rotation-on-motion)
+  down suggests one-high. That is the [man/zone indicator](../../appendices/glossary.qmd#gl-man-zone-indicator).
+- **Cadence and checks** ([The Pre-Snap Phase](../01-foundations/01-05-the-pre-snap-phase.qmd)):
+  the quarterback can change the play at the line, and a
+  [hard count](../../appendices/glossary.qmd#gl-hard-count) (a fake snap call) tries to make the
+  defense move early.
+- **Zones and the shell read** ([Coverage Fundamentals](06-01-coverage-fundamentals.qmd)):
+  deep zones are [thirds](../../appendices/glossary.qmd#gl-deep-third), [halves](../../appendices/glossary.qmd#gl-deep-half)
+  or [quarters](../../appendices/glossary.qmd#gl-deep-quarter). Underneath, from the sideline in, are the
+  [flat](../../appendices/glossary.qmd#gl-flat-zone) (near the sideline, 0–6 yards), the
+  [curl](../../appendices/glossary.qmd#gl-curl-zone) (10–12 yards, between the numbers and the hash), the
+  [hook](../../appendices/glossary.qmd#gl-hook-zone) (inside the curl, around the hash) and the
+  [hole](../../appendices/glossary.qmd#gl-hole-zone) (the middle, 10–15 yards, in front of the deep
+  safety). A defender's [landmark](../../appendices/glossary.qmd#gl-landmark) is the spot his zone
+  drop aims for. [Press](../../appendices/glossary.qmd#gl-press)
+  vs [off](../../appendices/glossary.qmd#gl-off-coverage) corners and [bail](../../appendices/glossary.qmd#gl-bail)
+  technique; [MOFC](../../appendices/glossary.qmd#gl-mofc) (middle of the field closed, a deep
+  safety in the middle) vs [MOFO](../../appendices/glossary.qmd#gl-mofo) (open, no one there);
+  [pattern matching](../../appendices/glossary.qmd#gl-pattern-matching) (zone defenders who pick up
+  receivers who enter their area). The deep-middle spot is called the **post** (it is where a post
+  route aims), so the safety who ends up there is the *post safety*, and "one safety in the post"
+  means middle of the field closed. A corner in [trail technique](../../appendices/glossary.qmd#gl-trail-technique)
+  runs just behind and underneath his man, trusting a safety over the top.
+- **Man coverage** ([Man Coverage](06-02-man-coverage.qmd)): [Cover 1](../../appendices/glossary.qmd#gl-cover-1)
+  is man with one deep safety; [Cover 0](../../appendices/glossary.qmd#gl-cover-0) is man with none; a
+  [robber](../../appendices/glossary.qmd#gl-robber) is a safety who sits in the hole 10–12 yards deep
+  to undercut in-breaking routes; a [bracket](../../appendices/glossary.qmd#gl-bracket) puts two
+  defenders on one receiver, one on each side.
+- **Cover 3** ([Cover 3](06-03-cover-3-family.qmd)): three deep, four under. It is usually reached by
+  rotating a safety down: [sky](../../appendices/glossary.qmd#gl-sky-rotation) (safety to the flat),
+  [buzz](../../appendices/glossary.qmd#gl-buzz-rotation) (safety to the curl) or
+  [cloud](../../appendices/glossary.qmd#gl-cloud-rotation) (corner to the flat). The defender
+  who covers both the curl and the flat on one side is the
+  [curl-flat defender](../../appendices/glossary.qmd#gl-curl-flat-defender);
+  [Cover 3 match](../../appendices/glossary.qmd#gl-cover-3-match) is Cover 3 whose zone players pick
+  up receivers by pattern.
+- **Cover 2** ([Cover 2 and Tampa 2](06-04-cover-2-and-tampa-2.qmd)): two deep halves, five under,
+  with [hard corners](../../appendices/glossary.qmd#gl-hard-corner) who squat in the flats;
+  [2-Man](../../appendices/glossary.qmd#gl-2-man) is two deep with man underneath.
+- **Quarters** ([Quarters and the Two-High Match Family](06-05-quarters-and-match.qmd)):
+  [quarters](../../appendices/glossary.qmd#gl-quarters) gives four defenders a deep quarter each,
+  with safeties who read #2 and fit the run; [Cover 6](../../appendices/glossary.qmd#gl-cover-6) is
+  quarters on one side and Cover 2 on the other; [Palms](../../appendices/glossary.qmd#gl-palms) is a
+  two-high check in which the corner and safety on one side trade jobs on #1 and #2;
+  [MEG](../../appendices/glossary.qmd#gl-meg) means a corner plays his man everywhere he goes.
+- **Routes and leverage** ([Passing Fundamentals](../04-the-passing-game/04-01-passing-fundamentals.qmd),
+  [The Quick Game](../04-the-passing-game/04-03-quick-game.qmd)): a [seam](../../appendices/glossary.qmd#gl-seam)
+  runs straight up between the hash and the numbers, a [post](../../appendices/glossary.qmd#gl-post)
+  breaks deep toward the middle, a [dig](../../appendices/glossary.qmd#gl-dig) breaks flat inside at
+  10–15 yards, an [out](../../appendices/glossary.qmd#gl-out) breaks to the sideline, a
+  [hitch](../../appendices/glossary.qmd#gl-hitch) stops and turns back, and a
+  [double move](../../appendices/glossary.qmd#gl-double-move) fakes one break and runs another. A
+  defender's [leverage](../../appendices/glossary.qmd#gl-leverage-inside-outside) is which side of
+  the receiver he stands on: *inside* leverage protects the middle, *outside* the sideline.
+- **Pass concepts and the quarterback** ([Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd),
+  [Quarterback Play](../04-the-passing-game/04-07-quarterback-play.qmd)): concepts like
+  [dagger](../../appendices/glossary.qmd#gl-dagger) are built to beat a particular coverage, so the
+  quarterback picks a side and a [progression](../../appendices/glossary.qmd#gl-progression) (the
+  order in which he looks at his receivers) partly from what he sees before the snap. When nothing
+  is open he throws a short [checkdown](../../appendices/glossary.qmd#gl-checkdown) to a back.
+- **Run fits** ([Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd)):
+  the number of defenders near the line versus the number of blockers decides whether a run has a
+  chance, and a rotating safety is often the extra run defender.
+- **Field landmarks** ([The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd)):
+  the NFL [hash marks](../../appendices/glossary.qmd#gl-hash-marks) sit only about 3 yards either
+  side of the middle of the field, and the painted yard-line numbers start 12 yards in from each
+  sideline, roughly 13 to 15 yards from the middle (sources in the split-field section). So "outside the hash" means 3 or more
+  yards from the middle, and "on the numbers" means about 14 yards out, closer to the sideline than
+  to the ball.
+- **Who's who** ([The Twenty-Two](../01-foundations/01-03-the-twenty-two.qmd),
+  [Formation Rules and Vocabulary](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)):
+  the [Mike](../../appendices/glossary.qmd#gl-mike-linebacker) is the middle linebacker, the
+  [Will](../../appendices/glossary.qmd#gl-will-linebacker) the other (weak-side) linebacker in a
+  nickel defense. On offense, [X](../../appendices/glossary.qmd#gl-x-receiver) is the wide receiver on
+  the line, [Z](../../appendices/glossary.qmd#gl-z-receiver) the wide receiver off it,
+  [Y](../../appendices/glossary.qmd#gl-y-receiver) the tight end, and H the third wide receiver,
+  usually in the slot. A *dropback* is a play on which the quarterback drops back to pass (sacks and
+  scrambles included); coverage statistics are counted per dropback.
+
+*Reading the diagrams:* offense is blue circles (X, Y, Z, H receivers; Q quarterback; R running
+back; C center). Defense is outlined squares: E and T defensive ends and tackles, M the Mike, W the
+Will, $ the nickel, CB a cornerback, FS and SS the free and strong safety. A **green ring** marks the
+players to watch. The faint lines across the field are 5 yards apart, starting at the line of
+scrimmage (the darker blue line), and the small numbers on the left edge give the depth in yards;
+the short ticks are the hash marks. The orange line is the line to gain for that down. It moves
+with the situation, so use the depth numbers, not the orange line, as your ruler. Dashed arrows are
+defenders' movements, solid arrows receivers' routes, dotted lines man-coverage assignments.
+:::
+
+## Why a defense would lie
+
+Start with what the quarterback is trying to do before the snap. In the 20 or so seconds he
+spends at the line, he decides a lot: which way his linemen
+[slide](../../appendices/glossary.qmd#gl-slide-protection) in pass protection, which defender he
+must throw away from if that defender blitzes, which side of the field his progression starts on, and whether the called play is any good against what he sees. If it
+isn't, he can change it ([The Pre-Snap Phase](../01-foundations/01-05-the-pre-snap-phase.qmd)).
+Almost all of that depends on one question: **what coverage is this?** If he knows the coverage
+before the snap, he knows roughly where the open grass will be before anyone has moved. Then the
+play is half over before it starts.
+
+The defense, meanwhile, has to put eleven people somewhere. And where they stand leaks
+information, because of plain physics. A safety can only cover ground so fast. If he is going to
+guard the deep middle of the field, he has to stand somewhere from which he can get there before
+the ball does. If a cornerback is going to cover one receiver man-to-man, he tends to line up
+facing that receiver, close to him, on the side he wants to protect. A defense that simply lined
+up where its call works best would be handing the quarterback its call sheet.
+
+**[Disguise](../../appendices/glossary.qmd#gl-disguise)** is the answer: lining up in a way that
+hides or misrepresents the coverage the defense will actually play. It comes in three flavours,
+and good defenses use all of them:
+
+1. **Show one thing, play another.** Line up in a two-high shell and play a one-high coverage, or
+   the reverse. This is the dramatic kind, and the next three sections are about it.
+2. **Show the same thing every time.** Line up in one shell for nearly everything, and play many
+   coverages out of it. The quarterback isn't fooled so much as left without information. This is
+   the quieter kind, and it is how the two-high defenses that spread through the NFL after 2018
+   live. [Case Study: Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd)
+   tells that story in full.
+3. **Move at the right moment.** Hold a picture until the last instant and change it at the snap,
+   so there's no time to react. We'll call that late rotation below.
+
+::: {.callout-important title="Why it exists"}
+Disguise is about **time**. A quarterback who knows the coverage before the snap can decide where
+to throw before the pass rush has started. A quarterback who must work it out after the snap
+spends part of his roughly 2.5 to 3 seconds of protection just finding out what he is looking at.
+The defense isn't trying to make the quarterback *wrong* so much as *late*. A late quarterback
+holds the ball, takes sacks, throws into windows that close, or settles for a short checkdown.
+:::
+
+There's an asymmetry in the rules that makes this possible. The offense must be **set**: after a
+shift, all eleven players have to be still for a full second before the snap, and only one player
+may be in motion when the ball is snapped, and not toward the line. The defense has no such rule.
+Defenders may move, shift, walk up and back out as much as they like before the snap, as long as
+they stay out of the neutral zone (the strip, one ball long, between the two teams) and don't use words or acts meant to disconcert the offense at
+the snap, such as imitating its snap count.[^rules] The offense has to hold still and be read, while the defense can keep moving.
+
+### What disguise costs
+
+- **The real job starts from the wrong spot.** A safety who shows two-high but is really the
+  robber has to travel to his real landmark; one who shows one-high in the box and is really a
+  deep-half player has a long way to run. Every yard of travel is time out of position.
+- **The run defense gets worse.** A nickel defense usually has six or seven players near the line
+  (four linemen, two linebackers, sometimes the nickel), the
+  [box](../../appendices/glossary.qmd#gl-box). A safety who comes down makes it seven or eight, but a
+  safety standing 13 yards deep who is supposed to be that extra run defender arrives late. A safety walked down to look like a run defender
+  who is really bailing to a deep half has left the box one man short. Offenses that run the ball
+  well punish disguise by simply handing it off ([Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd)).
+- **Communication and mistakes.** Every rotation is a little play inside the play, with its own
+  timing and its own way to go wrong. When one safety rotates and the other doesn't, the defense
+  ends up with two players in one zone and nobody in another: the "bust" you see when a receiver
+  runs untouched through the middle of the field.
+- **Practice time.** A defense that can play five coverages from one look has to rehearse all
+  five from that look, and every extra starting look multiplies the reps. Something has to give.
+  Some defenses keep one look and many coverages (flavour 2 above); others keep a short list of
+  coverages and practise reaching each one from several looks (flavours 1 and 3). Few can afford
+  both.
+
+::: {.callout-note title="Madden vs. real life"}
+In a video game the defense picks a play from a menu, and each defender walks to the spot that
+play's diagram gives him. What you see is close to what was called. In the NFL, **alignment is a
+separate decision from the call.** Coordinators design their calls so that several coverages
+start from the same picture, and coach players to hold that picture until a set moment. Real
+quarterbacks are taught to treat the pre-snap shell as a *hypothesis*, a best guess they expect
+to confirm or overturn in the first second after the snap.
+:::
+
+## The physics of a disguise: what leaks before the snap
+
+If you can't hide where you're going, you can at least make it hard to see. But the distances
+involved put limits on what a defense can fake, and those limits are exactly what a good
+quarterback (and now you) can read.
+
+Some rough numbers. A deep pass is usually released around 3 seconds after the snap (in 2025 the
+middle half of throws travelling 20 or more yards left between 2.6 and 3.6 seconds).[^ttt] But the
+safety's real deadline is earlier: he has to be on top of the *receiver* before the receiver runs
+past him, and in this chapter's simulated plays a slot receiver running up the seam is 15 yards
+downfield about two seconds after the snap. The safety also can't sprint at the snap. His first
+step or two are a read (is it a pass? where are the quarterback's eyes?), and a backpedal covers
+ground noticeably more slowly than turning and running. The fastest safeties top out around 22
+miles an hour, roughly 10 yards a second, but a safety reading the quarterback is rarely anywhere
+near that.[^dbspeed]
+
+So give him a working speed of 5 to 6.5 yards a second once he goes (the figure the simulated plays
+use) and a few tenths of a second to read. That leaves about 1.6 seconds of running before the seam
+receiver arrives: roughly **8 to 10 yards**. A safety 13 yards deep and 7.5 yards from the middle
+(a few yards outside the hash) is about 8 yards from the deep-middle landmark at 16 or 17 yards:
+inside the budget. One standing on the numbers, about 14 yards from the middle, is about 14 yards away:
+far outside it.
+
+Each defender's real job therefore draws a circle around his real
+[landmark](../../appendices/glossary.qmd#gl-landmark). He can line up anywhere inside it, and the
+disguise has to fit inside every defender's circle at once. Within the circle there is still a
+trade. A safety who will really be a robber at 10 or 11 yards can line up at 13 and still get there,
+which keeps the two-high picture intact, but the trip costs him time. Lining up at 11 makes his job
+easy, and it is also a tell. Every disguise is that bargain, made defender by defender: the closer to
+the real job, the easier the job and the louder the tell. (These are model numbers for teaching the
+idea, not measurements; with the real tracking data in
+[Tracking Data and the Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd)
+you can measure the circles.)
+
+That is why disguises leak. Here is what to look at, and why each one tells you something. The
+figure shows the textbook two-high spots as faint outlines so you can see how far each defender has
+cheated from them.
+
+```{python}
+#| label: fig-tells
+#| fig-cap: "A two-high shell that isn't going to stay two-high. The dashed outlines are the textbook two-high spots (safeties 13 deep, a few yards outside the hashes; corners 7 off). Against them, the right safety (SS) is three yards shallower and two and a half yards narrower, and the left safety (FS) is two yards narrower. The corners (CB) are pressed on the outside receivers, square to them, shading slightly outside (outside leverage): man technique, expecting help inside. The nickel ($) is tight on the left slot receiver, H; the slot to the right, Y, is the tight end, with the Will (W) over him. Each detail on its own means little. Together they suggest a rotation to one-high man at the snap: Cover 1, with the SS as a robber in the hole and the FS in the deep middle."
+off, dfn = nickel_vs_2x2()
+tell_moves = {"SS": (10.0, 5.0), "FS": (13.5, -5.5), "LCB": (1.2, -15.8), "RCB": (1.2, 15.8),
+              "NB": (1.5, -8.2), "WILL": (4.5, 7.0)}
+textbook = {k: (pl.d, pl.w) for k, pl in ((q.key, q) for q in dfn) if k in ("SS", "FS", "LCB", "RCB")}
+dfn = [p.moved(d=tell_moves[p.key][0], w=tell_moves[p.key][1]) if p.key in tell_moves else p for p in dfn]
+tells = Play(off, dfn, los=35, to_go=7)
+tells.highlight("SS", "FS")
+fld = tells.draw(lateral=(-22, 22), window=(-7.5, 18.5))
+no_numbers(fld.ax)
+ruler(fld, tells, widths=True)
+ppy = fld.pts_per_yard()
+for k, (d0, w0) in textbook.items():
+    gx, gy = fld.xy(*tells.to_abs(d0, w0))
+    ghost_marker(fld.ax, float(gx), float(gy), "", ppy, color=style.MUTED)
+pointer(fld, tells, "shallower and narrower:\nhe can reach the box\nor the hole, not a deep half",
+        (16.6, 13.0), (10.0, 5.0))
+pointer(fld, tells, "narrower than usual:\nhe can reach the deep middle", (17.0, -12.0), (13.5, -5.5))
+pointer(fld, tells, "press, eyes on the receiver,\noutside shade: man,\nexpecting help inside", (10.0, -11.0),
+        (1.2, -15.8))
+pointer(fld, tells, "nickel tight on the slot", (-4.6, -12.0), (1.5, -8.2))
+fld.ax.legend(handles=[Patch(facecolor="none", edgecolor=style.MUTED, lw=1.2, ls=(0, (2, 1.2)),
+                             label="textbook two-high spot")],
+              loc="upper center", bbox_to_anchor=(0.5, 0.0), fontsize=7.5, frameon=False)
+plt.show()
+```
+
+- **Safety depth.** Deep-zone safeties in a two-high shell usually stand 12–14 yards off the
+  ball. A safety at 8–10 yards is probably either coming down (into the box, the flat or the
+  hole as a robber) or about to sprint backward, and the second is hard to do well. *Why it tells:*
+  the deeper he is, the fewer underneath jobs he can reach in time; the shallower, the fewer deep
+  ones.
+- **Safety width.** A safety within about 8 yards of the middle (on the hash or a few yards
+  outside it) can reach the deep middle. One splitting the hash and the numbers, 9 to 11 yards out,
+  is probably staying on his half of the field. When one safety
+  pinches toward the middle and the other widens or creeps down, the shell is leaning toward
+  one-high. *Why:* the deep middle is a destination, and the safety who will go there likes to
+  start close to it.
+- **Corner technique, then leverage.** Two different questions. *Technique* (stance, eyes,
+  depth) says man or zone: a man corner is square to his receiver with his eyes on him; a zone
+  corner is turned toward the quarterback, seven or eight yards off and ready to backpedal or turn
+  and run to a deep third, or five or six yards off and flat-footed (a squat Cover 2 corner). *Leverage* says
+  where his help is. A corner who gives up the inside expects a safety or robber there (Cover 1,
+  Cover 3). One who takes away the inside expects help over the top or has none (2-Man, Cover 0).
+  *Why it tells:* the corner's technique has to match his job, and technique is hard to fake.
+  Corners can disguise too: a corner pressed in a two-high look who bails at the snap, one who
+  shows deep-third depth and comes up into the flat (the cloud rotation), or a corner and safety who
+  trade jobs (an *invert*: the safety comes down to the flat and the corner bails to the deep half,
+  as Palms does on one side). They have less room to lie than safeties do, but an invert means the
+  deep player can be a corner, so on the replay watch the two *deepest* defenders, whoever they are.
+- **Eyes and weight.** Zone defenders look at the quarterback. Man defenders look at their man.
+  A safety leaning forward on his toes is thinking about coming downhill; one sitting on his heels
+  is thinking about getting depth. This is the hardest tell to see on a broadcast, but the
+  All-22 film coaches use (a high, wide camera showing all 22 players) shows it.
+- **Timing.** When does anyone move? A safety who drifts toward his real spot during the cadence
+  (coaches say he *creeps* or *walks down*) is giving away his rotation; one who stands still until
+  the ball moves is not. That discipline has a name, late rotation, and its own section below.
+- **Situation and tendency.** A defense that always rotates to the field on third-and-long has a
+  habit opponents will have found on film
+  ([Tendencies](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd)). The best
+  disguises also break the defense's own patterns.
+
+::: {.callout-caution title="Common misconception"}
+"Two high safeties means Cover 2." It doesn't. Two-high is a **shell**, a picture, not a
+coverage. From the same two-high look a defense can play Cover 2, 2-Man, quarters, Cover 6 or
+Palms, or rotate into Cover 3 or Cover 1 at the snap. What the shell tells you is which coverages
+are *easy* from here, and so which ones are likely. To name the coverage, look again one second
+after the snap.
+:::
+
+## Post-snap rotation, part 1: two-high becomes one-high
+
+**[Post-snap rotation](../../appendices/glossary.qmd#gl-post-snap-rotation)** is defenders
+(almost always the safeties) moving at the snap from the shell they showed into a different one.
+The most common version starts two-high and ends one-high: one safety races to the deep middle and
+the other comes down. Where the down safety lands decides the coverage. If he goes to the flat,
+it's a sky rotation into Cover 3. To the curl area, a buzz rotation. To the hole in the middle
+of the field at 10 or 11 yards, it's Cover 3 or Cover 1 with a robber. In Cover 3 robber the
+robber is one of the four underneath defenders: the two curl-flat players and the hook player
+keep their zones and the robber takes the hole in front of the deep safety. (You'll also hear
+[rat](../../appendices/glossary.qmd#gl-rat): some staffs use it for any robber, others only for a
+linebacker sitting in the low hole at 5 to 8 yards, as in "Cover 1 rat".)
+([Cover 3](06-03-cover-3-family.qmd) built all three from a one-high start; here they start
+from two.)
+
+Coaches describe all this movement with a pile of short verbs, and some of them mean different
+things in different mouths. This chapter uses them like this:
+
+| Word | What the defender does |
+|:-------------|:------------------------------------------------------------|
+| *rotate*, *spin* | The whole shell turns: one safety goes to the post, the other comes down. "He spun down" and "he spun to the post" are both used; the verb names the rotation, not the direction. |
+| *come down*, *drop down* | A deep safety moves toward the line, into the box, the flat, the curl or the hole. |
+| *bail* | A defender who looked shallow turns and runs to a deep zone at the snap. |
+| *sink* | A defender gives ground a few yards straight back, keeping his eyes forward. |
+| *creep*, *walk down*, *cheat* | Small moves toward the real job *before* the snap; they are tells. |
+| *rob* | Sit in a throwing lane (usually the hole) and jump in-breaking routes. |
+| *poach* | A backside safety leaves his side to help on the trips side (see below). |
+
+```{python}
+#| label: fig-rotate-to-robber
+#| fig-cap: "Two-high rotates to Cover 3 with a robber. Before the snap (panel 1) both safeties sit 13 yards deep, one on each side: the deep middle looks open. Panels 1 and 2 are identical, and that is the point: no defensive back moves until the ball does. At the snap the free safety (FS) runs to the deep middle while the strong safety (SS) comes down and in to the hole at about 11 yards, right where Z's dig is heading; the ball (panel 4) is thrown into him. The dashed outlines show where the safeties stood before the snap. The corners turn and run to deep thirds (the left one stays on top of X's go route); underneath, the Will and the nickel ($) take the curl-flat zones, the Mike the hook and the SS the hole. In print, the four panels are four moments of one play."
+def rob_play():
+    off, dfn = nickel_vs_2x2()
+    p = Play(off, dfn, los=55, to_go=7)
+    # pre-snap: nobody in the secondary moves. The Mike's tiny shuffle only gives the play
+    # pre-snap frames to draw (gridiron starts the clock at the first pre-snap movement).
+    p.motion("MIKE", to=(4.5, 1.6), speed=0.12)
+    # offense: dagger to the right (the seam clears out, the dig comes in behind it)
+    p.route("Y", r.path((12, -1.0), (20, -2.0))); p.route("Z", r.dig(12, 11)); p.route("X", r.go(20))
+    p.route("H", r.hitch(5)); p.route("RB", r.flat(1.5, 6), side=-1)
+    p.dropback(2.5)
+    p.pass_to("Z", t=1.7)
+    protect(p)
+    # defense: four rush; the rest rotate to Cover 3 with a robber
+    p.drop("FS", (16.5, 0.0), speed=6.5)
+    p.drop("SS", (11.0, 4.0), speed=4.5)
+    # the boundary corner keeps his cushion on X's go route; the field corner squeezes over the dig
+    p.drop("LCB", (20.5, -16.0), speed=5.5); p.drop("RCB", (15.0, 15.5))
+    p.drop("NB", (6.5, 12.0)); p.drop("WILL", (6.5, -11.0)); p.drop("MIKE", (7.0, -2.0))
+    p.highlight("FS", "SS")
+    return p
+
+
+rob = rob_play()
+ROB_T = [-1.4, 0.0, 1.0, 2.6]
+if PDF:
+    strip(rob, ROB_T, ["−1.4 s · Two-high, as shown", "Snap · nothing has moved",
+                       "+1.0 s · FS to the post, SS comes down", "+2.6 s · Cover 3 robber: the dig is thrown into him"],
+          ghosts=("FS", "SS"), ghost_t=-1.4, window=(-8.5, 23.0),
+          notes_at={3: [("robber", (13.4, 8.6)), ("deep middle", (20.2, -4.5))]})
+    plt.show()
+else:
+    show_animation(rob, times=ROB_T)
+```
+
+Follow the play from the quarterback's side. Before the snap he sees two-high and an empty deep
+middle. Against two-high, the space between the safeties and behind the linebackers is often
+where the ball should go, and [dagger](../../appendices/glossary.qmd#gl-dagger) (a seam route that
+pulls the underneath and deep defenders away, with a deep dig coming in behind it; see
+[Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd)) is built to hit it. Here
+Y's seam bends slightly inside to push the middle open. At the snap, the defense changes the
+answer. The free safety's sprint to the middle puts a defender over the top of the seam. The strong safety's short trip down and in puts
+him exactly where the dig is going to arrive. The quarterback who decided before the snap, and
+throws on time without looking, throws it to the robber.
+
+Notice the distances. The free safety travels about 8 yards to the deep middle, inside the 8-to-10
+yard circle from the previous section. That's possible only because he lined up 7 or 8 yards from
+the middle, not on the numbers. The strong safety travels about 4 yards. Neither had far to go, which is the whole design. The shell was two-high, but
+each safety was standing where his *real* job was still within reach.
+
+The same rotation can land in man coverage instead: Cover 1 robber. The safeties move exactly as
+they do here, so the difference is in the corners. In Cover 3 they turn and run to deep thirds with
+their eyes on the quarterback; in Cover 1 they stay on their receivers, pressing or trailing them
+wherever they go. One second after the snap, the corners tell you which.
+
+What beats the robber, once the quarterback sees him? The throws he left behind. He has come down
+from one side, so the seam and the curl on that side are thinner, and his spot in the hole is in
+front of the deep safety, so a route that gets *behind* him (a post or deep crosser) is open if the
+post safety is late. The rest of Cover 3's weaknesses are still there too: the seams between
+the deep middle and each deep third, and four underneath defenders who can't cover every short
+zone, so stress the curl-flat defender on the far side with a route in front of him and one behind. [Concepts Versus Coverages](../08-the-chess-match/08-01-concepts-versus-coverages.qmd)
+builds the quarterback's side of this.
+
+::: {.callout-important title="Why it exists: two-high to one-high"}
+**What it solves.** It gets an extra defender near the line against the run, or a robber
+against in-breaking routes, without announcing either before the snap. Offenses facing two-high
+tend to run the ball, because with both safeties 12 or more yards deep only six or seven defenders
+are near the line to face the offense's blockers, and to throw between the safeties. The rotation punishes
+both: the down safety adds a run defender or sits in the throwing lane.
+
+**What it gives up.** The rotating safety starts late and from deep, so he arrives in the box
+after the run has started. The safety spinning to the middle has a long run, so a quick deep
+throw outside him (a post or a deep corner route released before he gets there) can beat it.
+And the robber looks only at the quarterback, so a quarterback who looks him off with his eyes and
+shoulders, then throws elsewhere, can move him out of the play
+([Concepts Versus Coverages](../08-the-chess-match/08-01-concepts-versus-coverages.qmd)).
+:::
+
+### Which safety comes down? A rule, not a whim
+
+A defense doesn't decide on the field which safety rotates. The call says so, usually by tying the
+rotation to something the offense shows: rotate **to the passing strength** (the side with more
+receivers), **to the field** (the wide side), **toward motion**, or the other way, **weak** or **to
+the boundary**. Staffs build names for these out of a direction and a landing spot ("sky strong,"
+"buzz weak" and the like); one of Nick Saban's trips calls, for example, drops the safety down to
+the passing strength.[^saban7] Before the snap, then, your best guess about direction is:
+
+- **Toward the strength or the motion** is the default. That is where the extra receivers are,
+  so that is where an extra underneath defender helps most. Quarterbacks are taught to expect it.
+- **Away from the strength** is itself a disguise. A defense that knows the quarterback expects
+  the strong safety to come down can spin the weak safety down instead, so the robber appears on
+  the side the quarterback thought was clean.
+- **Look for the tells on one safety, not both.** The safety who is shallower, narrower or leaning
+  forward is the likely down safety; the other one is the likely post safety. Combine that with
+  the strength of the formation and you can usually call the direction.
+
+## Post-snap rotation, part 2: one-high becomes two-high
+
+The rotation can run the other way. Show one-high: a single safety deep in the middle, the
+other safety walked down near the box, corners off and ready to bail, the classic Cover 3 or
+Cover 1 picture. Then, at the snap, the deep safety bails to one deep half and the down safety
+bails to the other. The corners, instead of bailing to deep thirds, hold their depth and widen
+into the flats, the Cover 2 corner's job. That is
+Cover 2 (or, with man coverage underneath, 2-Man), reached from a one-high start.
+
+```{python}
+#| label: fig-spin-to-two
+#| fig-cap: "One-high bails to Cover 2. Before the snap the free safety (FS) is alone in the deep middle and the strong safety (SS) is down at 9 yards: middle of the field closed. Panels 1 and 2 are the same picture: no defensive back moves before the snap. At the snap both safeties bail to deep halves, landing between the hash and the numbers, and the corners (CB), who looked as though they would bail to deep thirds, hold their depth and widen three yards toward the sideline (compare each corner with his dashed outline). That puts them right where the outside receivers' 8-yard outs are breaking. They play the flat from on top, at about 8 yards rather than the flat's usual 0 to 6, because a corner who starts deep keeps the out in front of him. What opened is the deep middle between the two safeties: H's seam holds the left safety, and Y bends his route inside into the open middle."
+def spin_play():
+    off, dfn = nickel_vs_2x2("single_high")
+    dfn = [p.moved(d=13.5, w=0.0) if p.key == "FS" else p for p in dfn]
+    dfn = [p.moved(d=9.0, w=6.0) if p.key == "SS" else p for p in dfn]
+    dfn = [p.moved(d=8.0) if p.pos == "CB" else p for p in dfn]
+    p = Play(off, dfn, los=55, to_go=7)
+    p.motion("MIKE", to=(4.5, 1.6), speed=0.12)      # pre-snap frames only; the secondary stays still
+    # offense: outs outside (good against one-high with off corners), seams inside
+    p.route("X", r.out(8, 5)); p.route("Z", r.out(8, 5)); p.route("H", r.seam(20))
+    p.route("Y", r.path((10, 0.0), (19, -5.0)))            # a seam that bends into the open middle
+    p.route("RB", r.flat(1.5, 6), side=-1)
+    p.dropback(2.5)
+    protect(p)
+    p.drop("FS", (17.0, -9.5), speed=6.5)
+    p.drop("SS", (17.0, 9.5), speed=6.5)
+    p.drop("LCB", (8.5, -19.0), speed=2.5); p.drop("RCB", (8.5, 19.0), speed=2.5)   # sink and widen
+    p.drop("NB", (8.0, 9.0)); p.drop("WILL", (8.0, -8.0)); p.drop("MIKE", (8.5, 1.0))
+    p.highlight("FS", "SS")
+    return p
+
+
+spin = spin_play()
+SPIN_T = [-1.4, 0.0, 1.0, 2.0]
+if PDF:
+    strip(spin, SPIN_T, ["−1.4 s · One-high, as shown", "Snap · nothing has moved", "+1.0 s · Both safeties bail",
+                         "+2.0 s · Cover 2: halves, corners in the flats"],
+          ghosts=("FS", "SS", "LCB", "RCB"), ghost_t=-1.4,
+          notes_at={3: [("½", (18.4, -13.0)), ("½", (18.4, 13.0)), ("middle open", (17.0, 0.5))]})
+    plt.show()
+else:
+    show_animation(spin, times=SPIN_T)
+```
+
+Why bother? One-high with off corners *invites* certain throws. With a safety in the deep middle
+and the corners backing off, the outside is where the quarterback looks: quick outs and hitches
+in front of the bailing corners, curls under them, back-shoulder throws to receivers facing
+one-on-one coverage. The bail to Cover 2 takes all of that away at once. The corners now sit
+exactly where the outs are going, and there's a safety over the top on each side to take away
+the deep ball outside.
+
+What opens instead is the deep middle, between the two safeties, which is exactly what the
+quarterback ruled out before the snap. A quarterback who reads the safeties *after* the snap sees
+them split and throws between them, up the seam or on a post (the throw that
+[Cover 2 and Tampa 2](06-04-cover-2-and-tampa-2.qmd) shows the Tampa 2 Mike running to carry). The
+other Cover 2 window is the sideline [hole shot](../../appendices/glossary.qmd#gl-hole-shot), the
+gap behind the corner and in front of the half-field safety, 18 to 22 yards deep. A quarterback
+who decided before the snap throws the out into a waiting corner.
+
+::: {.callout-important title="Why it exists: one-high to two-high"}
+**What it solves.** It lets a defense look like it is loading up against the run, with the down
+safety near the box, and still play two deep defenders against the pass. Offenses that see
+one-high often check to throws outside or to deep shots against single (one-on-one) coverage. The
+bail punishes both.
+
+**What it gives up.** The down safety was a run defender in the picture, and now he's running
+away from the line, so a run against this look faces one fewer defender than it seemed to. He also
+has the longest trip on the field, 8 or more yards of depth plus width, so a fast vertical route
+outside can reach his area before he does.
+:::
+
+## Late rotation: winning the last half-second
+
+The two plays above have something in common. In both, nothing moves until the snap. That is
+the difference between a rotation the quarterback can see and one he can't.
+
+**[Late rotation](../../appendices/glossary.qmd#gl-late-rotation)** means timing the rotation to
+start at the snap or just after it, rather than during the cadence. A defense that rotates early
+(safeties drifting into place while the quarterback calls signals) gives him a free look: he sees
+the real coverage, still has time to change the play, and the disguise has bought nothing. A
+defense that rotates late shows him the real coverage only after the play has begun. He has to
+recognise it *while* dropping back, with the pass rush coming.
+
+It is also why late rotation is risky. A safety who starts moving at the snap is a step behind one
+who was already there, so the rotation has to be fast and the distances have to be short. Every
+late rotation is a race between the safety and the first throw.
+
+The clearest way to see a rotation is to track just the two safeties, how deep each one is and
+how far from the middle, frame by frame from three seconds before the snap to two seconds after.
+Player-tracking data records exactly that: every player's position ten times a second, from chips
+in the shoulder pads. The figure below is built from simulated plays written out in the format of
+the NFL's [Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd)
+tracking files (that chapter builds it step by step from the real files).
+
+```{python}
+#| code-summary: "Show the Python (simulated BDB-format tracking used by the next two figures)"
+def _seg(p, key, start, end, tau, speed):
+    """Move `key` from start to end at `speed`, starting at time tau (negative = before the snap)."""
+    start, end = np.array(start, float), np.array(end, float)
+    L = float(np.linalg.norm(end - start))
+    if tau < 0:                                  # part of the trip happens before the snap
+        pre = min(L, speed * -tau)
+        mid = start + (end - start) * (pre / L if L else 0)
+        p.motion(key, to=tuple(mid), speed=max(pre / -tau, 0.05))
+        if L - pre > 0.05:
+            p.drop(key, tuple(end), speed=speed)
+    else:
+        p.drop(key, tuple(end), speed=speed, delay=tau)
+
+
+def sim_play(kind, rng, tau=None, play_id=0):
+    """One simulated dropback, returned as Big Data Bowl-style tracking rows (10 frames a second).
+
+    kind: 'stay2' (two-high shown and played), 'rot1' (two-high shown, rotated to one-high),
+          'stay1' (one-high shown and played), 'spin2' (one-high shown, bailed to two-high).
+    tau : when the safeties start their post-snap move (seconds; negative = before the snap).
+    """
+    off, dfn = nickel_vs_2x2()
+    side = rng.choice([-1, 1])
+    if kind in ("stay2", "rot1"):
+        d1, d2 = rng.uniform(11.5, 14.0, 2)
+        w1, w2 = rng.uniform(5.5, 8.5, 2)
+        fs0, ss0 = (d1, -side * w1), (d2, side * w2)
+    else:
+        fs0 = (rng.uniform(13.0, 15.5), rng.uniform(-1.5, 1.5))
+        ss0 = (rng.uniform(7.0, 10.0), side * rng.uniform(4.0, 7.0))
+    dfn = [q.moved(d=fs0[0], w=fs0[1]) if q.key == "FS" else q for q in dfn]
+    dfn = [q.moved(d=ss0[0], w=ss0[1]) if q.key == "SS" else q for q in dfn]
+    p = Play(off, dfn, los=35, to_go=10)
+    p.motion("MIKE", to=(4.5, 1.5), speed=0.1)   # a slow 3-second shuffle so frames start 3 s early
+    p.route("X", r.go(22)); p.route("Z", r.go(22)); p.route("H", r.seam(20)); p.route("Y", r.seam(20))
+    p.dropback(2.5)
+    tau = rng.uniform(-0.9, 0.3) if tau is None else tau
+    v = rng.uniform(5.0, 6.5)
+    if kind == "stay2":
+        _seg(p, "FS", fs0, (fs0[0] + rng.uniform(2, 4), fs0[1] - side * rng.uniform(0.5, 2.5)), max(tau, 0), v * .6)
+        _seg(p, "SS", ss0, (ss0[0] + rng.uniform(2, 4), ss0[1] + side * rng.uniform(0.5, 2.5)), max(tau, 0), v * .6)
+    elif kind == "rot1":
+        _seg(p, "FS", fs0, (rng.uniform(15.5, 18.0), rng.uniform(-1.0, 1.0)), tau, v)
+        _seg(p, "SS", ss0, (rng.uniform(8.0, 10.5), side * rng.uniform(3.0, 6.0)), tau, v * 0.8)
+    elif kind == "stay1":
+        _seg(p, "FS", fs0, (fs0[0] + rng.uniform(2, 4), fs0[1]), max(tau, 0), v * 0.6)
+        _seg(p, "SS", ss0, (ss0[0] + rng.uniform(-1, 1), ss0[1] + side * rng.uniform(1, 4)), max(tau, 0), v * 0.6)
+    else:
+        _seg(p, "FS", fs0, (rng.uniform(15.5, 18.0), -side * rng.uniform(9.0, 12.0)), tau, v)
+        _seg(p, "SS", ss0, (rng.uniform(15.5, 18.0), side * rng.uniform(9.0, 12.0)), tau, v)
+    trk = p.to_tracking(fps=FPS, play_id=play_id)   # columns: gameId, playId, nflId, frameId, x, y, s, a, ...
+    trk["kind"], trk["los"], trk["ball_y"] = kind, p.los, p.ball_y
+    return trk
+
+
+def shell_at(frame, deep=10.0, split=3.5):
+    """Classify one frame of any BDB-style play: 'two-high' if two or more defenders are 10+ yards
+    deep and none of them is within 3.5 yards (sideways) of the ball; otherwise 'one-high'.
+    Meant for pre-snap frames only: after the snap, a corner bailing past 10 yards would count."""
+    dfn = frame[frame["side"] == "def"]
+    d = dfn["x"] - frame["los"].iloc[0]
+    w = (frame["ball_y"].iloc[0] - dfn["y"]).abs()
+    deep_w = w[d >= deep]
+    return "two-high" if len(deep_w) >= 2 and deep_w.min() >= split else "one-high"
+```
+
+```{python}
+#| label: fig-safety-tracking
+#| fig-cap: "Simulated, BDB-format tracking (not real plays): the two safeties on 60 plays that all showed two-high, from 30 frames (3 seconds) before the snap to 20 frames after. Thin lines are single plays; thick lines are medians. Top panel: how deep each safety is. Bottom panel: how far he is sideways from the middle of the field (0 = straight down the middle). On 30 plays the shell stayed two-high (blue): both safeties drift back and a little wider. On the other 30 it rotated: one safety ran to the middle (orange: his sideways distance falls to about zero) while the other came down to robber depth (green: depth falls to about 9 or 10 yards, and he also pinches in from about 7 yards to under 5, toward the hole). We told the simulation to start 22 of the 30 rotations at the snap (late rotation), so the thick lines barely move before frame 0 and split sharply after it; the other 8 start 5 to 10 frames early, and their thin lines peel away before the snap: rotations the quarterback could have seen."
+rng = np.random.default_rng(2026)
+rows = []
+# 30 honest plays; 30 rotations, 22 of them late (start at or just after the snap) and 8 early
+taus = [0.0] * 30 + list(rng.uniform(0.0, 0.25, 22)) + list(rng.uniform(-1.0, -0.5, 8))
+for i, kind in enumerate(["stay2"] * 30 + ["rot1"] * 30):
+    trk = sim_play(kind, rng, tau=taus[i], play_id=i + 1)
+    rows.append(trk[trk["displayName"].isin(["FS", "SS"])])
+saf = pd.concat(rows, ignore_index=True)
+saf["frame_rel"] = np.round(saf["time"] * FPS).astype(int)       # frames from the snap
+saf = saf[saf["frame_rel"].between(-30, 20)].copy()
+saf["depth"] = saf["x"] - saf["los"]
+saf["from_middle"] = (saf["ball_y"] - saf["y"]).abs()        # sideways from the ball (= mid-field here)
+# in rotated plays, the safety who finishes deepest is the one who spun to the middle
+end = saf[saf["frame_rel"] == 20].set_index(["playId", "displayName"])["depth"]
+deepest = end.groupby(level=0).idxmax().map(lambda t: t[1])
+saf["role"] = np.where(saf["kind"] == "stay2", "stayed",
+                       np.where(saf["displayName"] == saf["playId"].map(deepest), "spun", "dropped"))
+COL = {"stayed": style.SERIES[0], "spun": style.SERIES[1], "dropped": style.SERIES[2]}
+LAB = {"stayed": "stayed two-high", "spun": "ran to the middle", "dropped": "came down"}
+
+fig, axes = plt.subplots(2, 1, figsize=(6.5, 5.6), sharex=True)
+for ax, col, ylab in ((axes[0], "depth", "Depth past the line of scrimmage (yd)"),
+                      (axes[1], "from_middle", "Sideways from the middle (yd)")):
+    ax.axvspan(-30, 0, color=style.GRID, alpha=0.35, lw=0)
+    for _, g in saf.groupby(["playId", "displayName"]):
+        ax.plot(g["frame_rel"], g[col], color=COL[g["role"].iloc[0]], lw=0.6, alpha=0.35)
+    for role, g in saf.groupby("role"):
+        med = g.groupby("frame_rel")[col].median()
+        ax.plot(med.index, med.values, color=COL[role], lw=2.4)
+        v = med.iloc[-1] + ({"spun": 0.7, "stayed": -0.7}.get(role, 0.0) if col == "depth" else 0.0)
+        ax.text(20.6, v, LAB[role], color=COL[role], fontsize=8, va="center", fontweight="bold")
+    ax.axvline(0, color=style.INK_2, lw=1.0)
+    ax.set_ylabel(ylab, fontsize=8.5)
+    ax.set_xlim(-30, 30)
+axes[0].text(-29, axes[0].get_ylim()[1] - 0.3, "before the snap", fontsize=8, color=style.INK_2, va="top")
+axes[0].text(0.6, axes[0].get_ylim()[1] - 0.3, "after the snap", fontsize=8, color=style.INK_2, va="top")
+axes[1].set_xlabel("Frames from the snap (10 frames = 1 second)", fontsize=8.5)
+axes[0].set_title("The two safeties around the snap (simulated, BDB-format tracking)", fontsize=10)
+fig.tight_layout()
+plt.show()
+```
+
+Read it as a picture of the idea, not as evidence: the simulation only plays back the timings we
+gave it. What it shows is the shape to look for. A rotation is a *divergence*: before it starts,
+the rotated plays and the honest plays are indistinguishable, and within about ten frames (one
+second) the safeties are in completely different places. When the divergence starts before the
+snap, even by half a second, the quarterback still has time to use it: he can change the
+protection, check to another play, or decide which side his progression starts on. A defense
+coached for late rotation pushes that starting point to zero or past it. (In these simulated plays
+the ball sits in the middle of the field, so "sideways from the middle" is also sideways from the
+ball. With the ball on a hash the two differ by about 3 yards, and coaches set the post safety's
+landmark by one or the other depending on the system.)
+
+Real safeties won't look this tidy. They shuffle, bounce on their toes, take false steps and
+adjust to motion, so real tracking lines are noisier and the plays are far less alike. We haven't
+checked these simulated paths against real tracking; the chapter on tracking data does that with
+the real files.
+
+With the real Big Data Bowl files, the same figure takes a few more steps: load the tracking
+weeks, flip every play so the offense moves the same way, find the two deepest defenders, and align
+every play on its snap frame. On the website, the code under "Show the Python" shows the shape of
+it. It isn't run here, because the files need a free Kaggle login to download; [Tracking Data and the Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd)
+walks through it on real plays.
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (the same figure from real Big Data Bowl 2025 files; not run here)"
+import pandas as pd
+from gridiron import bdb
+
+# BDB 2025: 2022 season, Weeks 1-9, with pre-snap frames. Files from Kaggle (login required).
+plays = pd.read_csv("data/bdb/plays.csv")          # has pff_passCoverage, absoluteYardlineNumber
+trk = bdb.load_tracking("data/bdb/tracking_week_*.csv")
+
+frames = []
+# One bdb.prepare() call per play is slow over nine weeks (minutes, not seconds). For speed, group
+# the tracking by (gameId, playId) once and prepare each group; this loop is written for clarity.
+for (g, pl), _ in plays.groupby(["gameId", "playId"]):
+    one = bdb.prepare(trk, plays, game_id=g, play_id=pl)   # offense moving +x, time 0 = snap
+    ball = one[(one["side"] == "ball") & (one["frameType"] == "SNAP")]
+    los, ball_y = float(ball["x"].iloc[0]), float(ball["y"].iloc[0])
+    one["frame_rel"] = (one["time"] * 10).round().astype(int)
+    # "Safeties" = the two deepest defenders one second before the snap, not roster FS/SS:
+    # teams play three-safety nickel, and corners rotate to the post in cloud or invert calls.
+    pre = one[(one["side"] == "def") & (one["frame_rel"] == -10)]
+    ids = pre.nlargest(2, "x")["nflId"]
+    s = one[one["nflId"].isin(ids)].copy()
+    s["depth"] = s["x"] - los
+    s["from_middle"] = (s["y"] - ball_y).abs()             # sideways from the ball, as in the simulation
+    frames.append(s[s["frame_rel"].between(-30, 20)].assign(gameId=g, playId=pl))
+saf = pd.concat(frames).merge(plays[["gameId", "playId", "pff_passCoverage"]], on=["gameId", "playId"])
+# ...then label each safety's role and plot exactly as in the simulated figure above.
+```
+
+## Split-field coverage: two halves, two answers
+
+So far the whole defense has rotated together. A different idea, and one of the most important in
+modern defense, is to **not treat the field as one problem at all**.
+
+**[Split-field coverage](../../appendices/glossary.qmd#gl-split-field-coverage)** means playing a
+different coverage on each half of the field, with each half following its own rules for the
+receivers on its side. The split is usually made one of two ways: by **formation** (the side with
+more receivers, the *strong* side, against the side with fewer) or by **field position** (the
+[field side](../../appendices/glossary.qmd#gl-field-side), the wider side of the field when the
+ball sits on a hash mark, against the [boundary side](../../appendices/glossary.qmd#gl-boundary-side),
+the shorter one).
+
+You have already met the most common split-field coverage: [Cover 6](06-05-quarters-and-match.qmd),
+quarters on one half and Cover 2 on the other. Here it is with the split made by field position:
+the ball is on the left hash, so the field (wide) side is to the offense's right.
+
+```{python}
+#| label: fig-cover6-split
+#| fig-cap: "Split-field Cover 6 against a 2x2 formation, ball on the left hash. The dashed line runs through the ball, so the two halves are unequal on purpose: the boundary (short) side on the left is about 24 yards to the sideline, the field (wide) side about 30. To the field side the defense plays quarters: the corner and the safety each take a deep quarter and the nickel ($) plays the curl and flat, matching the two receivers on that side. To the boundary side it plays Cover 2: the safety takes the whole deep half, from the sideline to the middle, and the corner squats in the flat. Nearly the same alignment, two coverages: look at the corners. The boundary corner (left) is two yards shallower than the field corner, and that shallower depth is the tell that he will squat in the flat."
+def cover6():
+    off = offense("gun_2x2")
+    # ball on the left hash: the field-side receivers split wider, Z to the field numbers
+    off = [p.moved(w=18.0) if p.key == "Z" else p.moved(w=11.0) if p.key == "Y" else p for p in off]
+    dfn = defense("nickel", "two_high", off)
+    moves = {"WILL": (5.0, -6.0), "RCB": (7.0, 18.8), "LCB": (5.0, -16.0), "FS": (12.5, -7.5),
+             "SS": (12.5, 8.5), "NB": (5.0, 11.0)}
+    dfn = [p.moved(d=moves[p.key][0], w=moves[p.key][1]) if p.key in moves else p for p in dfn]
+    dfn = [p.moved(label="CB") if p.pos == "CB" else p for p in dfn]
+    p = Play(off, dfn, los=45, ball_y="left", to_go=10)
+    # field side: quarters
+    p.drop("RCB", (15.0, 17.0), speed=4.0); p.zone((17.0, 15.5), (8, 11), "¼")
+    p.drop("SS", (15.0, 6.0), speed=4.0); p.zone((17.0, 5.0), (8, 10), "¼")
+    p.drop("NB", (5.5, 12.5)); p.zone((6.0, 14.0), (5, 7), "curl-flat")
+    # boundary side: Cover 2 (the half-field safety owns everything from the sideline to the middle)
+    p.drop("FS", (15.5, -9.0)); p.zone((17.5, -9.0), (8, 17), "½")
+    p.drop("LCB", (5.5, -17.0)); p.zone((4.0, -18.5), (4.5, 6), "flat")
+    p.drop("WILL", (7.0, -7.5)); p.zone((7.5, -9.5), (4.5, 6), "curl")
+    p.drop("MIKE", (6.5, 3.0)); p.zone((7.5, 3.2), (4.5, 5.5), "hook")
+    for k in ("SDE", "SDT", "WDT", "WDE"):
+        p.rush(k, pts=[(-1.4, 0.0)], speed=2.0)
+    p.highlight("LCB", "RCB")
+    return p
+
+
+c6 = cover6()
+fld = c6.draw(lateral="full", window=(-7, 23))
+no_numbers(fld.ax)
+ruler(fld, c6)
+divider(fld, c6, "BOUNDARY · Cover 2", "FIELD · quarters")
+plt.show()
+```
+
+Why split the field? Because the two halves really are different problems.
+
+- **The field and the boundary are different sizes, a little.** NFL hash marks sit 70 feet 9
+  inches from each sideline, so with the ball on a hash there are about 23.6 yards to the near
+  (boundary) sideline and 29.7 to the far (field) one, a difference of about 6 yards. In college
+  the hashes are 60 feet from the sidelines, so the split is about 20 yards against 33.[^hashes] A
+  boundary corner has the sideline as an extra defender; he can squat in the flat because a throw
+  over his head has little room to land. That difference is big in college, which is where
+  field/boundary quarters grew up. In the NFL it is modest, which is one reason pro split-field
+  calls are often keyed to the formation's **strength** (the trips side, the tight-end side)
+  rather than to the field.
+- **The two halves face different receivers.** A tight end and a slot to one side, a lone
+  wideout to the other: those sides threaten different things, and one coverage rule can't be
+  ideal for both.
+- **Each player's job is simpler.** Each player only has to know his own half: who is #1 and #2
+  on my side, and what is my rule against them? The defense gets flexibility from combining simple
+  halves, not from teaching eleven people one complicated call. The defenders in the middle, the
+  Mike and the hook players, belong to whichever half the call assigns them; in the figure above
+  the Mike takes the hook in the middle, the Will the curl for the Cover 2 half and the nickel the
+  curl-flat for the quarters half.
+- **But the communication is harder.** Both halves have to agree where the split is: by
+  formation, by field, or, with the ball in the middle and a balanced formation, by a default the
+  staff sets in advance. A safety or the Mike typically makes that strength call by shout and hand
+  signal. When a receiver motions across the formation, the strength can flip, and both halves
+  must re-declare in the last second before the snap. That is a big reason offenses motion so much
+  against split-field defenses (see below).
+
+Split-field coverage is also a disguise machine, and that's why it belongs in this chapter. From
+one two-high alignment the defense can play quarters on both halves, Cover 2 on both, Cover 6 to
+either side, Palms on one side, or rotate to one-high. The quarterback now has to read *two*
+coverages, one per half. A pre-snap guess that is right about the left half can be wrong about
+the right.
+
+How do you tell Cover 6 from its neighbours after the snap? Count the deep safeties first, then
+watch the corners. Cover 3: one safety in the deep middle, both corners bail. Cover 2: two
+safeties split the field, both corners sit down in the flats. Cover 6: two safeties split the
+field, and the corners *disagree*: one sits in the flat (the Cover 2 half), the other backpedals
+with his eyes on the quarterback and plays a deep quarter. One squatting corner and one bailing
+corner under two deep safeties is the Cover 6 picture.
+
+One naming warning before the history. Coverage numbers are dialect, not law
+([Coverage Fundamentals](06-01-coverage-fundamentals.qmd) and the dialect table in the
+[coverage atlas](../../appendices/appendix-d-coverage-pressure-atlas.qmd)), and "Cover 7" is the
+clearest example. In Nick Saban's vocabulary,
+**[Cover 7](../../appendices/glossary.qmd#gl-cover-7-match-family)** names a whole *family*: a
+two-high, quarters-based pattern-match coverage in which each side of the formation gets its own
+small call, so the full call is a split-field call assembled from parts.[^cover7] Other staffs use
+"Cover 7" for a man-match coverage, a bracket on one receiver, or nothing at all.
+
+### A short history: from college laboratories to the NFL
+
+Split-field quarters grew up in college football in the 1990s and 2000s, and the problem it solved
+is easy to state. College offenses spread the field and ran option and play-action from the same
+looks, on wide college hashes. A defense that put a safety in the box to stop the run gave up the
+deep ball; one that kept both safeties deep got run over. Quarters let it have both: safeties at
+10 to 12 yards who read the receivers in front of them and fit the run if it came, but stayed deep
+if it was a pass. TCU's Gary Patterson, one of the coaches most identified with the approach,
+summed up the safeties' job at a 2015 coaches' clinic: "Don't go till you know." His safeties didn't
+backpedal at the snap; they shuffled flat-footed and read, because, as he told the same clinic
+audience, "we want to take away the short game, we want to take away combination routes, and we
+want to stop the run."[^patterson]
+
+Saban's pattern-matching quarters, which goes back to his years as Bill Belichick's defensive
+coordinator in Cleveland (1991 to 1994), went with him to Michigan State, LSU and Alabama. Michigan
+State under Mark Dantonio and Pat Narduzzi, Patterson's TCU and Iowa's long-running quarters
+defenses became reference points that other coaches studied at clinics.[^quartershistory]
+
+The NFL caught up later, and fast. NFL Next Gen Stats (NGS, the league's tracking-data arm)
+measures how often defenses play a split-safety (two-high) coverage after the snap: 32.9% of
+dropbacks in 2018, 37.8% in 2021, 40.4% in 2024 and 42.0% in 2025, the highest since tracking
+began. In 2025, Cover 6 alone was 9.2% of coverages.[^ngs-two-high] Brandon Staley's 2020 Rams
+(below) are one of the teams that made the approach fashionable in the league. Staley came from the
+staff of Vic Fangio, the defensive coordinator most associated with the NFL's two-high wave, and
+coaches from Staley's staff and Fangio's wider tree, such as Ejiro Evero (the Rams' safeties coach in 2020, then Denver's
+defensive coordinator in 2022 and Carolina's since 2023), have leaned on rotation from a two-high
+shell: by one count, Carolina stayed two-high and rotated to one-high in almost equal measure.[^evero] The
+full story of the two-high spread, Vic Fangio and the counterpunch that followed, is told in
+[Case Study: Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd)
+and [The Modern Era](../11-history/11-05-the-modern-era.qmd).
+
+## Trips: the formation that forces a decision
+
+Split-field rules work beautifully against 2x2: two receivers and two or three defenders per
+side. A **3x1** formation (trips) breaks the symmetry on purpose. Three receivers go to one side
+and one to the other, and now the count is ugly.
+
+Count only the players who can run with a receiver 20 yards downfield. On the trips side the
+defense has the corner, the safety and the nickel against three receivers who can all go deep. On
+the backside it has a corner and a safety against one receiver. (The backside linebacker, the Will,
+is there too, but his jobs are the run and a short zone; he can't chase a receiver up the field.)
+If the defense just plays quarters as usual, the trouble is the third receiver (#3, the one closest
+to the ball). Quarters rules are built for two receivers per side: the corner takes #1 deep and the
+safety reads #2. Most systems do give #3 to someone underneath, the hook or [apex](../../appendices/glossary.qmd#gl-apex) player who walls
+him off (stays in his path and keeps him from running free across the middle). But if #2 and #3
+*both* run vertical, the safety can carry only one of them, and the underneath defender can't
+carry a fast receiver 20 yards deep. Meanwhile two defenders on the backside guard one man.
+Offenses love this: send #2 and #3 vertical and see who covers the second one. The problem is
+sharpest when #3 is a *detached* receiver, a slot or a tight end split off the line, who can get
+up the field fast; an in-line tight end is slower to release, and many quarters teams just play
+their normal rules against him.
+
+So every two-high defense carries a set of **3x1 checks**: pre-planned adjustments that tell
+each player what to do when trips appears. They fall into a few families. All of them answer the
+same question: *who takes #3 if he goes deep, and who gets left alone because of it?*
+
+### Poach: the backside safety comes across
+
+**[Poach](../../appendices/glossary.qmd#gl-poach)** is the most aggressive answer. The backside
+safety ignores the lone receiver, leaves him to the cornerback in pure man coverage, and works
+across the field to take #3 if #3 runs deep. The trips side can then play its normal quarters
+rules on #1 and #2.
+
+```{python}
+#| label: fig-poach
+#| fig-cap: "Poach against detached trips: the tight end Y has flexed off the line, about four yards outside the right tackle, to be a third slot receiver (#3). The backside safety (FS, highlighted) starts on the left but is reading #3, and runs across to carry him when he goes up the middle. On the trips side the corner and strong safety play #1 and #2 with quarters rules, and the nickel ($) and Mike take the curl-flat and hook underneath. The price is on the left: the corner (CB) covers X man-to-man with no safety anywhere near him (the dotted line is his man assignment)."
+off = trips(detached=True)
+dfn = trips_defense(off)
+dfn = [p.moved(d=5.0, w=-13.8) if p.key == "LCB" else p for p in dfn]
+poach = Play(off, dfn, los=35, to_go=10)
+poach.route("Z", r.go(20)); poach.route("H", r.seam(20)); poach.route("Y", r.path((4, -1.0), (20, -2.5)))
+poach.route("X", r.fade(18))
+for k in ("SDE", "SDT", "WDT", "WDE"):
+    poach.rush(k, pts=[(-1.4, 0.0)], speed=2.0)
+poach.drop("FS", (17.0, 3.0)); poach.drop("SS", (17.0, 10.5)); poach.drop("RCB", (17.0, 18.5))
+poach.drop("NB", (6.5, 14.0)); poach.drop("MIKE", (7.0, 5.0)); poach.drop("WILL", (7.0, -4.5))
+poach.man("LCB", "X")
+poach.note("poach: FS takes #3 deep", at=(20.0, -7.0))
+poach.note("CB alone on X", at=(6.0, -19.0))
+number_receivers(poach, extra={"Y": "Y detached"})
+poach.highlight("FS")
+fld = poach.draw(lateral="full", window=(-8, 22))
+no_numbers(fld.ax)
+ruler(fld, poach)
+plt.show()
+```
+
+Poach is a *read*, not a man assignment. If #3 goes vertical, the poaching safety carries him. If
+#3 stays short or breaks outside, the safety doesn't stand around: he robs inside, jumping #2's
+in-breaking route or the backside dig, or works back to help on X. That is what separates poach
+from a backside safety simply locked on #3 in man coverage.
+
+The trade is stated in the picture. Poach turns the trips side into a fair fight and gives the
+defense a deep player over #3, but the corner on the backside is now on an island. Offenses who
+expect poach build "poach beaters": they put their best receiver alone on the backside (often
+called an *X-iso* look) and attack him knowing no safety is coming, or they attack the poaching
+safety himself with a route that breaks behind him as he runs to #3.[^poachbeater] The poaching safety's alignment is also a tell: a backside
+safety who starts closer to the middle than usual, or who leans toward the trips side, is
+probably not staying home.
+
+### Solo and stubbie: other ways to solve the count
+
+The **[3x1 check (solo / stubbie)](../../appendices/glossary.qmd#gl-3x1-check-solo-stubbie)** family
+covers the other common answers. The names are shared across many playbooks but the details
+aren't, so treat these as the typical versions rather than the only ones.
+
+**Solo.** A warning first: if you search for "solo coverage", most of what you'll find, from pro
+and big-college quarters writers, uses *Solo* for the backside corner alone on X while the backside
+*safety* takes #3 vertical. That is the call this chapter has just shown you as poach. The version
+here comes from other playbooks, and we keep it under the name solo because it is a genuinely
+different answer, with a different defender on #3: the backside corner plays the single receiver by
+himself, and a linebacker, usually the Mike, takes #3 if he runs deep. That frees the backside
+safety to be an extra run defender against trips runs and run-pass options.[^solo] *The trade:* a linebacker running with a tight end or slot up the seam is a mismatch the
+offense will look for, which is why NFL defenses rarely ask a linebacker to carry a *detached* #3
+deep. Solo shows up mostly against tight-end trips, where #3 is in-line and slower to get going.
+
+```{python}
+#| label: fig-solo
+#| fig-cap: "Solo against a tight-end trips set, #3 in-line (dotted lines are man assignments). The backside corner is alone on X, the Mike linebacker takes #3 (the tight end) if he runs deep, and the backside safety (FS) is freed to come down as an extra run defender. The trips side plays #1 and #2 with its normal quarters rules."
+off = trips()
+solo = Play(off, trips_defense(off), los=35, to_go=None)
+number_receivers(solo, extra={"Y": "Y in-line"})
+for k in ("SDE", "SDT", "WDT", "WDE"):
+    solo.rush(k, pts=[(-1.4, 0.0)], speed=2.0)
+solo.man("LCB", "X"); solo.man("MIKE", "Y")
+solo.drop("MIKE", (12.0, 3.5)); solo.drop("FS", (5.5, -4.0))
+solo.drop("SS", (16.0, 10.0)); solo.drop("RCB", (16.0, 18.0)); solo.drop("NB", (6.0, 14.0))
+solo.drop("WILL", (6.5, -1.0))
+solo.highlight("FS", "MIKE")
+solo.note("FS free:\nextra run fitter", at=(4.2, -12.5))
+solo.note("Mike: #3 deep", at=(14.2, -0.5))
+fld = solo.draw(lateral=(-20, 21), window=(-6.5, 16.5), title=False)
+no_numbers(fld.ax)
+ruler(fld, solo)
+plt.show()
+```
+
+**Stubbie.** Instead of sending help across, the defense solves trips on the trips side alone,
+four defenders against three receivers. In the version taught in Saban's system (as decoded in
+Cameron Soran's guide to Saban's coverages, cited above) the corner plays #1 man-to-man wherever he
+goes, the nickel takes #2, a linebacker walls off #3 underneath, and the safety takes #3 deep while
+staying over the top of #2. He can do both because he lines up deeper than either and between them:
+if #3 goes vertical he carries him, and if #3 stays short he sits over #2, helping the nickel on
+anything deep. The backside safety stays home, so the lone receiver faces two defenders. *The
+trade:* the trips-side corner is locked in man coverage, and those four players are spread thin
+against crossing routes.
+
+```{python}
+#| label: fig-stubbie
+#| fig-cap: "Stubbie against 3x1 (dotted lines are man assignments). On the trips side the corner locks on #1 and the nickel ($) on #2; the Mike walls off #3 underneath while the strong safety takes #3 deep and stays over the top of #2. Here #3 (the tight end, Y) runs up the seam and #2 runs a short out, so the safety carries #3. The backside safety stays home, so X sees two defenders: the corner on him and the safety over the top."
+off = trips()
+stub = Play(off, trips_defense(off, fs_w=-9.0), los=35, to_go=None)
+number_receivers(stub)
+stub.route("Y", r.seam(18)); stub.route("H", r.out(5, 4)); stub.route("Z", r.go(16))
+for k in ("SDE", "SDT", "WDT", "WDE"):
+    stub.rush(k, pts=[(-1.4, 0.0)], speed=2.0)
+stub.man("RCB", "Z"); stub.man("NB", "H"); stub.man("LCB", "X")
+stub.drop("MIKE", (5.5, 5.5)); stub.drop("SS", (15.5, 5.0)); stub.drop("FS", (15.0, -14.0))
+stub.drop("WILL", (6.5, -3.0))
+stub.highlight("SS", "FS")
+stub.note("SS: #3 deep,\nover #2", at=(17.6, -2.5))
+stub.note("2 on X", at=(14.8, -9.0))
+fld = stub.draw(lateral=(-20, 21), window=(-6.5, 19.5), title=False)
+no_numbers(fld.ax)
+ruler(fld, stub)
+plt.show()
+```
+
+**Rotate.** The defense can also give up on two-high against trips and rotate to a one-high,
+three-deep [Cover 3 match](06-03-cover-3-family.qmd) coverage, with the trips-side safety coming
+down toward the passing strength and the backside safety becoming the deep-middle player.
+
+Why does this matter to a viewer? Because **trips is how offenses force the defense to declare.**
+The 3x1 check the defense uses usually shows up in the backside safety's alignment before the
+snap: home and wide (stubbie), cheated in toward the middle (poach, or a rotation in which he
+becomes the post safety), or creeping down (solo). Poach and rotation can look the same before
+the snap; the difference shows in the first second after it. The poaching safety keeps reading #3
+and goes where #3 goes; the rotating safety runs to the deep middle and stays there, while the
+trips-side safety comes down. And offenses use motion to *create* trips at the last moment, so the
+defense has to make that decision with a second left on the play clock. Usually a safety or the
+Mike shouts and signals the check. A defender who doesn't hear it plays the old call, and that is
+how the busts described at the start of the chapter happen: two defenders on one receiver, nobody
+on #3.
+
+The same question comes up against other three-receiver sides. An [empty](../../appendices/glossary.qmd#gl-empty)
+3x2 set has a trips side too, and the defense answers it with the same families. A [bunch](../../appendices/glossary.qmd#gl-bunch), three
+receivers packed tightly together, adds a different problem, receivers crossing each other at the
+line, which [Man Coverage](06-02-man-coverage.qmd) handles with its
+[banjo](../../appendices/glossary.qmd#gl-banjo) calls.
+
+## How offenses fight back
+
+Offenses' counters share one idea: **make the defense show its hand earlier, or make the hand
+not matter.**
+
+**Motion.** Moving a receiver before the snap forces defenders to adjust, and adjustments are
+information ([Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)).
+A cornerback who travels across the formation with the motion man hints at man coverage. A
+safety who spins down hints at one-high. Motion also changes the receiver count: turning 2x2 into
+3x1 forces the defense into its trips check with no time to disguise it. The league has gone
+all in. PFF (Pro Football Focus, a charting and grading company) counted pre-snap shifts or
+motion on 63.9% of plays in 2025, up from 43.0% in 2018.[^pff-motion]
+
+Defenses answer motion in three ways:
+
+- **Match rules.** In a pattern-match zone, defenders hand receivers off by rule, so a defender
+  may follow the motion man a few steps (looking like man) and then pass him to the next zone. The
+  motion read says "man" and the coverage is zone, or the reverse.
+- **Fake spins.** A safety spins down with the motion on purpose and goes back to his old job at
+  the snap.
+- **Many starting points.** The defense rehearses every rotation from more than one pre-snap
+  picture, so no single picture means one coverage.
+
+The offense's counter to all three is [motion at the snap](../../appendices/glossary.qmd#gl-motion-at-the-snap):
+the receiver is still moving when the ball is snapped, so the defense must react to him and rotate
+at the same instant, with no time for a second move.
+
+**Tempo.** Snapping the ball quickly gives the defense less time to line up, communicate and
+disguise. Under [tempo](../../appendices/glossary.qmd#gl-tempo) (the pace at which an offense gets
+to the line and snaps the ball; see
+[In-Game Adjustments and Tempo](../08-the-chess-match/08-04-in-game-adjustments-and-tempo.qmd)),
+defenses often fall back on one simple call, and simple calls are easier to read.
+
+**Hard counts.** A hard count isn't only fishing for an offside flag. Safeties drilled to move "on
+the snap" sometimes move on what *sounds* like the snap, and a safety who flinches at a fake
+reveals where he's going. The defense's answer is discipline: key the ball, not the voice.
+
+**Read it after the snap.** The deepest answer is for the quarterback to stop relying on the
+pre-snap picture. Modern quarterbacks are taught to form a pre-snap guess, then confirm it in the
+first steps of the drop by looking at the safeties: is the middle of the field closed or open
+*now*? Which safety moved, and where? Pass concepts are built to have an answer against either
+rotation. The classic example is a slot receiver on a "bender" in four verticals: if the middle
+opens (two safeties split), he bends his seam into a post between them (see
+[four verticals](../../appendices/glossary.qmd#gl-four-verticals)), as Y does in the Cover 2
+figure above; if the middle closes (one safety in the post), he stays on his seam and the ball goes
+away from the post safety. The route changes after the snap, on the same read the quarterback
+makes. Eye manipulation, looking off a robber to move him, is the advanced version
+([Concepts Versus Coverages](../08-the-chess-match/08-01-concepts-versus-coverages.qmd)).
+
+**Play-action and RPOs.** The safety who rotates down is usually the defense's extra run
+defender, and that makes him a target. A [run-pass option](../04-the-passing-game/04-06-rpos.qmd)
+can *read* him: if he comes down to fit the run, throw where he left; if he stays deep, hand off
+into a box that is one defender short. [Play-action](../04-the-passing-game/04-05-play-action-boots-screens.qmd)
+attacks the other safety: a run fake holds the post safety's eyes for a beat, and his long trip to
+the middle is exactly the kind of run a deep shot behind him is built to beat. Rotation buys the
+defense a run defender it never announced; a good run fake makes it pay for him.
+
+**Throw before it matters.** The quick game (throws out in about two seconds or less;
+[The Quick Game](../04-the-passing-game/04-03-quick-game.qmd)) doesn't care much about
+rotations, because the ball is gone before the safeties have finished moving. Against heavy
+disguise, a steady diet of quick throws is a way of declining the contest.
+
+## Measuring the lie
+
+Can you count how often a defense lies? Broadcasters and charting services label the coverage
+*after* the snap, and the nflverse data used throughout this course carries those labels
+(2018–2025). What they don't record is the picture the defense showed *before* the snap. For that
+you need tracking data: the safeties' positions in the frames before the snap.
+
+That is exactly what the 2025 Big Data Bowl asked for. Its theme was pre-snap behaviour, and it was
+the first edition whose tracking files included full pre-snap frames, from the first nine weeks of
+the 2022 season. The winning entry, by NYU students Smit Bajaj and Vishakh Sandwar, was called
+"Exposing Coverage Tells in the Pre-Snap."[^bdb2025] NFL Next Gen Stats then built a pre-snap
+model of its own, crediting that project as inspiration. It classifies the shell a quarterback
+sees before the snap and compares it with the coverage after. In its words: "If a defense shows
+split-safety zone and rotates to single-high man (or spins to Cover 0), we flag it as
+disguised."[^ngs-disguise] The article that introduced the model gave no league-wide disguise
+rate, we found no other published one, and the Big Data Bowl files cover only half of one season.
+So "how often does an NFL defense lie?" has no public league-wide answer yet (one analyst's count
+for a single team is in the Film room below).
+
+Here is how you would get one. First fix what "the shell" means: the picture once the offense is
+set and the quarterback starts his cadence, say two seconds before the snap. Then classify that
+picture with a simple rule (two or more defenders at least 10 yards deep and none of them near the
+middle means two-high), do the same at the snap, and compare both with the coverage the defense
+actually played. A defense that rotates during the cadence has still disguised, but the
+quarterback had time to see the truth; one that rotates at the snap did not give him that time.
+
+The chart below runs that measurement on eight **made-up** defenses. We typed in how often each one
+disguises and how late it moves, simulated 90 plays for each as BDB-format tracking, and let the
+classifier score them, so the chart can only give back what we put in. Its job is to show what the
+measurement looks like and how to read it, not to tell you anything about real teams. Read each row
+from left to right: the hollow dot is how often the picture two seconds before the snap told the
+truth, the filled dot how often the picture at the snap did, and the bar between them is how much of
+the lie the defense gave away during the cadence.
+
+```{python}
+#| label: fig-shell-agreement
+#| fig-cap: "Did the shell tell the truth? Eight made-up defenses (not real teams) whose disguise rates we chose, 90 simulated dropbacks each, listed from the least disguise (A) to the most (H). Hollow dots: how often the shell two seconds before the snap matched the coverage played. Filled dots: the same, measured at the snap. A and B are honest: they disguise on only 5% and 12% of plays, so their dots sit high (between about 88 and 98), though not at 100. C and D disguise often but rotate during the cadence: low hollow dots, long bars, and by the snap the picture is true again. F and H disguise often and move late: short bars, low scores. Those are the hardest to read. E and G sit in between. A filled dot can't fall left of its hollow dot here, because the defenses only ever move toward the truth."
+rng = np.random.default_rng(7)
+# hypothetical defenses: (share shown two-high, share disguised, share of disguises that move only at/after the snap)
+DEFS = {"A": (0.50, 0.05, 0.5), "B": (0.55, 0.12, 0.4), "C": (0.45, 0.25, 0.1), "D": (0.60, 0.30, 0.2),
+        "E": (0.65, 0.30, 0.5), "F": (0.70, 0.35, 0.9), "G": (0.75, 0.40, 0.6), "H": (0.75, 0.45, 0.9)}
+N = 90
+res, pid = [], 0
+for name, (p_two, p_dis, p_late) in DEFS.items():
+    n_dis = round(N * p_dis)
+    for i in range(N):
+        pid += 1
+        shown_two = rng.random() < p_two
+        disguised, late = i < n_dis, i < round(n_dis * p_late)
+        kind = {(True, False): "stay2", (True, True): "rot1",
+                (False, False): "stay1", (False, True): "spin2"}[(shown_two, disguised)]
+        tau = rng.uniform(0.0, 0.3) if late else rng.uniform(-1.6, -0.6)
+        trk = sim_play(kind, rng, tau=tau, play_id=pid)
+        played = "two-high" if kind in ("stay2", "spin2") else "one-high"   # the post-snap label
+        res.append((name, played,
+                    shell_at(trk[np.isclose(trk["time"], -2.0)]),
+                    shell_at(trk[np.isclose(trk["time"], 0.0)])))
+chk = pd.DataFrame(res, columns=["defense", "played", "shell_early", "shell_snap"])
+agree = (chk.assign(early=chk["shell_early"] == chk["played"], snap=chk["shell_snap"] == chk["played"])
+            .groupby("defense")[["early", "snap"]].mean().mul(100))
+
+fig, ax = plt.subplots(figsize=(6.5, 3.6))
+y = np.arange(len(agree))[::-1]                   # Defense A at the top
+ax.hlines(y, agree["early"], agree["snap"], color=style.BASELINE, lw=2.0, zorder=1)
+ax.scatter(agree["early"], y, s=46, facecolor="white", edgecolor=style.SERIES[0], lw=1.6, zorder=2,
+           label="2 seconds before the snap")
+ax.scatter(agree["snap"], y, s=46, color=style.SERIES[0], zorder=3, label="at the snap")
+ax.set_yticks(y, [f"Defense {d}" for d in agree.index], fontsize=8.5)
+ax.set_xlabel("Plays where the pre-snap shell matched the coverage played (%)", fontsize=8.5)
+ax.set_xlim(50, 101)
+ax.grid(axis="y", visible=False)
+ax.legend(loc="lower right", fontsize=8)
+ax.set_title("Pre-snap shell vs coverage played (simulated defenses, BDB-format)", fontsize=10)
+fig.tight_layout()
+plt.show()
+```
+
+Two numbers, then, describe a defense's disguise: *how often* it lies sets how low its early
+score can go, and *when* it moves decides whether the lie can be caught in time. With the real 2025
+Big Data Bowl files, whose plays carry a charted post-snap coverage, the same code would give real
+values; the website's "Show the Python" holds it, and
+[Tracking Data and the Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd)
+runs it on real defenses.
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (the real version from Big Data Bowl 2025 files; not run here)"
+from gridiron import bdb
+
+plays = pd.read_csv("data/bdb/plays.csv")        # pff_passCoverage is the post-snap label
+trk = bdb.load_tracking("data/bdb/tracking_week_*.csv")
+TWO_HIGH = {"Cover-2", "2-Man", "Quarters", "Cover-6 Right", "Cover 6-Left"}   # check the year's label list
+ONE_HIGH = {"Cover-1", "Cover-3", "Cover-3 Seam", "Cover-3 Cloud Left", "Cover-3 Cloud Right",
+            "Cover-3 Double Cloud", "Cover-1 Double", "Cover-0"}
+
+out = []
+for row in plays.dropna(subset=["pff_passCoverage"]).itertuples():
+    one = bdb.prepare(trk, plays, game_id=row.gameId, play_id=row.playId)
+    snap = one[one["frameType"] == "SNAP"]
+    one["los"] = float(snap.loc[snap["side"] == "ball", "x"].iloc[0])
+    one["ball_y"] = float(snap.loc[snap["side"] == "ball", "y"].iloc[0])
+    played = ("two-high" if row.pff_passCoverage in TWO_HIGH
+              else "one-high" if row.pff_passCoverage in ONE_HIGH else None)
+    if played is None:
+        continue
+    out.append((row.defensiveTeam, played,
+                shell_at(one[np.isclose(one["time"], -2.0)]), shell_at(one[np.isclose(one["time"], 0.0)])))
+# ...then group by defensiveTeam and plot exactly as in the simulated chart above.
+```
+
+## Film room
+
+::: {.callout-note title="Film room: Vikings 2023–2025 — Brian Flores and the defense that is both"}
+Brian Flores became the Vikings' defensive coordinator in 2023 and was still there in 2026. His
+defenses have been described as close to unreadable before the snap. The back seven (the
+linebackers and defensive backs, everyone behind the defensive line) move constantly, safeties
+change the shell during the cadence and again at the snap, and pressure comes from players who
+don't look like rushers. In 2023 the Vikings blitzed on 50.7% of opponents' dropbacks, the highest
+rate in the league. After a 23–17 Vikings win in Week 2 of 2024, 49ers quarterback Brock Purdy told
+Flores on the field, "The scheme, man, it's crazy."[^vikings-cbs]
+
+**What to notice:** CBS's breakdown of that 49ers game shows the two halves of the trick. On one
+snap six Vikings stand on the line before the snap and the play becomes a four-man rush with seven
+in coverage. On another, a blitz look is real but the coverage behind it is split-field
+Cover 6 (both plays are in the same CBS piece). Watch the number of defenders at the
+line before the snap, then count the rushers after it. With Flores, the two numbers often differ.
+
+What makes it work is the **spread of possibilities** behind one look. In the nflverse post-snap
+coverage labels for 2023–2025, the Vikings played two-high coverage more often than any other
+defense (51.4% of charted dropbacks, just ahead of Buffalo's 50.5%) and Cover 0, man with no deep
+safety, at 5.8%, behind only Kansas City and level with Baltimore; the Chiefs under Steve Spagnuolo
+sit right beside them on both counts. The chart shows the menu, not the disguise: post-snap
+labels can't say what the shell looked like. But the menu is what makes disguise pay. Against most
+defenses a quarterback who sees two-high can lean on the odds that it stays two-high; against a
+defense that lives at both ends, the odds are no help. (The blitz numbers are pressure disguise,
+the subject of Part 7; the logic is the same.)
+:::
+
+```{python}
+#| label: fig-vikings-mix
+#| fig-cap: "Post-snap coverage mix by defense, 2023–2025 regular seasons pooled: share of charted dropbacks played as a two-high coverage (Cover 2, 2-Man, quarters or Cover 6) against share played as Cover 0. Each dot is a defense; dashed lines are league medians. The Vikings lead the league in two-high, by less than a point over Buffalo (which plays very little Cover 0), and are tied in effect with Baltimore for second in Cover 0, behind Kansas City, which sits close by: both extremes from the same team. Source: nflverse participation data, charted for 2023–2025 by FTN Data (a football charting company); plays the charters marked as a blown coverage or a mix of coverages are left out."
+from gridiron.data import nfl
+
+part = nfl().load_participation([2023, 2024, 2025]).to_pandas()
+cv = part[part["defense_coverage_type"].notna()
+          & ~part["defense_coverage_type"].isin(["BLOWN", "COMBO"])].copy()
+gid = cv["nflverse_game_id"].str.split("_", expand=True)        # e.g. 2024_02_SF_MIN
+cv["week"] = gid[1].astype(int)
+cv["defteam"] = np.where(cv["possession_team"] == gid[3], gid[2], gid[3])
+cv = cv[cv["week"] <= 18]                                      # regular season only
+cv["two_high"] = cv["defense_coverage_type"].isin(["COVER_2", "2_MAN", "COVER_4", "COVER_6"])
+cv["zero"] = cv["defense_coverage_type"].eq("COVER_0")
+team = cv.groupby("defteam")[["two_high", "zero"]].mean() * 100
+
+fig, ax = plt.subplots(figsize=(6.5, 4.0))
+rest = team.drop(["MIN", "KC", "BUF"])
+ax.scatter(*team.loc["BUF", ["zero", "two_high"]], s=30, color=style.INK_2, zorder=3)
+ax.annotate("Bills", tuple(team.loc["BUF", ["zero", "two_high"]]), xytext=(7, 0), textcoords="offset points",
+            ha="left", va="center", fontsize=8, color=style.INK_2)
+ax.scatter(rest["zero"], rest["two_high"], s=26, color=style.MUTED, alpha=0.7, zorder=2)
+ax.scatter(*team.loc["MIN", ["zero", "two_high"]], s=64, color=style.SERIES[1], zorder=3)
+ax.scatter(*team.loc["KC", ["zero", "two_high"]], s=64, color=style.SERIES[0], zorder=3)
+ax.annotate("Vikings (Flores)", tuple(team.loc["MIN", ["zero", "two_high"]]), xytext=(-9, -1),
+            textcoords="offset points", ha="right", va="center", fontsize=8.5, fontweight="bold", color=style.INK)
+ax.annotate("Chiefs (Spagnuolo)", tuple(team.loc["KC", ["zero", "two_high"]]), xytext=(-9, -12),
+            textcoords="offset points", ha="right", fontsize=8.5, color=style.INK)
+ax.axvline(team["zero"].median(), color=style.BASELINE, lw=1, ls=(0, (3, 3)))
+ax.axhline(team["two_high"].median(), color=style.BASELINE, lw=1, ls=(0, (3, 3)))
+ax.text(team["zero"].max(), team["two_high"].median() - 0.9, "median", fontsize=7.5, color=style.MUTED, ha="right")
+ax.set_xlabel("Cover 0 (no deep safety), % of charted dropbacks", fontsize=8.5)
+ax.set_ylabel("Two-high after the snap, %", fontsize=8.5)
+ax.set_ylim(team["two_high"].min() - 2.5, team["two_high"].max() + 3)
+ax.set_title("Two-high and Cover 0 by defense, 2023–2025", fontsize=10)
+fig.tight_layout()
+plt.show()
+```
+
+A caution about the chart: the coverage labels are charted by people watching film, and the
+2023–2025 seasons come from a different charting source than earlier years, so compare teams
+within these seasons rather than across the 2022/2023 break.[^labels] The labels describe what
+was played after the snap; they can't tell you what was shown before it. That is the job of the
+tracking data in the previous section.
+
+::: {.callout-note title="Film room: Rams 2020 — Brandon Staley's first year"}
+Brandon Staley arrived in Los Angeles in 2020 as a first-time NFL defensive coordinator, from Vic
+Fangio's staff in Denver, and took over a defense with two great individual players: Aaron
+Donald inside and Jalen Ramsey at cornerback. He built it around a two-high shell. Most snaps
+looked alike before the snap, and the coverage was decided at and after it: quarters and Cover 6
+to the field or the boundary, rotations down into Cover 3 or a robber, and Ramsey moved around
+the formation, from outside corner to the nickel ("star") spot, to follow the matchup.[^ringer]
+Three things made the light-box, two-high approach affordable. Donald's four-man pass rush meant
+the Rams didn't need to blitz more than an average defense (they sent five or more rushers on about
+a quarter of dropbacks, close to the league median). The front, with Donald inside, could hold up
+against the run with fewer defenders in the box, while the safeties fitted the run from depth
+([Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd)).
+And the defense was disciplined enough to rotate late.
+
+**What to notice:** on a 2020 Rams passing down, find Ramsey first (outside or in the slot), then
+the two safeties: level and deep while the quarterback calls signals, with the rotation, if there
+is one, coming only as the ball moves. The results: the 2020 Rams finished the regular season first
+in the NFL in points allowed (18.6 a game), total yards allowed (281.9) and passing yards allowed
+(190.7).[^rams2020] Staley was hired as the Chargers' head coach after one season, and the Rams'
+approach spread through his coaching tree and the league. Its parent, Fangio's system, is the subject of
+[Case Study: Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd).
+:::
+
+::: {.callout-note title="Film room: Panthers under Ejiro Evero — the coin-flip rotation"}
+Ejiro Evero, a safeties coach on Staley's 2020 Rams staff, has run Carolina's defense since 2023.
+His Panthers are the cleanest public example of this chapter's main move: show two-high, then
+decide at the snap whether to stay there or rotate a safety down to a single-high, "closed-post"
+coverage. In Cody Alexander's charting of the Panthers' defense, published in April 2026, they
+stayed two-high 397 times and rotated 375 times, what he called "an almost perfect
+1:1 ratio." Cornerback Jaycee Horn described what that felt like from inside: "Everything is really
+out of a shell, not many tells or pre(-snap) things. It was just on the snap; everything
+happened."[^panthers]
+
+**What to notice:** on a Carolina passing down, call the shell as the quarterback starts his
+cadence; it will almost always be two-high. Then, on the replay, watch the two safeties at the snap.
+Roughly half the time one of them comes down and the other runs to the middle; the rest of the time
+both stay deep. Nothing before the snap tells you which, and that is the design. It also gives you a
+benchmark for your own log below: one charted NFL defense built around disguise rotated out of its
+two-high shell on about half the snaps that started there.
+:::
+
+::: {.callout-tip title="Watch for it on Sunday: call it twice"}
+For one quarter (two if you're keen), on every obvious passing down, make two calls out loud and
+write them down.
+
+- **Call 1, as the quarterback starts his cadence: the shell.** One-high or two-high? Then the
+  details that could change it: how deep is each safety, is one narrower or shallower, are the
+  corners pressed or off? Which side is the formation's strength?
+- **Call 2, one second after the snap: what it became.** Is the middle of the field closed (one
+  safety in the post) or open (two safeties splitting the field)? Closed: Cover 1 if the corners
+  turn and run with receivers, Cover 3 if they bail into deep thirds. Open: then the corners tell
+  you which, squatting in the flats for Cover 2 (or that side of Cover 6), backpedalling with eyes
+  on the quarterback for quarters, trailing their man for 2-Man. No safety deep at all: Cover 0.
+  If the two safeties went to two different jobs, notice which one came down and where he landed.
+- **Log the lie.** Mark each play S (same) or R (rotated). By the end of the quarter you'll have
+  a *disguise rate* for that defense. For scale, the Panthers in the film room above rotated out of
+  two-high on about half their two-high snaps. Also note whether the rotation started *before* the snap
+  (you could see it coming) or *at* the snap (you couldn't). Both count as a lie; only the second
+  one worked.
+- **Bonus: trips.** When the offense shows 3x1, watch the backside safety. Did he stay home
+  (stubbie), come across to #3 (poach), run to the deep middle (rotate), or come down (solo)?
+  Then watch where the ball went.
+
+Live, Call 1 needs a shot that shows the safeties: the wide pre-snap view some broadcasts use while
+the quarterback surveys the defense, or a high camera behind the offense. The standard live angle
+sits at the line and often cuts the safeties out of frame at the snap, so on many plays Call 1 has
+to wait for the replay. The high, wide replays (the closest a broadcast gets to the
+[All-22](../../appendices/glossary.qmd#gl-all-22) film coaches use) are the best place to check
+yourself: use the first replay to see the shell and the second to check the rotation.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: the leaning safety"}
+```{python}
+#| label: fig-predict-buzz
+#| fig-cap: "Second-and-9, ball in the middle of the field, play clock at 3. The defense shows two-high; the two safeties are highlighted. Use the depth numbers on the left and the hash marks to size them up."
+off, dfn = nickel_vs_2x2()
+mv = {"SS": (10.0, 5.0), "FS": (13.5, -7.0), "LCB": (8.0, -16.3), "RCB": (8.0, 16.3)}
+dfn = [p.moved(d=mv[p.key][0], w=mv[p.key][1]) if p.key in mv else p for p in dfn]
+pr1 = Play(off, dfn, los=40, to_go=9)
+pr1.highlight("SS", "FS")
+fld = pr1.draw(lateral=(-22, 22), window=(-7.5, 17))
+no_numbers(fld.ax)
+ruler(fld, pr1, widths=True)
+plt.show()
+```
+
+**What will the shell turn into at the snap, and which side of the field should the quarterback
+be wary of?**
+
+```{python}
+#| output: asis
+answer(r"""
+**Most likely a rotation to one-high zone, Cover 3, with the right safety (SS) coming down.**
+The safety tells: the SS has crept to 10 yards and stands 5 yards from the middle, while the FS is
+at 13.5 and 7 yards out. The SS is shallower and narrower, so he can reach the curl or the hole
+quickly, and he has crept down as the play clock runs out (a timing tell). The FS is the deeper
+one and can reach the deep middle. The corner tells: they are 8 yards off, outside and turned to
+the quarterback, which is zone technique, the way deep-third corners line up, not the square,
+pressed stance of man corners. You can't tell before the snap whether the SS will land in the curl
+(a **buzz** rotation) or in the hole (a robber), and you don't need to: either way he lands in the
+in-breaking lanes on the right.
+
+For the quarterback, the danger is to the **right**: curls and digs on that side run straight into
+the SS. The opportunities are the classic Cover 3 ones away from the rotation, such as stressing
+the left [curl-flat defender](../../appendices/glossary.qmd#gl-curl-flat-defender) with a curl-and-flat
+combination, or the seam on the left between the deep middle and the deep third (the Cover 3
+weaknesses listed with the robber rotation). Of course a disciplined defense could show exactly this and
+stay two-high.
+""")
+```
+:::
+
+::: {.callout-tip title="Predict the play 2: the safety who isn't home"}
+```{python}
+#| label: fig-predict-poach
+#| fig-cap: "Third-and-6. The offense shows detached trips (3x1) to the right and X alone on the left. The defense is two-high. Compare the two safeties' widths, and look at where the left corner stands on X."
+off = trips(detached=True)
+dfn = trips_defense(off, fs_w=-4.0)
+pr2 = Play(off, dfn, los=50, to_go=6)
+number_receivers(pr2)
+pr2.highlight("FS", "LCB")
+fld = pr2.draw(lateral="full", window=(-7.5, 17))
+no_numbers(fld.ax)
+ruler(fld, pr2, widths=True)
+plt.show()
+```
+
+**Which 3x1 check does this look like, and where would you throw?**
+
+```{python}
+#| output: asis
+answer(r"""
+**Poach, or a rotation; either way, X is alone.** The left (backside) safety is only about 4 yards
+from the middle, much narrower than the right safety at 9. A backside safety staying home to help
+on X would be wider and square to X, so he isn't home: he is getting ready to go somewhere on the
+trips side. Before the snap there are two candidates. In **poach** he reads #3 and carries him if
+he goes up the middle. In a **rotation** to one-high he becomes the deep-middle safety and the
+trips-side safety comes down. The clue here is that the right safety is still deep and wide, not
+creeping down, which leans toward poach, but you confirm it after the snap: the poacher goes where
+#3 goes; the rotating safety runs to the middle and stays there. The left corner fits both. He is
+pressed a yard inside X (inside leverage), taking away the inside, which is what a corner does when
+he expects no help over the top.
+
+**Throw to X**, especially if X is the offense's best receiver. Against poach, X is one-on-one with no help. The classic poach beaters are a
+[back-shoulder](../../appendices/glossary.qmd#gl-back-shoulder-throw) fade or a go route outside (the corner gave up the outside to take away the inside),
+or a [double move](../../appendices/glossary.qmd#gl-double-move). Against the rotation, X still
+faces his corner with the post safety starting far away. It's also worth sending #3 vertical
+anyway, so the safety has to commit.
+""")
+```
+:::
+
+::: {.callout-tip title="Predict the play 3: the safeties spin with the motion"}
+```{python}
+#| label: fig-predict-motion
+#| fig-cap: "First-and-10. Two-high before the motion. Z then motions across the formation from right to left. No defender follows him. The left safety (FS), on the side Z is heading to, walks down to about 9 yards; the right safety (SS) drifts toward the middle and gains depth; the right corner (CB) stays where he was, now over empty grass. Every arrow here is movement before the snap."
+off, dfn = nickel_vs_2x2()
+# Z must start off the line to go in motion, so Y steps up to be the end on the line (still 7 on it)
+off = [p.moved(d=-0.7) if p.key == "Y" else p.moved(d=-1.5) if p.key == "Z" else p for p in off]
+pr3 = Play(off, dfn, los=30, to_go=10)
+pr3.motion("Z", pts=[(-1.5, -7.0), (-1.5, -17.0), (-1.5, -18.0)], speed=7.0)   # offsets from his start
+pr3.motion("FS", to=(9.0, -8.0), speed=2.0)      # motion side: walks down toward the motion
+pr3.motion("SS", to=(13.5, 1.0), speed=2.5)      # side the motion left: rotates to the post
+pr3.highlight("FS", "SS", "RCB")
+pr3.note("CB stays: deep third,\nno man", at=(11.0, 16.0))
+fld = pr3.draw(lateral=(-22, 22), window=(-7.5, 17))
+no_numbers(fld.ax)
+ruler(fld, pr3)
+plt.show()
+```
+
+**What did the motion tell the offense? And what could the defense still do to it at the snap, and
+how would the offense take that away?**
+
+```{python}
+#| output: asis
+answer(r"""
+**It suggested one-high zone, Cover 3 rotating toward the motion.** Nobody went with Z across the
+formation, and the right corner stayed home over empty grass: a corner with no man to cover is
+playing a zone, here a deep third. The left safety coming down toward the motion while the right
+safety rotates to the post is the defense moving to a single deep safety, with the FS as an
+underneath (buzz or sky) defender on the side Z is going to. That is the
+[spin](../../appendices/glossary.qmd#gl-spin-safety-rotation-on-motion) from
+[Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd), and it
+goes the default way: toward the motion, which is where the receivers now are.
+
+**The catch:** a defense that knows you use motion to read it can spin on purpose and then rotate
+*back* at the snap. That is late rotation used against the motion read, and it's a favourite of
+heavy-disguise defenses. The offense's counter is in the timing: snapping the ball as Z passes the
+quarterback (motion at the snap) leaves the safeties almost no time to re-rotate, so the picture
+they show during the motion is much more likely to be the real one. It is still a strong hint, not
+a certainty.
+""")
+```
+:::
+
+## Checklist so far (Parts 1–6)
+
+Part 6 ends here, so it's time to update the pre-snap card. The lines this part of the book exists
+for are **shell → rotation → leverage**. Read them in that order: the shell gives you a
+first guess, the rotation (or its absence) confirms or overturns it, and the corners finish the
+read: their technique (eyes, stance, depth) tells you man or zone, and their leverage tells you
+where the help is.
+
+```{python}
+#| label: fig-checklist
+#| fig-cap: "The watching checklist after six parts of the book. Earlier lines come from Parts 1–5; the highlighted lines are new in Part 6: the shell before the snap, the corners' technique and leverage, the rotation at the snap (after you have seen run or pass), the middle of the field one second later, the trips check, and the log. The card grows again after Part 7 (pressure) and becomes the master checklist of the capstone."
+items = [
+    ("BEFORE THE SNAP", None, None),
+    ("1", "Situation: down, distance, field zone, clock and score", "Part 1", False),
+    ("2", "Personnel: who is on the field for each side", "02-01, 02-05", False),
+    ("3", "Formation and strength: 2x2, 3x1, where is the tight end?", "02-02 to 02-04", False),
+    ("4", "Motion: does a defender travel (man), bump (zone) or spin a safety?", "02-06", False),
+    ("5", "Box count: blockers against defenders near the line", "02-05, 05-05", False),
+    ("6", "Shell: one-high or two-high? Depth and width of each safety", "06-01, 06-06", True),
+    ("7", "Corners: technique (eyes, stance, depth) says man or zone; leverage says where the help is", "06-01 to 06-06", True),
+    ("AT THE SNAP", None, None),
+    ("8", "Run or pass: the offensive linemen's first step (a rotating safety may be a run fitter)", "Parts 3–4", False),
+    ("9", "Rotation: did a safety move during the cadence, at the snap, or not at all?", "06-06", True),
+    ("ONE SECOND AFTER", None, None),
+    ("10", "Middle of the field: closed (1 deep safety) or open (2)? Then the corners: squat, bail or trail", "06-01 to 06-06", True),
+    ("11", "Trips? Backside safety: home (stubbie), across to #3 (poach), to the middle (rotate), or down as a run defender (solo, mostly vs tight-end trips)?", "06-06", True),
+    ("12", "Log it: your pre-snap call against what it became (call it twice)", "06-06", True),
+]
+import textwrap
+
+rows = []                                      # (kind, payload, height in lines)
+for it in items:
+    if it[1] is None:
+        rows.append(("head", it[0], 1))
+    else:
+        lines = textwrap.wrap(it[1], 60)
+        rows.append(("item", (it[0], lines, it[2], it[3]), len(lines)))
+n_lines = sum(h for _, _, h in rows) + 4
+fig, ax = plt.subplots(figsize=(6.5, 0.24 * n_lines))
+ax.set_xlim(0, 100); ax.set_ylim(0, n_lines); ax.axis("off")
+ax.add_patch(FancyBboxPatch((0.8, 0.3), 98.4, n_lines - 0.6, boxstyle="round,pad=0.2,rounding_size=0.8",
+                            fc=style.SURFACE, ec=style.BASELINE, lw=1.2))
+ax.text(3, n_lines - 1.3, "Watching checklist · after Part 6", fontsize=11, fontweight="bold",
+        color=style.INK, va="center")
+ax.text(97, n_lines - 1.3, "new in Part 6", fontsize=8, color=style.INK_2, ha="right", va="center",
+        bbox=dict(boxstyle="round,pad=0.3", fc=style.OFFENSE_TINT, ec="none"))
+y = n_lines - 2.8
+for kind, payload, h in rows:
+    if kind == "head":
+        ax.text(3, y, payload, fontsize=8, fontweight="bold", color=style.INK_2, va="center")
+        y -= 1.0
+        continue
+    num, lines, where, new = payload
+    top, bottom = y + 0.45, y - (h - 1) - 0.45
+    if new:
+        ax.add_patch(FancyBboxPatch((2.2, bottom), 95.6, top - bottom, boxstyle="round,pad=0.05,rounding_size=0.4",
+                                    fc=style.OFFENSE_TINT, ec="none"))
+    ax.text(5.5, y, num, fontsize=8.5, fontweight="bold", color=style.OFFENSE_DARK, va="center", ha="center")
+    for j, line in enumerate(lines):
+        ax.text(9.0, y - j, line, fontsize=8, color=style.INK, va="center")
+    ax.text(97, y, where, fontsize=7, color=style.INK_2, va="center", ha="right")
+    y -= h + 0.15
+plt.show()
+```
+
+## Takeaways
+
+- **The shell is a hypothesis, not an answer.** Defenses choose their alignment separately from
+  their coverage, and the best ones show the same picture for many calls. Name the shell before
+  the snap, and expect to check it one second after.
+- **Disguise buys time, and it costs something.** Every defender must line up where his real job
+  is still reachable, so disguises leak: safety depth and width, corner technique and leverage,
+  eyes, and above all the *timing* of movement. Late rotation hides the most and risks the most.
+  Which safety rotates is set by the call, most often toward the strength or the motion.
+- **Rotations run both ways.** Two-high can become Cover 3 or a robber (taking away the middle
+  throws two-high invites); one-high can bail into Cover 2 (taking away the outside throws
+  one-high invites). Each rotation opens the area the quarterback ruled out.
+- **Split-field coverage plays two coverages at once,** one per half, keyed to strong and weak
+  or (more in college, with its wide hashes) field and boundary. Each player's job is simpler; the
+  communication is harder, and motion across the split tests it. It is a big part of why two-high
+  defenses spread through the NFL after 2018.
+- **Trips forces a decision,** and the decision is about #3: the backside safety comes across
+  (poach), a linebacker takes him (solo), the trips side handles it four-on-three (stubbie), or
+  the defense rotates. Whoever is left alone is where the offense will attack.
+- **Offenses answer by forcing the defense to show earlier or by making the picture not matter:**
+  motion, tempo, hard counts, post-snap reads, play-action and RPOs that target the rotating
+  safety, and quick throws.
+
+## Connections
+
+**Builds on:** every coverage chapter in this part, [Coverage Fundamentals](06-01-coverage-fundamentals.qmd)
+through [Quarters and the Two-High Match Family](06-05-quarters-and-match.qmd), plus
+[Motion and Shifts as Weapons](../02-personnel-and-formations/02-06-motion-and-shifts.qmd) (the
+motion read that disguise is designed to defeat) and
+[The Pre-Snap Phase](../01-foundations/01-05-the-pre-snap-phase.qmd) (cadence and hard counts).
+
+**Sets up:** [Zone Blitzes, Fire Zones, and Simulated Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd),
+which applies the same idea to the pass rush (show pressure, drop out of it; show coverage, bring
+it); [Concepts Versus Coverages](../08-the-chess-match/08-01-concepts-versus-coverages.qmd), which
+teaches the quarterback's side of the post-snap read; and
+[The Modern Era](../11-history/11-05-the-modern-era.qmd), on how the two-high wave reshaped
+offenses.
+
+**Case study:** [Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd)
+follows the disguise idea through two coaches' defenses and links back to the safety-rotation
+figure. **Data:** [Tracking Data and the Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd)
+builds the tracking figures in this chapter from real files.
+
+::: {.callout-note title="Go deeper"}
+- Cody Alexander, *Match Quarters: A Modern Guidebook to Split-Field Coverages* and his
+  MatchQuarters newsletter: the most thorough public writing on split-field coverage and 3x1
+  checks, from a coach's point of view.
+- Cameron Soran, "The Complete Guide to Nick Saban Coverages at Alabama," Throw Deep Publishing
+  (2021): Cover 7, the trips checks and the rest of the Saban vocabulary, decoded.
+- Chris B. Brown, *The Art of Smart Football* (2015) and *The Essential Smart Football* (2012):
+  short essays on pattern-match coverage and the offense–defense arms race.
+- NFL Next Gen Stats' 2025 metrics primer on the pre-snap disguise model, and the 2025 Big Data
+  Bowl winning entry, "Exposing Coverage Tells in the Pre-Snap," for the data side.
+:::
+
+```{python}
+#| echo: false
+#| output: asis
+if PDF and ANSWERS:
+    print("\n## Answers to Predict the play\n")
+    for i, md_ans in enumerate(ANSWERS, 1):
+        print(f'\n::: {{.callout-tip title="Answer to Predict the play {i}"}}\n\n{md_ans}\n\n:::\n')
+```
+
+[^rules]: NFL Rulebook, Rule 7 (the snap; offensive players set for one second; one man in motion, not moving forward) and Rule 7/Rule 12 provisions on defensive players' movement, encroachment and disconcerting signals: https://operations.nfl.com/the-rules/nfl-rulebook/ (2026 edition). The offense: Rule 7, Section 4, Article 6 (all players set simultaneously for at least one full second before the snap), Article 7 (shifts) and Article 8 (one backfield player may be in motion at the snap, moving parallel to or away from the line). The defense is restricted only by encroachment, neutral-zone infraction and offside (Rule 7, Section 4, Articles 3–5) and by Rule 12, Section 3, Article 1(i): "acts or words by the defensive team that are designed to disconcert an offensive team at the snap" (15 yards).
+
+[^saban7]: Cameron Soran, "The Complete Guide to Nick Saban Coverages at Alabama," Throw Deep Publishing (Feb. 24, 2021): https://throwdeeppublishing.com/blogs/news/nick-saban-s-alabama-pass-coverages . Soran calls Cover 7 "the work horse" of Saban's pass defense and "a form of quarters coverage," shows the per-side calls, explains the trips call "Mable" ("the safety is dropping down to the passing strength") and dates Saban's pattern-match coverage to his association with Belichick in Cleveland in the early 1990s. Kyle Jones, "Film Study: Nick Saban's Influence on Mark Dantonio…," Eleven Warriors (Mar. 23, 2020): https://elevenwarriors.com/ohio-state-football/film-study/2020/03/112969/film-study-nick-sabans-influence-on-mark-dantonio-and-ohio-states-2002-national-title-run-is-undeniable ("Man-Match Quarters coverage, which Saban calls Cover 7"; Saban left Belichick's Browns staff for Michigan State in 1995 and hired Dantonio to coach the secondary).
+
+[^cover7]: Soran calls Cover 7 "the work horse" of Saban's pass defense and "a form of quarters coverage" and shows its per-side calls; Eleven Warriors: "Man-Match Quarters coverage, which Saban calls Cover 7." Both are cited in full in the note on Saban's trips calls.
+
+[^hashes]: NFL Rulebook, Rule 1, Section 1 (inbounds lines, or hash marks, 70 feet 9 inches from each sideline): https://operations.nfl.com/the-rules/nfl-rulebook/ . College hash marks are 60 feet from each sideline (40 feet apart); NFL hashes are 18 feet 6 inches apart, the width of the goalposts: "American football field," Wikipedia: https://en.wikipedia.org/wiki/American_football_field ; Ben Volin, "Why are many college players busts in the NFL? Blame the hash marks," *Boston Globe* (Apr. 26, 2022): https://www.bostonglobe.com/2022/04/26/sports/why-are-many-college-players-busts-nfl-blame-hash-marks . The bottom edge of each NFL yard-line number is 12 yards from the sideline (same Wikipedia article, citing the rulebook's field diagram). On a 160-foot-wide field, a ball on an NFL hash is 70.75 ft (23.6 yd) from the near sideline and 89.25 ft (29.75 yd) from the far one; on a college hash, 20 and 33.3 yards.
+
+[^ngs-two-high]: NFL Next Gen Stats via NFL.com, "The coverage that turned the Seahawks into Super Bowl winners and is taking the NFL by storm": https://www.nfl.com/news/the-coverage-that-turned-the-seahawks-into-super-bowl-winners-and-is-taking-the-nfl-by-storm . Split-safety rates are post-snap coverage on dropbacks; a different TruMedia/538 series measured on early downs gives lower numbers and should not be mixed with this one.
+
+[^evero]: Panthers.com, "With all 10 head coaching vacancies filled, Ejiro Evero set to return as defensive coordinator": https://www.panthers.com/news/with-all-10-head-coaching-vacancies-filled-ejiro-evero-set-to-return-defensive-coordinator (Feb. 1, 2026): Evero returns as Carolina's defensive coordinator for 2026. Canales said on Jan. 11, 2026 that Evero had signed a contract extension (https://en.wikipedia.org/wiki/Ejiro_Evero , which also gives his Rams role: safeties coach 2017–2020). Scheme: Cody Alexander, "How the Panthers Led the NFL in Play-Action Success Rate," MatchQuarters (Apr. 20, 2026): https://www.matchquarters.com/p/panthers-defense-disguise-entropy-safety-steals (Carolina split "an almost perfect 1:1 ratio between staying in a two-high shell and rotating to a Closed-Post," 397 static to 375 rotated).
+
+[^panthers]: Cody Alexander, MatchQuarters (Apr. 20, 2026): https://www.matchquarters.com/p/panthers-defense-disguise-entropy-safety-steals ("The Panthers maintain an almost perfect 1:1 ratio between staying in a two-high shell and rotating to a Closed-Post (397 Static vs. 375 Rotated)"; the Jaycee Horn quote is reproduced in the same article). The article does not say which season(s) the count covers.
+
+[^poachbeater]: Emory Wilhite, "Poach Beater": https://emorywilhite.substack.com/p/poach-beater (Dec. 29, 2025; a route breaking over the ball behind the poaching safety); Cody Alexander, "What is Poach coverage?", MatchQuarters (May 17, 2025): https://www.matchquarters.com/p/what-is-poach-coverage
+
+[^solo]: Mike Kuchar with Rich Nagy, "Solo Coverage: Lehigh's Quarters Run Fit to Defend 3×1 Runs/RPOs," X&O Labs: https://www.xandolabs.com/the-lab/defense/coverage/two-high-coverage-structures/solo-coverage-lehighs-quarters-run-fit-to-defend-31-runs-rpos/ . In that version the Mike takes #3 vertical and the backside safety becomes a run fitter. For the other usage, Cody Alexander, "Three coverages to carry this Fall," MatchQuarters (July 11, 2022): https://www.matchquarters.com/p/three-coverages-to-carry-this-fall (in his Solo the backside safety reads #3 and takes him man-to-man if he goes vertical). Saban's "Clip" (backside safety "poach #3 vertical") is in the Soran guide cited above.
+
+[^pff-motion]: Daire Carragher, PFF, "NFL pre-snap motion usage reaches new highs across the NFL" (Feb. 23, 2026): https://www.pff.com/news/nfl-pre-snap-motion-usage-reaches-new-highs-across-the-nfl . PFF's measure counts shifts and motion together; it is not comparable with FTN's `is_motion` flag.
+
+[^bdb2025]: NYU School of Professional Studies, "NYU duo crowned winners of the 2025 NFL Big Data Bowl": https://www.sps.nyu.edu/about/news-and-ideas/articles/preston-robert-tisch-institute-for-global-sport/2025/nyu-duo-crowned-winners-of-the-2025-nfl-big-data-bowl.html ; project title from NYU Stern (Aug. 24, 2025): https://www.stern.nyu.edu/experience-stern/news/undergraduate-college-alumnus-vishakh-sandwar-bs-25-featured-indian-origin-nyu-students-win-nfls-big . Data (2022 Weeks 1–9, first edition with all frames from pre-snap to post-snap): Kaggle competition overview, https://kaggle.com/competitions/nfl-big-data-bowl-2025/overview , and the description in arXiv:2502.16313, https://arxiv.org/abs/2502.16313
+
+[^ngs-disguise]: Next Gen Stats Analytics Team, "Next Gen Stats: New advanced metrics you need to know for the 2025 NFL season," NFL.com (2025): https://www.nfl.com/news/next-gen-stats-new-advanced-metrics-you-need-to-know-for-the-2025-nfl-season
+
+[^vikings-cbs]: Chris Trapasso, "Inside Vikings' 3-0 start: The 'crazy' defensive scheme of Brian Flores," CBS Sports (Sept. 26, 2024): https://www.cbssports.com/nfl/news/inside-vikings-3-0-start-the-crazy-defensive-scheme-of-brian-flores/
+
+
+[^labels]: Course calculation from nflverse `load_participation()`, 2023–2025 regular seasons (Weeks 1–18), dropbacks with a charted `defense_coverage_type`, BLOWN and COMBO excluded; two-high = COVER_2, 2_MAN, COVER_4, COVER_6 (COVER_9 counted in neither group). Vikings: 51.4% two-high (league median 40.6%; Bills next at 50.5%) and 5.8% Cover 0 (median 3.8%; Chiefs 6.3%, Ravens 5.8%, the Vikings ahead by about a thousandth of a percentage point, 113 of 1,958 against 127 of 2,201). Coverage labels come from NGS for 2016–2022 and from FTN from 2023, with different label sets, so these seasons should not be compared directly with earlier ones.
+
+[^rams2020]: Los Angeles Rams, "Rams defense happy to be No. 1 at end of regular season, but more work to be done": https://www.therams.com/news/rams-defense-happy-no-1-at-end-of-regular-season-more-work-to-be-done (Jan. 7, 2021: fewest points, total yards and passing yards per game in the NFL). The 190.7 passing figure is repeated in Kaelen Jones, The Ringer (Jan. 13, 2021; full citation in the note on Ramsey's alignments). Pro Football Reference blocks automated checks; spot-check there before print. Staley was hired as Chargers head coach on Jan. 17, 2021 (AP via KSAT: https://www.ksat.com/sports/2021/01/18/los-angeles-chargers-hiring-brandon-staley-as-head-coach/ ).
+
+[^ttt]: Course calculation from nflverse 2025 regular-season pass attempts (sacks excluded) joined to `load_participation()` `time_to_throw`: all throws, median 2.5 s (n = 17,394); throws with `air_yards` ≥ 20, median 3.1 s, middle half 2.6–3.6 s (n = 1,993).
+
+[^dbspeed]: Top speed: NFL Next Gen Stats via Colts.com (Feb. 18, 2017), safety T.J. Green's 22.34 mph was the third-fastest by a safety in 2016: https://www.colts.com/news/two-colts-named-to-2016-next-gen-stats-all-rookie-team-18571406 . Backpedal vs turning: a study of college defensive backs found the cross-over (turn-and-run) technique faster than the backpedal over 0–3 and 3–5 yards: NASE, "Comparison of Backpedal and Cross-over Technique to Acceleration and Change of Direction Speed": https://www.naseinc.com/blog/comparison-of-backpedal-and-cross-over-technique-to-acceleration-and-change-of-direction-speed-blog-entry-by-naseinc/
+
+[^patterson]: Chris B. Brown, "Hard Knocks: Playing Defense With TCU's Gary Patterson," Grantland (Sept. 1, 2015): https://grantland.com/features/hard-knocks-playing-defense-with-tcus-gary-patterson/ ("'Don't go till you know,' Patterson said at a 2015 clinic. 'Other teams have their safeties backpedal, but we sit there and flat-foot shuffle ... we want to take away the short game, we want to take away combination routes, and we want to stop the run.'").
+
+[^quartershistory]: Michigan State: Zach Barnett, FootballScoop (June 25, 2014), on Pat Narduzzi's 80-minute Cover 4 talk at the Angelo Football Clinic: https://footballscoop.com/news/how-ben-roethlisberger-and-urban-meyer-shaped-pat-narduzzi-s-defensive-philosophy . TCU: Chris B. Brown, "Hard Knocks: Playing Defense With TCU's Gary Patterson," Grantland (Sept. 1, 2015), quoting Patterson's clinic talks on his quarters ("Blue") coverage: https://grantland.com/features/hard-knocks-playing-defense-with-tcus-gary-patterson/ . Iowa: Cody Alexander, "Fitting The Run With The Iowa Hawkeyes," MatchQuarters (June 13, 2024), on Phil Parker's "Under 4-3 Quarters" and split-field coverage: https://www.matchquarters.com/p/fitting-the-run-iowa-hawkeyes-phil-parker-4-3 . Saban to Michigan State and Dantonio: Eleven Warriors, cited in the Cover 7 note.
+
+[^ringer]: Kaelen Jones, "The Rams Defense Has L.A. on the Cusp of Another Deep Playoff Run," The Ringer (Jan. 13, 2021): https://theringer.com/2021/01/13/nfl/rams-defense-los-angeles-brandon-staley-aaron-donald-jalen-ramsey ("showing opposing quarterbacks one coverage before rotating into a different look right after"; Ramsey often used as the nickel or "Star"; "much lighter boxes"; Staley's years on Fangio's staffs in Chicago and Denver). Blitz rate: course calculation from nflverse `load_participation()` (NGS), 2020 regular season, dropbacks with `number_of_pass_rushers` recorded: the Rams sent five or more on 26.0%, 15th-lowest of 32 (league median 27.4%).

@@ -129,9 +129,7 @@ class Field:
                     yl = int(x - 10 if x <= 60 else 110 - x)
                     for yn in (NUMBERS_IN, FIELD_WIDTH - NUMBERS_IN):
                         px, py = self.xy(x, yn)
-                        rot = -90 if self.orient == "vertical" else 0
-                        if self.orient == "vertical" and yn > MIDDLE:
-                            rot = 90
+                        rot = 0  # upright in both views: easier to read than true-to-field sideways numbers
                         ax.text(px, py, f"{yl}", color=style.MUTED, alpha=0.55, fontsize=9,
                                 ha="center", va="center", rotation=rot, zorder=1,
                                 fontweight="bold")

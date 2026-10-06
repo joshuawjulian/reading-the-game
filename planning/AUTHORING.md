@@ -176,3 +176,17 @@ p.draw(legend=True);
   `docker exec -w /workspaces/course rtg pdftoppm -r 60 -png pdfs/<slug>.pdf _pdfbuild/<slug>/page`.
 - A chapter is not done until its PDF renders with zero errors and you have looked at
   every diagram.
+
+## 8. Drill answers (book-wide convention)
+
+Put each Predict-the-play answer in a collapsed callout whose title starts with "Answer":
+
+```markdown
+::: {.callout-tip title="Answer" collapse="true"}
+...
+:::
+```
+
+The website shows it collapsed under the drill. The print build (`filters/print-answers.lua`)
+moves it to an "Answers to Predict the play" section at the end of the chapter and leaves a
+pointer, so no per-chapter helper code is needed.

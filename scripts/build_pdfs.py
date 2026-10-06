@@ -44,6 +44,8 @@ format:
     fig-format: svg
     fig-width: 6.5
     keep-typ: false
+    filters:
+      - print-answers.lua
 execute:
   echo: false
   warning: false
@@ -94,6 +96,7 @@ def build(src: Path, html: bool = False) -> tuple[str, bool, str]:
     for extra in src.parent.glob(f"{slug}_assets"):
         shutil.copytree(extra, d / extra.name)
     (d / f"{slug}.qmd").write_text(rewrite_links(src.read_text(), src))
+    shutil.copy(ROOT / "filters" / "print-answers.lua", d / "print-answers.lua")
     env = dict(os.environ, RTG_FORMAT="pdf", PYTHONPATH=str(ROOT))
     (d / "_quarto.yml").write_text(PDF_PROJECT)
     r = subprocess.run(["quarto", "render", f"{slug}.qmd", "--to", "typst"], cwd=d, env=env,

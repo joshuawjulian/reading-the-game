@@ -79,14 +79,14 @@ def draw_frame(fld: Field, frame: pd.DataFrame, trails: pd.DataFrame | None = No
     return arts
 
 
-def animate(trk, orient="vertical", width_in=6.0, fps=10, trails=True, title=None, window=None):
+def animate(trk, orient="vertical", width_in=6.0, fps=10, trails=True, title=None, window=None, to_go=None):
     """FuncAnimation of a tracking DataFrame (or a Play)."""
     df = _ensure(trk).copy()
     df["_id"] = _ident(df)
     los = _los(df)
     window = window or _window(df, los)
     lat = (max(0.0, float(df["y"].min()) - 5), min(FIELD_WIDTH, float(df["y"].max()) + 5))
-    fld = Field(orient=orient, los=los, window=window, width_in=width_in, to_go=None, lateral=lat)
+    fld = Field(orient=orient, los=los, window=window, width_in=width_in, to_go=to_go, lateral=lat)
     ppy = fld.pts_per_yard()
     times = _frame_time(df)
     frames = sorted(df["frameId"].unique())
@@ -112,7 +112,8 @@ def animate(trk, orient="vertical", width_in=6.0, fps=10, trails=True, title=Non
     return anim
 
 
-def frame_strip(trk, times=(0.0, 1.0, 2.0, 3.0), ncols=None, width_in=6.5, title=None, lateral_pad=4.0):
+def frame_strip(trk, times=(0.0, 1.0, 2.0, 3.0), ncols=None, width_in=6.5, title=None, lateral_pad=4.0,
+                to_go=None):
     """Small multiples of the play at chosen seconds after the snap (negative = pre-snap).
 
     The PDF stand-in for an animation: each panel shows positions at that moment
@@ -140,7 +141,8 @@ def frame_strip(trk, times=(0.0, 1.0, 2.0, 3.0), ncols=None, width_in=6.5, title
         ax.axis("off")
     for ax, t in zip(axes.flat, times):
         fid = int((tmap - t).abs().idxmin())
-        fld = Field(ax=ax, orient="vertical", los=los, window=window, numbers=False, lateral=(ylo, yhi))
+        fld = Field(ax=ax, orient="vertical", los=los, window=window, numbers=True, lateral=(ylo, yhi),
+                    to_go=to_go)
         draw_frame(fld, df[df["frameId"] == fid], df[df["frameId"] <= fid], fld.pts_per_yard())
         lab = "snap" if abs(t) < 1e-6 else f"{t:+.1f}s"
         ax.set_title(lab, fontsize=9, color=style.INK_2, loc="center")
@@ -154,12 +156,14 @@ def _pdf_build() -> bool:
     return os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
 
 
-def show_animation(trk, times=None, title=None, **kw):
+def show_animation(trk, times=None, title=None, to_go=None, **kw):
     """In HTML builds: an embedded, scrubbable video. In PDF builds: a frame strip.
 
     Use as the last line of a Quarto code cell. Pass `times` to choose the PDF panels.
     """
     from IPython.display import HTML, display
+    if to_go is None and isinstance(trk, Play):
+        to_go = trk.to_go
     df = _ensure(trk)
     if times is None:
         t = df["time"] if "time" in df else pd.Series([0, 3])
@@ -167,10 +171,10 @@ def show_animation(trk, times=None, title=None, **kw):
         t_start = float(t.min())
         times = [round(x, 1) for x in np.linspace(max(t_start, -2.0) if t_start < -0.2 else 0.0, t_end, 4)]
     if _pdf_build():
-        fig = frame_strip(df, times=times, title=title)
+        fig = frame_strip(df, times=times, title=title, to_go=to_go)
         plt.show()
         return None
-    anim = animate(df, title=title, **kw)
+    anim = animate(df, title=title, to_go=to_go, **kw)
     if shutil.which("ffmpeg"):
         html = anim.to_html5_video(embed_limit=40)
         html = html.replace("<video ", '<video style="max-width:100%;height:auto" ')
