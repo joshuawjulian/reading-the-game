@@ -14,7 +14,7 @@ glossary:
   "4i-technique": "A defensive lineman lined up on the inside shoulder of an offensive tackle, in the B gap; common for the ends of three-man fronts."
   "5-technique": "A defensive lineman lined up on the outside shoulder of an offensive tackle, in the C gap; in 3-4 defenses the usual name for the defensive end position."
   "Covered / uncovered lineman": "An offensive lineman is covered when a defensive lineman is lined up on him (head-up or on a shoulder) and uncovered when none is, so the nearest defender in front of him is a linebacker. Uncovered linemen are the ones free to double-team and to climb to the linebackers."
-  "Drive block": "A one-on-one block straight ahead on the defender lined up on you, to move him back off the ball."
+  "Drive block": {def: "A one-on-one block straight ahead on the defender lined up on you, to move him back off the ball.", aliases: ["Base block"]}
   "Down block": "A block on a defender lined up inside you, hitting him from the side to push him toward the center and seal the inside of the hole."
   "Reach block": "A block on a defender lined up on your play-side shoulder or in your play-side gap, in which you get your head and body outside him to seal him inside, away from the play."
   "Cut-off block": "A backside block in which the lineman steps play-side to get between a defender and the play, so the defender cannot chase it; he does not need to move the man, only stay in his path."
@@ -205,9 +205,11 @@ def panel(ax, play, df, t, lateral, window, rings=()):
     fld = Field(ax=ax, orient="vertical", los=play.los, window=window, numbers=False, hashes=False,
                 lateral=(ylo, yhi), to_go=play.to_go)
     cur = df[df["frameId"] == fid]
-    shown = cur[cur["x"].between(play.los + window[0] + 0.8, play.los + window[1] - 0.8)
-                & cur["y"].between(ylo + 0.8, yhi - 0.8)]          # only players whose marker fits whole
-    ids = set(shown["_id"])
+    snap = df[df["frameId"] == int((tmap - 0.0).abs().idxmin())]
+    first = snap[snap["x"].between(play.los + window[0] + 0.8, play.los + window[1] - 0.8)
+                 & snap["y"].between(ylo + 0.8, yhi - 0.8)]       # players whose marker fits whole at the snap ...
+    ids = set(first["_id"]) | {"football"}
+    shown = cur[cur["_id"].isin(ids) | (cur["side"] == "ball")]    # ... stay in every frame (clipped at the edge)
     trails = df[(df["frameId"] <= fid) & df["_id"].isin(ids) & (df["side"] != "ball")]
     for (_, side), g in trails.groupby(["_id", "side"]):
         xs, ys = fld.xy(g["x"].values, g["y"].values)
@@ -232,10 +234,12 @@ def panel(ax, play, df, t, lateral, window, rings=()):
         r = cur[cur["displayName"] == key].iloc[0]
         x, y = fld.xy(r["x"], r["y"])
         ax.add_patch(Circle((float(x), float(y)), 1.05, fc="none", ec=col, lw=1.7, zorder=7))
+    for patch in ax.patches:
+        patch.set_clip_on(True)
     return fld
 
 
-def strip(play, times, lateral, window, notes=None, rings=(), ncols=4, width_in=6.5):
+def strip(play, times, lateral, window, notes=None, rings=(), ncols=4, width_in=6.5, after=None):
     """Numbered frame strip with a fixed, box-sized window, so markers stay legible in print."""
     df = tracking(play)
     nrows = int(np.ceil(len(times) / ncols))
@@ -246,7 +250,9 @@ def strip(play, times, lateral, window, notes=None, rings=(), ncols=4, width_in=
     for ax in axes.flat[len(times):]:
         ax.axis("off")
     for i, (ax, t) in enumerate(zip(axes.flat, times)):
-        panel(ax, play, df, t, lateral, window, rings)
+        fld = panel(ax, play, df, t, lateral, window, rings)
+        if after:
+            after(fld, t)
         ax.set_title(f"{i + 1}.  " + ("snap" if abs(t) < 1e-6 else f"{t:+.2f} s".rstrip("0")),
                      fontsize=8.5, color=style.INK_2, loc="left")
         if notes:
@@ -256,7 +262,7 @@ def strip(play, times, lateral, window, notes=None, rings=(), ncols=4, width_in=
     return fig
 
 
-def video(play, times, lateral, window, notes=None, rings=(), width_in=5.2):
+def video(play, times, lateral, window, notes=None, rings=(), width_in=5.2, after=None):
     """Web version of the strip: the same panel at every frame, with the strip's notes as captions."""
     import shutil
     from matplotlib import animation
@@ -269,7 +275,9 @@ def video(play, times, lateral, window, notes=None, rings=(), width_in=5.2):
     def update(fid):
         ax.clear()
         t = float(tmap[fid])
-        panel(ax, play, df, t, lateral, window, rings)
+        fld = panel(ax, play, df, t, lateral, window, rings)
+        if after:
+            after(fld, t)
         txt = ("snap" if abs(t) < 0.05 else f"{t:+.1f} s")
         if notes:
             cur = [n for tt, n in zip(times, notes) if tt <= t + 1e-6]
@@ -295,11 +303,11 @@ def animation_or_strip(play, times, **kw):
 ```
 
 The replay rolls, and the analyst draws on the screen. "Look at this. They've got a 3-technique
-over the right guard, and they run right at him. The guard and tackle double-team him, the tackle
+over the right guard, and they run right at him. The guard and tackle double-team him, one of them
 climbs to the Mike, the fullback kicks out the end, and the back hits the C gap untouched." You
 nodded, because he sounded certain. But almost every noun in that sentence was a word nobody ever
-taught you: 3-technique, double team, climbs, Mike, kicks out, the C gap. This chapter teaches
-them. It is the vocabulary the rest of the run game is written in, and it is smaller than it
+taught you: 3-technique, double team, climbs, kicks out, the end, the C gap. This chapter teaches
+them, and near the end you will read that sentence again and understand every word. It is the vocabulary the rest of the run game is written in, and it is smaller than it
 sounds: a handful of names for *spaces*, a numbering for *where a defender stands*, and eight verbs
 for *what a blocker does*. Each one exists because it solves a problem. Learn the problems and
 the words stick.
@@ -320,18 +328,22 @@ the words stick.
 **How to read the diagrams.** Offense is blue circles, defense orange squares. *Left* and *right*
 always mean the offense's left and right, and plays are drawn going up the page. LT, LG, C, RG and
 RT are the five offensive linemen (in the small block diagrams, just T, G and C); Q is the
-quarterback, R the running back, F a fullback, and Y and U are tight ends on the right and left.
-Defensive linemen are labelled with their *technique number*, which this chapter teaches; M, W
-and S are the Mike, Will and Sam linebackers you met in
-[The Twenty-Two](../01-foundations/01-03-the-twenty-two.qmd). Lines ending in a short bar are
-blocks; arrows are paths; the thick dark arrow is the ball carrier.
+quarterback, R the running back, F a fullback, Y and U are tight ends on the right and left, and X,
+Z and H are wide receivers (H in the slot). Defensive linemen are labelled with their *technique
+number*, which this chapter teaches; M, W and S are the Mike, Will and Sam linebackers you met in
+[The Twenty-Two](../01-foundations/01-03-the-twenty-two.qmd); $ is the nickel back, CB a cornerback,
+and FS and SS the safeties, as in
+[A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd). Lines
+ending in a short bar are blocks; arrows are paths; the thick dark arrow is the ball carrier.
 
 ## Why the run game needs its own words
 
 A running play lasts about three seconds and involves twenty-two people colliding in a space
 about fifteen yards wide. The people inside it have to talk about it in two very different
 moments. Before the snap, a center has maybe ten seconds to tell four other linemen who is
-blocking whom against a defense that is still moving. Later, in the film room, a line coach has
+blocking whom against a defense that is still moving. (He usually starts by naming one linebacker
+as "the Mike," the reference point every lineman counts from; that call, *Mike identification*, is
+taught in [Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd).) Later, in the film room, a line coach has
 to explain why a play that gained twelve yards last week lost two today. Both conversations
 need words that are short, unambiguous, and shared by everyone in the room.
 
@@ -366,7 +378,7 @@ for w in (-0.8, 0.8, -2.4, 2.4, 4.0):                          # faint lines bet
     fld.ax.plot(x, y, color=GREEN, lw=0.8, ls=(0, (2, 2)), alpha=0.6, zorder=2)
 say(fld, p, 3.1, 6.3, "the tight end\nadds a D gap", color=GREEN, fontsize=7)
 say(fld, p, 3.1, -5.6, "no tight end:\nC is the last gap", color=GREEN, fontsize=7)
-say(fld, p, -4.6, 4.2, "Y = tight end", fontsize=7)
+say(fld, p, -2.2, 4.8, "Y = tight end", fontsize=7)
 plt.show()
 ```
 
@@ -390,8 +402,9 @@ both sides of the ball, which is why a linebacker can say "A gap, A gap!" and ev
 he means the space next to the center. (How defenses divide up the gaps, and what happens when a
 defender leaves his, is [Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd).)
 
-That point leads straight to the first piece of run-game arithmetic. **Every player the offense
-puts on the line creates a gap the defense has to fill.** Add a tight end and there are seven gaps
+That point leads straight to the first piece of run-game arithmetic, which you first met in
+[Formation Rules](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd): **every
+player the offense puts on the line creates a gap the defense has to fill.** Add a tight end and there are seven gaps
 instead of six; add a second tight end and there are eight. A defense that wants a defender for
 every gap needs one more defender near the ball for every blocker the offense attaches to its line.
 That is a big part of why offenses use tight ends in the run game at all, and why the
@@ -410,12 +423,12 @@ for exactly that reason.
 
 ## Holes: the offense's numbers
 
-The offense has its own way of naming the same spaces, older than the gap letters and built for a
-different job: calling a play in the huddle.
+The offense has its own way of naming the same spaces, a separate system built for a different job:
+calling a play in the huddle.
 
 ```{python}
 #| label: fig-holes
-#| fig-cap: "One common hole-numbering system, drawn with two tight ends (U and Y) so both sides match: counting outward from the center, the holes on the right get even numbers (0, 2, 4, 6, 8) and the holes on the left get odd numbers (1, 3, 5, 7, 9). The backs have numbers too. A two-digit call names the ball carrier, then the hole: '24' sends the tailback (the 2-back) through the 4 hole, just outside the right tackle. Many teams flip odd and even, or number the linemen instead of the spaces."
+#| fig-cap: "One common hole-numbering system, drawn with two tight ends (U and Y) so both sides match: counting outward from the center, the holes on the right get even numbers (0, 2, 4, 6, 8) and the holes on the left get odd numbers (1, 3, 5, 7, 9). The backs have numbers too. A two-digit call names the ball carrier, then the hole: '24' sends the tailback (the 2-back) through the 4 hole, just outside the right tackle. The 8 and 9 holes are the widest, outside the tight ends: runs around the end. Many teams flip odd and even, or number the linemen instead of the spaces."
 off = line("full") + [te(+1), te(-1), O("QB", "QB", -1.9, 0, "Q"), O("FB", "FB", -4.5, 0, "3"),
                       O("RB", "RB", -7.0, 0, "2")]
 p = Play(off, None, los=35, to_go=None)
@@ -434,8 +447,9 @@ plt.show()
 In [**hole numbering**](../../appendices/glossary.qmd#gl-hole-numbering), every place a run can go
 gets a digit. In the most common version, the holes are counted outward from the center with even
 numbers on one side and odd numbers on the other (in @fig-holes, even to the right). The backs get
-digits too: in one classic scheme, which comes from the old T-formation, the quarterback is 1, the
-halfbacks 2 and 4, and the fullback 3.[^holes] Put the two together and a run call is just two digits:
+digits too: in one classic scheme, built for the four backs of the old T-formation, the quarterback is 1,
+the fullback 3, and the halfbacks 2 and 4 (2 on the left, 4 on the right; in an I-formation the tailback is
+the 2).[^holes] Put the two together and a run call is just two digits:
 **"24" means the 2-back carries the ball through the 4 hole**. A coach can add a word for the blocking
 scheme ("24 Power," "32 Trap") and the whole play fits in one breath.
 
@@ -454,10 +468,10 @@ you will hear NFL coaches name runs by scheme and direction far more often than 
 playbooks name things is in [Offensive Systems and Their Languages](../04-the-passing-game/04-08-offensive-systems-and-languages.qmd).)
 
 ::: {.callout-note title="Madden vs. real life"}
-Madden's run menu is full of "HB Dive" and "FB Dive" plays aimed at one numbered hole, and a lane lights
-up when you snap it. Real NFL runs are mostly called by blocking scheme, and the hole on half of them is
-decided by the defense's reaction after the snap. A hole number tells you where the play is *designed* to
-go. Whether it goes there is up to eleven defenders.
+Madden's play art draws the running back's path to one spot, and the game rewards you for hitting it. In
+a real NFL run the drawn path is only the plan: on zone runs, one of the two great families you will
+meet at the end of this chapter, the hole is decided after the snap by how the defense reacts. A hole number tells you where the play is
+*designed* to go. Whether it goes there is up to eleven defenders.
 :::
 
 ## Play side, backside, and the point of attack
@@ -466,29 +480,41 @@ Three more words describe direction, and you need them before the blocks make se
 
 ```{python}
 #| label: fig-point-of-attack
-#| fig-cap: "A lead run to the right. The shaded half of the formation is the play side, the half the run is aimed at; the other half is the backside. The point of attack (green X) is the spot on the line where the play is designed to hit: here, the right B gap, between the right guard and right tackle. The fullback (F) leads through it onto the Mike linebacker; the running back follows him."
+#| fig-cap: "A lead run to the right. The shaded half of the formation is the play side, the half the run is aimed at; the other half is the backside. The point of attack (green X) is the spot on the line where the play is designed to hit: here, the right A gap, between the center and the right guard. No defensive lineman stands in it (the 1 is on the center's other shoulder, the 3 outside the guard), so the nearest defender is the Mike linebacker behind it. Two blocks widen it: the center drives the 1 to his left and the right guard drives the 3 to his right (orange arrows show where each defender is pushed). The fullback (F) leads through onto the Mike, and the running back (R) follows him. Only the blocks that make the hole are drawn."
 off = line("full") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("FB", "FB", -4.5, 0, "F"), O("RB", "RB", -7.0, 0, "R")]
 dfn = front([("LE", "5", -1), ("LT_", "1", -1), ("RT_", "3", 1), ("RE", "9", 1)],
-            lbs=[("WILL", 4.5, -2.8, "W"), ("MIKE", 4.5, 1.4, "M"), ("SAM", 4.2, 6.0, "S")])
+            lbs=[("WILL", 4.5, -2.8, "W"), ("MIKE", 4.5, 1.0, "M"), ("SAM", 4.2, 6.0, "S")])
 p = Play(off, dfn, los=35, to_go=None)
-go_to(p, "FB", (3.6, 1.7), "block", via=[(-1.2, 2.2), (1.4, 2.3)], speed=5.0)
-go_to(p, "RB", (3.0, 2.9), "run", via=[(-3.6, 1.3), (-0.5, 2.6)])
+go_to(p, "C", (0.35, -0.55), via=[(-0.3, -0.25)])                # drives the 1 to the left ...
+go_to(p, "LT_", (2.3, -2.3), "path", speed=1.2)                  # ... (orange: where he is pushed)
+go_to(p, "RG", (0.35, 2.3), via=[(-0.4, 1.95)])                  # drives the 3 to the right
+go_to(p, "RT_", (2.3, 4.0), "path", speed=1.2)
+go_to(p, "FB", (3.5, 1.25), "block", via=[(-2.7, 1.45), (1.6, 1.3)], speed=5.0)
+go_to(p, "RB", (1.9, 0.45), "run", via=[(-5.7, 0.95), (-3.2, 0.95), (-0.6, 0.75)])
 p.highlight("RB")
 fld = draw(p, width_in=5.8, lateral=(-10.5, 10.5), window=(-8.6, 7.5))
 shade_box(fld, p, 0.0, 10.4, d0=-8.5, d1=7.4, color=style.OFFENSE, alpha=0.06)
-spot(fld, p, 0.0, 2.4, color=style.THIRD, ms=11)
-say(fld, p, 6.3, 7.9, "PLAY SIDE", color=style.OFFENSE_DARK, fontsize=8, weight="bold")
-say(fld, p, 6.3, -7.9, "BACKSIDE", color=style.INK_2, fontsize=8, weight="bold")
-point_to(fld, p, (-2.8, 6.6), (0.0, 2.4), "point of attack:\nthe right B gap", color=GREEN, fontsize=7)
-say(fld, p, -6.2, 4.2, "F leads, R follows", fontsize=7)
+spot(fld, p, 1.0, 0.8, color=style.THIRD, ms=11)
+say(fld, p, 5.9, 7.9, "PLAY SIDE", color=style.OFFENSE_DARK, fontsize=8, weight="bold")
+say(fld, p, 5.9, -7.9, "BACKSIDE", color=style.INK_2, fontsize=8, weight="bold")
+point_to(fld, p, (-3.2, 6.8), (1.0, 0.8), "point of attack:\nthe right A gap", color=GREEN, fontsize=7, shrink=4)
+say(fld, p, -6.4, 4.2, "F leads on the M,\nR follows", fontsize=7)
 plt.show()
 ```
 
 The [**play side**](../../appendices/glossary.qmd#gl-playside-backside) (often written *playside*) is
 the half of the formation the run is aimed at; the **backside** is the other half, away from the play.
 The [**point of attack**](../../appendices/glossary.qmd#gl-point-of-attack) is the exact spot on the
-line where the play is designed to hit: in @fig-point-of-attack, the right B gap. Broadcasters
+line where the play is designed to hit: in @fig-point-of-attack, the right A gap. Broadcasters
 abbreviate it "the POA" or say "the point."
+
+Notice *why* the play aims there. The point of attack is chosen for who is standing near it and how
+he can be blocked. Here the right A gap has no defensive lineman in or beside it, so the nearest
+defender is a linebacker four or five yards away: coaches call that a *bubble*, and a lead play loves
+it, because the fullback can get to the linebacker before the linebacker gets to the hole. Often,
+though, the chosen spot has a defender standing right in it. Then the blocks are what empty it: the
+linemen move the man who owns that gap out of it, and the run goes into the space they made. On a
+designed run the hole is mostly *made*, not found.
 
 Do not confuse the play side with the *strong side*. The [strong side](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)
 is a fact about the formation (the side with the tight end, or with more players), fixed before the
@@ -511,7 +537,7 @@ So football gave every spot along the line a number.
 
 ```{python}
 #| label: fig-technique-chart
-#| fig-cap: "The technique chart. The offensive line is drawn with extra-wide spacing so every number has room; in a real game all these alignments are crammed into the 15 or so yards between the tight ends, about a yard off the ball. Head-up alignments (top row) take even numbers: 0 on the center, 2 on a guard, 4 on a tackle, 6 on a tight end. Shaded alignments (lower row) take odd numbers on a lineman's outside shoulder (1, 3, 5, 9) or an 'i' for an inside shoulder (2i, 4i); the inside shoulder of a tight end is a 7. Green letters are the gaps from earlier: each gap holds one or two shaded alignments."
+#| fig-cap: "The technique chart. The offensive line is drawn with extra-wide spacing so every number has room; in a real game all these alignments are crammed into the 10 or so yards between the tight ends, about a yard off the ball. Head-up alignments (top row) take even numbers: 0 on the center, 2 on a guard, 4 on a tackle, 6 on a tight end. Shaded alignments (lower row) take odd numbers on a lineman's outside shoulder (1, 3, 5, 9) or an 'i' for an inside shoulder (2i, 4i); the inside shoulder of a tight end is a 7. Green letters are the gaps from earlier: each gap holds one or two shaded alignments."
 fig, ax = plt.subplots(figsize=(6.6, 2.5))
 SP = 2.4                                            # exaggerated split, for room to write
 xs = {"U": -3 * SP, "LT": -2 * SP, "LG": -SP, "C": 0.0, "RG": SP, "RT": 2 * SP, "Y": 3 * SP}
@@ -546,8 +572,9 @@ plt.show()
 ```
 
 A [**technique**](../../appendices/glossary.qmd#gl-technique-alignment-number) (or *alignment
-number*) says where a defensive lineman lines up relative to the offensive linemen. The system rests on
-two ideas:
+number*) says where a defensive lineman lines up relative to the offensive linemen. You met two of its
+words, *head-up* and *shaded*, and the 3-technique in [The Twenty-Two](../01-foundations/01-03-the-twenty-two.qmd);
+here is the full system. It rests on two ideas:
 
 - A defender lined up directly across from a blocker, nose to nose, is
   [**head-up**](../../appendices/glossary.qmd#gl-head-up) on him, and gets an **even** number: **0**
@@ -559,16 +586,14 @@ two ideas:
   tackle's.
 
 The numbers are mirrored: a 3-technique can be on the left guard or the right guard, and the caption or
-the context tells you which. Two exceptions sit at the tight end, because the system was built before
-the "i" convention: in the most common version, a defender on the tight end's *inside* shoulder is a
-**7**, and one on his *outside* shoulder is a **9**. Systems disagree here more than anywhere else. Some
-coaches call head-up on the tight end an 8 or swap the 6 and the 7, and many use "wide 9" for an end
-lined up well outside the tight end.[^tech]
-<!-- VERIFY: the 6/7/8/9 conventions around the tight end vary by source; confirm the "most common" claim against a coaching reference. -->
+the context tells you which. The pattern breaks at the tight end: in the most common version, a defender
+on the tight end's *inside* shoulder is a **7** (not a "6i"), and anything outside him is a **9**. Systems
+disagree here more than anywhere else. Some swap the 6 and the 7, some use an 8 when two tight ends line up
+on the same side, and many use "wide 9" for an end lined up well outside the tight end.[^tech]
 
 | Gap | Alignments that sit in it | Typical player |
 |---|---|---|
-| A | 1, 2i (and the 0 covers both A gaps) | nose tackle, "shade" nose |
+| A | 1, 2i (and a 0 can play either A gap) | nose tackle, "shade" nose |
 | B | 3, 4i | 3-technique tackle; 3-4 defensive end |
 | C | 5, 7 | defensive end |
 | D | 9 | defensive end or outside linebacker on the edge |
@@ -582,14 +607,24 @@ job. Head-up defenders are different. A 0 or a 4 is often asked to control the b
 then fill whichever gap the ball goes to, on either side. That style is called *two-gapping*, and it is
 taught in [Defensive Line Play](../05-defensive-fronts-and-run-defense/05-01-dl-techniques-and-gap-control.qmd).
 
+If a 3 and a 4i both sit in the B gap, why does anyone care which one it is? Because the number says
+*whose shoulder* he is on, and so which blocker has a man in his face. A 3 is on the guard; a 4i is on
+the tackle. Same gap, different blocker occupied, and as the next section shows, that decides who is
+free to help and who has to block him. That is also how to tell them apart in a game. The real
+distances are tiny: linemen usually leave a gap of about two feet between themselves and the next
+man,[^splits] so a whole B gap is two or three feet wide and a 3 and a 4i stand about a foot apart.
+Don't try to place a defender in the gap; ask which lineman's shoulder he is lined up on. The angle
+that shows it best is the end-zone replay, shot from behind the offense straight down the line; the
+high sideline camera of a live broadcast flattens the line and hides it.
+
 **Where the numbers came from.** The system is usually credited to Paul "Bear" Bryant, but the better-documented
-story gives it to **Bum Phillips**, who devised it as a Texas high-school coach in the 1950s and later coached
-under Bryant at Texas A&M; Bryant himself reportedly credited Phillips. Before it, every staff used its own
+story gives it to **Bum Phillips**, who, by his hometown paper's account, devised it while coaching at Nederland
+High School in Texas in the early 1950s, and who joined Bryant's staff at Texas A&M in 1957. Bryant himself
+credited Phillips. Before it, every staff used its own
 code words for alignments, so a lineman who changed schools had to learn a new language.[^phillips] Phillips,
 the Stetson-wearing Texan who later coached the Houston Oilers, liked things simple, and the numbers stuck because
 they *are* simple: two rules, ten digits and an "i", and a defensive coordinator can describe an entire
 line in a breath.
-<!-- VERIFY: the Bum Phillips origin (high-school coach, 1950s) and Bryant's crediting him; NFL.com's Rosenthal piece says Bryant credited Bum; date details not confirmed. -->
 
 ### The numbers that became position names
 
@@ -604,8 +639,10 @@ A few technique numbers are used so often that they turned into names for *posit
   In a [3-4 defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) it became the name for
   the defensive end: a big, long player who can hold off the tackle and still close the C gap.
 - The [**4i-technique**](../../appendices/glossary.qmd#gl-4i-technique) sits on the tackle's *inside* shoulder,
-  in the B gap. It is a favorite alignment for the ends of modern three-man fronts, because a defender there
-  clogs the B gap and makes the offense's favorite double team, guard and tackle together, awkward to set up.
+  in the B gap. It is a favorite alignment for the ends of modern three-man fronts. It squeezes the B gap from
+  the inside, it is hard for the tackle to get outside of (he is already inside the tackle's body), and
+  because he can play off either the guard or the tackle, he muddles which of those two should block him and
+  which should go to the linebacker.
 - The **0** and **1** are the nose. A 0 is head-up on the center; a 1, often called a *shade nose*, sits on one
   of the center's shoulders. Both are usually the heaviest men on the field (the
   [nose tackle](../01-foundations/01-03-the-twenty-two.qmd) of 01-03).
@@ -652,7 +689,7 @@ asks a one-word question: *am I covered?*
 
 ```{python}
 #| label: fig-covered
-#| fig-cap: "The same two fronts, now from the offensive line's point of view. An orange tie links each defensive lineman to the offensive lineman he is lined up on, who is covered. Linemen with nobody on them (green) are uncovered: the nearest defender in front of them is a linebacker. Top: the LG and the RT are uncovered. Bottom: both guards are uncovered, the center and both tackles covered (the LT twice over)."
+#| fig-cap: "The same two fronts, now from the offensive line's point of view. An orange tie links each defensive lineman to the offensive lineman he is lined up on, who is covered. Linemen with nobody on them (green) are uncovered: the nearest defender in front of them is a linebacker. Top: the LG and the RT are uncovered. Bottom: both guards are uncovered, the center and both tackles covered; the 5 and the 4i bracket the left tackle, so he is covered twice over."
 COVERS = [{"LE": "LT", "LT_": "C", "RT_": "RG", "RE": "Y"},
           {"LE": "LT", "LD": "LT", "NT": "C", "RD": "RT", "RE": "Y"}]
 fig, axes = plt.subplots(2, 1, figsize=(6.0, 5.4))
@@ -679,10 +716,21 @@ covers the tight end; the left guard and the right tackle are uncovered.
 **Why every blocking scheme starts here.** A covered lineman has a man in his face at the snap and usually has
 to deal with him first. An uncovered lineman is the offense's free resource. He can help a neighbor on a
 defensive lineman (a double team), or go straight to a linebacker at the *second level*, the linebackers'
-depth. Which uncovered linemen exist, and where, shapes what any run play can do against that front. Against
-the bottom front, both guards are uncovered and both have a linebacker in front of them, so the guards are the
-natural climbers; the center, covered by a 0, has the heaviest man on the field on his nose and little chance
-to help anyone. A defense that wants to stop a certain run chooses its front partly to change who is covered.
+depth. Which uncovered linemen exist, and where, shapes what any run play can do against that front.
+
+Uncovered does not always mean free, though; you still have to count. Look at the bottom front. Both guards
+are uncovered, but they are not equally free. On the left, the 5 and the 4i bracket the left tackle, and one
+man cannot block two, so the left guard has to help with the 4i before he can think about a linebacker. On the
+right, the tackle has only the 4i, so the right guard can double-team the 4i with him and then climb: he is the
+natural climber. The center, covered by a 0, has the heaviest man on the field on his nose and little chance to
+help anyone. A defense that wants to stop a certain run chooses its front partly to change who is covered, and
+who has to stay home to help.
+
+Covered and uncovered is a snapshot taken before the snap, and the defense knows it. Defensive linemen can
+*slant* at the snap, stepping sideways into the next gap instead of straight ahead
+([Defensive Line Play](../05-defensive-fronts-and-run-defense/05-01-dl-techniques-and-gap-control.qmd) teaches
+it), and a lineman who was uncovered can suddenly have a man in his face. How a blocking scheme copes with
+that is one of the big differences between the two families at the end of this chapter.
 
 One refinement, which you will meet in [Zone Running](03-02-zone-running.qmd): zone-blocking teams count
 "covered" only on the side the play is going. A defender shaded on a lineman's *backside* shoulder is not his
@@ -699,7 +747,7 @@ on the perimeter in [03-05](03-05-perimeter-and-misdirection.qmd)).
 
 ```{python}
 #| label: fig-block-library
-#| fig-cap: "The eight core blocks, play going right in every panel. Defenders are drawn a little deeper than real (about a yard off the ball in a game) so each block's path shows; orange arrows show where the defender is pushed or wants to go. 1, Drive: straight ahead, move the man back. 2, Down: block a man lined up inside you, from the side. 3, Reach: get outside a man on your play-side shoulder and seal him in. 4, Cut-off: on the backside, step play-side and get between the defender and the play. 5, Combo: two linemen on one defender, then one climbs to the linebacker. 6, Pull: leave your spot and run behind the line. 7, Kick-out: hit the end man from the inside and push him toward the sideline; the run goes inside him. 8, Lead: a back runs through the hole ahead of the ball carrier and blocks the first defender who shows."
+#| fig-cap: "The eight core blocks, play going right in every panel. Defenders are drawn a little deeper than real (about a yard off the ball in a game) so each block's path shows; orange arrows show where the defender is pushed or wants to go. 1, Drive (also called a base block): straight ahead, move the man back. 2, Down: block a man lined up inside you, from the side. 3, Reach: get outside a man on your play-side shoulder and seal him in (the tackle is left out so the guard's path shows). 4, Cut-off: on the backside, step play-side and get between the defender and the play; the play is going away, so he only has to be slowed. 5, Combo: two linemen on one defender, then one climbs to the linebacker. 6, Pull: leave your spot, run flat behind the line, and turn up to block somebody where the play is going. 7, Kick-out (drawn a beat after the snap, with the tackle already blocking down on the 3): the fullback hits the end man (drawn a little wide) from the inside and pushes him toward the sideline; the run goes inside him. 8, Lead: a back runs through the hole ahead of the ball carrier and blocks the first defender who shows."
 DD = 1.8   # defenders drawn a little deeper than real (about 1 yard) so each block's line shows
 SPAN = 7.6
 
@@ -715,7 +763,7 @@ def plate_down(p):
 
 
 def plate_reach(p):
-    go_to(p, "RG", (1.1, 3.05), via=[(-0.1, 2.85)])
+    go_to(p, "RG", (1.15, 3.0), via=[(0.2, 2.15)])
     go_to(p, "RB", (3.8, 5.0), "run", via=[(-3.4, 2.6), (-0.6, 4.9)])
 
 
@@ -732,19 +780,20 @@ def plate_combo(p):
 
 
 def plate_pull(p):
-    p.pull("LG", [(-1.9, 0.6), (-1.9, 4.4), (0.9, 5.8), (4.3, 5.4)])
+    go_to(p, "LG", (3.6, 4.15), "pull", via=[(-1.6, -1.2), (-1.6, 4.3), (0.9, 4.45)])
 
 
 def plate_kick(p):
-    go_to(p, "RT", (1.2, 2.95), via=[(0.25, 3.25)])
-    go_to(p, "FB", (1.15, 3.55), via=[(-2.0, 2.9)], speed=5.0)
-    go_to(p, "DE", (2.7, 5.2), "path", speed=1.5)
-    go_to(p, "RB", (4.6, 3.8), "run", via=[(-4.0, 1.2), (-1.4, 3.6), (1.8, 4.0)])
+    # drawn a beat after the snap: the tackle has already stepped down onto the 3 (panel 2)
+    go_to(p, "RT", (0.95, 2.5))
+    go_to(p, "FB", (1.15, 3.95), via=[(-2.6, 2.3), (-0.8, 3.7)], speed=5.0)
+    go_to(p, "DE", (2.6, 5.7), "path", speed=1.5)
+    go_to(p, "RB", (4.6, 3.45), "run", via=[(-4.6, 0.9), (-2.6, 2.2), (-0.8, 3.1), (1.6, 3.35)])
 
 
 def plate_lead(p):
     go_to(p, "FB", (3.75, 2.45), via=[(-1.6, 2.4)], speed=5.0)
-    go_to(p, "RB", (2.4, 1.75), "run", via=[(-4.0, 0.7), (-1.0, 1.95)])
+    go_to(p, "RB", (2.4, 1.75), "run", via=[(-5.6, 0.9), (-2.4, 2.2)])
 
 
 DL3 = D("DL", "DL", DD, T("3"), "3")
@@ -757,15 +806,18 @@ PLATES = [
     ("4. Cut-off", "backside: get between\nhim and the play", [D("DL", "DL", DD, T("3", -1), "3")], plate_cutoff, -4.6),
     ("5. Combo", "two on one, then one\nclimbs to a linebacker",
      [D("DL", "DL", DD, T("1"), "1"), D("M", "LB", 4.6, 1.75, "M")], plate_combo, -2.2),
-    ("6. Pull", "leave your spot and\nrun behind the line", [], plate_pull, -2.6),
+    ("6. Pull", "leave your spot, run\nbehind the line, lead up", [D("M", "LB", 4.6, 4.15, "M")], plate_pull, -2.45),
     ("7. Kick-out", "hit the end man from\ninside; push him out",
-     [DL3, D("DE", "DL", DD, T("5"), "5")] + BACKS, plate_kick, -1.4),
+     [DL3, D("DE", "DL", DD, T("5") + 0.6, "5")] + BACKS, plate_kick, -1.4),
     ("8. Lead", "a back blocks ahead\nof the ball carrier", BACKS + [D("M", "LB", 4.6, 2.45, "M")], plate_lead, -2.2),
 ]
 fig, axes = plt.subplots(2, 4, figsize=(6.6, 6.3))
 for ax, (ttl, note, extra, build, w0) in zip(axes.flat, PLATES):
     later = []
-    ol = [q for q in line("short") if w0 + 0.8 <= q.w <= w0 + SPAN - 0.8]   # only whole markers
+    ol = [q for q in line("short") if w0 + 0.8 <= q.w <= w0 + SPAN - 0.8   # only whole markers
+          and not (build is plate_reach and q.key == "RT")]                 # keep the reach path clear
+    if build is plate_kick:                                                 # the tackle, already down on the 3
+        ol = [q.moved(d=0.05, w=2.75) if q.key == "RT" else q for q in ol]
     p = Play(ol + extra, None, los=35, to_go=None)
     build(p)
     f = draw(p, ax=ax, lateral=(w0, w0 + SPAN), window=(-7.6, 5.6), title=False)
@@ -867,39 +919,49 @@ tracking data, not a real snap.
 
 ```{python}
 #| label: fig-combo-animation
-#| fig-cap: "A combo block on an inside run to the right (simulated, in Big Data Bowl tracking coordinates; faint lines are each player's path so far). 1: the center and right guard (purple ring) both have their hands on the 1-technique, driving him back, and both are watching the Mike linebacker (orange ring). 2: the Mike reads run and steps up into a gap; that commitment is the guard's signal to come off the double team and climb. 3: the guard is on the Mike, the center has turned the 1-technique by himself, and the running back is in the hole the pair created."
+#| fig-cap: "A combo block on an inside run to the right (simulated, in Big Data Bowl tracking coordinates; faint lines are each player's path so far). 1, the snap: the 1-technique is on the center, the Mike (orange ring) is stacked behind him, and the right guard (purple ring) has nobody on him, so the center and guard are the natural pair. 2: both linemen have their hands on the 1 and are driving him back, and both are watching the Mike. 3: the Mike reads run and steps up into a gap; that commitment is the guard's signal to come off the double team and climb. 4: the guard is on the Mike, the center has turned the 1 by himself, and the running back is in the hole the pair created (dashed). The Will, coming over the top, is the free hat in this seven-man box: the next section is about him."
 def combo_play():
     """An inside run right: C and RG double the 1-technique; RG climbs to the Mike when he commits."""
-    off = line("full") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -6.2, 0, "R")]
+    off = line("full") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -5.5, 0, "R")]
     dfn = front([("LE", "5", -1), ("L3", "3", -1), ("N1", "1", 1), ("RE", "5", 1)],
                 lbs=[("WILL", 4.6, -2.6, "W"), ("MIKE", 4.6, 1.0, "M"), ("SAM", 4.2, 6.6, "S")])
     p = Play(off, dfn, los=35, to_go=None)
     # the double team: both linemen into the 1, drive him back, then the RG comes off to the Mike
-    go_to(p, "C", (0.25, 0.35), speed=2.4)
-    go_to(p, "RG", (0.25, 1.15), speed=2.0, via=[(-0.4, 1.4)])
-    go_to(p, "N1", (1.15, 0.65), "path", speed=0.8)                      # held up at the line ...
-    go_to(p, "N1", (2.3, 0.05), "path", speed=1.4, delay=0.15)           # ... then driven back and turned
-    go_to(p, "C", (1.05, -0.35), speed=1.4, delay=0.15)                   # the center finishes him alone
-    go_to(p, "RG", (2.2, 1.85), speed=3.0, delay=0.25)                   # climbs when the Mike commits
-    go_to(p, "RG", (2.7, 2.5), speed=1.1)
-    go_to(p, "MIKE", (3.1, 1.6), "path", speed=2.4, delay=0.3)           # reads run, fills downhill
-    go_to(p, "MIKE", (3.6, 2.55), "path", speed=1.0)
-    # everyone else, simply
-    go_to(p, "LG", (0.3, -2.1), speed=1.6); go_to(p, "L3", (0.6, -2.0), "path", speed=0.8)
-    go_to(p, "LT", (0.3, -3.6), speed=1.6, via=[(-0.5, -3.3)]); go_to(p, "LE", (0.6, -3.7), "path", speed=0.8)
-    go_to(p, "RT", (0.4, 3.9), speed=1.6); go_to(p, "RE", (0.8, 4.1), "path", speed=0.6)
+    go_to(p, "C", (-0.05, 0.3), speed=2.4)
+    go_to(p, "RG", (-0.05, 1.3), speed=2.0, via=[(-0.4, 1.45)])
+    go_to(p, "N1", (1.3, 0.75), "path", speed=0.8)                       # held up at the line ...
+    go_to(p, "N1", (1.9, 0.1), "path", speed=1.2, delay=0.1)             # ... then driven back and turned
+    go_to(p, "C", (0.6, -0.4), speed=1.2, delay=0.1)                     # the center finishes him alone
+    go_to(p, "MIKE", (3.4, 1.55), "path", speed=3.2, delay=0.15)         # reads run, steps up into a gap
+    go_to(p, "MIKE", (3.25, 2.1), "path", speed=1.2)
+    go_to(p, "RG", (0.4, 1.6), speed=1.6)                                # still on the 1 ...
+    go_to(p, "RG", (2.0, 2.0), speed=3.4)                                # ... then climbs when the Mike commits
+    # everyone else, simply (engaged pairs kept a marker apart)
+    go_to(p, "LG", (-0.1, -2.15), speed=1.6); go_to(p, "L3", (1.25, -2.2), "path", speed=0.6)
+    go_to(p, "LT", (-0.1, -3.5), speed=1.6, via=[(-0.5, -3.3)]); go_to(p, "LE", (1.3, -3.75), "path", speed=0.6)
+    go_to(p, "RT", (-0.05, 3.75), speed=1.6); go_to(p, "RE", (1.35, 4.0), "path", speed=0.6)
     go_to(p, "Y", (3.3, 6.0), speed=3.0, via=[(0.6, 5.2)]); go_to(p, "SAM", (3.6, 6.2), "path", speed=1.0)
-    go_to(p, "WILL", (3.3, -0.6), "path", speed=2.8, delay=0.35)
-    go_to(p, "QB", (-2.6, 0.6), "path", speed=3.0)
-    go_to(p, "RB", (5.0, 1.0), "run", speed=5.0, via=[(-3.8, 0.7), (-1.0, 0.95), (1.7, 1.05)])
+    go_to(p, "WILL", (3.4, -0.9), "path", speed=2.8, delay=0.35)
+    go_to(p, "QB", (-2.6, -0.7), "path", speed=3.0)
+    go_to(p, "RB", (4.0, 1.0), "run", speed=5.0, via=[(-3.8, 0.75), (-1.0, 0.95), (1.7, 1.05)])
     p.handoff("RB", t=0.6)
     return p
 
 
-animation_or_strip(combo_play(), [0.4, 0.85, 1.35],
-                   notes=["C and RG both on the 1;\nboth watch the Mike", "Mike commits to a gap:\nRG comes off the 1",
-                          "RG on the Mike; C finishes\nthe 1 alone; R in the hole"],
-                   rings=(("RG", PURPLE), ("MIKE", style.DEFENSE)), lateral=(-3.4, 4.4), window=(-5.0, 5.6), ncols=3)
+def mark_hole(fld, t):
+    """A dashed outline of the hole, once it has opened."""
+    if t >= 1.2:
+        x, y = _P(fld, P_COMBO, 1.1, 1.05)
+        fld.ax.add_patch(Ellipse((float(x), float(y)), 2.4, 1.9, fc="none", ec=GREEN, lw=1.4, ls=(0, (3, 2)),
+                                 zorder=6.5))
+
+
+P_COMBO = combo_play()
+animation_or_strip(P_COMBO, [0.0, 0.4, 0.85, 1.35],
+                   notes=["the 1 is on the C; Mike\nbehind him; RG uncovered", "C and RG both on the 1;\nboth watch the Mike",
+                          "Mike steps up into a gap:\nRG comes off the 1", "RG on the Mike; C turns the\n1 alone; R in the hole"],
+                   rings=(("RG", PURPLE), ("MIKE", style.DEFENSE)), lateral=(-3.8, 4.9), window=(-6.4, 5.8), ncols=4,
+                   after=mark_hole)
 ```
 
 Three things to notice in @fig-combo-animation. First, the 1-technique is moved *backward*, a yard or more, which
@@ -981,7 +1043,7 @@ Read the two pictures in @fig-hat-math as a negotiation.
 - **Six against six** (left). The offense has a blocker for every defender in the box. The run has a fair fight up
   front, and if it gets through the line, the next defenders are two safeties a dozen yards away. Offenses love to
   run against this look. It is common now, because defenses have leaned into two-deep safeties to stop the pass:
-  NFL Next Gen Stats measured *split-safety* coverage on 42.0% of plays in 2025, up from 32.9% in 2018.[^twohigh]
+  NFL Next Gen Stats measured *split-safety* coverage on 42.0% of dropbacks in 2025, up from 32.9% in 2018.[^twohigh]
 - **Seven against six** (right). The defense has rolled a safety down. Now there is one more defender than blockers,
   and the unblocked man is in the box, not twelve yards away. Some defender will be unblocked whatever the blocking
   scheme does; the scheme only gets to choose *which* one. A good run play leaves the defender who is farthest from
@@ -1063,10 +1125,10 @@ unblocked and the quarterback watches him after the snap. If that defender plays
 the ball; if he plays the quarterback, the quarterback hands off. Either way the read has done a blocker's work: the
 defender is "blocked" by the decision. The offense is back to eleven against eleven, and one of the defense's free men has
 disappeared. That is the core idea of the [zone read](03-04-option-football.qmd) and every other
-[option](03-04-option-football.qmd) play, which [Option Football](03-04-option-football.qmd) builds out properly. As
-Chris B. Brown puts the idea in *The Art of Smart Football*, the quarterback run game is about getting the numbers back
-to even.[^brown]
-<!-- VERIFY: paraphrase of Brown's framing (QB run game evens the numbers); confirm wording/chapter. -->
+[option](03-04-option-football.qmd) play, which [Option Football](03-04-option-football.qmd) builds out properly. Jim
+Harbaugh, whose 49ers ran the read option with Colin Kaepernick, put it plainly in the week before Super Bowl XLVII,
+crediting the thought to Lou Holtz: without an option attack "the offense is basically playing with 10," but when the
+quarterback is a threat to run, "that gets the numbers back to even, back to 11-on-11."[^harbaugh]
 
 That arithmetic is why running quarterbacks change everything about a run game. In 2019 the Baltimore Ravens, with
 Lamar Jackson running a read-option-heavy offense, ran for 3,296 yards, breaking a team record that had stood since
@@ -1175,17 +1237,17 @@ quarterbacks, which tells you how much of the offense lived up front.
 
 Gibbs's teams are a good place to see the language in use because their signature runs were the gap-scheme plays this
 chapter just described: down blocks on the play side, guards and even tackles pulling around to kick out and lead, a
-fixed hole. Their counter play, with two backside linemen pulling, became one of the most copied runs in football (it is
-taught in [03-03](03-03-gap-and-power-runs.qmd)). And Gibbs's answer to one defender, the Giants' Lawrence Taylor, gave
+fixed hole. Their counter play, with two backside linemen pulling (the left guard Russ Grimm and, unusually, the left
+tackle Joe Jacoby), became one of the most copied runs in football (it is taught in [03-03](03-03-gap-and-power-runs.qmd)).[^counter] And Gibbs's answer to one defender, the Giants' Lawrence Taylor, gave
 the run game a new blocker: Gibbs moved a back up near the line as an extra blocker for the edge, the position now called
 the *H-back*.[^hback] That is hat math again. Taylor was a defender the existing blocking could not handle, so Gibbs added
 a hat.
 
 ::: {.callout-note title="Film room: Washington, Super Bowl XVII (1982 season)"}
-**The play:** January 30, 1983, at the Rose Bowl. Washington trails Miami 17–13 early in the fourth quarter and faces
+**The play:** January 30, 1983, at the Rose Bowl. Washington trails Miami 17–13 with 10:10 left in the game and faces
 fourth-and-1 at the Miami 43. Gibbs calls "I-Right 70 Chip," a short-yardage run to the left. Tight end Clint Didier goes
-in motion to the right and then reverses back to the left, and cornerback Don McNeal follows him. The play is designed, in
-the words usually used to describe it, to block everyone except the smallest defender on the field, the cornerback, and let
+in motion to the right and then reverses back to the left, and cornerback Don McNeal follows him. The play is designed, as
+the standard account of it puts it, to block everyone except the smallest defender on the field, the cornerback, and let
 John Riggins run through him. Behind Didier and fullback Otis Wonsley, Riggins breaks McNeal's tackle at the line (McNeal had
 slipped as Didier changed direction) and outruns safety Glenn Blackwood for a 43-yard touchdown. Washington wins 27–17;
 Riggins carries 38 times for 166 yards and is named MVP.[^sb17]
@@ -1195,7 +1257,6 @@ leave free: the smallest one, against a 230-pound back with a running start. Wat
 is the play side, which gap Riggins hits, who leads (the fullback), and what the motion did to the cornerback before the snap.
 ([Motion and Shifts](../02-personnel-and-formations/02-06-motion-and-shifts.qmd) is about that last idea.)
 :::
-<!-- VERIFY: "block everyone but the smallest cornerback" design description and Riggins's weight (~230 lb) against PFR/broadcast. -->
 
 Five years later the same line produced an even more lopsided day: in Super Bowl XXII, after the 1987 season, rookie
 Timmy Smith, making his first career start, ran for 204 yards, still the Super Bowl record, in a 42–10 win over
@@ -1221,9 +1282,9 @@ block, done at a speed most centers cannot match.
 ::: {.callout-note title="Film room: Detroit Lions 2023–2024"}
 **The seasons:** under offensive coordinator Ben Johnson, Detroit reached the NFC Championship Game after the 2023 season and
 went 15–2 in 2024. By the same nflverse calculation, the Lions were in the top five in EPA per designed run in both seasons and
-led (or, in 2024, tied for the lead in) rushing touchdowns on designed runs.[^lions] Their line was anchored by right tackle **Penei Sewell**
+tied for the league lead in rushing touchdowns on designed runs both years.[^lions] Their line was anchored by right tackle **Penei Sewell**
 (#58), a first-team All-Pro in 2023, 2024 and 2025, and center **Frank Ragnow** (#77), a second-team All-Pro in 2023 and 2024
-who retired in June 2025.[^sewell] (Johnson became the Bears' head coach in 2025, so this is a 2023–2024 offense, not
+who retired in June 2025 (a comeback attempt that November ended when he failed his physical).[^sewell] (Johnson became the Bears' head coach in 2025, so this is a 2023–2024 offense, not
 Detroit's current one.)
 
 **What to notice:** pick a game and watch only the right side. Sewell's blocks are a block-library tour: down blocks on runs
@@ -1301,8 +1362,8 @@ kick-out and **leads** through it onto the first linebacker who shows (here the 
 the puller. Inside the hole: down blocks. Outside it: the kick-out. Through it: a lead. That combination is the play called
 *power*, the signature gap-scheme run, and [03-03](03-03-gap-and-power-runs.qmd) builds it fully.
 
-The tell you could have used: the back's first steps aimed outside the tackle, and the guard pulled the same way. Zone teams
-do not pull guards; a pulling guard almost always runs to the hole.
+The tell you could have used: the back's first steps aimed outside the tackle, and the guard pulled the same way. A zone
+run does not pull guards; a pulling guard almost always runs to the hole.
 :::
 :::
 
@@ -1507,28 +1568,43 @@ show_animation(one, times=[0.0, 0.4, 0.85, 1.35])   # the same moments as the si
 [^holes]: Hole and back numbering vary by team. The even-right, odd-left convention and the "back digit + hole digit" call are
     described in many coaching primers, e.g. "Gap (American football)," Wikipedia
     (<https://en.wikipedia.org/wiki/Gap_(American_football)>), and the play-calling primer at
-    <https://s3.amazonaws.com/footballtutorials/concepts/playcalling.pdf>. The T-formation back numbers (quarterback 1, halfbacks
-    2 and 4, fullback 3) are one common scheme, not a standard.
-    <!-- VERIFY: back-numbering convention (QB 1, HBs 2 and 4, FB 3) against a coaching source. -->
+    <https://s3.amazonaws.com/footballtutorials/concepts/playcalling.pdf> (Football-Tutorials.com: "The QB is always '1', and
+    the FB is always '3'," the tailback is 2, and in four-back sets 2 is the back left of the fullback and 4 the back right of
+    him; holes "numbered odd on the left and even on the right"). That primer numbers the hole behind the center 0, a
+    reminder that numbering is a dialect; the back numbers are one common scheme, not a standard.
 
-[^tech]: The head-up/shade logic and the variations at the tight end ("7 and 9 vary by system"): "Gap (American football),"
-    Wikipedia: <https://en.wikipedia.org/wiki/Gap_(American_football)>; Pro Football Focus, "Defensive Line Techniques: The
-    Prototypes": <https://www.pff.com/news/defensive-line-techniques-the-prototypes>.
+[^tech]: The head-up/shade logic and the variations at the tight end: "Gap (American football)," Wikipedia (7 and 9 "are not
+    universal"): <https://en.wikipedia.org/wiki/Gap_(American_football)>; Big Blue View, "Defensive line techniques, gaps
+    explained" (May 24, 2023: 6 head-up on the tight end, 7 on his inside shoulder as "the only anomaly," 9 outside him, 8 with
+    two tight ends to one side): <https://bigblueview.com/2023/5/24/23734677/defensive-line-techniques-gaps-explained-big-blue-view-glossary-of-terms>;
+    Scouting Academy, "ITP Glossary: 7 Technique" (the Bryant numbering "swaps the order of the 6 and 7"):
+    <https://scoutingacademy.com/itp-glossary-7-technique/>; Pro Football Focus (Sam Monson, 2011), "Defensive Line
+    Techniques: The Prototypes": <https://www.pff.com/news/defensive-line-techniques-the-prototypes>.
+
+[^splits]: Splits vary by team, by lineman and by play. Jeff Lutz, "Teach the Basics of
+    Offensive Line Play," Gridiron Strategies (Lutz, an offensive line coach at Wisconsin-Eau Claire, advises starting the season
+    "taking 2-foot splits on all plays"): <https://gridironstrategies.com/article/teach-the-basics-of-offensive-line-play>. The
+    diagrams in this book space the linemen wider than that, so the markers have room.
 
 [^phillips]: Gregg Rosenthal, "Wade Phillips brings quick-fix wizardry to Los Angeles Rams' D," NFL.com (2017): Bryant
     "credited Bum with creating the universally used numbering system which tells defensive linemen where to line up based on their
     assigned numbers, like the '1 technique' or '5 technique,'" which replaced code words that "varied from team to team":
-    <https://www.nfl.com/news/wade-phillips-brings-quick-fix-wizardry-to-los-angeles-rams-d-0ap3000000834089>.
+    <https://www.nfl.com/news/wade-phillips-brings-quick-fix-wizardry-to-los-angeles-rams-d-0ap3000000834089>. Port Arthur News,
+    "An ode to Bum" (Phillips "while at NHS" taught the numbered techniques to Bryant at Texas A&M):
+    <https://www.panews.com/?p=10285>. Phillips coached Nederland High School 1951–56 and was on Bryant's Texas A&M staff in
+    1957: <https://en.wikipedia.org/wiki/Bum_Phillips>. (NFL.com dates the A&M hire to 1958, but Bryant left A&M for Alabama
+    after the 1957 season.)
 
 [^kelce]: Jason Kelce: sixth round (191st overall), 2011; six first-team All-Pro selections (2017–2019, 2021–2023); listed at 6-3,
     295; retired March 4, 2024: <https://en.wikipedia.org/wiki/Jason_Kelce>; Pro Football Reference:
     <https://www.pro-football-reference.com/players/K/KelcJa00.htm>.
 
-[^twohigh]: NFL Next Gen Stats: split-safety coverage rate 32.9% in 2018, 42.0% in 2025, the highest since tracking began:
+[^twohigh]: NFL Next Gen Stats: split-safety coverage on 32.9% of dropbacks in 2018 and 42.0% in 2025, the highest since tracking began:
     <https://www.nfl.com/news/the-coverage-that-turned-the-seahawks-into-super-bowl-winners-and-is-taking-the-nfl-by-storm>.
 
-[^brown]: Chris B. Brown, *The Art of Smart Football* (2015) and *The Essential Smart Football* (2012), on the quarterback run
-    game and option football as ways to make the quarterback count in the run game.
+[^harbaugh]: Kareem Copeland, "Jim Harbaugh: Option allows 49ers to play 11-on-11," NFL.com, January 31, 2013:
+    <https://www.nfl.com/news/jim-harbaugh-option-allows-49ers-to-play-11-on-11-0ap1000000133218>. Chris B. Brown's *The
+    Essential Smart Football* (2012) and *The Art of Smart Football* (2015) develop the same arithmetic.
 
 [^ravens]: "Ravens break single-season team rushing record," NFL.com (Dec 2019; 3,296 yards, breaking the 1978 Patriots' 3,165):
     <https://www.nfl.com/news/ravens-break-single-season-team-rushing-record-0ap3000001092761>; Baltimore Ravens, "Ravens set all-time
@@ -1541,13 +1617,18 @@ show_animation(one, times=[0.0, 0.4, 0.85, 1.35])   # the same moments as the si
 
 [^hback]: "H-back," Wikipedia (Gibbs's one-back offense and the H-back as a response to Lawrence Taylor, with Gibbs's own account):
     <https://en.wikipedia.org/wiki/H-back>. See also the Pro Football Hall of Fame on Taylor:
-    <https://profootballhof.com/news/2023/gold-jacket-spotlight-lawrence-taylor-created-havoc>.
-    <!-- VERIFY: the H-back origin story is widely told; confirm with a primary Gibbs interview or book. -->
+    <https://www.profootballhof.com/news/2023/06/gold-jacket-spotlight-lawrence-taylor-created-havoc/> (Gibbs: "You get a back
+    blocking Lawrence Taylor, you lose"). Gibbs's own account, as cited by Wikipedia: Nick Charles, "Taylor made," CNNSI.com,
+    August 12, 1999 ("We had to try in some way have a special game plan just for Lawrence Taylor").
+
+[^counter]: Rick Gosselin, "State Your Case: Joe Jacoby" (2015; updated 2022): on the counter trey "the left guard and left
+    tackle pull to the right," and Gibbs: "You can pull guards. But how many people pull tackles? We pulled Joe. He could
+    run." <https://rickgosselin.com/state-your-case-joe-jacoby/>.
 
 [^sb17]: "Super Bowl XVII," Wikipedia (fourth-and-1 at the Miami 43 with 10:10 left in the fourth quarter, trailing 17–13; "I-Right 70
     Chip"; Didier's motion and McNeal's slip; the design to block everyone but the cornerback; the run to the left behind Didier
     and Otis Wonsley; Riggins 38 carries, 166 yards, MVP; Washington 27, Miami 17):
-    <https://en.wikipedia.org/wiki/Super_Bowl_XVII>; Pro Football Reference box score:
+    <https://en.wikipedia.org/wiki/Super_Bowl_XVII>; Riggins listed at 6-2, 230 lb: <https://www.profootballhof.com/players/john-riggins/>; Pro Football Reference box score:
     <https://www.pro-football-reference.com/boxscores/198301300mia.htm>.
 
 [^smith]: "Timmy Smith," Wikipedia (204 yards in Super Bowl XXII, January 31, 1988, in his first career start; Washington 42, Denver
@@ -1560,8 +1641,11 @@ show_animation(one, times=[0.0, 0.4, 0.85, 1.35])   # the same moments as the si
     Football Reference, <https://www.pro-football-reference.com/teams/phi/2022.htm>.
 
 [^lions]: Same calculation as the Eagles note, 2023 and 2024 regular seasons: Detroit ranked 5th in EPA per designed run both years and
-    had the most designed-run touchdowns (27 in 2023; 29 in 2024, tied with Philadelphia). Ben Johnson was Detroit's offensive
+    tied for the most designed-run touchdowns both years (27 in 2023, with San Francisco and Miami; 29 in 2024, with Philadelphia
+    and Buffalo); 5th in success rate in 2024, 8th in 2023. Ben Johnson was Detroit's offensive
     coordinator 2022–2024 and became Chicago's head coach for 2025 (this book's checked facts, planning/FACTS-current.md §9).
 
 [^sewell]: Penei Sewell (first-team All-Pro 2023, 2024, 2025): <https://en.wikipedia.org/wiki/Penei_Sewell>. Frank Ragnow (second-team
-    All-Pro 2020, 2023, 2024; retired June 2, 2025): <https://en.wikipedia.org/wiki/Frank_Ragnow>.
+    All-Pro 2020, 2023, 2024; retired June 2, 2025; announced a return on November 26, 2025, which ended three days later when he
+    failed his physical with a hamstring strain): <https://en.wikipedia.org/wiki/Frank_Ragnow>. Sewell's third straight first-team
+    selection (2025 team, announced January 2026): <https://www.foxsports.com/articles/nfl/2025-nfl-allpro-team-see-who-made-the-roster>.
