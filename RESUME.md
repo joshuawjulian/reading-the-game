@@ -8,7 +8,9 @@
 - DONE: pilot chapters 01-04, 03-02, 06-06, 13-02 (19/29/25/42 pp), published. Review logs in planning/reviews/.
   Known: the chapters run long (7.8k-13.8k words vs the 3-7k target); links to unwritten chapters warn until they exist.
 - The user approved the pilots ("THIS IS EXCELLENT"): keep the depth, push straight live.
-- IN PROGRESS: remaining 69 chapters via scripts/workflows/write-book-batched.js: 4 workflows, each taking its
+- PAUSED 2026-10-06 17:15 at 26/73 done (user's request). To continue: resume the 4 runs below exactly as in
+  "If the Claude session restarts" (finished steps replay from cache; 04-04/04-05 pick up at their revise step).
+- WAS IN PROGRESS: remaining 69 chapters via scripts/workflows/write-book-batched.js: 4 workflows, each taking its
   chapters TWO AT A TIME all the way to published (book order; chapters with "drafted": true skip the writer).
   Runs: wf_c480f37f-1d6 wf_ac33f498-efd wf_696ecbf2-3a5 wf_a370e8fb-ddc, args in scripts/workflows/batched{0..3}.json. Live publishing: scripts/publish_live.sh (batches of 3 chapters, progress page every 5 min). The revise stage writes planning/reviews/<id>.done; an auto-publish loop commits and
   pushes chapters that have a .done marker every 20 minutes. To RESUME after an interruption, rerun the
