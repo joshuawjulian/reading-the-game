@@ -1,61 +1,79 @@
 name: Build and publish
 
+# main         -> builds the site and publishes it to the gh-pages branch root (the live site)
+# pull request -> builds a preview at /pr-preview/pr-<N>/ and comments the link on the PR;
+#                 closing or merging the PR removes the preview
 on:
   push:
     branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
+  pull-requests: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  site:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       UV_PROJECT_ENVIRONMENT: .venv
+      BUILD: ${{ github.event.action != 'closed' }}
     steps:
       - uses: actions/checkout@v4
+
       - name: System packages (ffmpeg for animations)
+        if: env.BUILD == 'true'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-liberation
       - uses: astral-sh/setup-uv@v6
+        if: env.BUILD == 'true'
         with:
           python-version: "3.12"
           enable-cache: true
       - name: Python deps
+        if: env.BUILD == 'true'
         run: uv sync
       - uses: quarto-dev/quarto-actions/setup@v2
+        if: env.BUILD == 'true'
         with:
           version: 1.10.19
       - name: Cache nflverse downloads
+        if: env.BUILD == 'true'
         uses: actions/cache@v4
         with:
           path: data/cache
           key: nflverse-${{ hashFiles('pyproject.toml') }}-v1
       - name: Per-chapter PDFs
+        if: env.BUILD == 'true'
         run: |
           source .venv/bin/activate
           python scripts/build_pdfs.py --jobs 4
       - name: Render book (HTML)
+        if: env.BUILD == 'true'
         run: |
           source .venv/bin/activate
+          python scripts/gen_toc.py
           quarto render --to html
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Publish live site
+        if: github.event_name != 'pull_request'
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: _site
+          branch: gh-pages
+          clean-exclude: pr-preview/
+          force: false
+
+      - name: Publish PR preview
+        if: github.event_name == 'pull_request'
+        uses: rossjrw/pr-preview-action@v1
+        with:
+          source-dir: _site
+          preview-branch: gh-pages
+          umbrella-dir: pr-preview
