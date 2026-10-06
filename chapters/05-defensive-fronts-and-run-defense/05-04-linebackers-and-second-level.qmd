@@ -5,7 +5,7 @@ description: "The second level of a defense from the linebacker's eyes: alignmen
 glossary:
   "Stack alignment": "A linebacker lined up directly behind a defensive lineman, four or five yards deep, using him as a shield. The lineman takes one gap and the linebacker the other, and the offense cannot tell before the snap which will go where."
   "Walk-out": "A linebacker moving out of the box before the snap to line up over or near a slot receiver, usually at an apex, so that he can cover the receiver. It takes a defender out of the box and puts him in conflict between the run and the pass."
-  "Key (read key, defense)": "The offensive player (or two) a defender watches at the snap to learn whether the play is a run or a pass and where it is going. For most linebackers it is the guard in front of him and the near running back. Not to be confused with an option play's read key, the defender the quarterback reads."
+  "Key (read key, defense)": "The offensive player (or two) a defender watches at the snap to learn whether the play is a run or a pass and where it is going. For an off-ball linebacker it is usually the guard nearest him (often both guards) and the near running back. Not to be confused with an option play's read key, the defender the quarterback reads."
   "Flow (fast / slow)": "The direction and speed of the backfield's action at the snap, as a linebacker reads it. Fast flow (the ball going sideways quickly, as on outside zone or a toss) tells him to run with it and stay inside-out; slow flow (the ball coming straight downhill, or slowly, as on inside zone, iso, draws and counters) tells him to press his gap and not overrun it."
   "Fill": "A linebacker attacking downhill into the gap a run is aimed at, to meet the lead blocker or the ball carrier as close to the line of scrimmage as he can."
   "Plug": "A linebacker stepping straight forward into a gap directly in front of him, usually an inside gap that a defensive lineman has slanted out of, and closing it with his body."
@@ -13,7 +13,7 @@ glossary:
   "Run-through": "A linebacker attacking through his gap at the snap, or on his first key, instead of waiting: he beats the climbing blocker to the spot and meets the play in the backfield. Fast and disruptive, but exposed to misdirection."
   "Pursuit angle": "The path a defender takes to a ball carrier who is already moving: aimed at where the runner will be rather than where he is, and kept slightly inside him so that he cannot cut back, so that the defender meets the runner instead of chasing him."
   "Leverage tackling": "Tackling from a position that keeps the ball carrier on one side of you (usually inside-out, so that his only escape is toward the sideline and your help), striking with the near shoulder at the near thigh and wrapping, rather than launching head-on for a big hit. The Seattle Seahawks taught it as 'hawk tackling', borrowed from rugby."
-  "Hook / curl defender": "A zone defender, usually a linebacker, who drops to the area between the offensive tackle and the numbers about 8 to 12 yards deep (the hook and curl zones), takes away in-breaking routes and sinks under curls while he reads the quarterback."
+  "Hook / curl defender": "A zone defender, usually a linebacker, who drops to the area between the offensive tackle and the numbers about 8 to 12 yards deep (the hook and curl zones), takes away in-breaking routes, carries a slot receiver who runs straight up the seam, and sinks under curls while he reads the quarterback."
 ---
 
 ```{python}
@@ -75,6 +75,11 @@ def go_to(p, key, end, kind="path", delay=0.0, speed=None, via=()):
     if kind == "route":
         return p.route(key, pts, frame="field", delay=delay, speed=speed)
     return {"path": p.path, "run": p.run}[kind](key, pts, delay=delay, speed=speed)
+
+
+def path_len(pts):
+    """Length in yards of a path through (d, w) points."""
+    return float(sum(np.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts[:-1], pts[1:])))
 
 
 def _P(fld, p, d, w):
@@ -402,9 +407,11 @@ runs["tackler"] = (runs.solo_tackle_1_player_id.fillna(runs.tackle_with_assist_1
                    .fillna(runs.assist_tackle_1_player_id))
 ros = nfl().load_rosters(TS).to_pandas()[["season", "gsis_id", "depth_chart_position"]]
 ros = ros.drop_duplicates(["season", "gsis_id"])
+# roster labels: ILB/MLB/LB are off-ball linebackers; OLB mixes 3-4 edge rushers with some off-ball 4-3
+# outside linebackers, so the "Inside linebacker" share is a floor for all off-ball linebackers
 GROUP = {"DE": "Defensive line", "DT": "Defensive line", "NT": "Defensive line",
-         "ILB": "Off-ball linebacker", "MLB": "Off-ball linebacker", "LB": "Off-ball linebacker",
-         "OLB": "Outside linebacker / edge", "CB": "Defensive back", "FS": "Defensive back",
+         "ILB": "Inside linebacker", "MLB": "Inside linebacker", "LB": "Inside linebacker",
+         "OLB": "Outside linebacker (mostly edge)", "CB": "Defensive back", "FS": "Defensive back",
          "SS": "Defensive back", "DB": "Defensive back", "S": "Defensive back"}
 ros["grp"] = ros.depth_chart_position.map(GROUP)
 TK = runs.merge(ros, left_on=["season", "tackler"], right_on=["season", "gsis_id"], how="inner")
@@ -413,8 +420,22 @@ BINS = [-99, 0, 2, 4, 6, 9, 14, 99]
 BIN_LABELS = ["0 or less", "1-2", "3-4", "5-6", "7-9", "10-14", "15+"]
 TK["bin"] = pd.cut(TK.rushing_yards, BINS, labels=BIN_LABELS)
 SHARE = pd.crosstab(TK.bin, TK.grp, normalize="index") * 100
-LB_SHARE_ALL = (TK.grp == "Off-ball linebacker").mean() * 100
+LB_SHARE_ALL = (TK.grp == "Inside linebacker").mean() * 100
 MED = TK.groupby("grp").rushing_yards.median()
+DB_56 = TK[(TK.bin == "5-6") & (TK.grp == "Defensive back")].depth_chart_position.value_counts(normalize=True) * 100
+
+# missed tackles per 100 attempts by position group: Pro Football Reference's charted advanced defensive
+# stats via nflverse, 2021-2025, matched to the roster position that season
+adv = nfl().load_pfr_advstats(seasons=TS, stat_type="def", summary_level="season").to_pandas()
+ros_pfr = nfl().load_rosters(TS).to_pandas()[["season", "pfr_id", "depth_chart_position"]].dropna()
+ros_pfr = ros_pfr.drop_duplicates(["season", "pfr_id"])
+MGRP = {"DE": "DL", "DT": "DL", "NT": "DL", "ILB": "ILB", "MLB": "ILB", "LB": "ILB", "OLB": "OLB",
+        "CB": "CB", "DB": "CB", "FS": "S", "SS": "S", "S": "S"}
+ros_pfr["grp"] = ros_pfr.depth_chart_position.map(MGRP)
+adv = adv.merge(ros_pfr, on=["season", "pfr_id"], how="left")
+MISS_MATCH = adv.grp.notna().mean() * 100
+mt = adv[adv.grp.notna()].groupby("grp")[["comb", "m_tkl"]].sum()
+MISS = (mt.m_tkl / (mt.comb + mt.m_tkl) * 100).to_dict()
 
 # two defensive seasons for the film room, from nflverse schedules and play-by-play
 sch = nfl().load_schedules([2000, 2022]).to_pandas()
@@ -435,30 +456,29 @@ BAL22 = allowed("BAL", 2022)
 PRE, POST = BAL22[BAL22.week <= 8], BAL22[BAL22.week >= 9]
 ```
 
-Second-and-7, early in the first quarter. The offense hands the ball to its running back, who takes
-two steps to his left. The middle linebacker, facing him, does not take a step to *his* right, the way
-the back seems to be going. He takes one sideways step the other way, toward the side the back is leaving,
-and then he is running hard, a yard behind his own defensive line, and he arrives in the hole at the
-same moment as the back and a pulling guard. No gain. On the replay the analyst ignores the back
-completely and draws a circle around the offense's left guard: "Watch the guard. He pulls, and Smith
-is gone before the back even gets the ball." What did the linebacker see, and how did he see it so
-fast? This chapter is about the eleven or so square yards of grass where most runs are won or lost,
-and the players who live there.
+Second-and-7, early in the first quarter. The offense hands the ball to its running back, whose first
+step is a jab to his left. The middle linebacker, facing him, does not step to *his* right, the way the
+back seems to be going. He goes the other way, toward the side the back is leaving, running hard just
+behind his own defensive line, and he arrives in the hole a step before the pulling guard who was supposed
+to block him. No gain. On the replay the analyst ignores the back completely and draws a circle around the
+offense's left guard: "Watch the guard. He pulls, and the Mike is gone before the back even gets the
+ball." What did the linebacker see, and how did he see it so fast? This chapter is about the few square
+yards between the offensive tackles where most runs are won or lost, and the players who live there.
 
 **You'll be able to:**
 
-- Name a linebacker's alignment (stacked, open, apexed or walked out) and say what it protects and what
-  it gives away.
-- Say what a linebacker looks at when the ball is snapped (his **keys**: the guards and the near back)
-  and predict his first step from what they do.
-- Tell fast flow from slow flow, and say whether a run calls for a **fill**, a **plug**, a **scrape** or
-  a **run-through**.
-- Explain a good pursuit angle and leverage tackling, and why so many tackles are made, and missed, at the
-  second level.
+- Name a linebacker's alignment (stacked, open, or walked out to an apex) and say what it protects and
+  what it gives away.
+- Say what a linebacker looks at when the ball is snapped (his **keys**: usually the guards and the near
+  back) and predict his first step from what they do.
+- Tell fast flow from slow flow, and match a run to the fit it usually calls for: a **fill**, a **plug**,
+  a **scrape** or a **run-through**.
+- Explain a good pursuit angle and leverage tackling, and say where tackles are made, and missed, and
+  why.
 - Describe a linebacker's pass jobs (hook/curl zone, man on a back, the hole) and his pressure jobs, and
   see play-action from his side.
-- Explain why the Sam linebacker is disappearing, why linebackers keep getting smaller and faster, and what
-  the green-dot linebacker does before every snap.
+- Explain why the Sam linebacker became a part-time player, why linebackers got smaller and faster, and
+  what the green-dot linebacker does before every snap.
 
 ::: {.callout-note title="You'll need"}
 - **[Even Fronts](05-02-even-fronts.qmd)**: the 4-3 Over and Under, the **uncovered guard** each one leaves
@@ -495,6 +515,17 @@ first level, the safeties the third. You met the three classic linebackers in
 [Even Fronts](05-02-even-fronts.qmd) you saw where they stand in a 4-3, and that each front leaves one guard
 uncovered and puts a linebacker over him.
 
+This chapter is about *off-ball* linebackers: the ones who stand off the line of scrimmage, behind the
+linemen. The name "outside linebacker" can mean two different players, and it is worth sorting out now. In
+a 4-3, the Sam and the Will are outside linebackers in the old sense: off the ball, on either side of the
+Mike. In a 3-4, "outside linebacker" usually means a [stand-up edge](../../appendices/glossary.qmd#gl-stand-up-edge)
+([Odd and Hybrid Fronts](05-03-odd-and-hybrid-fronts.qmd)), an
+[edge rusher](../../appendices/glossary.qmd#gl-edge-rusher) who lines up on the line and rushes the
+passer; that is a different job, and this chapter mostly leaves it alone. When it says *inside
+linebackers*, it means the off-ball linebackers in the box: the Mike and the Will in a 4-3, the two
+linebackers of a nickel defense, the two inside linebackers of a 3-4 (whom staffs name differently: Mike
+and Will is common).
+
 Why call it the hardest job? Put yourself in his cleats for the first second of a play.
 
 - **He has two jobs that point in opposite directions.** Against a run he has a gap to fill, and it is in
@@ -502,9 +533,9 @@ Why call it the hardest job? Put yourself in his cleats for the first second of 
   the snap. Against a pass he has a zone to drop to or a man to cover, and that is *behind* him or beside him.
   Every snap, he has to choose before he can be sure.
 - **He is the one who gets blocked by someone twice his size.** Defensive linemen are big men fighting big
-  men. A linebacker weighs 230 to 245 pounds, and the man coming to block him, a guard who has climbed off a
-  double team, weighs 315. He cannot win that collision by force. He wins it by getting to the spot first, or
-  by slipping the block.
+  men. A linebacker weighs about 225 to 245 pounds, and the man coming to block him, a guard who has climbed off a
+  double team, weighs 315. He cannot win that collision by force. He wins by getting to the spot first, or
+  by meeting the block on his own terms and getting off it.
 - **He tackles in space.** A defensive lineman makes his tackles in a crowd, with the runner barely moving. A
   linebacker meets the ball carrier after he has come through the line, at full speed, with room to cut both
   ways.
@@ -579,22 +610,29 @@ gaps on either side of that lineman between them, and the offense cannot tell be
 take which. On one snap the lineman slants left and the linebacker fills right; on the next, the reverse. The
 left panel of @fig-alignments is the extreme version, a *3-3 stack*, with all three linebackers hidden behind
 all three linemen; you met it as the 3-3-5 front in
-[Odd and Hybrid Fronts](05-03-odd-and-hybrid-fronts.qmd). Most four-man fronts stack one linebacker at a
-time, typically behind the 3-technique.
+[Odd and Hybrid Fronts](05-03-odd-and-hybrid-fronts.qmd). Four-man fronts usually stack at most one
+linebacker (in many Under fronts, the Will behind the 3-technique) and play the others open or over a
+shaded lineman.
+
+The cost of the stack is that his own lineman is in his way. To get to either gap he has to go around his
+own man, so he is a step slower to it than a linebacker standing over open grass, and if the lineman in
+front of him gets driven backward, the linebacker is caught in the pile (coaches say "in the wash").
 
 **Open.** The opposite is to stand over an *uncovered* offensive lineman, a guard nobody is lined up on. That
 is the middle panel, and it is the bubble you met in [Even Fronts](05-02-even-fronts.qmd): every even front
 leaves one guard uncovered and puts a linebacker over him. The linebacker gets a clear view of the whole
 backfield, and nobody is in his way when he goes. The cost is that nobody is in the *guard's* way either. He
 can climb straight up to the linebacker at the snap, so the open linebacker has to be quick enough to beat
-a 315-pound man to a spot two yards away.
+him to a spot two yards away.
 
-Coaches number these spots the way they number linemen's techniques, often with a zero added: a linebacker
-in a *30* is lined up on the guard's outside shoulder, the spot behind a 3-technique, and one in a *10* is
-on the center's shoulder. You won't hear that on a broadcast, but it is how a linebacker coach talks, and it
-tells you that linebacker alignments are as precise as the line's.
+::: {.callout-note title="Go deeper"}
+Coaches number linebacker spots the way they number linemen's techniques, often with a zero added: a
+linebacker in a *30* is lined up on the guard's outside shoulder, the spot behind a 3-technique, and one
+in a *10* is on the center's shoulder, over the A gap. You won't hear it on a broadcast, but it is how a
+linebacker coach talks, and it tells you that linebacker alignments are as precise as the line's.
+:::
 
-**Depth.** Off-ball linebackers usually stand about four to five yards deep, a little deeper against a team
+**Depth.** Off-ball linebackers usually stand about four to six yards deep, a little deeper against a team
 that likes play-action or against a running back aligned deep behind the quarterback, a little shallower on
 short yardage. The trade is simple. Every yard closer to the line is a step quicker to the hole and a step
 closer to the blockers; every yard deeper is more time to read and less time to get there.
@@ -611,7 +649,7 @@ over or near the slot receiver.
 
 ```{python}
 #| label: fig-apex-2x2
-#| fig-cap: "A base 4-3 against a 2x2 formation (two receivers on each side; the tight end, Y, is detached as the right slot). With only four defensive backs, the defense has to walk both outside linebackers out of the box (ringed) to apex alignments, halfway between each tackle and slot receiver, about five yards deep. The box (shaded) now holds five defenders: four linemen and the Mike, alone in the middle. Each walked-out linebacker has two jobs (shown for the Sam): on a run, fill back inside to the edge of the box; on a pass, wall off the slot receiver's inside route and sink under the curl. He cannot be early for both."
+#| fig-cap: "A base 4-3 against a 2x2 formation (two receivers on each side; the tight end, Y, is detached as the right slot). With only four defensive backs, one answer is to walk both outside linebackers out of the box (ringed) to apex alignments, halfway between each tackle and slot receiver, about five yards deep. The box (shaded) now holds five defenders: four linemen and the Mike, alone in the middle. Each walked-out linebacker has two jobs (shown for the Sam): on a run, come downhill from the outside in, keeping the ball inside him (he is usually the force or alley player on his side); on a pass, wall off the slot receiver's inside route and sink under the curl. He cannot be early for both."
 off = line("short") + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -1.6, "R"),
                        O("X", "WR", -0.7, -16.0, "X"), O("H", "WR", -1.5, -9.0, "H"),
                        O("Y", "TE", -1.5, 9.0, "Y"), O("Z", "WR", -0.7, 16.0, "Z")]
@@ -626,22 +664,26 @@ f = draw(p, width_in=6.4, lateral=(-19.5, 19.5), window=(-7.4, 15.6), title=Fals
 lane(f, p, -4.6, 4.6, -0.2, 6.6, color=style.MUTED, alpha=0.08, ls=(0, (2, 2)))
 say(f, p, 2.9, -1.2, "the box: five", color=style.INK, fontsize=6.8, weight="bold")
 say(f, p, 8.3, -6.1, "apex: halfway between\ntackle and slot", color=style.DEFENSE_DARK, fontsize=6.8)
-dashed(f, p, [(4.2, 5.6), (2.3, 4.5)], color=style.DEFENSE_DARK, lw=1.3)
-dashed(f, p, [(5.9, 6.6), (9.4, 8.0)], color=style.DEFENSE_DARK, lw=1.3)
-say(f, p, 2.6, 9.8, "run: fill\nback inside", color=style.DEFENSE_DARK, fontsize=6.8)
-say(f, p, 8.6, 12.0, "pass: wall the\nslot, sink", color=style.DEFENSE_DARK, fontsize=6.8)
+dashed(f, p, [(4.1, 6.2), (1.9, 5.6)], color=style.DEFENSE_DARK, lw=1.3)
+dashed(f, p, [(5.9, 6.3), (8.0, 7.3)], color=style.DEFENSE_DARK, lw=1.3)
+say(f, p, 2.3, 10.4, "run: downhill,\noutside-in", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 9.4, 11.6, "pass: wall the slot's\ninside route, sink", color=style.DEFENSE_DARK, fontsize=6.8)
 plt.show()
 ```
 
-@fig-apex-2x2 shows why a walk-out is sometimes unavoidable. The offense has spread four receivers across the
-field, two on each side. A base 4-3 has only four defensive backs: two cornerbacks on the wide receivers and
-two safeties deep. Somebody has to stand near the two slot receivers, and the only somebodies left are the
-outside linebackers. So both walk out.
+@fig-apex-2x2 shows why a walk-out happens. The offense has spread four receivers across the field, two on
+each side. A base 4-3 has only four defensive backs: two cornerbacks on the wide receivers and two safeties
+deep. Somebody has to stand near the two slot receivers. The defense has three answers: walk the outside
+linebackers out, as here; rotate a safety down over one slot and keep one linebacker in the box (a
+single-high look); or take a linebacker off and bring in a nickel back, which the defense can only do
+before the snap, by substitution or a pre-planned check.
 
-**Why do it?** Because the alternative is worse. A linebacker left in the box against a slot receiver is
+**Why walk out?** Because leaving him inside is worse. A linebacker left in the box against a slot receiver is
 eight or nine yards from a man he may have to cover, which is an easy completion every time the quarterback
-looks at him. From the apex, he can still get to the edge of the box against a run, and he can get under or
-in front of the slot receiver's route against a pass.
+looks at him. From the apex, he can still come downhill at the edge of the box against a run, outside-in, keeping the
+ball inside him, and he can get under or in front of the slot receiver's route against a pass. (Whether he
+squeezes the run or bounces it outside is the call's decision, built in
+[Run Fits and Box Math](05-05-run-fits-and-box-math.qmd).)
 
 **What does it cost?** Count the box. Five defenders against five offensive linemen and a running back: the
 box is now [light](../../appendices/glossary.qmd#gl-light-box), and every run defender can be blocked. And
@@ -668,84 +710,120 @@ So he watches one or two.
 A [**key**](../../appendices/glossary.qmd#gl-key-read-key-defense) is the offensive player a defender watches
 at the snap to learn *what* the play is and *where* it is going. (It is the defense's version of an idea; don't
 confuse it with an option play's [read key](../../appendices/glossary.qmd#gl-read-key), which is the
-*defender* a quarterback watches.) For an inside linebacker, the two classic keys are the **guard** in front
-of him and the **near running back**, and coaches talk about reading "through" the guard to the back: eyes on
-the guard's first step, the back in the edge of the picture.
+*defender* a quarterback watches.) For an inside linebacker, the two classic keys are the **guards** and the
+**near running back**, and coaches talk about reading "through" the guard to the back: eyes on the guard's
+first step, the back in the edge of the picture.
+
+Which guard? The simplest rule is the guard nearest him, the one he is lined up on or over. Many teams have
+their inside linebackers read *both* guards, the near one first, because the far guard's pull is the single
+most valuable thing a linebacker can see (the Mike in @fig-key-pull, below, reads his near guard and sees
+the far one pull). You'll hear the versions by name: a "guard read" or "high hat, low hat" read; a
+"triangle" of the near guard, the far guard (or the near tackle) and the near back (not the quarterback's
+[triangle read](../../appendices/glossary.qmd#gl-triangle-read) of Part 4); and a "flow" or "backfield"
+read, which watches the backs and trusts the linemen in front to keep the guards off.
 
 ### What the guard tells him
 
-Offensive linemen can't hide what kind of play it is, because the rules and the physics of blocking tell them
-how to move. A guard's first step is the most honest signal on the field.
+Offensive linemen can't hide what kind of play it is, because the physics of blocking and the rules tell
+them how to move (a lineman may not go downfield on a pass, a rule the play-action section below puts to
+work). A guard's first step is the most honest signal on the field.
 
 | The guard's first step | What it means | The linebacker's reaction |
 |:--|:--|:--|
 | Fires forward, pads low ("low hat") | Run, and the guard is blocking the man in front of him or doubling a lineman | Downhill: attack his gap |
 | Comes straight up at the linebacker | Run, and the linebacker is the guard's target; the ball is coming near him | Beat the guard to the spot, or take him on and keep his gap |
+| Blocks down, inside, away from the linebacker | A gap-scheme run coming to the linebacker's side; a puller, a fullback or the tackle is coming to kick out or lead | Squeeze toward the down block and find the puller or the kick-out |
+| Opens his hips and steps back and flat behind the line, either direction | A pull: a gap-scheme run (power, counter, trap) going where he goes | "Pull, follow": flow with him, inside-out |
+| Steps sideways and reaches, the whole line stepping together | Zone: the run will go the way the line is stepping | Flow with the line, inside-out (next section) |
 | Steps back and sits, hands up ("high hat") | Pass protection | Pass: get to his drop or his man |
-| Steps flat along the line, away from the center | A pull: a gap-scheme run (power, counter, a trap) going where the guard is going | Flow with the guard: "pull, follow" |
-| Steps sideways and reaches, the whole line stepping together | Zone: the run will go the way the line is stepping | Flow with the line, stay inside-out (see the next section) |
+| High hat, but the back stays square in front of the quarterback, or the linemen set softly and let the rushers by | A draw or a screen | Get depth slowly, eyes on the back; don't run away from it |
 
 The "high hat, low hat" read is the same one [How to Watch a Broadcast](../01-foundations/01-06-how-to-watch-a-broadcast.qmd)
 gave you for spotting run and pass from the couch. The linebacker uses it a quarter-second after the snap, from
 five yards away.
 
+The last row is where reading gets hard. A [draw](../../appendices/glossary.qmd#gl-draw) is built to look
+like a pass: the linemen set, the quarterback drops, and then he hands the ball to a back who waited. A
+linebacker who reads "high hat, pass" and sprints to his zone is running away from it. The tells are small:
+the back stays square in front of the quarterback instead of stepping up to block or releasing; the guards
+set but don't punch, inviting the rushers upfield; the quarterback's drop is a little too quick. So
+linebackers are taught to open to their drop with their eyes still on the back for a beat. A
+[screen](../04-the-passing-game/04-05-play-action-boots-screens.qmd) shows the same high hat first, then the
+linemen let their rushers through and release, running *sideways* after a pass set, while the back slips out
+behind them. Linemen running flat after setting to pass is the screen's signature.
+
 The pull is the most valuable signal of all, because the gap-scheme runs of
 [Gap and Power Runs](../03-the-run-game/03-03-gap-and-power-runs.qmd) need a pulling lineman to get an extra
 blocker to the hole, and that lineman has to *run* there. Wherever he is going, the ball is going too. That is
-the read in the chapter's opening scene, and @fig-key-pull plays it out.
+the read in the chapter's opening scene, and @fig-key-pull plays it out, jab step and all.
 
 ```{python}
 #| label: fig-key-pull
-#| fig-cap: "The key read: the guard pulls, the Mike flows (simulated play in Big Data Bowl tracking coordinates; faint lines are each player's path so far). The offense runs power to the right from an I-formation against a 4-3 Over. 1: at the snap the Mike (orange ring) and the Will read the left guard (green ring; dotted lines: their eyes). 2: the guard steps flat to his right, a pull, and the Mike's first step is sideways, toward where the guard is going, not toward the back. 3: the Mike runs a yard behind his own linemen, staying inside the ball, while the Will follows the guard as the backup; the fullback kicks out the Sam. 4: the Mike had a shorter trip than the guard, so he reaches the hole first and meets the back at the line (X). A linebacker who had watched the back would have arrived a step later, into the guard."
+#| fig-cap: "The key read: the guard pulls, the Mike flows (simulated play in Big Data Bowl tracking coordinates; faint lines are each player's path so far). Power to the right from an I-formation against a 4-3 Over, with the tailback's jab step to the left first, as in the chapter's opening. 1: at the snap the Mike (orange ring) reads both guards, the Will the left guard (green ring); dotted lines are their eyes, and the dashed lines show the race each man is about to run to the hole, about six yards for the Mike against nearly eight for the pulling guard, whose first step goes backward. 2: the right guard fires out (run) and the left guard pulls (where); the Mike's first step goes with the puller, not with the back. 3: the Mike runs just behind his own linemen, inside the ball, while the Will follows the guard as the backup; the fullback kicks out the Sam. 4: the Mike reaches the hole first and meets the puller at the line instead of two yards past it, so the hole is full and the back, a step behind his guard, has nowhere to go. A Mike who had watched the back would have been a step late, and the guard would have blocked him at linebacker depth."
 def power_vs_over():
     off = line("short") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("FB", "FB", -4.5, 0, "F"),
                            O("RB", "RB", -7.0, 0, "T")]
     p = Play(off, over_front(+1), los=35, to_go=None)
-    # play side blocks down; center blocks back; left tackle hinges
-    go_to(p, "Y", (0.25, 4.2), "block", speed=1.6); go_to(p, "SE", (0.9, 3.75), speed=0.6)
-    go_to(p, "RT", (0.3, 2.9), "block", speed=1.2); go_to(p, "RG", (0.3, 1.95), "block", speed=1.2)
-    go_to(p, "DT", (0.75, 2.3), speed=0.5)
-    go_to(p, "C", (0.15, -0.55), "block", speed=1.2); go_to(p, "NT", (0.8, -0.5), speed=0.5)
-    go_to(p, "LT", (-0.6, -3.7), "block", speed=1.2); go_to(p, "WE", (0.4, -3.6), speed=1.0)
-    # the left guard pulls through the hole; the fullback kicks out the Sam
-    go_to(p, "LG", (1.0, 5.3), "pull", speed=4.2, via=[(-1.5, -0.9), (-1.7, 2.6)])
-    go_to(p, "FB", (0.7, 6.3), "block", speed=5.4, via=[(-2.6, 2.6)])
-    go_to(p, "SAM", (1.3, 6.7), speed=3.0, delay=0.3)
-    # the back: handoff, then downhill at the hole
-    go_to(p, "QB", (-2.7, 1.0), speed=3.0)
-    go_to(p, "RB", (0.75, 4.75), "run", speed=6.0, via=[(-4.1, 2.1)])
-    p.handoff("RB", t=0.7)
-    # the linebackers: the Mike flows on the pull; the Will follows the guard
-    go_to(p, "MIKE", (1.0, 4.5), speed=4.8, delay=0.22, via=[(4.1, 2.5)])
-    go_to(p, "WILL", (3.5, 3.4), speed=4.0, delay=0.35, via=[(4.5, 0.4)])
+    # play side: the right guard and tackle block the 3, Y blocks down on the end; the center blocks back,
+    # the left tackle hinges
+    go_to(p, "Y", (-0.3, 3.95), "block", speed=1.6); go_to(p, "SE", (1.0, 3.65), speed=0.6)
+    go_to(p, "RT", (-0.35, 3.0), "block", speed=1.2); go_to(p, "RG", (-0.35, 2.0), "block", speed=1.2)
+    go_to(p, "DT", (1.0, 2.45), speed=0.4)
+    go_to(p, "C", (-0.35, -0.6), "block", speed=1.2); go_to(p, "NT", (1.0, -0.7), speed=0.4)
+    go_to(p, "LT", (-0.9, -3.6), "block", speed=1.2); go_to(p, "WE", (0.5, -3.7), speed=1.0)
+    # the left guard pulls (first step back and flat), around the double team and up into the hole;
+    # the fullback kicks out the Sam
+    go_to(p, "LG", HOLE_G, "pull", speed=5.5, via=[(-1.6, -1.0), (-2.2, 2.6)])
+    go_to(p, "FB", (-0.2, 7.1), "block", speed=5.4, via=[(-2.4, 3.4)])
+    go_to(p, "SAM", (1.2, 7.7), speed=3.0, delay=0.3)
+    # the back: a jab step to his left (the lie), then the handoff and downhill behind his guard
+    go_to(p, "QB", (-2.6, -0.6), speed=2.5)
+    go_to(p, "RB", (-6.75, -0.6), "run", speed=2.6)
+    go_to(p, "RB", (-2.7, 4.6), "run", speed=6.5, via=[(-4.6, 2.4)])
+    p.handoff("RB", t=0.75)
+    # the linebackers: the Mike flows on the pull, straight for the hole; the Will follows the guard
+    go_to(p, "MIKE", HOLE_M, speed=6.0, delay=0.2, via=[(3.6, 2.6)])
+    go_to(p, "WILL", (1.9, 3.1), speed=4.6, delay=0.3, via=[(4.0, 0.6)])
     return p
+
+
+HOLE_M, HOLE_G = (0.7, 5.5), (-0.75, 5.35)
+
+
+MIKE_TRIP = path_len([(4.5, 0.8), (3.6, 2.6), HOLE_M])
+GUARD_TRIP = path_len([(-0.7, -1.6), (-1.6, -1.0), (-2.2, 2.6), HOLE_G])
 
 
 def key_marks(fld, play, t, i):
     if t < 0.05:
-        for k in ("MIKE", "WILL"):
-            eyes(fld, play, play.position(k, t), play.position("LG", t))
-    if t > 1.35:
-        spot(fld, play, 0.55, 4.45, ms=8)
+        for k, g in (("MIKE", "LG"), ("MIKE", "RG"), ("WILL", "LG")):
+            eyes(fld, play, play.position(k, t), play.position(g, t))
+        # the race: each man's whole trip to the hole, from his snap spot
+        dashed(fld, play, [(4.5, 0.8), (3.6, 2.6), HOLE_M], color=style.DEFENSE_DARK, lw=1.0)
+        dashed(fld, play, [(-0.7, -1.6), (-1.6, -1.0), (-2.2, 2.6), HOLE_G], color=style.OFFENSE_DARK, lw=1.0)
+        say(fld, play, 5.9, 3.3, f"Mike: {MIKE_TRIP:.0f} yd", color=style.DEFENSE_DARK, fontsize=6.4)
+        say(fld, play, -3.3, -2.6, f"guard: {GUARD_TRIP:.1f} yd", color=style.OFFENSE_DARK, fontsize=6.4)
 
 
 P_POWER = power_vs_over()
-animation_or_strip([(P_POWER, 0.0, ""), (P_POWER, 0.6, ""), (P_POWER, 1.0, ""), (P_POWER, 1.4, "")],
-                   notes=["Mike and Will read the\nleft guard (dotted)",
-                          "the guard pulls: the Mike's\nfirst step is sideways",
-                          "Mike runs behind his line,\ninside the ball; Will follows",
-                          "Mike beats the puller to\nthe hole: tackle at the line"],
-                   rings=(("MIKE", style.DEFENSE), ("LG", style.THIRD)), lateral=(-5.8, 8.6), window=(-7.9, 6.3),
+animation_or_strip([(P_POWER, 0.0, ""), (P_POWER, 0.5, ""), (P_POWER, 0.9, ""), (P_POWER, 1.4, "")],
+                   notes=["eyes on the guards (dotted);\ndashed: the race to the hole",
+                          "the left guard pulls: the Mike's\nfirst step goes with him",
+                          "Mike flows over the top;\nthe back's jab step was the lie",
+                          "Mike meets the puller at the\nline: hole full, back stopped"],
+                   rings=(("MIKE", style.DEFENSE), ("LG", style.THIRD)), lateral=(-6.2, 9.6), window=(-7.9, 7.6),
                    after=key_marks, width_in=6.0)
 ```
 
-Notice two things about the picture. First, the Mike's first step in panel 2 is *sideways*. A linebacker who
-reads a pull does not charge at the line; he runs with the puller, a yard or two behind his own linemen, until
-he sees the hole. Second, he wins the race because he has the shorter trip. The guard has to run behind the
-center and around the double team, about eight yards; the Mike, starting five yards off the ball and two
-gaps over, has about five. If he reads the pull in the first quarter of a second, he gets there first. If he
-waits to see where the back goes, he arrives with the guard, and the guard is there to block him. That is the
-case for keys in one sentence: **the linemen tell the truth sooner than the ball does.**
+Notice three things about the picture. First, the Mike's two guards told him two truths in the first
+quarter-second: the right guard, nearest him, fired out low (it's a run), and the left guard pulled (it's
+going right). Second, the Mike's first step in panel 2 goes *sideways*, with the puller. A linebacker who
+reads a pull does not charge at the line; he runs with the puller, just behind his own linemen, until he sees
+the hole. Third, he wins the race because his trip is shorter and starts just as soon. The guard has to step
+back, run behind the center and around the double team, nearly eight yards; the Mike has about six, and he
+leaves the moment the guard does. If he waits to see where the back goes, he arrives with the guard, and the
+guard is there to block him. That is the case for keys in one sentence: **the linemen tell the truth sooner
+than the ball does.**
 
 ### What the back tells him
 
@@ -760,14 +838,16 @@ Why not just read the back? Because the back can lie and the linemen mostly can'
 on the backfield lie. The [counter](../../appendices/glossary.qmd#gl-counter) starts with the back stepping
 *away* from the play while the guard and tackle pull *toward* it; a linebacker who believes the back takes a
 false step and is out of position before he knows it. Play-action shows him a back who seems to have the
-ball. That is why most coaches teach the guard as the primary key and the back as the confirmation: if both
-say the same thing, go; if they disagree, believe the guard.
+ball. That is why most coaches teach the guards as the primary key and the back as the confirmation: if
+they say the same thing, go; if they disagree, believe the linemen.
 
 Keys also depend on the defense. Linebackers in a two-gap 3-4, who sit behind big linemen and are protected
-from blockers, often read the guards almost exclusively. Linebackers in an attacking one-gap 4-3 often read
-the backfield ("flow") and trust their linemen to hold the guards. And outside linebackers and the walked-out
-apex player usually key the near back and the tight end or tackle in front of them, because the play coming
-their way starts out there.
+from blockers, often read the guards almost exclusively. Linebackers in an attacking one-gap 4-3 (the Tampa 2
+teams of the 2000s are the classic case) often read the backfield flow and trust their linemen to hold the
+guards. And a Sam on the line's strong side, or a walked-out apex player, keys the tight end or tackle in
+front of him and the near back, because the play coming his way starts out there: a tight end who blocks
+down means the ball is coming outside him, one who releases means pass, and from the apex the eyes go on
+through to the slot receiver.
 
 ::: {.callout-important title="Why it exists"}
 **Keys exist because a linebacker who waits to be sure is always late.** The back reaches the line in about
@@ -793,9 +873,9 @@ words, but nearly all of them sort it into two kinds.
 
 ```{python}
 #| label: fig-flow
-#| fig-cap: "Two kinds of flow against a 4-3 Over (only the backfield, the linebackers and the end on the play side move). Left, fast flow: outside zone to the right; the line steps sideways and the back sprints flat for the tight end's outside leg. The Mike runs with it a yard behind his line and a step behind the ball, the Will follows a step behind the Mike, guarding the cutback lane (dashed blue), and the Sam stays outside the ball to turn it back in. Right, slow flow: inside zone, the back coming straight downhill at the B gap. Both linebackers press forward into their gaps, square to the line, and wait for the back to commit. Running sideways here would open the gap they just left."
+#| fig-cap: "Two kinds of flow against a 4-3 Over (the offensive line, the backfield and the linebackers move; the defensive line is left standing). Left, fast flow: outside zone to the right; the line steps sideways and the back sprints flat for the tight end's outside leg. The Mike runs with it, just behind his line and a step behind the ball; the Will shuffles over the top, deeper than the Mike and behind the end of the cutback lane (dashed blue), so a back who cuts back runs into him; the Sam stays outside the ball to turn it back in. Right, slow flow: inside zone, the back coming straight downhill at the B gap. Both linebackers press forward into their gaps, square to the line, and wait for the back to commit. Running sideways here would open the gap they just left."
 fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.3))
-LAT, WIN = (-8.6, 10.6), (-8.6, 8.0)
+LAT, WIN = (-8.6, 10.6), (-8.6, 9.2)
 off = line("short") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -7.0, 0, "R")]
 # fast flow: outside zone right
 p = Play(off, over_front(+1), los=35, to_go=None)
@@ -805,13 +885,14 @@ for k in OL_KEYS + ("Y",):
 go_to(p, "QB", (-2.6, 1.6))
 go_to(p, "RB", (-1.6, 6.2), "run", via=[(-5.7, 3.0)])
 go_to(p, "MIKE", (2.9, 5.0), via=[(4.0, 2.6)])
-go_to(p, "WILL", (3.4, 2.6), via=[(4.4, 0.0)])
+go_to(p, "WILL", (5.5, -0.5), via=[(5.0, -1.4)])          # shuffle over the top, deeper than the Mike
 go_to(p, "SAM", (1.6, 7.9))
 f = draw(p, ax=axes[0], lateral=LAT, window=WIN, title=False)
-dashed(f, p, [(-2.8, 4.6), (0.0, 1.6), (2.6, 0.3)], color=style.OFFENSE, lw=1.2)
-say(f, p, 6.6, 4.4, "run with it,\ninside the ball", color=style.DEFENSE_DARK, fontsize=6.7)
-say(f, p, 6.6, -3.4, "Will: a step\nbehind, for the\ncutback", color=style.DEFENSE_DARK, fontsize=6.6)
-say(f, p, 2.75, -2.6, "cutback lane", color=style.OFFENSE_DARK, fontsize=6.4)
+dashed(f, p, [(-2.8, 4.6), (0.0, 1.6), (3.0, 0.0)], color=style.OFFENSE, lw=1.2)
+say(f, p, 7.1, 4.6, "run with it,\ninside the ball", color=style.DEFENSE_DARK, fontsize=6.7)
+say(f, p, 7.1, -3.6, "Will: over the top,\nbehind the Mike,\nfor the cutback", color=style.DEFENSE_DARK,
+    fontsize=6.6)
+say(f, p, 2.6, -3.0, "cutback lane", color=style.OFFENSE_DARK, fontsize=6.4)
 title(axes[0], "Fast flow: outside zone")
 # slow flow: inside zone right
 p = Play(off, over_front(+1), los=35, to_go=None)
@@ -820,10 +901,10 @@ for k in OL_KEYS + ("Y",):
     go_to(p, k, (q.d + 0.5, q.w + 0.4), "block", speed=2.0)
 go_to(p, "QB", (-2.6, 0.9))
 go_to(p, "RB", (-1.4, 2.3), "run", via=[(-4.6, 1.2)])
-go_to(p, "MIKE", (2.9, 1.5))
-go_to(p, "WILL", (3.0, -1.3))
+go_to(p, "MIKE", (2.5, 1.5))
+go_to(p, "WILL", (2.6, -1.4))
 f = draw(p, ax=axes[1], lateral=LAT, window=WIN, title=False)
-say(f, p, 6.6, 0.0, "press the gap,\nstay square", color=style.DEFENSE_DARK, fontsize=6.7)
+say(f, p, 7.1, 0.0, "press the gap,\nstay square", color=style.DEFENSE_DARK, fontsize=6.7)
 say(f, p, -4.4, 4.6, "downhill at\nthe B gap", color=style.OFFENSE_DARK, fontsize=6.6)
 title(axes[1], "Slow flow: inside zone")
 fig.tight_layout(w_pad=0.6)
@@ -832,12 +913,14 @@ plt.show()
 
 **Fast flow** is the ball going sideways in a hurry: outside zone, a toss, a sweep, the back sprinting flat
 for the edge. The linebacker's job is to run with it, and to run with it *correctly*. Correctly means
-**inside-out**: a yard or so behind his own linemen and a step behind the ball, so that the ball is always a
-little outside him. If the back keeps going, the linebacker can keep up and fill as soon as he turns
+*inside-out*: a yard or so behind his own linemen and a step behind the ball, so that the ball is always a
+little outside him. (You will see the phrase again; it is the linebacker's master rule.) If the back keeps going, the linebacker can keep up and fill as soon as he turns
 upfield. If the back stops and cuts back, which is what outside zone is designed to make him do (see
 [Zone Running](../03-the-run-game/03-02-zone-running.qmd)), the linebacker is still inside him and can stop.
-The backside linebacker, the Will in @fig-flow, follows a step behind the Mike and a little deeper. He is the
-[cutback](../../appendices/glossary.qmd#gl-cutback) player: if both linebackers race to the sideline, the back has the whole field behind them.
+The backside linebacker, the Will in @fig-flow, shuffles over the top: behind the Mike and a little deeper,
+ending up behind the spot where a cutback would come through. He is the
+[cutback](../../appendices/glossary.qmd#gl-cutback) player: if both linebackers race to the sideline, the
+back has the whole field behind them.
 
 **Slow flow** is the ball coming straight at the line, or coming slowly: inside zone, an iso, a draw, a
 delayed handoff, the counter's first step. Now the linebacker presses: he steps forward into his gap, square
@@ -845,7 +928,7 @@ to the line, shoulders parallel to it, and makes the back declare first. The wor
 slow flow is to run sideways, because every inside run is built around a back who reads the linebackers and
 cuts into the gap one of them just left.
 
-There is a third case, and coaches have a phrase for it: **split flow**, the backs going in opposite
+There is a third case, and coaches have a phrase for it: *split flow*, the backs going in opposite
 directions (one back left, the other right, or a back one way and the quarterback the other). Split flow is
 the offense saying *misdirection*. A linebacker who sees it plays his gap and does not chase either one until
 the ball shows.
@@ -859,47 +942,53 @@ gap has four common names, and you will hear all four on broadcasts and in coach
 
 ```{python}
 #| label: fig-fit-actions
-#| fig-cap: "Four ways a linebacker fits a run (the ringed linebacker is the one acting in each panel). Fill: against an iso, the Mike attacks downhill into the hole and meets the fullback in it, as close to the line as he can. Plug: the 3-technique slants inside, and the Mike steps straight forward into the B gap he left. Scrape: on an outside run, the end squeezes down inside, and the Mike runs sideways behind his linemen to the gap outside the end. Run-through: at the snap the Will attacks through the B gap (the bubble) before the climbing guard (dashed blue: where the guard was heading) can reach him, and meets the play in the backfield."
+#| fig-cap: "Four ways a linebacker fits a run (the ringed linebacker acts in each panel). Fill: on an iso the fullback leads into the strong A gap, open in the Over because the nose is shaded the other way, while the center and right guard block the two tackles; the Mike attacks downhill and meets the fullback in the hole, as close to the line as he can. Plug: the 3-technique slants inside, and the Mike, stacked behind him, steps straight forward into the B gap the 3 left, where the back is aiming. Scrape: on an outside run the end squeezes down inside, and the Mike runs sideways behind his linemen to the C gap outside the end, while the Sam keeps the D gap outside him. Run-through: the Will, over the uncovered left guard (the bubble), attacks through the B gap outside the guard at the snap, before the guard can climb to him (dashed blue: where the guard was heading), and meets the back in the backfield (X)."
 fig, axes = plt.subplots(2, 2, figsize=(6.6, 6.4))
-LAT, WIN = (-7.8, 8.8), (-8.2, 8.6)
+LAT, WIN = (-7.8, 9.4), (-8.2, 8.8)
 ofb = line("short") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("FB", "FB", -4.5, 0, "F"), O("RB", "RB", -7.0, 0, "T")]
 one = line("short") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -7.0, 0, "R")]
-# fill vs iso (the hole is the right B gap)
-p = Play(ofb, over_front(+1, mike_w=1.6), los=35, to_go=None)
+# fill vs iso: the hole is the strong A gap, open in the Over because the 1 is shaded the other way
+p = Play(ofb, over_front(+1), los=35, to_go=None)
 p.highlight("MIKE", color=style.DEFENSE)
-go_to(p, "FB", (0.6, 2.3), "run", speed=5.5, via=[(-2.6, 1.4)])
-go_to(p, "RB", (-1.2, 2.2), "run", via=[(-4.6, 1.0)])
-go_to(p, "MIKE", (1.75, 2.35))
+go_to(p, "C", (-0.2, -0.45), "block"); go_to(p, "RG", (-0.2, 1.95), "block")
+go_to(p, "FB", (0.4, 0.9), "run", speed=5.5)
+go_to(p, "RB", (-1.4, 0.9), "run", via=[(-4.6, 0.4)])
+go_to(p, "MIKE", (1.7, 0.9))
 f = draw(p, ax=axes[0, 0], lateral=LAT, window=WIN, title=False)
-say(f, p, 5.9, 4.9, "meet him\nin the hole", color=style.DEFENSE_DARK, fontsize=6.7)
+say(f, p, 6.6, 4.4, "meet the fullback\nin the hole", color=style.DEFENSE_DARK, fontsize=6.7)
 title(axes[0, 0], "Fill")
 # plug: the 3-technique slants inside, the Mike plugs the B gap
 p = Play(one, over_front(+1, mike_w=2.4), los=35, to_go=None)
 p.highlight("MIKE", color=style.DEFENSE)
-go_to(p, "DT", (1.0, 0.9))
-go_to(p, "MIKE", (1.9, 2.5))
+go_to(p, "DT", (1.0, 0.95))
+go_to(p, "MIKE", (2.0, 2.45))
+go_to(p, "RB", (-1.6, 2.3), "run", via=[(-4.6, 1.2)])
 f = draw(p, ax=axes[0, 1], lateral=LAT, window=WIN, title=False)
-gap_tag(f, p, -2.3, 2.4, "B")
-say(f, p, 5.9, 5.2, "straight into the\ngap the 3 left", color=style.DEFENSE_DARK, fontsize=6.7)
-say(f, p, -4.3, 4.4, "the 3 slants inside", color=style.DEFENSE_DARK, fontsize=6.4)
+gap_tag(f, p, 0.2, 2.45, "B", fontsize=6.6)
+say(f, p, 6.6, 4.4, "straight into the\ngap the 3 left", color=style.DEFENSE_DARK, fontsize=6.7)
+point_to(f, p, (2.8, -2.6), (1.25, 1.5), "the 3 slants\ninside", color=style.DEFENSE_DARK, fontsize=6.4)
 title(axes[0, 1], "Plug")
 # scrape: the end squeezes, the Mike scrapes outside him
 p = Play(one, over_front(+1), los=35, to_go=None)
 p.highlight("MIKE", color=style.DEFENSE)
-go_to(p, "SE", (1.0, 3.2))
+go_to(p, "SE", (0.6, 2.9))
 go_to(p, "RB", (-2.6, 6.1), "run", via=[(-5.8, 2.8)])
-go_to(p, "MIKE", (2.3, 5.9), via=[(3.9, 3.1)])
+go_to(p, "MIKE", (2.0, 4.4), via=[(3.9, 2.6)])
+go_to(p, "SAM", (1.8, 6.6))
 f = draw(p, ax=axes[1, 0], lateral=LAT, window=WIN, title=False)
 say(f, p, 6.6, 2.6, "over the top\nof his linemen", color=style.DEFENSE_DARK, fontsize=6.7)
+point_to(f, p, (2.9, -2.4), (0.75, 2.75), "the end\nsqueezes", color=style.DEFENSE_DARK, fontsize=6.4)
+say(f, p, 3.6, 7.6, "Sam:\nD gap", color=style.DEFENSE_DARK, fontsize=6.2)
 title(axes[1, 0], "Scrape")
 # run-through: the Will beats the climbing guard through the A gap
-p = Play(one, over_front(+1, will_w=-2.4), los=35, to_go=None)
+p = Play(one, over_front(+1, will_w=-2.5), los=35, to_go=None)
 p.highlight("WILL", color=style.DEFENSE)
-go_to(p, "WILL", (-2.2, -2.4))
-go_to(p, "RB", (-3.8, -1.8), "run", via=[(-5.6, -0.6)])
+go_to(p, "WILL", (-2.0, -2.7))
+go_to(p, "RB", (-3.6, -2.2), "run", via=[(-5.6, -0.8)])
 f = draw(p, ax=axes[1, 1], lateral=LAT, window=WIN, title=False)
-dashed(f, p, [(0.2, -1.6), (2.0, -1.7), (3.2, -2.0)], color=style.OFFENSE, lw=1.3)
-say(f, p, 6.8, 3.0, "through the gap before\nthe guard gets there", color=style.DEFENSE_DARK, fontsize=6.6)
+dashed(f, p, [(0.2, -1.4), (2.0, -1.6), (3.2, -1.9)], color=style.OFFENSE, lw=1.3)
+spot(f, p, -2.75, -2.55, ms=8)
+say(f, p, 6.6, 3.0, "through the B gap before\nthe guard gets there", color=style.DEFENSE_DARK, fontsize=6.6)
 title(axes[1, 1], "Run-through")
 fig.tight_layout(h_pad=0.8, w_pad=0.6)
 plt.show()
@@ -930,12 +1019,27 @@ plt.show()
   fit most vulnerable to misdirection: a linebacker who runs through a gap on a counter step or a play-action
   fake is out of the play, or out of his coverage.
 
-Which one a linebacker uses depends on the call, the front and the play. A defense whose linemen slant and
-stunt will ask its linebackers to plug and scrape behind them. A defense that wants its linebackers to make
-plays in the backfield, against teams that run a lot of zone, will ask them to run through. And when the
-linebacker meets a blocker in the hole, he has a further choice, to take him on with one shoulder and turn the
-ball outside or to beat him inside and turn the ball back in. That choice, *spill* or *box*, is a whole-defense
-decision, and [Run Fits and Box Math](05-05-run-fits-and-box-math.qmd) builds it.
+The call and the front decide a lot (a defense whose linemen slant and stunt asks its linebackers to plug and
+scrape behind them; one that wants plays in the backfield against a zone team asks them to run through), but
+from the couch you can usually match the fit to what the run looks like:
+
+| What the run shows the linebacker | The fit it usually calls for |
+|:--|:--|
+| A fullback or lead blocker coming straight at him (iso, lead) | **Fill**: meet the lead blocker in the hole, at the line |
+| His own lineman slanting away, leaving the gap in front of him empty | **Plug** that gap |
+| The ball going outside, or the end in front of him squeezing inside (and the zone read, below) | **Scrape** over the top to the outside gap |
+| Zone blocking, with linemen who need a moment to climb to him, and a call that says go | **Run-through** before they arrive |
+
+**The first step, and the block he can't avoid.** None of these starts with a lunge. A linebacker's first
+step is a short *read step* (some coaches say "pop step"): a few inches, downhill, that keeps him moving
+without committing him. His *second* step is the one that tells you what he saw. The cardinal sin is the
+*false step*, a first step the wrong way, which is exactly what counters and play-action are built to draw.
+And sometimes a climbing lineman gets to him anyway. Then he does not run around the block, which would open
+the gap behind him (unless the call tells him to). He meets the blocker with his hands, a punch to the chest,
+keeps his gap-side arm free, and gets off the block toward his gap. Which shoulder he takes the blocker on
+with, keeping the ball inside him ([box](../../appendices/glossary.qmd#gl-box-technique), or squeeze) or
+bouncing it outside ([spill](../../appendices/glossary.qmd#gl-spill)), is a whole-defense decision, and
+[Run Fits and Box Math](05-05-run-fits-and-box-math.qmd) builds it.
 
 ::: {.callout-note title="Madden vs. real life"}
 In Madden, the linebacker you control can run anywhere and the computer fills the gap you left. On a real
@@ -961,27 +1065,28 @@ hard to time.
 
 ```{python}
 #| label: fig-scrape-read
-#| fig-cap: "The Will's scrape on a zone read, from the linebacker's side (the line zones right; the quarterback reads the left end, who crashes down on the back, so the quarterback keeps). Left, a good scrape: the Will runs tight over the top of the end, a step behind him, and arrives on the quarterback's inside hip with the nickel back ($) outside: the keeper has nowhere to go but toward the help. Right, an overrun: the Will scrapes too wide and too fast, gets outside the quarterback, and the quarterback cuts back inside him, into the space the crashing end left. The left guard (dashed blue) climbs to the spot the Will vacated in both."
+#| fig-cap: "The Will's scrape on a zone read, from the linebacker's side (the line zones right; the quarterback reads the left end, who crashes down on the back, so the quarterback keeps). Left, a good scrape: the Will runs tight over the top of the end, a step behind him, and arrives on the quarterback's inside hip with the nickel back ($) outside: the keeper has nowhere to go but toward the help. Right, an overrun: the Will scrapes too wide and too fast, gets outside the quarterback, and the quarterback cuts back inside him, into the space the crashing end left. In both, the left tackle (dashed blue), uncovered because the end he would block is being read, climbs toward the spot the Will left: the scrape has to beat him there."
 fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.4))
 LAT, WIN = (-13.2, 6.6), (-7.6, 8.4)
-off = line("short") + [te(+1), O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -1.6, "R"),
+off = line("short") + [te(+1), O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -1.9, "R"),
                        O("H", "WR", -1.5, -10.0, "H")]
 dfn = nickel_front(mike=(4.7, 1.4), will=(4.7, -2.2)) + [D("NB", "NB", 4.6, -8.0, "$")]
 for ax, good in zip(axes, (True, False)):
     p = Play(off, dfn, los=35, to_go=None)
     p.highlight("WILL", color=style.DEFENSE)
-    go_to(p, "WE", (-2.3, -2.2))
-    go_to(p, "RB", (-3.0, 3.4), "run", via=[(-4.4, 1.2)])
+    go_to(p, "WE", (-2.3, -2.4))
+    go_to(p, "RB", (-3.0, 3.4), "run", via=[(-4.0, -0.4)])
     if good:
-        go_to(p, "QB", (1.0, -6.6), "run", via=[(-4.4, -2.4), (-2.0, -5.2)])
+        go_to(p, "QB", (1.0, -6.6), "run", via=[(-4.3, -2.6), (-2.0, -5.2)])
         go_to(p, "WILL", (0.9, -5.6), via=[(3.3, -4.6)])
         go_to(p, "NB", (2.4, -8.0))
     else:
-        go_to(p, "QB", (2.6, -3.4), "run", via=[(-4.4, -2.4), (-1.6, -5.4)])
+        go_to(p, "QB", (2.6, -4.3), "run", via=[(-4.3, -2.6), (-1.6, -5.8), (0.2, -5.3)])
         go_to(p, "WILL", (0.6, -8.4), via=[(3.0, -6.0)])
         go_to(p, "NB", (2.6, -9.2))
     f = draw(p, ax=ax, lateral=LAT, window=WIN, title=False)
-    dashed(f, p, [(0.1, -1.6), (2.4, -2.0), (3.9, -2.2)], color=style.OFFENSE, lw=1.2)
+    # the left tackle is uncovered (the end he would block is being read), so he climbs to the Will
+    dashed(f, p, [(0.1, -3.2), (2.4, -2.9), (3.9, -2.4)], color=style.OFFENSE, lw=1.2)
     if good:
         spot(f, p, 1.25, -6.25, ms=8)
         say(f, p, 6.8, -5.4, "tight over the end,\non the QB's inside hip", color=style.DEFENSE_DARK, fontsize=6.6)
@@ -989,14 +1094,16 @@ for ax, good in zip(axes, (True, False)):
     else:
         say(f, p, 6.8, -5.4, "too wide, too fast:\nthe QB cuts inside", color=style.DEFENSE_DARK, fontsize=6.6)
         title(ax, "Overrun")
-    say(f, p, -6.6, -6.2, "end crashes:\nQB keeps", color=style.INK_2, fontsize=6.4)
+    say(f, p, -4.6, -9.4, "end crashes:\nQB keeps", color=style.INK_2, fontsize=6.4)
+    say(f, p, 2.6, -0.4, "LT climbs", color=style.OFFENSE_DARK, fontsize=6.2)
 fig.tight_layout(w_pad=0.6)
 plt.show()
 ```
 
 The scraper has three things to get right. **Timing**: he has to leave at the snap, before the read, because
 a quarterback keeps the ball and is past the line in about a second and a half. **Path**: tight to the
-crashing end, so that the quarterback can't run between them; coaches tell scrapers to "rub the end's hip."
+crashing end, so that the quarterback can't run between them and the uncovered left tackle, climbing at the
+snap, can't get to him first; coaches tell scrapers to "rub the end's hip."
 **Leverage**: he has to arrive *inside* the quarterback, on his inside hip, with a teammate (the nickel back
 or a safety in @fig-scrape-read) outside, so that the quarterback's only way out is toward that teammate. An
 overrun, on the right, is the scraper's classic mistake: he gets to the spot so eagerly that he passes it,
@@ -1017,7 +1124,7 @@ runner. That is almost always wrong.
 
 ```{python}
 #| label: fig-pursuit
-#| fig-cap: "Pursuit angles (geometry computed for a back running 7 yards a second as he comes out of his cut and a linebacker running 7.5; dots on each path mark every 0.5 seconds). The back has bounced outside to the right and turned upfield; the Mike starts inside him and a little downfield. Grey, the chase: aimed at where the back is, every instant, he never catches him. Orange, the angle: aimed at where the back will be, a step inside him, he meets him at the X after about a second and a quarter. Dashed orange, the overrun: aimed too flat and too far outside, he gets outside the ball, and the back cuts back inside him (dashed blue) into open field. The cornerback (CB) is the leverage player: he stays outside the back and squeezes him inside, toward the Mike."
+#| fig-cap: "Pursuit angles (geometry computed for a back running 7 yards a second as he comes out of his cut and a linebacker running 7.5; dots on each path mark every 0.5 seconds). The back has bounced outside to the right and turned upfield; the Mike starts inside him and a little downfield. Grey, the chase: aimed at where the back is at every instant. The dotted ties join where the two men are at the same moment, labelled with the time and the gap: he is still two yards behind after a second and a half. (The grey path crosses the back's, but later, after the back has gone.) He doesn't get within reach until well past 20 yards downfield. Orange, the angle: aimed at where the back will be, a step inside him, he meets him at the X after about a second and a quarter. Dashed orange, the overrun: aimed too flat and too far outside, he gets outside the ball, and the back cuts back inside him (dashed blue) into open field. The cornerback (CB) is the leverage player: he stays outside the back and squeezes him inside, toward the Mike."
 def intercept(R0, vR, L0, sL):
     """Earliest time t at which a defender from L0 at speed sL can reach the runner R0 + vR t."""
     d = np.asarray(R0, float) - np.asarray(L0, float)
@@ -1044,6 +1151,14 @@ for k in range(int(1.9 / dt)):
     v = tgt - chase[-1]
     chase.append(chase[-1] + sL * dt * v / np.linalg.norm(v))
 chase = np.array(chase)
+# keep chasing (off the picture) until he is within arm's reach (1 yard): when, and how far downfield?
+c_, t_ = chase[-1].copy(), len(chase) * dt
+while np.linalg.norm(R0 + vR * t_ - c_) > 1.0:
+    v = R0 + vR * t_ - c_
+    c_ += sL * dt * v / np.linalg.norm(v)
+    t_ += dt
+CATCH_T, CATCH_D = t_, (R0 + vR * t_)[0]
+GAP = {t: float(np.linalg.norm(R0 + vR * t - chase[int(round(t / dt))])) for t in (0.5, 1.0, 1.5)}
 # the overrun: aimed too far ahead, so that he arrives outside the back
 over_end = R0 + vR * t_meet + np.array([-0.6, 3.4])
 fig, ax = plt.subplots(figsize=(5.4, 4.9))
@@ -1067,6 +1182,12 @@ for k in range(1, 4):                       # half-second ticks
     if t < t_meet:
         x, y = P(L0 + (MEET - L0) * t / t_meet)
         ax.plot([x], [y], marker="o", ms=3.2, color=style.DEFENSE, zorder=6)
+for t in (0.5, 1.0, 1.5):                   # same moment, two men: how far apart the chaser still is
+    (x0, y0), (x1, y1) = P(R0 + vR * t), P(chase[int(round(t / dt))])
+    ax.plot([x0, x1], [y0, y1], color=style.INK_2, lw=0.8, ls=(0, (1, 1.2)), zorder=5.5)
+    xr, yr = P(R0 + vR * t + np.array([0.0, 0.9]))
+    ax.text(xr, yr, f"{t:.1f} s: {GAP[t]:.1f} yd", fontsize=6.0, color=style.INK_2, ha="left", va="center",
+            zorder=9, bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.85))
 spot(f, p, MEET[0], MEET[1], ms=9)
 solid(f, p, [(8.0, 14.6), (MEET[0] + 1.6, MEET[1] + 2.2)], color=style.DEFENSE, lw=1.4)
 point_to(f, p, (2.0, 11.4), tuple(chase[45]), "chase (grey):\naimed at the man", color=style.INK_2, fontsize=6.8)
@@ -1074,25 +1195,26 @@ say(f, p, MEET[0] - 0.4, MEET[1] - 4.6, "angle: aimed where\nhe will be, a step 
     fontsize=6.8)
 say(f, p, over_end[0] - 1.9, over_end[1] + 1.2, "overrun", color=style.DEFENSE_DARK, fontsize=6.8)
 say(f, p, cut0[0] + 4.4, cut0[1] - 2.8, "cutback", color=style.OFFENSE_DARK, fontsize=6.8)
-say(f, p, 10.7, 15.6, "leverage player:\nstays outside", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 12.7, 15.6, "leverage player:\nstays outside", color=style.DEFENSE_DARK, fontsize=6.8)
 say(f, p, -0.9, 9.4, "the back bounces\noutside", color=style.OFFENSE_DARK, fontsize=6.8)
 plt.show()
 ```
 
 @fig-pursuit makes the point with real geometry. A linebacker who runs *at* the back (the grey path) is
 always aiming at a spot the back has already left. In this example the linebacker is the faster man, and he
-still never gets closer than about two yards; against a back who is faster than he is, which in the open field
-is most backs, he ends up chasing his heels all the way to the end zone. A linebacker who aims at *where the
+is still two yards behind after a second and a half; he gets within arm's reach only after
+`{python} f"{CATCH_T:.1f}"` seconds, `{python} f"{CATCH_D:.0f}"` yards downfield. Against a back who is as fast as he
+is, or faster, which in the open field is most backs, he never catches him at all. A linebacker who aims at *where the
 back will be* (orange) cuts the distance he has to run and meets the back in about a second and a quarter.
 That is a pursuit angle. The catch is the dashed path: aim too far ahead, and the linebacker gets outside the
 back, who simply plants his foot and cuts back behind him. Every defender who has been run past has done one
 of those two things: chased, or overrun.
 
-The rule coaches give for it is **inside-out**: take the angle that keeps the ball carrier a step *outside*
+The rule coaches give for it is *inside-out* again: take the angle that keeps the ball carrier a step *outside*
 you, never inside. If you are inside him, he can only go one way, outside, and outside is where the next
 defender is.
 
-That next defender is the **leverage player**: the man on the outside whose job is to keep the ball inside,
+That next defender is the *leverage player*: the man on the outside whose job is to keep the ball inside,
 turning the runner back toward the pursuit. In @fig-pursuit it is the cornerback; on other plays it is the
 end who set the edge, an outside linebacker, a safety who came down. (The defense names him in advance, as its
 *force* player, in [Run Fits and Box Math](05-05-run-fits-and-box-math.qmd).) Put the two together and you
@@ -1116,7 +1238,7 @@ The modern approach is [**leverage tackling**](../../appendices/glossary.qmd#gl-
 most influential teachers were Pete Carroll's Seattle Seahawks. In 2014 they made a 20-minute instructional
 video of their shoulder tackling, borrowed from rugby, and that August the league sent it, with a letter from
 Carroll, to coaches and parents at every level of the game; a second video in 2015 named its basic tackle the
-**hawk tackle**.[^hawk] The ideas fit together:
+*hawk tackle*.[^hawk] The ideas fit together:
 
 - **Leverage first.** The tackler approaches with the runner on one side of him, usually inside-out, so the
   runner's only escape is toward the sideline and the next defender. The pursuit angle in @fig-pursuit is the
@@ -1147,19 +1269,19 @@ far the runner got before he was brought down, and shows who made the tackle.
 
 ```{python}
 #| label: fig-tackle-depth
-#| fig-cap: "Who makes the tackle, by how far the run got. Every regular-season designed run from 2021 to 2025 that ended in a tackle (no scrambles, touchdowns or penalties), grouped by the yards gained, with the share of tackles made by each position group (the first tackler listed in nflverse play-by-play, matched to the team's roster position that season; outside linebackers include 3-4 edge rushers). Runs stopped at or behind the line are mostly the defensive line's. Off-ball linebackers make a quarter of the tackles on runs of 3 to 9 yards, the second level. Past 10 yards, a run that got by the linebackers, it is the defensive backs' tackle."
+#| fig-cap: "Who makes the tackle, by how far the run got. Every regular-season designed run from 2021 to 2025 that ended in a tackle (no scrambles, touchdowns or penalties), grouped by the yards gained, with the share of tackles made by each position group (the first tackler listed in nflverse play-by-play, matched to the team's roster position that season). Inside linebackers are those listed ILB, MLB or LB; outside linebackers are those listed OLB, mostly 3-4 edge rushers but also some off-ball 4-3 outside linebackers, so the inside-linebacker line is a floor for off-ball linebackers. The defensive line makes most of the tackles at or near the line. The inside linebackers' share holds at a fifth to a quarter out to 9 yards and peaks on runs of 5 to 9, as the line's share collapses. Past 10 yards it is the defensive backs' tackle."
 style.apply()
 fig, ax = plt.subplots(figsize=(6.2, 3.6))
 ax.axvspan(1.5, 4.5, color=style.GRID, alpha=0.55, lw=0, zorder=0)
-order = ["Defensive line", "Outside linebacker / edge", "Off-ball linebacker", "Defensive back"]
-cols = {"Defensive line": style.SERIES[3], "Outside linebacker / edge": style.SERIES[4],
-        "Off-ball linebacker": style.SERIES[1], "Defensive back": style.SERIES[0]}
+order = ["Defensive line", "Outside linebacker (mostly edge)", "Inside linebacker", "Defensive back"]
+cols = {"Defensive line": style.SERIES[3], "Outside linebacker (mostly edge)": style.SERIES[4],
+        "Inside linebacker": style.SERIES[1], "Defensive back": style.SERIES[0]}
 xs = np.arange(len(BIN_LABELS))
 LABEL_Y = {"Defensive line": SHARE["Defensive line"].values[-1] - 2.5,
-           "Outside linebacker / edge": SHARE["Outside linebacker / edge"].values[-1] + 1.0,
-           "Off-ball linebacker": SHARE["Off-ball linebacker"].values[-1] + 2.5}
+           "Outside linebacker (mostly edge)": SHARE["Outside linebacker (mostly edge)"].values[-1] + 1.0,
+           "Inside linebacker": SHARE["Inside linebacker"].values[-1] + 2.5}
 for g in order:
-    lw = 2.6 if g == "Off-ball linebacker" else 1.6
+    lw = 2.6 if g == "Inside linebacker" else 1.6
     ax.plot(xs, SHARE[g].values, marker="o", ms=3.5, lw=lw, color=cols[g], zorder=3)
     ax.text(xs[-1] + 0.15, LABEL_Y.get(g, SHARE[g].values[-1]), g, va="center", fontsize=7.4, color=style.INK_2)
 ax.set_xticks(xs, BIN_LABELS)
@@ -1168,32 +1290,55 @@ ax.set_ylabel("Share of tackles (%)")
 ax.set_xlim(-0.3, len(BIN_LABELS) + 1.6)
 ax.set_ylim(0, 85)
 ax.grid(axis="x", visible=False)
-ax.text(3.0, 80, "the second level", ha="center", fontsize=7.6, color=style.INK_2)
+ax.text(3.0, 80, "the second level (3-9 yards)", ha="center", fontsize=7.6, color=style.INK_2)
 ax.spines["left"].set_visible(False)
 fig.tight_layout()
 plt.show()
 ```
 
-The picture has three bands, and they are the three levels of the defense. Runs stopped at or behind the line
-are mostly the defensive line's tackles. Runs that get past the line run into the linebackers: off-ball
-linebackers make about a quarter of the tackles on runs of 3 to 9 yards. And a run that gets past *them*
-becomes the secondary's problem, which is why the long runs in the right half of the chart are tackled almost
-entirely by defensive backs. Across all runs, off-ball linebackers made `{python} f"{LB_SHARE_ALL:.0f}"`% of the
-tackles; their median tackle came on a run of `{python} f"{MED['Off-ball linebacker']:.0f}"` yards, against
-`{python} f"{MED['Defensive line']:.0f}"` for linemen and `{python} f"{MED['Defensive back']:.0f}"` for defensive
-backs.[^tackledata]
+Read the chart from left to right and you can watch the three levels hand the runner along. Runs stopped at
+or near the line are the defensive line's: about two in five of those tackles. The inside linebackers' share
+barely moves, a fifth to a quarter of the tackles on every run up to 9 yards, and it peaks, at about a
+quarter, on runs of 5 to 9 yards, just where the line's share collapses. They never top the chart, because
+they share the second level with everyone else who flows to the ball, and because the roster labels
+undercount them. Past 10 yards the run has beaten them, and it is a defensive back's tackle. Across all runs,
+inside linebackers made `{python} f"{LB_SHARE_ALL:.0f}"`% of the tackles; their median tackle came on a run of
+`{python} f"{MED['Inside linebacker']:.0f}"` yards, against `{python} f"{MED['Defensive line']:.0f}"` for
+linemen and `{python} f"{MED['Defensive back']:.0f}"` for defensive backs.[^tackledata]
 
-Missed tackles are not in the free play-by-play, but everything about the second level explains why
-coaches worry about them there. A lineman tackles a back who is still in a crowd, barely moving, with nowhere
-to go. A linebacker meets him after he has cleared the line: moving at full speed, with room to cut both
-ways, often after the linebacker has had to get off a block, from an angle, alone. The runner chooses his cut
-after seeing the tackler commit; the tackler has to commit first. That is the situation leverage tackling was
-built for: take away one direction with your angle, and you only have to win the other. And a missed tackle at
-the second level is expensive, because the next line of defense is a safety ten yards downfield.
+One thing in the chart deserves a second look: defensive backs already make
+`{python} f"{SHARE.loc['5-6', 'Defensive back']:.0f}"`% of the tackles on runs of only 5 or 6 yards. Those
+tackles split almost evenly among cornerbacks (`{python} f"{DB_56['CB']:.0f}"`%), free safeties
+(`{python} f"{DB_56['FS']:.0f}"`%) and strong safeties (`{python} f"{DB_56['SS']:.0f}"`%). The corners are the
+leverage players on outside runs, turning the ball back in, as in @fig-pursuit; the safeties are the eighth
+man in the box when a single-high defense rotates one down, or the "big nickel" safety playing linebacker. The
+second level isn't only linebackers any more, which is where the end of this chapter is heading.
 
-If you want to measure it, the 2024 Big Data Bowl was about tackling, and its data marks every missed tackle on
-nine weeks of 2022 plays. The cell below (not run in this book, because the data is not downloaded) counts
-missed-tackle rates by position.
+The chart is also a warning about the statistic fans quote most. A linebacker's tackle total counts every
+tackle the same, but a tackle five yards downfield is a run that beat the defense first, and the best fill of
+the game, the one that meets the fullback at the line and makes the back bounce into a teammate, often goes in
+the box score under someone else's name. Coaches grade linebackers on whether they were in their gap on time;
+the tackle is a by-product.
+
+Missed tackles are not in the play-by-play, but Pro Football Reference charts them for every defender, and
+nflverse carries the numbers. Per hundred tackle attempts from 2021 to 2025 (runs and passes together),
+defensive linemen missed `{python} f"{MISS['DL']:.1f}"`, inside linebackers `{python} f"{MISS['ILB']:.1f}"`,
+outside linebackers `{python} f"{MISS['OLB']:.1f}"`, safeties `{python} f"{MISS['S']:.1f}"` and cornerbacks
+`{python} f"{MISS['CB']:.1f}"`.[^misses] The farther from the line a defender usually tackles, the more often
+he misses. A lineman tackles a back who is still in a crowd, barely moving, with nowhere to go. Past the line
+the runner is moving at full speed, with room to cut both ways, and the tackler is often coming off a block,
+from an angle, alone. The runner chooses his cut after seeing the tackler commit; the tackler has to commit
+first.
+
+Two things stand out. Inside linebackers make their tackles in far more space than linemen do and miss barely
+more often: that is what leverage tackling, and all the drilling behind it, buys. (Take away one direction
+with your angle, and you only have to win the other.) And the misses that hurt are the ones past the line,
+because the cost of a miss grows with the space behind it: a lineman who misses leaves the back a crowd, a
+linebacker who misses leaves him a safety ten yards away.
+
+For a play-by-play look, the 2024 Big Data Bowl was about tackling, and its data marks every missed tackle on
+nine weeks of 2022 plays. This chapter's source includes code (not run here, because the data isn't
+downloaded) that counts missed-tackle rates by position from it.
 
 ```{python}
 #| eval: false
@@ -1233,21 +1378,22 @@ off = line("short") + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -1.6, 
                        O("X", "WR", -0.7, -16.0, "X"), O("H", "WR", -1.5, -9.0, "H"),
                        O("Y", "TE", -1.5, 9.0, "Y"), O("Z", "WR", -0.7, 16.0, "Z")]
 dfn = nickel_front(mike=(4.6, 1.4), will=(4.6, -1.8)) + [
-    D("NB", "NB", 5.0, -7.6, "$"), D("SS", "S", 7.0, 7.4, "SS"), D("FS", "S", 14.0, 0.0, "FS"),
+    D("NB", "NB", 5.0, -7.6, "$"), D("SS", "S", 6.5, 10.6, "SS"), D("FS", "S", 14.0, 0.0, "FS"),
     D("LCB", "CB", 7.0, -16.0, "CB"), D("RCB", "CB", 7.0, 16.0, "CB")]
 p = Play(off, dfn, los=35, to_go=None)
 p.dropback(2.0)
 p.route("X", r.go(16)); p.route("Z", r.go(16))
-go_to(p, "H", (12.0, -2.8), "route", via=[(12.0, -9.0)])
-go_to(p, "Y", (5.6, 4.6), "route", via=[(2.4, 9.0)])
-p.drop("WILL", (10.0, -4.4), zone=(6.0, 8.0), label="hook/curl")
-p.drop("MIKE", (10.0, 4.0), zone=(6.0, 8.0), label="hook/curl")
+go_to(p, "H", (17.0, -8.2), "route", via=[(4.0, -8.9)])        # the seam
+go_to(p, "Y", (6.4, 4.4), "route", via=[(2.4, 9.0)])           # the slant
+p.drop("WILL", (8.2, -5.8), zone=(6.0, 7.0), label="hook/curl")
+p.drop("MIKE", (7.6, 5.0), zone=(6.0, 7.0), label="hook/curl")
 p.drop("FS", (17.5, 0.0)); p.drop("LCB", (16.0, -15.0)); p.drop("RCB", (16.0, 15.0))
-p.drop("NB", (6.0, -12.0)); p.drop("SS", (6.0, 12.0))
+p.drop("NB", (6.0, -12.0)); p.drop("SS", (6.0, 13.0))
 p.highlight("MIKE", "WILL", color=style.DEFENSE)
 f = draw(p, width_in=6.3, lateral=(-19.4, 19.4), window=(-7.4, 20.2), title=False)
-say(f, p, 3.0, -6.0, "wall the\ninside route", color=style.DEFENSE_DARK, fontsize=6.8)
-say(f, p, 14.4, 6.4, "sink under curls,\neyes on the QB", color=style.DEFENSE_DARK, fontsize=6.8)
+dashed(f, p, [(8.4, -6.1), (11.0, -7.0), (13.4, -7.3)], color=style.DEFENSE_DARK, lw=1.4)
+say(f, p, 14.4, -4.4, "Will: carry the\nseam to ~12 yd", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 12.4, 8.4, "Mike: wall the slant,\nthen sink, eyes on the QB", color=style.DEFENSE_DARK, fontsize=6.8)
 plt.show()
 ```
 
@@ -1313,13 +1459,13 @@ coming for *him* on a run, sees a guard who fires out and then doesn't come. Tha
 #| label: fig-pa-keys
 #| fig-cap: "Play-action from the linebacker's side (simulated, BDB-format tracking). The same play twice: an inside-zone fake to the right and a tight end (Y) running a deep crossing route behind the linebackers, against a 4-2-5 whose Mike (ringed) is over the uncovered right guard. Top row: this Mike keys the back. 1: eyes on the back. 2: the back takes the fake, so the Mike steps up to fill. 3: when the ball is thrown he is five or six yards deep, and Y is behind him. Bottom row: this Mike keys the right guard. 1: eyes on the guard. 2: the guard fires out but stays at the line instead of climbing to him (a lineman may not go downfield on a pass): no climb, so not a run, and the Mike gets depth. 3: he is about ten yards deep, in the crossing route's path, as the ball is thrown."
 def pa_play(keys_guard):
-    off = line("full") + [te(+1), O("QB", "QB", -1.9, 0.0, "Q"), O("RB", "RB", -7.0, 0.0, "R")]
+    off = line("short") + [te(+1), O("QB", "QB", -1.9, 0.0, "Q"), O("RB", "RB", -7.0, 0.0, "R")]
     dfn = nickel_front(mike=(4.5, 1.8), will=(4.5, -1.0), wide_ends=False)
     p = Play(off, dfn, los=35, to_go=None)
     for k in OL_KEYS:                                         # run-action: low first step, then hold
         q = p.players[k]
-        go_to(p, k, (q.d + 0.55, q.w + 0.35), "block", speed=1.8)
-    for k, end in (("WE", (0.4, -4.1)), ("DT", (0.4, -2.2)), ("NT", (0.4, 0.9)), ("SE", (0.4, 4.0))):
+        go_to(p, k, (q.d + 0.4, q.w + 0.35), "block", speed=1.8)
+    for k, end in (("WE", (1.1, -4.0)), ("DT", (1.1, -2.1)), ("NT", (1.1, 1.0)), ("SE", (1.1, 4.1))):
         go_to(p, k, end, speed=0.8)
     go_to(p, "QB", (-2.7, 1.0), speed=3.0)
     go_to(p, "QB", (-7.0, 0.3), speed=4.6)
@@ -1343,6 +1489,15 @@ def pa_marks(fld, play, t, i):
     if t < 0.05:
         key = "RG" if play is P_PA_GUARD else "RB"
         eyes(fld, play, play.position("MIKE", t), play.position(key, t))
+    if play is P_PA_GUARD:                    # the key: the right guard, ringed; he never gets past the line
+        d, w = play.position("RG", t)
+        x, y = _P(fld, play, d, w)
+        fld.ax.add_patch(Circle((float(x), float(y)), 0.95, fc="none", ec=GREEN, lw=1.6, zorder=7.5))
+        if t > 0.5:
+            point_to(fld, play, (2.9, w + 0.6), (d + 0.6, w), "no climb", color=GREEN, fontsize=6.4, shrink=2)
+    if t >= 2.0:                              # the throw
+        q, y_ = play.position("QB", 2.0), play.position("Y", t + 0.3)
+        dashed(fld, play, [tuple(q), tuple(y_)], color=style.BALL, lw=1.2)
 
 
 animation_or_strip(
@@ -1413,13 +1568,16 @@ for k, lab, c in (("nickel", "5 DBs (nickel)", style.SERIES[0]), ("base", "4 or 
     ax.plot(PKG.index, PKG[k], marker="o", ms=3, lw=2.2 if k == "base" else 1.6, color=c)
     ax.text(2025.3, PKG[k].iloc[-1], lab, fontsize=7.0, va="center", color=style.INK_2)
 ax.axvline(2022.5, color=style.MUTED, lw=0.9, ls=(0, (3, 2)))
-ax.set_xlim(2015.6, 2029.6); ax.set_ylim(0, 75)
+ax.set_xlim(2015.6, 2029.6); ax.set_ylim(0, 85)
 ax.set_xticks([2016, 2019, 2022, 2025])
+ax.text(2016.0, 83, "for scale: base was on 54% of\nplays in 2008, 45% in 2011 (PFF)", fontsize=6.6,
+        color=style.INK_2, va="top")
 ax.set_ylabel("Share of defensive snaps (%)")
-ax.set_title("Defensive backs on the field", fontsize=9)
+ax.set_title("Defensive backs on the field, 2016-2025", fontsize=9)
 ax = axes[1]
 ax.plot(CMB.loc[:2018].index, CMB.loc[:2018, "wt"], marker="o", ms=3, lw=1.8, color=style.SERIES[1])
-ax.plot(CMB.loc[2019:].index, CMB.loc[2019:, "wt"], marker="o", ms=3, lw=1.8, color=style.SERIES[1])
+ax.plot(CMB.loc[2019:2019].index, CMB.loc[2019:2019, "wt"], marker="o", ms=3, lw=0, color=style.SERIES[1])
+ax.plot(CMB.loc[2022:].index, CMB.loc[2022:, "wt"], marker="o", ms=3, lw=1.8, color=style.SERIES[1])
 ax.axvline(2018.5, color=style.MUTED, lw=0.9, ls=(0, (3, 2)))
 ax.set_ylim(225, 250)
 ax.text(2001, 247.6, "listed ILB", fontsize=7.2, color=style.INK_2)
@@ -1640,6 +1798,7 @@ go_to(p, "RT", (-1.9, 1.0), via=[(-1.8, 2.8)])
 for k in ("LT", "LG", "C"):
     q = p.players[k]
     go_to(p, k, (q.d + 0.4, q.w + 0.9), "block")
+go_to(p, "Y", (-1.6, 5.0), "block")              # hinge: step back and wall off the backside end
 p.highlight("MIKE", color=style.DEFENSE)
 p.read("RB", key="MIKE"); p.read("RG", key="MIKE")
 f = draw(p, width_in=5.4, lateral=(-9.0, 9.6), window=(-7.6, 7.6))
@@ -1672,7 +1831,7 @@ likely to do?
 off = line("short") + [te(+1), O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -1.6, "R"),
                        O("X", "WR", -0.7, -17.0, "X"), O("H", "WR", -1.5, -8.6, "H"), O("Z", "WR", -1.5, 15.0, "Z")]
 dfn = nickel_front(mike=(4.7, 1.0), will=(4.7, -2.0)) + [
-    D("NB", "NB", 3.0, -8.6, "$"), D("SS", "S", 6.0, 6.0, "SS"), D("FS", "S", 13.5, 0.0, "FS"),
+    D("NB", "NB", 3.0, -8.6, "$"), D("SS", "S", 7.6, 6.0, "SS"), D("FS", "S", 13.5, 0.0, "FS"),
     D("LCB", "CB", 3.0, -17.0, "CB"), D("RCB", "CB", 3.0, 15.0, "CB")]
 p = Play(off, dfn, los=40, to_go=6, title="Drill 2: the back goes out, the Will goes with him")
 p.motion("RB", to=(-1.5, -12.8))
@@ -1709,18 +1868,33 @@ linebackers have flowed hard to the right. Where does the back go, and who made 
 #| label: fig-drill-3
 #| fig-cap: "Drill 3: outside zone right, about 0.8 seconds after the snap (paths show where everyone has gone). The line has stepped right and is cutting off the backside linemen; the back is pressing the edge; the Mike and the Will (ringed) have both run hard to the right, the Will level with the Mike."
 off = line("short") + [te(+1), O("QB", "QB", -1.9, 0, "Q"), O("RB", "RB", -7.0, 0, "R")]
-p = Play(off, over_front(+1), los=40, to_go=10, title="Drill 3: outside zone, both linebackers flowing")
+p = Play(off, over_front(+1), los=40, to_go=10)
+T_FREEZE = 0.8
+
+
+def by(key, end, via=(), kind="path"):
+    """Move `key` so that he arrives at `end` exactly at T_FREEZE."""
+    pts = [tuple(p._cur(key)), *via, end]
+    go_to(p, key, end, kind, speed=max(path_len(pts) / T_FREEZE, 0.1), via=via)
+
+
 for k in OL_KEYS + ("Y",):
     q = p.players[k]
-    go_to(p, k, (q.d + 0.2, q.w + 1.2), "block", speed=2.0)
-go_to(p, "QB", (-2.6, 1.6))
-go_to(p, "RB", (-3.6, 4.6), "run", via=[(-5.9, 2.6)])
-go_to(p, "MIKE", (3.6, 5.3), via=[(4.2, 2.8)])
-go_to(p, "WILL", (3.6, 3.3), via=[(4.3, 0.2)])
-go_to(p, "SAM", (2.0, 7.8))
-go_to(p, "NT", (1.0, -0.2)); go_to(p, "WE", (0.6, -3.0))
-p.highlight("MIKE", "WILL", color=style.DEFENSE)
-f = draw(p, width_in=5.4, lateral=(-8.6, 10.6), window=(-8.6, 7.6))
+    by(k, (q.d + 0.3, q.w + 1.2), kind="block")
+by("QB", (-2.6, 1.6))
+by("RB", (-3.6, 4.6), via=[(-5.9, 2.6)], kind="run")
+p.handoff("RB", t=0.6)
+by("MIKE", (3.6, 5.3), via=[(4.2, 2.8)])
+by("WILL", (3.6, 3.3), via=[(4.3, 0.2)])
+by("SAM", (2.0, 7.8))
+by("NT", (1.2, 0.3)); by("WE", (1.0, -3.4)); by("DT", (1.2, 2.9)); by("SE", (1.2, 4.6))
+fig, ax = plt.subplots(figsize=(5.4, 4.6))
+LAT3, WIN3 = (-8.6, 10.6), (-8.8, 8.2)
+fld = panel(ax, p, tracking(p), T_FREEZE, LAT3, WIN3, rings=(("MIKE", style.DEFENSE), ("WILL", style.DEFENSE)))
+lane(fld, p, -3.6, 0.4, 1.9, 6.4, color=style.OFFENSE, alpha=0.10)
+say(fld, p, 5.0, -1.6, "backside:\nnobody home", color=style.OFFENSE_DARK, fontsize=6.8)
+ax.set_title(f"Drill 3: outside zone, {T_FREEZE:.1f} s after the snap", fontsize=8.6, loc="left", color=style.INK,
+             fontweight="bold")
 plt.show()
 ```
 
@@ -1828,14 +2002,22 @@ and fits in the language of this chapter.
     <https://www.nfl.com/news/nfl-owners-vote-to-ban-hip-drop-tackle-at-annual-league-meeting>.
 
 [^threestrike]: NBC Sports (ProFootballTalk), "NFL's new three-strike system doesn't apply until the 2026 regular
-    season" (August 2026), as summarized in this course's fact sheet (planning/FACTS-current.md §6, rated likely):
+    season" (August 2026):
     <https://www.nbcsports.com/nfl/profootballtalk/rumor-mill/news/nfls-new-three-strike-system-doesnt-apply-until-the-2026-regular-season>.
 
 [^tackledata]: Course calculation from nflverse play-by-play and weekly rosters via nflreadpy, regular seasons
     2021–2025: designed runs (`play_type == "run"`, scrambles excluded) without a penalty or a touchdown, with the
     tackler taken as the first of `solo_tackle_1_player_id`, `tackle_with_assist_1_player_id` and
     `assist_tackle_1_player_id`, and his group from the roster's `depth_chart_position` that season (ILB, MLB and LB
-    as off-ball linebackers; OLB, which includes 3-4 edge rushers, separately). The code is in this chapter's source.
+    as inside linebackers; OLB, mostly 3-4 edge rushers but also some off-ball 4-3 outside linebackers such as
+    Cleveland's Jeremiah Owusu-Koramoah in 2023, separately, so the inside-linebacker share understates what all
+    off-ball linebackers do). The code is in this chapter's source.
+
+[^misses]: Course calculation from Pro Football Reference's charted advanced defensive statistics, via nflverse
+    (`nflreadpy.load_pfr_advstats(stat_type="def")`), seasons 2021–2025: missed tackles divided by combined tackles
+    plus missed tackles, summed over each group, with the group taken from the nflverse roster's
+    `depth_chart_position` that season (`{python} f"{MISS_MATCH:.0f}"`% of player-seasons match a roster entry;
+    "DB" is counted with the cornerbacks). The code is in this chapter's source.
 
 [^ngsbase]: James Reber (Next Gen Stats), "NFL trend watch: heavy personnel could shape Super Bowl LX showdown
     between Patriots and Seahawks," NFL.com (base defense on 29.7% of snaps in 2025, up from 20.5% in 2023):
