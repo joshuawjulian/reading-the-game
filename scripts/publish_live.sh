@@ -3,12 +3,12 @@
 #  - every 60 s: once 3 more chapters have finished (planning/reviews/<id>.done), or 30 min have
 #    passed with at least one, commit + push their source,
 #    re-render the site locally (freeze: auto => only the new chapter executes) and push the built
-#    site to the gh-pages branch (worktree at ../course-site), which GitHub Pages serves.
+#    site to the gh-pages branch (worktree at ./site), which GitHub Pages serves.
 #  - every 5 min otherwise: refresh the Progress page if any review file changed.
 # Needs the dev container "rtg" running.  Usage: scripts/publish_live.sh
 cd "$(dirname "$0")/.." || exit 1
-SITE=../course-site
-TRAILER=$'\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_017tWEYignuoHaT3tqHoSVdL'
+SITE=./site
+TRAILER=$'\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01U81SkmEGYjcE8yddb3Wibb'
 last_done=""; last_rev=""; last_progress=0; last_publish=0; BATCH=3
 
 deploy() {

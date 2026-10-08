@@ -1,26 +1,36 @@
 # RESUME — Reading the Game
 
-## Status (2026-10-06)
+## Layout (2026-10-08)
+- Everything lives in `~/dev/nfl-learn` (formerly `~/dev/course` + `~/dev/course-site`).
+  `site/` is the `gh-pages` worktree (gitignored). Dev container `rtg` mounts this folder at
+  `/workspaces/course`.
+
+## Status (2026-10-08)
 - DONE: scaffold (gridiron lib, Quarto book, per-chapter Typst PDFs, Pages CI, feedback);
-  curriculum (73 chapters / 15 parts, planning/CURRICULUM.md, editable source in
-  planning/curriculum-src/); gap audit (planning/AUDIT-curriculum.md, all 64 fixes applied);
-  verified current facts (planning/FACTS-current.md).
-- DONE: pilot chapters 01-04, 03-02, 06-06, 13-02 (19/29/25/42 pp), published. Review logs in planning/reviews/.
-  Known: the chapters run long (7.8k-13.8k words vs the 3-7k target); links to unwritten chapters warn until they exist.
-- The user approved the pilots ("THIS IS EXCELLENT"): keep the depth, push straight live.
-- 2026-10-08 ~04:00: Parts 1-9 done (48/73). User allowed up to 4 agents => TWO workflows, alternating pairs in book order:
-  wf_22bf2a81-593 (args scripts/workflows/dual-A.json) and wf_5744d20b-a2b (args scripts/workflows/dual-B.json),
-  script scripts/workflows/write-book-batched.js. Resume = same scriptPath + resumeFromRunId + the same args file.
-- WAS IN PROGRESS: remaining 69 chapters via scripts/workflows/write-book-batched.js: 4 workflows, each taking its
-  chapters TWO AT A TIME all the way to published (book order; chapters with "drafted": true skip the writer).
-  Runs: wf_c480f37f-1d6 wf_ac33f498-efd wf_696ecbf2-3a5 wf_a370e8fb-ddc, args in scripts/workflows/batched{0..3}.json. Live publishing: scripts/publish_live.sh (batches of 3 chapters, progress page every 5 min). The revise stage writes planning/reviews/<id>.done; an auto-publish loop commits and
-  pushes chapters that have a .done marker every 20 minutes. To RESUME after an interruption, rerun the
-  workflow with resumeFromRunId, or run it fresh with only the chapters that lack a .done marker.
+  curriculum (73 chapters / 15 parts, `planning/CURRICULUM.md`, source in `planning/curriculum-src/`);
+  gap audit (`planning/AUDIT-curriculum.md`, all fixes applied); verified facts (`planning/FACTS-current.md`).
+- DONE + published: Parts 1-9 and 13-02 (48/73). The user approved the pilots ("THIS IS EXCELLENT"):
+  keep the depth (chapters run 8-14k words), push straight live.
+- TODO: Parts 10-15 (25 chapters), split between `scripts/workflows/dual-A.json`
+  and `dual-B.json` (alternating pairs in book order). The user allowed up to 4 agents at once => two workflows.
 - AFTER: atlas appendices A-G, whole-book gap audit, link/glossary check.
-- OLD: then the full run of the remaining 69 chapters with the same
-  workflow (script saved under the session's workflows/scripts/write-chapters-*.js; it takes
-  args {chapters: [{id, path}]}, with paths from planning/chapters.yml), then a final
-  whole-book gap audit, the atlas appendices, and the glossary check.
+
+## How the writing pipeline runs
+- `scripts/workflows/write-book-batched.js` takes `{chapters: [{id, path, drafted}]}` and runs
+  each chapter writer -> web fact-check -> beginner + coach reviews -> revise, two at a time.
+  The revise step writes `planning/reviews/<id>.done`, which publishes the chapter.
+- `scripts/publish_live.sh` (background) commits and pushes chapters with a `.done` marker in
+  batches of 3 (or after 30 min), re-renders, and deploys `_site/` to `site/`.
+
+## To restart after a session restart (background work dies with the session)
+1. `docker start rtg`.
+2. Run the workflow once per args file, passing the script inline (or by `scriptPath` from the repo
+   root) with `args` = the contents of `dual-A.json` / `dual-B.json`, minus chapters that
+   already have a `.done` marker; mark chapters with a finished draft `"drafted": true`.
+   Run journals do not survive a restart, so `resumeFromRunId` usually fails; start fresh runs instead.
+3. Start the publisher: `scripts/publish_live.sh >> /tmp/rtg-publish.log 2>&1` in the background.
+   Never stop it with `pkill -f publish_live.sh` inside a command line that contains that text,
+   because it kills itself; use `pgrep -f` to get the PID first, then `kill` it.
 
 ## Feedback loop
 - Every page: Giscus comment box (GitHub Discussions, category "Announcements", mapped by page path)
@@ -28,11 +38,3 @@
   label everything `feedback` plus a type (`fact-check`, `clarity`, `diagram`, `topic-request`).
 - Triage: `gh issue list -R joshuawjulian/reading-the-game -l feedback` and
   `gh api graphql` for discussion comments. Fix, then close with a link to the commit.
-
-## If the Claude session restarts (everything background dies with it)
-1. Resume each workflow: Workflow({scriptPath: scripts/workflows/write-book-batched.js, resumeFromRunId: <run>,
-   args: <contents of scripts/workflows/batched{k}.json>}) for k = 0..3 in the run-ID order above. (Finished agent
-   steps replay from cache.)
-2. `docker start rtg` if needed, then start the publisher (do NOT `pkill -f publish_live.sh` from the same
-   command line; it matches itself): `scripts/publish_live.sh >> /tmp/rtg-publish.log 2>&1` in the background.
-3. Re-create the 30-min check-in cron (session-only).

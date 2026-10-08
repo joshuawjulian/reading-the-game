@@ -9,7 +9,7 @@ export const meta = {
   ],
 }
 
-const ROOT = '/home/julian/dev/course'
+const ROOT = '/home/julian/dev/nfl-learn'
 const COMMON = `You are working on "Reading the Game", a football course (Quarto book) in ${ROOT}. The user has seen the four pilot chapters and LOVES them ("THIS IS EXCELLENT") — match their depth, voice and diagram quality. Exemplars: chapters/01-foundations/01-04-what-a-play-really-is.qmd, chapters/03-the-run-game/03-02-zone-running.qmd, chapters/06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd, chapters/13-analytics-and-data/13-02-expected-points-and-success-rate.qmd (skim at least one relevant exemplar to calibrate style, helper patterns and diagram conventions).
 Read FIRST: ${ROOT}/planning/AUTHORING.md (the authoring contract — it wins), ${ROOT}/planning/FACTS-current.md (verified current facts; never contradict it; today is 2026-10-06), and your chapter's full spec in ${ROOT}/planning/CURRICULUM.md (search for the chapter ID). Check the CURRICULUM term index: terms this chapter OWNS get defined + glossary front matter; terms owned elsewhere get linked to the owning chapter's file (paths in planning/chapters.yml; the file may not exist yet — fine). Prerequisite chapters that ALREADY EXIST in chapters/: skim them so terminology, labels and diagram conventions stay consistent and you build on (not repeat) what they taught.
 Diagrams: the gridiron library in ${ROOT}/gridiron/ (read module docstrings). Do NOT edit gridiron/ (other agents are using it concurrently) — implement anything missing inside the chapter's code and mention it in notes.

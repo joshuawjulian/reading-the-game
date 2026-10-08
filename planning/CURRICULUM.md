@@ -533,7 +533,7 @@ _Levels 2-3._ How offenses run the ball: the vocabulary of gaps and blocks, then
   - Explain designed QB runs (QB power, QB counter, QB draw, QB sweep) as blocker-count changers.
   - Name defensive answers (scrape exchange, gap exchange) with a forward reference to 05-05.
   - Explain the NFL's on-and-off relationship with option (2012 wave, fade, Lamar/Hurts/Allen era).
-- **Key terms introduced:** option; end man on the line of scrimmage (also: EMOLOS, EMOL); read key (also: read defender); zone read; give / keep; inverted veer (also: power read); speed option; triple option; dive; pitch; midline option; veer; QB power; QB counter; QB draw; QB sweep; scrape exchange
+- **Key terms introduced:** option; end man on the line of scrimmage (also: EMOLOS, EMOL); read key (also: read defender); zone read (also: read option); give / keep; inverted veer (also: power read); speed option; triple option; dive; pitch; midline option; veer; QB power; QB counter; QB draw; QB sweep; scrape exchange
 - **Diagrams:**
   - [A] Zone read, two branches: end crashes (keep) vs end stays (give) (frame strips)
   - [S] Triple option from the flexbone (formation from 02-03)
@@ -2531,6 +2531,7 @@ Front matter (unnumbered `index.qmd`): how to use the book, the level system, th
 - read (post-snap) -> 01-04
 - read defender: see *read key* -> 03-04
 - read key (also: read defender) -> 03-04
+- read option: see *zone read* -> 03-04
 - read safety -> 06-05
 - read-option wave (2012) -> 11-04
 - red zone -> 01-02
@@ -2839,7 +2840,7 @@ Front matter (unnumbered `index.qmd`): how to use the book, the level system, th
 - zone blitz -> 07-03
 - zone blocking -> 03-02
 - zone coverage -> 02-05
-- zone read -> 03-04
+- zone read (also: read option) -> 03-04
 - zoom motion -> 02-06
 
 ## 7. Pilot chapters
