@@ -1,0 +1,1368 @@
+---
+title: "Case Study: The Lions — Ben Johnson's Offense and Dan Campbell's Aggression"
+subtitle: "How a franchise with nothing to lose built an offense out of disguise and a fourth down out of arithmetic, and what each coach took with him when the staff broke up"
+description: "The 2021-2025 Detroit Lions as a case study: the 2021 rebuild and why a bad team should choose variance; Ben Johnson's offense (2022-2024) as four habits, under center, heavy and jumbo personnel with a reported lineman, shifts layered with motion, and trick plays built as constraint plays; Dan Campbell's fourth-down aggression measured against the league and against kicking; how defenses and the league responded; the 2025 departures (Johnson to the Bears, Glenn to the Jets), John Morton's one season, Campbell calling plays and Drew Petzing in 2026; and what moved to Chicago with Johnson, measured with a before-and-after fingerprint."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import logging
+import os
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, FancyBboxPatch, Patch, Rectangle, RegularPolygon
+from matplotlib.lines import Line2D
+from IPython.display import HTML, Markdown, display
+
+from gridiron import Field, Play, Player, style
+from gridiron.animate import animate
+from gridiron.play import MARKER_R
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+LIONS, BEARS, LEAGUE = style.SERIES[0], style.SERIES[1], style.MUTED
+
+
+# ---------------------------------------------------------------- building plays by hand
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=label)
+
+
+def D(key, pos, d, w, label=None):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line5(d=-0.7):
+    """The five offensive linemen (only the center labelled)."""
+    return [O(k, k, d, w, label="C" if k == "C" else "") for k, w in
+            (("LT", -3.2), ("LG", -1.6), ("C", 0.0), ("RG", 1.6), ("RT", 3.2))]
+
+
+def pre(p, key, pts):
+    """Pre-snap movement through absolute (d, w) points (gridiron's motion takes offsets from the start)."""
+    d0, w0 = p._cur(key)
+    p.motion(key, pts=[(d - d0, w - w0) for d, w in pts])
+
+
+def go(p, key, pts, kind="path", **kw):
+    """Post-snap movement through absolute (d, w) points: kind = path, run, route or block."""
+    d0, w0 = p._cur(key)
+    rel = [(d - d0, w - w0) for d, w in pts]
+    if kind == "route":
+        return p.route(key, pts, absolute=True, **kw)
+    if kind == "block":
+        return p.block(key, pts=rel, **kw)
+    return {"path": p.path, "run": p.run}[kind](key, rel, **kw)
+
+
+def retime(p, key, frames):
+    """Replace `key`'s pre-snap keyframes with explicit (t, d, w) rows (t <= 0).
+    gridiron ends every pre-snap motion at the snap and starts it whenever its length requires,
+    so a shift, a one-second freeze and then a motion can't be expressed directly. This sets
+    the schedule by hand (implemented here, not in gridiron). Call it after every action is added."""
+    kf, t0, t1 = p._compile()
+    post = kf[key][kf[key][:, 0] > 1e-9]
+    new = np.array(frames, dtype=float)
+    if new[-1, 0] < 0:
+        new = np.vstack([new, [0.0, *new[-1, 1:]]])
+    kf[key] = np.vstack([new, post])
+    p._compiled = (kf, min(float(f[0, 0]) for f in kf.values()), t1)
+
+
+# ---------------------------------------------------------------- drawing helpers
+def no_numbers(ax):
+    """Remove the painted yard numbers (in zoomed windows they sit where players stand)."""
+    for t in list(ax.texts):
+        if t.get_alpha() == 0.55:
+            t.remove()
+
+
+def P_of(fld, p):
+    """(d, w) in the play's frame -> plot coordinates on this field."""
+    return lambda d, w: tuple(float(v) for v in fld.xy(*p.to_abs(d, w)))
+
+
+def say(ax, P, d, w, text, color=style.INK, fs=6.8, ha="center", ec=None):
+    x, y = P(d, w)
+    ax.text(x, y, text, fontsize=fs, color=color, ha=ha, va="center", zorder=12, linespacing=1.12,
+            bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec=ec or "none", lw=0.6, alpha=0.93))
+
+
+def point_to(ax, P, at, to, text, color=style.INK, fs=6.6):
+    """A label at `at` with a thin leader line to `to` (both (d, w))."""
+    ax.annotate(text, xy=P(*to), xytext=P(*at), fontsize=fs, color=color, ha="center", va="center", zorder=12,
+                linespacing=1.12, bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none", alpha=0.93),
+                arrowprops=dict(arrowstyle="-", color=style.INK_2, lw=0.7, shrinkA=0, shrinkB=5))
+
+
+def ghost_marker(ax, x, y, label, ppy, side="def"):
+    """A hollow, dashed marker: where a player stood before he moved."""
+    col = style.DEFENSE if side == "def" else style.OFFENSE
+    if side == "def":
+        pat = RegularPolygon((x, y), 4, radius=MARKER_R * 1.25, orientation=np.pi / 4, facecolor="none",
+                             edgecolor=col, lw=1.0, ls=(0, (2, 1.2)), zorder=6)
+    else:
+        pat = Circle((x, y), MARKER_R, facecolor="none", edgecolor=col, lw=1.0, ls=(0, (2, 1.2)), zorder=6)
+    ax.add_patch(pat)
+    if label:
+        ax.text(x, y, label, ha="center", va="center", color=col, fontweight="bold", zorder=6,
+                fontsize=max(4.0, min(8.0, ppy * 0.72)))
+
+
+# ---------------------------------------------------------------- animations and their print strips
+def snapshot(play, t, ax=None, lateral=(-17, 17), window=(-9, 15), ghosts=(), ghost_t=None, trail_from=None):
+    """Everyone where he is at time t, a faint trail behind each mover, and a hollow 'ghost'
+    where each listed player stood at `ghost_t`."""
+    pos = {k: play.position(k, t) for k in play.players}
+    moved = [pl.moved(d=float(pos[k][0]), w=float(pos[k][1])) for k, pl in play.players.items()]
+    q = Play([m for m in moved if m.side == "off"], [m for m in moved if m.side == "def"],
+             los=play.los, ball_y=play.ball_y, to_go=play.to_go)
+    q.highlights = dict(play.highlights)
+    fld = q.draw(ax=ax, lateral=lateral, window=window, title=False)
+    ax, ppy = fld.ax, fld.pts_per_yard()
+    no_numbers(ax)
+    P = P_of(fld, play)
+    start = play._compile()[1] if trail_from is None else trail_from
+    for k, pl in play.players.items():
+        if pl.pos in ("LT", "LG", "C", "RG", "RT", "DE", "DT", "NT"):
+            continue
+        pts = np.array([play.position(k, tt) for tt in np.linspace(start, t, 50)])
+        if np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) < 0.4:
+            continue
+        xs, ys = fld.xy(*play.to_abs(pts[:, 0], pts[:, 1]))
+        col = style.OFFENSE if pl.side == "off" else style.DEFENSE
+        ax.plot(xs, ys, color=col, lw=1.1, alpha=0.5, ls="-" if pl.side == "off" else (0, (3, 2)), zorder=3)
+    if ghost_t is not None:
+        for k in ghosts:
+            d0, w0 = play.position(k, ghost_t)
+            d1, w1 = play.position(k, t)
+            if abs(d1 - d0) + abs(w1 - w0) > 1.0:
+                ghost_marker(ax, *P(d0, w0), play.players[k].label, ppy, play.players[k].side)
+    bd, bw = play.ball_position(t)
+    carried = any(np.hypot(*(play.position(k, t) - np.array([bd, bw]))) < 0.3
+                  for k, pl in play.players.items() if pl.side == "off" and k != "C")
+    bx, by = P(bd + (0.95 if carried and t > 0 else 0.0), bw)
+    ax.add_patch(Ellipse((bx, by), 0.75, 1.1, facecolor=style.BALL, edgecolor="white", lw=0.6, zorder=9.5))
+    for art in list(ax.texts) + list(ax.patches) + list(ax.lines):   # nothing drawn outside the window
+        art.set_clip_on(True)
+    return fld
+
+
+def strip(play, times, labels, ncols=2, width_in=6.5, legend=True, **kw):
+    """The print version of an animation: one panel per chosen moment, each with a caption."""
+    lateral, window = kw.get("lateral", (-17, 17)), kw.get("window", (-9, 15))
+    n = len(times)
+    nrows = int(np.ceil(n / ncols))
+    pw = width_in / ncols
+    h = nrows * (pw * (window[1] - window[0]) / abs(lateral[1] - lateral[0]) + 0.42) + (0.35 if legend else 0.1)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(width_in, h), squeeze=False)
+    for ax in axes.flat[n:]:
+        ax.axis("off")
+    for ax, t, lab in zip(axes.flat, times, labels):
+        snapshot(play, t, ax=ax, **kw)
+        ax.set_title(lab, fontsize=7.8, color=style.INK, loc="left", pad=3, linespacing=1.15)
+    fig.tight_layout(h_pad=0.6, w_pad=0.5, rect=(0, 0.05 if legend else 0, 1, 1))
+    if legend:
+        hs = [Line2D([], [], color=style.OFFENSE, lw=1.2, alpha=0.7, label="Offense: path so far"),
+              Line2D([], [], color=style.DEFENSE, lw=1.2, ls=(0, (3, 2)), label="Defense: path so far"),
+              Patch(facecolor="none", edgecolor=style.DEFENSE, lw=1.0, ls=(0, (2, 1.2)),
+                    label="Dashed outline: where he started")]
+        fig.legend(handles=hs, loc="lower center", ncol=3, fontsize=7.0, frameon=False, bbox_to_anchor=(0.5, 0.0))
+    return fig
+
+
+def show_play(play, times, labels, web_caption, **kw):
+    """Web: an animation with a caption that changes with the phase of the play.
+    Print: a labelled frame strip (panel titles = `labels`)."""
+    if PDF:
+        strip(play, times, labels, **kw)
+        plt.show()
+        return
+    df = play.to_tracking()
+    tmap = df.groupby("frameId")["time"].first()
+    anim = animate(df, to_go=play.to_go)
+    ax = anim._fig.axes[0]
+    cap = ax.text(0.01, 0.02, "", transform=ax.transAxes, ha="left", va="bottom", fontsize=9, color=style.INK,
+                  zorder=21, bbox=dict(boxstyle="round,pad=0.3", fc=style.SURFACE, ec=style.THIRD, lw=1.0))
+    base = anim._func
+
+    def upd(fid, *a):
+        out = base(fid, *a)
+        cap.set_text(web_caption(float(tmap.get(fid, 0.0))))
+        return out
+    anim._func = upd
+    if shutil.which("ffmpeg"):
+        html = anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+    else:
+        html = anim.to_jshtml(default_mode="once")
+    plt.close(anim._fig)
+    display(HTML(html))
+
+
+def phases(cuts):
+    """[(t_upper, caption), ...] -> function of t (seconds from the snap) for show_play."""
+    def f(t):
+        for up, txt in cuts:
+            if t < up:
+                return txt
+        return cuts[-1][1]
+    return f
+```
+
+```{python}
+#| code-summary: "Show the Python (load nflverse play-by-play and FTN charting, 2018-2025, and compute every number quoted in the text)"
+#| output: false
+from gridiron.data import nfl, pbp
+
+COLS = ["season", "season_type", "week", "game_id", "play_id", "posteam", "defteam", "down", "ydstogo",
+        "yardline_100", "play_type", "qtr", "wp", "epa", "success", "qb_dropback", "sack",
+        "fourth_down_converted", "passer_player_name", "pass_attempt", "complete_pass", "passing_yards",
+        "pass_touchdown", "interception", "fumble_lost", "yards_gained", "desc"]
+raw = pbp(range(2018, 2026), columns=COLS)
+reg = raw[raw.season_type == "REG"].copy()
+plays = reg[reg.play_type.isin(["pass", "run"]) & reg.down.notna()].copy()
+S = {}
+
+
+def pct(x, nd=0):
+    return f"{100 * x:.{nd}f}%"
+
+
+def ordinal(n):
+    n = int(n)
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def rk(tab, season, team, asc=False):
+    return int(tab.loc[season].rank(ascending=asc, method="min")[team])
+
+
+# --- records and points (schedules) -------------------------------------------------------------
+sch = nfl().load_schedules(list(range(2019, 2026))).to_pandas()
+rs = sch[sch.game_type == "REG"]
+REC, PTS = {}, {}
+for team in ("DET", "CHI"):
+    for s in range(2019, 2026):
+        g = rs[(rs.season == s) & ((rs.home_team == team) | (rs.away_team == team))]
+        pf = np.where(g.home_team == team, g.home_score, g.away_score)
+        pa = np.where(g.home_team == team, g.away_score, g.home_score)
+        w, l, t = int((pf > pa).sum()), int((pf < pa).sum()), int((pf == pa).sum())
+        REC[(team, s)] = (w, l, t)
+        S[f"rec_{team}_{s}"] = f"{w}–{l}" + (f"–{t}" if t else "")
+        PTS[(team, s)] = int(pf.sum())
+pts24 = pd.concat([rs[rs.season == 2024].groupby("home_team").home_score.sum(),
+                   rs[rs.season == 2024].groupby("away_team").away_score.sum()], axis=1).sum(axis=1)
+S["det_pts24"] = f"{PTS[('DET', 2024)]}"
+assert pts24.idxmax() == "DET"
+S["chi_pts24"], S["chi_pts25"] = f"{PTS[('CHI', 2024)]}", f"{PTS[('CHI', 2025)]}"
+
+# --- offensive EPA per play and its rank ---------------------------------------------------------
+EPA = plays.groupby(["season", "posteam"]).epa.mean().unstack()
+for s in range(2019, 2026):
+    S[f"det_epa_rk{s}"] = ordinal(rk(EPA, s, "DET"))
+    S[f"chi_epa_rk{s}"] = ordinal(rk(EPA, s, "CHI"))
+for team, s in [("DET", 2024), ("DET", 2025), ("CHI", 2024), ("CHI", 2025)]:
+    S[f"epa_{team}_{s}"] = f"{EPA.loc[s, team]:+.2f}"
+
+# --- quarterbacks and sacks ---------------------------------------------------------------------
+def qb_line(name, s):
+    g = reg[(reg.passer_player_name == name) & (reg.season == s)]
+    return dict(yds=int(g.passing_yards.fillna(0).sum()), td=int(g.pass_touchdown.sum()),
+                epa_db=float(g[g.qb_dropback == 1].epa.mean()))
+
+
+GOFF24 = qb_line("J.Goff", 2024)
+S["goff24_yds"], S["goff24_td"] = f"{GOFF24['yds']:,}", f"{GOFF24['td']}"
+CW = {s: qb_line("C.Williams", s) for s in (2024, 2025)}
+S["cw24_epa"], S["cw25_epa"] = f"{CW[2024]['epa_db']:+.2f}", f"{CW[2025]['epa_db']:+.2f}"
+S["cw24_td"], S["cw25_td"] = f"{CW[2024]['td']}", f"{CW[2025]['td']}"
+SK = reg.groupby(["season", "posteam"]).sack.sum().unstack()
+S["chi_sk24"], S["chi_sk25"] = f"{int(SK.loc[2024, 'CHI'])}", f"{int(SK.loc[2025, 'CHI'])}"
+
+# --- fourth downs --------------------------------------------------------------------------------
+f4 = reg[(reg.down == 4) & reg.play_type.isin(["run", "pass", "punt", "field_goal"])].copy()
+f4["go"] = f4.play_type.isin(["run", "pass"])
+f4["neutral"] = (f4.qtr <= 3) & f4.wp.between(0.2, 0.8)
+GR = f4[f4.neutral].groupby(["season", "posteam"]).go.mean().unstack()
+LGR = f4[f4.neutral].groupby("season").go.mean()
+ATT = f4[f4.go].groupby(["season", "posteam"]).size().unstack().fillna(0)
+S["det_att21"], S["det_att21_rk"] = f"{int(ATT.loc[2021, 'DET'])}", ordinal(rk(ATT, 2021, "DET"))
+S["lg_att21"] = f"{ATT.loc[2021].mean():.0f}"
+for s in range(2018, 2026):
+    S[f"det_gr{s}"], S[f"lg_gr{s}"] = pct(GR.loc[s, "DET"]), pct(LGR.loc[s])
+    S[f"det_gr_rk{s}"] = ordinal(rk(GR, s, "DET"))
+S["chi_gr24"], S["chi_gr25"] = pct(GR.loc[2024, "CHI"]), pct(GR.loc[2025, "CHI"])
+assert all(rk(GR, s, "DET") == 1 for s in (2022, 2023, 2024))
+assert rk(ATT, 2021, "DET") == 1
+went = f4[f4.go & f4.season.between(2021, 2025)]
+S["det_conv"] = pct(went[went.posteam == "DET"].fourth_down_converted.mean())
+S["lg_conv"] = pct(went.fourth_down_converted.mean())
+
+# A rough yardstick for "points gained by going instead of kicking": for every go in the first
+# three quarters, subtract the league's average EPA on punts and field goals from fourth downs in
+# the same yards-to-go and field-position bucket (2021-2025).
+q3 = f4[(f4.qtr <= 3) & f4.season.between(2021, 2025)].copy()
+q3["yb"] = pd.cut(q3.ydstogo, [0, 1, 2, 3, 5, 10, 99])
+q3["fb"] = pd.cut(q3.yardline_100, [0, 10, 20, 30, 40, 50, 60, 70, 80, 100])
+KICK = q3[~q3.go].groupby(["yb", "fb"], observed=True).epa.mean().rename("kick_epa")
+GOS = q3[q3.go].join(KICK, on=["yb", "fb"])
+GOS["gain"] = GOS.epa - GOS.kick_epa
+assert GOS.kick_epa.notna().all()
+TEAMGAIN = GOS.groupby("posteam").agg(n=("gain", "size"), gain=("gain", "sum"), per=("gain", "mean"))
+det_g = TEAMGAIN.loc["DET"]
+S["det_gain"], S["det_gain_yr"] = f"{det_g.gain:.0f}", f"{det_g.gain / 5:.0f}"
+S["det_per"], S["lg_per"] = f"{det_g.per:+.2f}", f"{GOS.gain.mean():+.2f}"
+S["det_n_q3"] = f"{int(det_g.n)}"
+S["gain_rk"] = ordinal(int(TEAMGAIN.gain.rank(ascending=False, method="min")["DET"]))
+S["n_rk"] = ordinal(int(TEAMGAIN.n.rank(ascending=False, method="min")["DET"]))
+for t in ("PHI", "KC"):
+    S[f"per_{t}"] = f"{TEAMGAIN.loc[t, 'per']:+.2f}"
+GAIN_YR = GOS[GOS.posteam == "DET"].groupby("season").gain.sum()
+S["gain24"] = f"{GAIN_YR[2024]:.0f}"
+assert int(TEAMGAIN.n.rank(ascending=False, method="min")["DET"]) == 1
+longish = lambda g: (g.ydstogo >= 4).mean()
+D2 = f4[(f4.qtr <= 3) & f4.season.between(2022, 2024) & f4.ydstogo.between(1, 2) & f4.yardline_100.between(30, 40)]
+S["det_d2"], S["lg_d2"] = pct(D2[D2.posteam == "DET"].go.mean()), pct(D2.go.mean())
+S["det_d2_n"] = f"{int((D2.posteam == 'DET').sum())}"
+S["det_long"], S["lg_long"] = pct(longish(GOS[GOS.posteam == "DET"])), pct(longish(GOS))
+
+# --- FTN charting: the offense's habits (2022-2025) ----------------------------------------------
+ftn = nfl().load_ftn_charting(list(range(2022, 2026))).to_pandas()
+ftn = ftn.rename(columns={"nflverse_game_id": "game_id", "nflverse_play_id": "play_id"})
+FP = plays[plays.season >= 2022].merge(
+    ftn[["game_id", "play_id", "qb_location", "is_motion", "is_play_action", "is_trick_play"]],
+    on=["game_id", "play_id"], how="inner")
+FP["uc"] = FP.qb_location == "U"
+for c in ("is_motion", "is_play_action", "is_trick_play"):
+    FP[c] = FP[c].astype(float)
+FPDB = FP[FP.qb_dropback == 1]
+HAB = {"uc": FP.groupby(["season", "posteam"]).uc.mean().unstack(),
+       "pa": FPDB.groupby(["season", "posteam"]).is_play_action.mean().unstack(),
+       "mo": FP.groupby(["season", "posteam"]).is_motion.mean().unstack(),
+       "tr": FP.groupby(["season", "posteam"]).is_trick_play.mean().unstack() * 100}
+HABL = {"uc": FP.groupby("season").uc.mean(), "pa": FPDB.groupby("season").is_play_action.mean(),
+        "mo": FP.groupby("season").is_motion.mean(), "tr": FP.groupby("season").is_trick_play.mean() * 100}
+for k in ("uc", "pa", "mo"):
+    for s in range(2022, 2026):
+        for team in ("DET", "CHI"):
+            S[f"{k}_{team}_{s}"] = pct(HAB[k].loc[s, team])
+            S[f"{k}_{team}_{s}_rk"] = ordinal(rk(HAB[k], s, team))
+        S[f"{k}_lg_{s}"] = pct(HABL[k].loc[s])
+for s in range(2022, 2026):
+    for team in ("DET", "CHI"):
+        S[f"tr_{team}_{s}"] = f"{HAB['tr'].loc[s, team]:.1f}"
+        S[f"tr_{team}_{s}_rk"] = ordinal(rk(HAB["tr"], s, team))
+    S[f"tr_lg_{s}"] = f"{HABL['tr'].loc[s]:.1f}"
+assert rk(HAB["uc"], 2022, "DET") == 1 and rk(HAB["uc"], 2024, "DET") == 1 and rk(HAB["pa"], 2024, "DET") == 1
+TRICK = FP[FP.is_trick_play == 1]
+TN = TRICK.groupby("posteam").size()
+assert TN.idxmax() == "DET"
+S["mo_top24"] = pct(HAB["mo"].loc[2024].max())
+assert HAB["mo"].loc[2024].idxmax() == "LA"
+S["det_trick_n"], S["trick_n2"] = f"{TN['DET']}", f"{TN.drop('DET').max()}"
+S["det_trick_epa"] = f"{TRICK[TRICK.posteam == 'DET'].epa.mean():+.2f}"
+S["lg_trick_epa"] = f"{TRICK.epa.mean():+.2f}"
+UCEPA = FP[(FP.posteam == "DET") & FP.season.between(2022, 2024)].groupby("uc").epa.mean()
+S["det_uc_epa"], S["det_gun_epa"] = f"{UCEPA[True]:+.2f}", f"{UCEPA[False]:+.2f}"
+PAEPA = FPDB[(FPDB.posteam == "DET") & FPDB.season.between(2022, 2024)].groupby("is_play_action").epa.mean()
+S["det_pa_epa"], S["det_nopa_epa"] = f"{PAEPA[1.0]:+.2f}", f"{PAEPA[0.0]:+.2f}"
+
+# --- coverage the Lions saw (participation, FTN-sourced from 2023) -------------------------------
+part = nfl().load_participation([2024]).to_pandas().rename(columns={"nflverse_game_id": "game_id"})
+cov = plays[(plays.season == 2024) & (plays.qb_dropback == 1)].merge(
+    part[["game_id", "play_id", "defense_coverage_type"]], on=["game_id", "play_id"])
+cov = cov[cov.defense_coverage_type.notna() & ~cov.defense_coverage_type.isin(["BLOWN", "COMBO", "PREVENT"])]
+cov["two"] = cov.defense_coverage_type.isin(["COVER_2", "2_MAN", "COVER_4", "COVER_6"])
+TWO = cov.groupby("posteam").two.mean()
+S["two_det24"], S["two_lg24"] = pct(TWO["DET"]), pct(cov.two.mean())
+S["two_det24_rk"] = ordinal(int(TWO.rank(ascending=False, method="min")["DET"]))
+```
+
+Saturday night, December 30, 2023, in Arlington, Texas. Twenty-three seconds left, and Detroit has just
+scored a touchdown to make it Dallas 20, Lions 19. Kick the extra point and the game is probably headed
+to overtime on the road. Dan Campbell sends his offense back out to go for two and the win. Before the snap,
+two offensive linemen walk toward the referee. Jared Goff takes the snap, and the ball goes to left
+tackle Taylor Decker, number 68, who catches it in the end zone. The crowd groans; then the flag comes
+out. The referee says the lineman who reported himself eligible was number 70, not 68, so Decker was an
+illegal receiver. Detroit loses 20–19.[^decker]
+
+Every piece of that play is this chapter. A coach who went for the win rather than the tie. A play-caller,
+Ben Johnson, who treated a 6-foot-7 tackle listed at well over 300 pounds as a receiver the defense would forget. A formation built to
+look like a run. And a rule about reporting that turned a clever play into a loss. Two seasons earlier the
+same franchise had won three games. How did the Lions become the team that tried things like this, and
+why did it mostly work?
+
+**You'll be able to…**
+
+- Explain the 2021 rebuild in Detroit, and why a team expected to lose should *choose* high-variance
+  decisions rather than avoid them.
+- Recognize Ben Johnson's offense on a broadcast from four habits: the quarterback under center, heavy
+  and jumbo personnel with a reported lineman, shifts layered with motion, and trick plays built as
+  constraint plays, and say what each one buys and costs.
+- Read the data on Campbell's fourth downs honestly: the go rate, the EPA on the attempts, a rough
+  estimate of points gained over kicking, and why the value per attempt falls as a coach gets more aggressive.
+- Lay out the 2025 staff changes and what followed: Johnson to the Bears and Aaron Glenn to the Jets as head
+  coaches, John Morton's one season, Campbell calling plays and Drew Petzing as the third offensive
+  coordinator in three years.
+- Assess what moved to Chicago with Johnson using a before-and-after fingerprint, and name what the data
+  can't separate.
+
+::: {.callout-note title="You'll need"}
+- **[The Modern Era](../11-history/11-05-the-modern-era.qmd)**: the league-wide trends this case study rides,
+  above all the return of the quarterback taking the snap from under center (the *under-center revival*),
+  the motion boom, and offenses going back to heavier personnel after a decade of three-receiver sets.
+- **[The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd)**:
+  the [go-for-it decision](../../appendices/glossary.qmd#gl-go-for-it-decision), the expected-points case for
+  going, the rules of thumb, and the film room on the Lions' 2023 NFC Championship Game. This chapter builds
+  on those and doesn't repeat them.
+- **[Formation Rules](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)**: how a lineman
+  becomes a receiver by [reporting eligible](../../appendices/glossary.qmd#gl-reporting-eligible), and the
+  [eligible tackle](../../appendices/glossary.qmd#gl-eligible-tackle).
+- **[The Pre-Snap Phase](../01-foundations/01-05-the-pre-snap-phase.qmd)** and
+  **[Motion and Shifts](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)**: a
+  [shift](../../appendices/glossary.qmd#gl-shift) (two or more players moving at once, then a full second
+  [set](../../appendices/glossary.qmd#gl-set)), [motion](../../appendices/glossary.qmd#gl-motion), jet motion,
+  and how a defense answers motion.
+- **[Play-Action, Bootlegs, and Screens](../04-the-passing-game/04-05-play-action-boots-screens.qmd)** and
+  **[Constraint Theory](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd)**: the run fake, and
+  plays whose job is to punish a defense for over-playing the base play.
+- **[EPA](../01-foundations/01-02-downs-distance-and-field-position.qmd)** (expected points added: how much a play
+  changed the offense's expected score) and success rate, for the data sections.
+:::
+
+**How to read the diagrams.** Offense is blue circles, defense orange squares; *left* and *right* are the
+offense's left and right. LT, LG, C, RG and RT are the offensive linemen (only the center is lettered), **70**
+is a sixth lineman who has reported eligible, Q the quarterback and R the running back. Y and U are tight ends,
+X, Z and H receivers. On defense, E and T are linemen, S, M and W the Sam, Mike and Will linebackers, CB a
+cornerback and FS and SS the safeties. Solid arrows are paths after the snap, thick dark arrows the ball carrier,
+dashed blue lines movement before the snap, and lines ending in a short bar are blocks. All of the field
+pictures are illustrative: typical of the Lions' offense, not copies of a single play, unless the caption says so.
+
+## The problem: a franchise with nothing to protect
+
+Start with how deep the hole was. Before January 2024, the Lions had won one playoff game since their last
+championship in 1957: a victory over Dallas on January 5, 1992.[^drought] In 2020 they went
+`{python} S["rec_DET_2020"]`, fired head coach Matt Patricia in November, and finished the season with an
+interim coach. In January 2021 they hired a new general manager, Brad Holmes, from the Rams' scouting
+department, and a new head coach, **Dan Campbell**.
+
+Campbell was not a hot coordinator. He had been a tight end for 11 NFL seasons, the Dolphins' interim head
+coach for 12 games in 2015, and for the five seasons before Detroit, Sean Payton's tight ends coach and
+assistant head coach in New Orleans. At his introductory press conference, on January 21, 2021, he promised a
+team that would take on the identity of the city, absorb a punch and, on the way back up, "bite a kneecap
+off."[^kneecap] It became a meme, and not a kind one. One national commentator said the new coach had "3-13
+written all over him."
+
+Then came the trade. Nine days later the Lions agreed to send Matthew Stafford, their quarterback for twelve
+seasons, to the Rams for Jared Goff, a 2021 third-round pick and the Rams' first-round picks in 2022 and
+2023.[^trade] Goff had just been pushed out in Los Angeles. To most observers he was a contract the Rams wanted
+to get rid of; the picks were the prize.
+
+That is the problem this case study is about. Detroit had no young stars, a quarterback the league had written
+off, and a coach most people thought was a motivational speaker. What do you do with a team like that?
+
+### The answer, part 1: build the trenches and the core through the draft
+
+Holmes and Campbell's plan was old-fashioned in one way and modern in another. The old-fashioned part was the
+order of building: linemen first, on both sides of the ball, mostly through the draft. The modern part was
+volume: extra picks from the Stafford trade, and a willingness to trade around the board.
+
+| Draft | Pick | Player | Position |
+|------|----:|-------|---------|
+| 2021 | 7 | Penei Sewell | offensive tackle |
+| 2021 | 112 (4th round) | Amon-Ra St. Brown | wide receiver |
+| 2022 | 2 | Aidan Hutchinson | edge rusher |
+| 2022 | 12 | Jameson Williams | wide receiver |
+| 2023 | 12 | Jahmyr Gibbs | running back |
+| 2023 | 18 | Jack Campbell | linebacker |
+| 2023 | 34 | Sam LaPorta | tight end |
+| 2023 | 45 | Brian Branch | defensive back |
+
+: The core of the Johnson-era roster, drafted 2021–2023. Source: nflverse draft data.[^draft] {#tbl-draft}
+
+The Rams' two first-round picks didn't simply turn into two players: Detroit used them in trades. In 2022 the
+Rams' pick (No. 32) went to Minnesota with two more picks to move up to No. 12 for Jameson Williams; in 2023 the
+Rams' pick (No. 6) went to Arizona in a trade down that brought back No. 12 (Gibbs) and No. 34 (LaPorta). Two more names
+matter for the offense: right tackle Sewell, the seventh overall pick in 2021, and St. Brown, a fourth-rounder
+who became one of the league's best receivers. You'll see both in the plays below. A scheme can only ask its
+players to do what they can do, and Johnson's scheme asked a lot of a tackle and a slot receiver.
+
+### The answer, part 2: when you are the underdog, choose variance
+
+The second half of the plan was a decision-making style, and it showed up before the team was any good. In 2021
+the Lions went `{python} S["rec_DET_2021"]`. They also went for it on fourth down
+`{python} S["det_att21"]` times, the most in the league (the average team went
+for it `{python} S["lg_att21"]` times), and ran three successful fake punts.[^fakes21] Why would a bad team be
+the most aggressive team in football?
+
+::: {.callout-important title="Why it exists"}
+**Underdogs should increase variance.** If you expect to lose a game playing it safe, a safe strategy mostly
+guarantees the expected result: a respectable loss. A riskier strategy, more fourth-down attempts, onside and
+fake kicks, trick plays, widens the spread of outcomes in both directions, and when you start out behind, the
+good tail of a wider distribution is where your wins live. It is the same logic as a basketball underdog
+shooting more three-pointers. The price is real: bad outcomes get worse and more visible, and a coach who
+chooses variance will be second-guessed on every failure. A rebuilding team with nothing to protect pays that
+price most cheaply.
+
+There was a second, less mathematical reason: identity. Campbell talked about building a team that played like
+it had nothing to lose, and an aggressive fourth-down habit is a weekly, public signal to the players that the
+coach trusts them. That is harder to measure, but it is part of why the habit survived after the Lions became
+favourites, which is where the math gets more interesting (later in this chapter).
+:::
+
+@fig-timeline puts the five seasons and the staff in one picture. Keep it nearby: the Lions changed play-callers
+four times in five seasons, and much of this chapter is about which ideas belonged to which coach.
+
+```{python}
+#| label: fig-timeline
+#| fig-cap: "The Campbell era at a glance. Top: regular-season record and how each season ended. Bottom: who held each job. The play-caller is the coach who chose the plays on game day, which isn't always the offensive coordinator: Campbell took the play sheet from Anthony Lynn midway through 2021 (with Ben Johnson, then passing-game coordinator, helping), and from John Morton in Week 10 of 2025. Johnson called the plays as coordinator from 2022 to 2024. Who calls the plays in 2026 under the new coordinator, Drew Petzing, is left blank. Sources: nflverse schedules; team and league reports cited in the text."
+seasons = list(range(2021, 2026))
+fig, (a1, a2) = plt.subplots(2, 1, figsize=(6.6, 4.3), gridspec_kw=dict(height_ratios=[1.0, 1.35]))
+wins = [REC[("DET", s)][0] for s in seasons]
+a1.bar(seasons, wins, color=LIONS, width=0.6)
+ends = {2021: "", 2022: "missed playoffs\non the last day", 2023: "won NFC North;\nlost NFC title game",
+        2024: "15 wins, No. 1 seed;\nlost divisional round", 2025: "missed playoffs"}
+for s, w in zip(seasons, wins):
+    a1.text(s, w + 0.5, S[f"rec_DET_{s}"], ha="center", va="bottom", fontsize=8, fontweight="bold", color=style.INK)
+    if ends[s]:
+        a1.text(s, w + 3.4, ends[s], ha="center", va="bottom", fontsize=6.4, color=style.INK_2, linespacing=1.1)
+a1.set_ylim(0, 28)
+a1.set_yticks([0, 5, 10, 15])
+a1.set_ylabel("Wins", fontsize=8)
+a1.set_xlim(2020.45, 2026.55)
+a1.set_xticks(list(range(2021, 2027)), [str(s) for s in range(2021, 2027)])
+a1.text(2026, 1.0, "season\nunder way", ha="center", va="bottom", fontsize=6.4, color=style.MUTED, style="italic")
+a1.set_title("Detroit under Dan Campbell, 2021–2026", fontsize=10)
+a1.grid(axis="x", visible=False)
+
+rows = ["Head coach", "Play-caller", "Offensive\ncoordinator", "Defensive\ncoordinator"]
+C_CAMP, C_JOHN, C_OTHER, C_DEF = LIONS, style.THIRD, "#c9c8c1", style.SERIES[3]
+bars = [  # (row, start, end, name, colour, text colour)
+    (0, 2020.55, 2026.45, "Dan Campbell", C_CAMP, "white"),
+    (1, 2020.55, 2021.0, "Lynn", C_OTHER, style.INK), (1, 2021.0, 2021.45, "Campbell", C_CAMP, "white"),
+    (1, 2021.55, 2024.45, "Ben Johnson", C_JOHN, "white"),
+    (1, 2024.55, 2025.0, "Morton", C_OTHER, style.INK), (1, 2025.0, 2025.45, "Campbell", C_CAMP, "white"),
+    (2, 2020.55, 2021.45, "Anthony Lynn", C_OTHER, style.INK), (2, 2021.55, 2024.45, "Ben Johnson", C_JOHN, "white"),
+    (2, 2024.55, 2025.45, "John Morton", C_OTHER, style.INK), (2, 2025.55, 2026.45, "Drew Petzing", C_OTHER, style.INK),
+    (3, 2020.55, 2024.45, "Aaron Glenn", C_DEF, style.INK), (3, 2024.55, 2026.45, "Kelvin Sheppard", C_DEF, style.INK),
+]
+for r, x0, x1, name, col, tc in bars:
+    a2.add_patch(FancyBboxPatch((x0, -r - 0.34), x1 - x0, 0.68, boxstyle="round,pad=0,rounding_size=0.08",
+                                fc=col, ec="white", lw=0.8))
+    short = x1 - x0 < 0.6
+    a2.text((x0 + x1) / 2, -r, name.replace("Campbell", "Camp-\nbell") if short else name, ha="center",
+            va="center", fontsize=5.9 if short else 7.4, color=tc, fontweight="bold", linespacing=0.95)
+a2.text(2026.0, -1, "not\nshown", ha="center", va="center", fontsize=6.2, color=style.MUTED, style="italic")
+a2.set_yticks([-i for i in range(4)], rows, fontsize=7.6)
+a2.set_ylim(-3.6, 0.6)
+a2.set_xlim(2020.45, 2026.55)
+a2.set_xticks(list(range(2021, 2027)), [str(s) for s in range(2021, 2027)])
+a2.grid(False)
+for sp in ("left", "bottom"):
+    a2.spines[sp].set_visible(False)
+a2.tick_params(length=0)
+fig.tight_layout(h_pad=0.8)
+plt.show()
+```
+
+## Ben Johnson: the designer
+
+**Ben Johnson** is an unlikely NFL play-caller in the best sense. He was a walk-on quarterback at North Carolina
+who graduated with degrees in mathematics and computer science and worked briefly as a software developer before
+going into coaching: graduate assistant and then tight ends coach at Boston College, seven seasons on the Miami
+Dolphins' offensive staff (quarterbacks, tight ends and receivers), and then Detroit in 2019 as an offensive
+quality-control coach, the job of breaking down film and data for the coaches above him.[^johnson] Campbell's
+arrival in 2021 kept him and made him passing-game coordinator. When the offense sputtered under coordinator
+Anthony Lynn, Campbell took over the play-calling at midseason, leaning on Johnson for the plan; after the season
+Lynn left and Johnson became the
+[offensive coordinator](../../appendices/glossary.qmd#gl-offensive-coordinator) and
+[play-caller](../../appendices/glossary.qmd#gl-play-caller).[^lynn]
+
+The results came fast. Detroit's offense ranked `{python} S["det_epa_rk2021"]` in EPA per play in 2021,
+`{python} S["det_epa_rk2022"]` in 2022, `{python} S["det_epa_rk2023"]` in 2023 and `{python} S["det_epa_rk2024"]`
+in 2024, when the Lions went `{python} S["rec_DET_2024"]` and led the league with `{python} S["det_pts24"]` points.
+Goff, the castoff, threw for `{python} S["goff24_yds"]` yards and `{python} S["goff24_td"]` touchdowns that year.
+Johnson was named the AP's Assistant Coach of the Year for 2024.[^acoy]
+
+What was his offense? Not one invention. Its base was familiar: a wide-zone and gap run game, play-action off
+it, and quick, timed throws to St. Brown and LaPorta. What made it *Johnson's* was a set of habits layered on top
+that made every snap look like several others. Here are the four that show up most clearly on film and in the
+data, with what each buys and costs.
+
+### Habit 1: the quarterback goes back under center
+
+In the 2010s the shotgun took over the NFL. By 2023 barely more than a quarter of snaps came with the quarterback
+[under center](../../appendices/glossary.qmd#gl-under-center). Johnson's Lions went the other way: under center
+on `{python} S["uc_DET_2022"]` of their runs and passes in 2022 (`{python} S["uc_DET_2022_rk"]` in the league;
+the league average was `{python} S["uc_lg_2022"]`) and `{python} S["uc_DET_2024"]` in 2024, again the highest
+rate in football (league `{python} S["uc_lg_2024"]`).[^ftn]
+
+Why go back? Because under center, a run and a pass begin with the same motion. The quarterback turns his back to
+the defense, the running back comes downhill toward him, and for the first second the linebackers can't see the
+ball. From the shotgun, the run fake is a sideways mesh the defense reads more easily. Under center is a disguise
+before it is anything else, and the payoff is
+[**play-action**](../../appendices/glossary.qmd#gl-play-action). In 2024 the Lions used a run fake on
+`{python} S["pa_DET_2024"]` of their dropbacks, the league's highest share (league
+`{python} S["pa_lg_2024"]`), and across 2022–2024 their dropbacks averaged `{python} S["det_pa_epa"]` EPA with a
+run fake against `{python} S["det_nopa_epa"]` without one.
+
+Here is the honest part. Detroit's plays from under center were not, on average, better than its plays from the
+shotgun: `{python} S["det_uc_epa"]` EPA per play against `{python} S["det_gun_epa"]` in 2022–2024. That is the
+point. Under center didn't win by itself; it made the run and the pass look alike, so that both worked. The cost
+is in the passing game's other half: from under center the quarterback needs a beat longer to set up on a true
+dropback, which is part of why under-center teams lean on play-action rather than pure drop-back passing.
+
+### Habit 2: bodies, and the lineman who might be a receiver
+
+Johnson loved [heavy personnel](../../appendices/glossary.qmd#gl-heavy-personnel) (extra tight ends) and
+[jumbo](../../appendices/glossary.qmd#gl-jumbo-six-offensive-linemen) sets with a sixth offensive lineman, and he
+made that sixth lineman a weapon by having him report eligible. [Formation Rules](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)
+counted the numbers: Detroit reported a lineman on 170 runs and passes from 2022 to 2024, third most in the
+league, and passed on about 35% of them against about 24% for the league.
+
+A reported lineman sends the defense two messages at once. "Big formation" says run, so linebackers and a safety
+creep toward the line. "Eligible" says this 300-pounder might go out for a pass, so somebody has to account for
+him. @fig-jumbo shows the two plays that make the defense pay for each message.
+
+```{python}
+#| label: fig-jumbo
+#| fig-cap: "One jumbo look, two answers (illustrative). Six offensive linemen; #70 has reported eligible and lines up as the right end, where a tight end would stand, and the defense has walked its strong safety (SS) down to make eight in the box against the run. Left, the leak: the run fake goes left, the linebackers flow with it, #70 blocks for a count and then slips into the flat behind them while the quarterback boots right. Right, the bait: the run fake goes right, toward #70, and the safety and linebackers attack it. Z runs a deep crossing route into the space they left, while X's post holds the deep safety in the middle. Both plays start from exactly the same picture; the defense has to guess which message to believe."
+def jumbo_look():
+    off = line5() + [O("T70", "OL", -0.7, 4.8, "70"), O("U", "TE", -0.7, -4.8, "U"),
+                     O("X", "WR", -1.5, -12.0, "X"), O("Z", "WR", -1.5, 9.5, "Z"),
+                     O("QB", "QB", -1.9, 0.0, "Q"), O("RB", "RB", -7.0, 0.0, "R")]
+    dfn = [D("LE", "DE", 1.0, -4.0, "E"), D("LT_", "DT", 1.0, -0.7, "T"), D("RT_", "DT", 1.0, 2.35, "T"),
+           D("RE", "DE", 1.0, 5.6, "E"), D("SAM", "SAM", 3.8, 7.4, "S"), D("MIKE", "MIKE", 4.4, 1.2, "M"),
+           D("WILL", "WILL", 4.4, -2.8, "W"), D("SS", "SS", 7.0, 4.2, "SS"), D("FS", "FS", 13.5, -0.5, "FS"),
+           D("LCB", "CB", 6.5, -12.0, "CB"), D("RCB", "CB", 6.5, 10.5, "CB")]
+    return off, dfn
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.7, 4.3))
+LAT, WIN = (-15.5, 15.5), (-9.5, 25.0)
+
+# --- left: the leak ---
+off, dfn = jumbo_look()
+p = Play(off, dfn, los=35, to_go=5)
+go(p, "RB", [(-4.6, -2.0), (-1.4, -3.8)], "run", speed=6.0)                  # the fake, left
+go(p, "QB", [(-2.7, -1.2), (-5.2, 2.4), (-5.0, 6.8)], speed=5.0)             # fake, then boot right
+go(p, "T70", [(0.2, 5.4)], "block", speed=2.0)                               # a count of blocking ...
+go(p, "T70", [(2.2, 8.4), (3.0, 12.8)], "route", speed=5.0, delay=0.3)       # ... then the leak
+go(p, "Z", [(9.0, 9.8), (17.0, 13.0)], "route")                              # clear out the corner
+for k, to in [("MIKE", (2.6, -1.8)), ("WILL", (2.8, -5.0)), ("SAM", (3.0, 4.4)), ("SS", (4.2, 1.8))]:
+    go(p, k, [to], speed=4.0)                                                # chase the fake
+go(p, "RCB", [(15.0, 12.4)], speed=5.0)                                      # carries Z deep
+for k in ("LT", "LG", "C", "RG", "RT"):
+    go(p, k, [(-0.2, p.players[k].w - 0.7)], "block", speed=1.5)
+p.pass_to("T70", t=2.6)
+p.highlight("T70")
+fld = p.draw(ax=axes[0], lateral=LAT, window=WIN, title=False)
+no_numbers(axes[0])
+P = P_of(fld, p)
+say(axes[0], P, -4.3, 12.2, "70: block a count,\nthen leak", color=style.OFFENSE_DARK)
+say(axes[0], P, 6.0, -6.4, "linebackers chase\nthe run fake", color=style.DEFENSE_DARK)
+say(axes[0], P, -7.4, 7.6, "Q: fake left,\nboot right", color=style.OFFENSE_DARK)
+axes[0].set_title("The leak: throw to the lineman", fontsize=9, loc="left")
+
+# --- right: the bait ---
+off, dfn = jumbo_look()
+p = Play(off, dfn, los=35, to_go=5)
+go(p, "RB", [(-4.4, 2.0), (-1.4, 3.8)], "run", speed=6.0)                    # the fake, right
+go(p, "QB", [(-2.7, 1.0), (-6.6, -0.6)], speed=4.0)                         # fake, then set up
+go(p, "Z", [(11.0, 9.0), (15.5, 1.0), (16.0, -5.0)], "route")                # deep crosser behind the bite
+go(p, "X", [(12.0, -12.0), (23.0, -4.5)], "route")                           # post: hold the deep safety
+for k, to in [("MIKE", (2.2, 2.6)), ("WILL", (2.6, 0.4)), ("SAM", (2.4, 5.8)), ("SS", (3.4, 4.6))]:
+    go(p, k, [to], speed=4.0)                                                # attack the run fake
+go(p, "FS", [(17.5, -2.6)], speed=3.0)
+go(p, "RCB", [(16.0, 11.0)], speed=5.0)
+go(p, "LCB", [(17.0, -10.5)], speed=5.0)
+for k in ("LT", "LG", "C", "RG", "RT", "T70"):
+    go(p, k, [(0.0, p.players[k].w + 0.6)], "block", speed=1.5)
+p.pass_to("Z", t=2.7)
+p.highlight("Z")
+fld = p.draw(ax=axes[1], lateral=LAT, window=WIN, title=False)
+no_numbers(axes[1])
+P = P_of(fld, p)
+say(axes[1], P, 9.4, 2.4, "SS and linebackers\nattack the run fake", color=style.DEFENSE_DARK)
+say(axes[1], P, 19.8, 7.4, "Z: deep crosser into\nthe space they left", color=style.OFFENSE_DARK)
+say(axes[1], P, 21.8, -10.6, "X's post holds\nthe deep safety", color=style.OFFENSE_DARK)
+axes[1].set_title("The bait: throw behind the run defense", fontsize=9, loc="left")
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+The left play is the one fans remember, because the catch is funny. The right one is the one that does damage,
+and it is far more common. That trade is the whole design: the reported lineman is mostly a *threat*, and the
+offense cashes the threat by throwing somewhere else.
+
+::: {.callout-caution title="Common misconception"}
+"Reporting a tackle eligible is a trick play." Mostly it isn't. Across the league, a reported lineman usually
+means a run, and Detroit ran on about two of every three such snaps. The report is a cheap way to add a
+blocker who is also a possible receiver, and the passes it sets up usually go to the regular receivers. The
+genuinely tricky part, a throw to the lineman himself, is the rare constraint play that keeps the threat honest.
+:::
+
+::: {.callout-note title="Film room: Lions at Cowboys, December 30, 2023"}
+Back to the opening play, now with the vocabulary. Trailing 20–19 with 23 seconds left, Campbell went for two
+and the win on the road, the choice the [two-point chart](../10-situational-football/10-04-clock-and-game-management.qmd)
+calls close. Johnson's call put a sixth lineman on the field and threw to a tackle, and the official play-by-play
+tells the story in one line: "70-D.Skipper reported in as eligible... 16-J.Goff pass to 68-T.Decker is complete. ATTEMPT
+SUCCEEDS. PENALTY on DET-68-T.Decker, Illegal Touch Pass." Backup tackle Dan Skipper (#70) and Decker (#68) had
+both gone toward referee Brad Allen; Decker said afterwards that he reported, Skipper said he hadn't said a word,
+and Allen said that number 70 had reported. The retry moved back five yards and failed, and so did one more after
+a Dallas penalty. Detroit lost 20–19.
+
+The same game shows the rest of the identity. Earlier, on fourth-and-2 from their own 28, the Lions ran a fake
+punt: a direct snap to linebacker Jalen Reeves-Maybin, who threw 31 yards to Khalil
+Dorsey. When the two teams met again in October 2024, in a 47–9 Detroit win, the Lions ran a hook-and-lateral that
+ended with Penei Sewell carrying the ball to the Dallas 3, called back for an ineligible man downfield, and
+widely read as a joke at the expense of the 2023 game.[^troll]
+
+**What to notice:** the play was a good idea that died on a procedure, which is a risk every reporting play
+carries: the referee has to hear the report and announce it, and the defense has to be told. The lesson Detroit took was not to
+stop reporting linemen; they kept doing it for two more seasons. The lesson for a viewer is to listen for the
+referee's announcement, and then watch the safeties rather than the lineman.
+:::
+
+### Habit 3: shift, set, motion: make the defense declare twice
+
+Before a defense can stop a play, it has to agree on what it's looking at: which side is the strength, which
+linebacker has which gap, who covers whom. Every [shift](../../appendices/glossary.qmd#gl-shift) asks it to agree
+again. Johnson's offense layered two kinds of movement: first a shift that changed the formation (a tight end
+trading sides, a receiver tightening his split), then, after the required one-second freeze, a man in
+[motion at the snap](../../appendices/glossary.qmd#gl-motion-at-the-snap). @fig-shift-motion runs one such
+sequence in simulation.
+
+```{python}
+#| label: fig-shift-motion
+#| fig-cap: "Shift, set, motion (simulated, in Big Data Bowl tracking format; illustrative, not a specific Lions play). 1: two tight ends, one on each side; the defense sets its strength toward Y. 2: the shift: U walks across behind the quarterback to a wing beside Y, and Z tightens his split, so the formation is now heavy to the right. 3: the defense has to re-declare: the Sam slides out over U, the Mike and Will shuffle right, the right corner moves in over Z. Everyone on offense is set for a full second, as the rules require. 4: Z comes back across in jet motion; the left safety spins down toward him and the right safety rotates to the middle, so two-high becomes one-high, and the linebackers bump left. 5: at the snap the quarterback fakes the jet sweep to Z, and the left side of the defense reacts to it. 6: the ball goes the other way: a handoff to R on a run to the heavy right side, behind U and Y, where the defense has one fewer player than it had at the start. Dashed outlines are where players began."
+def shift_play():
+    off = line5() + [O("Y", "TE", -0.7, 4.8, "Y"), O("X", "WR", -0.7, -14.0, "X"), O("U", "TE", -1.6, -6.2, "U"),
+                     O("Z", "WR", -1.5, 13.0, "Z"), O("QB", "QB", -1.9, 0.0, "Q"), O("RB", "RB", -7.0, 0.0, "R")]
+    dfn = [D("LE", "DE", 1.0, -4.1, "E"), D("LT_", "DT", 1.0, -0.7, "T"), D("RT_", "DT", 1.0, 2.35, "T"),
+           D("RE", "DE", 1.0, 5.7, "E"), D("WILL", "WILL", 4.5, -3.2, "W"), D("MIKE", "MIKE", 4.5, 0.8, "M"),
+           D("SAM", "SAM", 3.8, 6.4, "S"), D("LCB", "CB", 6.5, -14.0, "CB"), D("RCB", "CB", 6.5, 13.0, "CB"),
+           D("FS", "FS", 12.0, -8.0, "FS"), D("SS", "SS", 12.0, 8.0, "SS")]
+    p = Play(off, dfn, los=35, to_go=10)
+    # pre-snap paths (for positions); their timing is set by retime() below
+    pre(p, "U", [(-3.3, -3.0), (-3.3, 3.5), (-1.6, 6.4)])
+    pre(p, "Z", [(-1.5, 9.0), (-3.0, 4.0), (-3.0, 0.2)])
+    for k, to in [("SAM", (3.6, 8.2)), ("RCB", (6.5, 9.8))]:
+        pre(p, k, [to])
+    pre(p, "MIKE", [(4.5, 2.2), (4.5, 0.9)])
+    pre(p, "WILL", [(4.5, -1.6), (4.5, -3.0)])
+    pre(p, "FS", [(8.0, -8.4)])
+    pre(p, "SS", [(12.6, 2.5)])
+    # after the snap
+    go(p, "Z", [(-2.8, -8.0), (0.5, -13.5)], speed=8.0)                     # the fake jet sweep
+    go(p, "QB", [(-2.4, -0.6), (-4.2, 1.4)], speed=6.0)                      # fake to Z, hand to R
+    go(p, "QB", [(-6.2, -2.4)], speed=4.0, delay=0.15)
+    go(p, "RB", [(-4.6, 1.8), (-1.6, 3.7), (2.4, 4.3), (9.5, 4.6)], "run", speed=6.4, delay=0.3)
+    p.handoff("RB", t=0.8)
+    for k, dw in [("LT", -0.6), ("LG", 0.6), ("C", 0.7), ("RG", 0.7), ("RT", 0.6)]:
+        go(p, k, [(0.3, p.players[k].w + dw)], "block", speed=1.5)
+    go(p, "Y", [(0.4, 5.5)], "block", speed=1.6)
+    go(p, "U", [(2.9, 7.7)], "block", speed=2.6)
+    go(p, "X", [(3.4, -13.6)], "block", speed=4.0)
+    go(p, "WILL", [(3.6, -4.8)], speed=3.5)                                  # first steps: chase the jet
+    go(p, "MIKE", [(4.0, -0.4), (3.4, 2.8)], speed=3.5)                      # ... then back to the run, late
+    go(p, "SAM", [(3.3, 8.4)], speed=2.0)
+    go(p, "FS", [(5.6, -10.4)], speed=4.0)
+    go(p, "LCB", [(4.8, -12.0)], speed=3.0)
+    go(p, "SS", [(10.5, 3.4)], speed=3.0, delay=0.4)
+    go(p, "LE", [(0.6, -3.2)], speed=1.5)
+    go(p, "RE", [(1.0, 6.6)], speed=1.0)
+    # the schedule: shift (-6.8 to -4.6), defense re-declares, everyone set, jet motion from -1.3
+    retime(p, "U", [(-6.8, -1.6, -6.2), (-6.0, -3.3, -3.0), (-5.2, -3.3, 3.5), (-4.6, -1.6, 6.4)])
+    retime(p, "Z", [(-6.8, -1.5, 13.0), (-5.6, -1.5, 13.0), (-4.6, -1.5, 9.0), (-1.3, -1.5, 9.0),
+                    (-0.65, -3.0, 4.0), (0.0, -3.0, 0.2)])
+    retime(p, "SAM", [(-6.8, 3.8, 6.4), (-4.4, 3.8, 6.4), (-3.4, 3.6, 8.2)])
+    retime(p, "RCB", [(-6.8, 6.5, 13.0), (-4.4, 6.5, 13.0), (-3.4, 6.5, 9.8)])
+    retime(p, "MIKE", [(-6.8, 4.5, 0.8), (-4.3, 4.5, 0.8), (-3.4, 4.5, 2.2), (-0.9, 4.5, 2.2), (0.0, 4.5, 0.9)])
+    retime(p, "WILL", [(-6.8, 4.5, -3.2), (-4.3, 4.5, -3.2), (-3.4, 4.5, -1.6), (-0.9, 4.5, -1.6), (0.0, 4.5, -3.0)])
+    retime(p, "FS", [(-6.8, 12.0, -8.0), (-1.0, 12.0, -8.0), (0.0, 8.0, -8.4)])
+    retime(p, "SS", [(-6.8, 12.0, 8.0), (-1.0, 12.0, 8.0), (0.0, 12.6, 2.5)])
+    p.highlight("U", "Z")
+    p.highlight("FS", color=style.DEFENSE)
+    return p
+
+
+SHIFT = shift_play()
+show_play(SHIFT, [-6.8, -4.6, -2.2, -0.5, 0.45, 2.5],
+          ["1. Lined up: Y right, U on the left wing", "2. The shift: U trades sides, Z tightens",
+           "3. Defense re-declares; all set 1 second", "4. Jet motion: FS spins down, SS to the middle",
+           "5. Snap: fake the jet to Z", "6. Handoff to R, back to the heavy side"],
+          phases([(-4.7, "The shift: U trades sides, Z tightens his split"),
+                  (-1.3, "The defense re-declares; everyone set for a full second"),
+                  (0.0, "Jet motion: the safety spins down, the linebackers bump"),
+                  (0.75, "Snap: fake the jet sweep"), (9, "Hand off back to the heavy side")]),
+          lateral=(-16.5, 15.5), window=(-9, 14), ghosts=("U", "Z", "SAM", "MIKE", "WILL", "FS", "SS", "RCB"),
+          ghost_t=-6.8)
+```
+
+Count what the defense had to do in under seven seconds: identify a two-tight-end formation and set its strength;
+watch two players move at once, re-identify the strength and slide three players; recognise a jet motion and
+rotate its safeties; and then, at the snap, decide whether the jet was real. Each of those is a call that must be
+heard by eleven people in a loud stadium. Each is a chance for one of them to be a step late or in the wrong
+gap. A defense that answers every movement correctly has still been made to *show* its answers, which tells the
+quarterback who is likely to be where.
+
+::: {.callout-important title="Why it exists"}
+Shifts and motion buy information and mistakes. The defense's adjustment reveals its coverage (a defender who
+travels with motion suggests man; a safety who spins suggests a rotation), and every re-declaration is a chance
+for a miscommunication. Layering a shift *and* a motion means the defense has to answer twice on one snap. The
+cost: the offense must be perfectly drilled too. After a shift every player has to be still for a full second
+before anyone goes in motion, or it is a five-yard illegal shift, and the more players move, the
+more ways there are to get it wrong. It also burns play clock, which is why these sequences cluster on plays
+where the offense broke the huddle early.
+:::
+
+Johnson's Lions were not the league's heaviest motion team by volume: FTN's charters logged motion on
+`{python} S["mo_DET_2024"]` of Detroit's plays in 2024, `{python} S["mo_DET_2024_rk"]` in the league (the Rams led,
+at `{python} S["mo_top24"]`). The distinctive thing was the combination: motion *plus* shifts *plus* under center *plus* heavy
+personnel, so the same eleven players could arrive at many different formations, and the defense could rarely
+substitute its way out of a look before the snap.
+
+### Habit 4: trick plays as constraint plays
+
+Every team has a few trick plays. Johnson's Lions ran them more than anyone and treated them as part of the
+system rather than a surprise package. FTN's charters flagged `{python} S["det_trick_n"]` Detroit snaps as trick
+plays from 2022 to 2025, the most in the league (the next team had `{python} S["trick_n2"]`), and those snaps
+averaged `{python} S["det_trick_epa"]` EPA, against `{python} S["lg_trick_epa"]` for everyone's trick plays.[^ftn2]
+The samples are small, a few dozen plays, so read the EPA as "worked often" rather than as a precise number.
+
+The logic is [constraint theory](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd). A trick
+play isn't random. It is a [constraint play](../../appendices/glossary.qmd#gl-constraint-play) built on a specific
+habit the defense has learned from your film: a cornerback who always rallies to a short catch, a defense that
+ignores the running back as a passer, a safety who flies at every run fake. The offense's own
+[self-scout](../../appendices/glossary.qmd#gl-self-scout) tells it which of its plays the defense has studied
+hardest, and the trick play starts as exactly that play. The 2024 season shows the pattern: the same catch-and-pitch
+idea four times, and three different non-quarterbacks throwing.
+
+```{python}
+#| label: tbl-tricks
+#| tbl-cap: "The 2024 Lions' trick plays, from the official play-by-play (regular season and playoffs). Result yards include the lateral; EPA is the play's expected points added. Source: nflverse play-by-play; dates from nflverse schedules."
+TRICKS = [
+    ("2024_03_DET_ARI", "Lateral to 26-J.Gibbs", "Hook-and-lateral: St. Brown catches, pitches to Gibbs"),
+    ("2024_04_SEA_DET", "pass short left to 16-J.Goff", "St. Brown throws to Goff"),
+    ("2024_06_DET_DAL", "Lateral to 58-P.Sewell", "Hook-and-lateral to right tackle Sewell"),
+    ("2024_08_TEN_DET", "D.Montgomery pass", "Running back Montgomery throws to LaPorta"),
+    ("2024_13_CHI_DET", "P.Sewell sacked", "Toss to Sewell, with an option to pass"),
+    ("2024_15_BUF_DET", "Lateral to 26-J.Gibbs", "Hook-and-lateral: St. Brown to Gibbs"),
+    ("2024_17_DET_SF", "Lateral to 9-Ja.Williams", "Hook-and-lateral: St. Brown to Jameson Williams"),
+    ("2024_20_WAS_DET", "D.Montgomery pass", "Montgomery throws to St. Brown"),
+    ("2024_20_WAS_DET", "Ja.Williams pass", "Jameson Williams throws to Gibbs"),
+]
+allsch = nfl().load_schedules([2024]).to_pandas().set_index("game_id")
+r24 = raw[raw.season == 2024]
+md = ("| Date | Opp. | Down | Play | Result | EPA |\n"
+      "|-----------|--------|--------|------------------------------------|-------------|-----:|\n")
+for gid, key, what in TRICKS:
+    row = r24[(r24.game_id == gid) & r24.desc.str.contains(key, regex=False, na=False)].iloc[0]
+    g = allsch.loc[gid]
+    opp = g.away_team if g.home_team == "DET" else g.home_team
+    when = pd.Timestamp(g.gameday).strftime("%b %-d, %Y") + (" (playoff)" if g.game_type != "REG" else "")
+    dd = f"{['1st', '2nd', '3rd', '4th'][int(row.down) - 1]}-{int(row.ydstogo)}"
+    if "No Play" in row.desc:
+        res = "no play (penalty)"
+    elif "INTERCEPTED" in row.desc:
+        res = "intercepted"
+    elif "TOUCHDOWN" in row.desc:
+        res = f"{int(row.yards_gained)}-yard TD"
+    else:
+        yg = int(row.yards_gained)
+        res = f"{'−' if yg < 0 else '+'}{abs(yg)} yard{'' if abs(yg) == 1 else 's'}"
+    md += f"| {when} | {'at ' if g.home_team != 'DET' else ''}{opp} | {dd} | {what} | {res} | {row.epa:+.1f} |\n"
+display(Markdown(md))
+```
+
+Notice two things in the table. The hook-and-lateral kept working after opponents had surely seen it on film,
+because the defense's habit it attacks, swarming the receiver who has just caught a short pass, is one no coach
+wants to un-teach. And the last two rows are the cost of the habit: in the season's biggest game, two trick plays,
+one a 20-yard gain and one intercepted in the fourth quarter.
+
+The most famous of them is @fig-hook-lateral: on a Monday night in Santa Clara, St. Brown caught a pass a yard
+past the line of scrimmage and pitched it to Jameson Williams, who ran 41 more yards for a touchdown.
+
+```{python}
+#| label: fig-hook-lateral
+#| fig-cap: "The hook-and-lateral (simulated, in Big Data Bowl tracking format; illustrative, not the exact alignment the Lions used). 1: at the snap Z, the outside receiver, runs a two-yard hitch toward the sideline; H, inside him, starts late on a flat path toward the sideline. 2: the quarterback throws quickly to Z, and the three nearest defenders (the corner, the nickel and the safety) all break on the catch: tackling the man with the ball is what they are trained to do. 3: as H passes just behind him, Z pitches the ball backward to H. A backward pass can be thrown to anyone, at any time, so this is legal anywhere on the field. 4: three defenders are now on the wrong man, and H has the sideline to himself. The pitch has to go backward or level, or it is an illegal forward pass."
+def hook_play():
+    off = line5() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -1.6, "R"), O("X", "WR", -0.7, -15.0, "X"),
+                     O("Y", "TE", -1.5, -8.0, "Y"), O("H", "WR", -1.5, 8.0, "H"), O("Z", "WR", -0.7, 14.5, "Z")]
+    dfn = [D("LE", "DE", 1.0, -4.0, "E"), D("LT_", "DT", 1.0, -1.0, "T"), D("RT_", "DT", 1.0, 1.0, "T"),
+           D("RE", "DE", 1.0, 4.0, "E"), D("WILL", "WILL", 4.5, -2.5, "W"), D("MIKE", "MIKE", 4.5, 2.2, "M"),
+           D("NB", "NB", 4.5, 8.4, "NB"), D("RCB", "CB", 5.5, 15.0, "CB"), D("LCB", "CB", 6.0, -15.0, "CB"),
+           D("SS", "SS", 11.5, 10.0, "SS"), D("FS", "FS", 12.0, -8.0, "FS")]
+    p = Play(off, dfn, los=58, to_go=12)
+    go(p, "Z", [(2.3, 14.6), (1.9, 14.2)], "route", speed=7.0)
+    p.dropback(1.5)
+    p.pass_to("Z", t=0.75)
+    go(p, "H", [(-0.9, 10.6), (0.5, 13.0), (0.7, 15.2), (4.0, 17.5), (10.0, 19.0), (17.5, 19.8)], "route",
+       speed=6.6, delay=0.85)
+    p.pitch("H", t=1.95)
+    go(p, "RCB", [(2.8, 14.6), (2.2, 14.1)], speed=3.6, delay=0.75)
+    go(p, "NB", [(2.9, 12.3), (2.4, 13.3)], speed=5.0, delay=0.85)
+    go(p, "SS", [(5.4, 13.4), (3.2, 14.0)], speed=6.0, delay=0.8)
+    go(p, "MIKE", [(3.2, 8.6)], speed=4.5, delay=0.9)
+    for k in ("LT", "LG", "C", "RG", "RT"):
+        go(p, k, [(-0.8, p.players[k].w)], "block", speed=1.2)
+    p.highlight("Z", "H")
+    return p
+
+
+HOOK = hook_play()
+show_play(HOOK, [0.0, 1.65, 2.0, 2.95],
+          ["1. Snap: Z hitches, H starts late", "2. The catch: three defenders break on Z",
+           "3. The pitch, backward, to H", "4. H has the sideline"],
+          phases([(0.7, "Z runs a short hitch; H starts late"), (1.6, "Quick throw to Z"),
+                  (1.95, "Three defenders break on the catch"), (2.4, "Pitch to H, backward"),
+                  (9, "H has the sideline")]),
+          lateral=(-5.6, 26.6), window=(-7.5, 19.5), ghosts=("RCB", "NB", "SS"), ghost_t=0.0, trail_from=0.0)
+```
+
+::: {.callout-note title="Madden vs. real life"}
+In a video game a trick play is a menu option you pick when you're feeling lucky. In the NFL it is a scheduled
+part of the week. A trick play is usually installed against one opponent's habit, practised all week, and called
+when the situation matches the film: the right down, the right hash, the right defensive call. Coaches think of
+it like any other [tendency breaker](../../appendices/glossary.qmd#gl-tendency-breaker): it exists because the
+offense has been predictable on purpose, and it works only if the play it imitates has been run often enough
+that the defense trusts its read.
+:::
+
+## Dan Campbell's fourth down
+
+Johnson designed the plays; Campbell decided when to keep the offense on the field. The case for going for it on
+fourth down, and the rules of thumb, are in [The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd),
+along with the 2023 NFC Championship Game in San Francisco, where two fourth-down attempts failed in a 34–31 loss.
+This section asks the case-study questions: how aggressive were the Lions, compared with whom, and did it pay?
+
+```{python}
+#| label: fig-fourth-down
+#| fig-cap: "Left: how often each team went for it on a neutral fourth down (first three quarters, win probability 20–80%, so the decision is a choice rather than desperation), 2018–2025. The shaded band is the middle 80% of teams each season. Detroit was a below-average team on this measure before Campbell, jumped in 2021, and led the league in 2022, 2023 and 2024. Right: a rough value check, 2021–2025, first three quarters. Each dot is a team: how many times it went for it (across) against the average points gained per attempt (up), estimated as the attempt's EPA minus the league's average EPA on punts and field goals from the same distance and field position. Detroit went for it more than anyone, and on average each attempt was worth a little more than the league's, but less per attempt than teams like Philadelphia (whose tries leaned heavily on the tush push) and Kansas City. Fakes from punt formation count as attempts. Source: nflverse play-by-play."
+fig, (a, b) = plt.subplots(1, 2, figsize=(6.7, 3.4), gridspec_kw=dict(width_ratios=[1.12, 1]))
+yrs = list(range(2018, 2026))
+a.fill_between(yrs, GR.quantile(0.1, axis=1).loc[yrs], GR.quantile(0.9, axis=1).loc[yrs], color=style.GRID,
+               alpha=0.9, lw=0, label="middle 80% of teams")
+a.plot(yrs, LGR.loc[yrs], color=LEAGUE, lw=1.6, label="league")
+a.plot(yrs, GR.loc[yrs, "DET"], color=LIONS, lw=2.2, marker="o", ms=3.6, label="Lions")
+a.axvline(2020.5, color=style.INK_2, lw=0.8, ls=(0, (3, 2)))
+a.text(2020.65, 0.012, "Campbell\nhired", fontsize=6.8, color=style.INK_2, va="bottom")
+a.set_ylim(0, 0.40)
+a.set_xticks(yrs[::2])
+a.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+a.set_ylabel("Neutral fourth downs: went for it", fontsize=8)
+a.set_title("Go rate", fontsize=9.5)
+a.legend(loc="upper left", fontsize=6.8, frameon=True, facecolor=style.SURFACE, edgecolor="none", framealpha=1.0)
+
+tg = TEAMGAIN.copy()
+b.axhline(0, color=style.BASELINE, lw=0.9)
+b.axhline(GOS.gain.mean(), color=LEAGUE, lw=0.9, ls=(0, (3, 2)))
+b.text(tg.n.min() - 2, GOS.gain.mean() + 0.06, "league average", fontsize=6.5, color=style.INK_2, va="bottom")
+b.text(tg.n.min() - 2, -0.06, "same as kicking", fontsize=6.5, color=style.INK_2, va="top")
+other = tg.drop("DET")
+b.scatter(other.n, other.per, s=16, color=style.MUTED, alpha=0.7, lw=0)
+named = tg.loc[["PHI", "KC", "CHI"]]
+b.scatter(named.n, named.per, s=22, color=style.INK_2, lw=0, zorder=4)
+b.scatter([tg.loc["DET", "n"]], [tg.loc["DET", "per"]], s=42, color=LIONS, zorder=5)
+for t, name, dx, dy, ha in [("DET", "Lions", -3, 0.12, "right"), ("PHI", "Eagles", 3, 0.0, "left"),
+                            ("KC", "Chiefs", 3, 0.0, "left"), ("CHI", "Bears", 3, -0.05, "left")]:
+    b.text(tg.loc[t, "n"] + dx, tg.loc[t, "per"] + dy, name, fontsize=7, ha=ha, va="center",
+           color=LIONS if t == "DET" else style.INK, fontweight="bold" if t == "DET" else "normal")
+b.set_xlabel("Fourth-down attempts, 2021–2025 (first three quarters)", fontsize=7.6)
+b.set_ylabel("Points gained per attempt vs kicking", fontsize=8)
+b.set_title("Value per attempt", fontsize=9.5)
+fig.tight_layout(w_pad=1.2)
+plt.show()
+```
+
+Three readings of @fig-fourth-down.
+
+**The habit came first, the good team second.** Detroit's neutral go rate was `{python} S["det_gr2020"]` in 2020,
+below the league. In Campbell's first season it was `{python} S["det_gr2021"]`, `{python} S["det_gr_rk2021"]` in
+the league, for a team that won three games: the underdog logic from the start of this chapter. Then it *stayed*
+near a third of neutral fourth downs, first in the league in 2022, 2023 and 2024
+(`{python} S["det_gr2024"]` in 2024, against a league average of `{python} S["lg_gr2024"]`), after Detroit had
+become a favourite. That is the more interesting decision, because the variance argument no longer applies. A
+favourite going for it is betting on the expected-points case alone, and on its own offense.
+
+**It paid, by a rough yardstick, about two touchdowns a season.** Detroit converted `{python} S["det_conv"]` of its
+attempts in 2021–2025 (the league converted `{python} S["lg_conv"]`). Converting is the wrong test, though, as
+[10-04](../10-situational-football/10-04-clock-and-game-management.qmd) argued: what matters is the attempt
+compared with the kick it replaced. Compare each of Detroit's `{python} S["det_n_q3"]` first-three-quarter attempts
+with what the league's punts and field goals produced from the same spots, and the attempts come out about
+`{python} S["det_gain"]` points ahead over five seasons, roughly `{python} S["det_gain_yr"]` a season, with the best
+year in 2024 (about `{python} S["gain24"]`). That ranks `{python} S["gain_rk"]` in the league over the period.
+This yardstick is crude. Teams go for it when they like their chances, so the attempts are a selected sample, and a
+proper answer needs a win-probability model of each decision, which is built in
+[Win Probability and Decision Analysis](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd). But
+the direction is not in doubt.
+
+**The more you go, the less each go is worth.** Look at the right panel again. Detroit is far out to the right, the
+league's busiest fourth-down team, but its value *per attempt* (`{python} S["det_per"]` points) is only a little
+above the league's (`{python} S["lg_per"]`), and well below the Eagles (`{python} S["per_PHI"]`) and the Chiefs
+(`{python} S["per_KC"]`). That's what diminishing returns look like. The first fourth downs a coach adds are the
+obvious ones, fourth-and-1 near midfield. The next ones are closer calls: `{python} S["det_long"]` of Detroit's
+attempts came with four or more yards to go, against `{python} S["lg_long"]` for the league. A closer call is still
+worth taking if it's positive on average, but it fails more often, and its failures are the ones that end up on
+highlight shows.
+
+::: {.callout-caution title="Common misconception"}
+"Campbell is a gambler." A gambler takes bets with negative expected value for the thrill. Campbell's fourth-down
+record is a long series of bets with *positive* expected value, some of which lost, a few of them in playoff
+games. The fair criticism is narrower: in a handful of late, high-leverage spots (the 2023 NFC title game is the
+famous one), the models themselves called the decision close, and a coach with a strong kicker might reasonably
+have kicked. Judge the habit by the whole record, and the close calls by the odds before the snap.
+:::
+
+The habit extended past the field. Detroit's front office took its aggressive streak to the league's rule-making
+meetings: a Lions proposal produced the 2024 rule that gives a coach a third challenge when *either* of his first
+two succeeds (it had required both),[^challenge] and in 2025 the Lions proposed letting wild-card teams with better
+records be seeded above division winners, a proposal withdrawn before a vote.[^seeding] A team that thinks in
+expected value tends to notice where the rules leave value on the table.
+
+## How opponents responded
+
+Defenses tried the normal things. They could not take away the under-center play-action game by playing two deep
+safeties all day, because Detroit's run game would then face a light box; in 2024 Detroit saw a two-high shell on
+`{python} S["two_det24"]` of its dropbacks, `{python} S["two_det24_rk"]` in the league (league
+`{python} S["two_lg24"]`), meaning defenses more often brought a safety down to stop the run and accepted the
+play-action risk. That's the trade Johnson's offense was built to force.
+
+The most effective response came in January 2025, in the divisional round against Washington. Detroit, the
+`{python} S["rec_DET_2024"]` top seed, lost 45–31 after turning the ball over five times: four interceptions, one
+of them returned for a touchdown, and a lost fumble. Two of the trick plays in the table above came in that game.
+A team built on variance had the bad tail arrive on the worst day.
+
+The league's response was the more durable one, and it came in two forms. The first was imitation, though the
+Lions were one influence among several (by 2025 the Rams took more snaps from under center than anyone): league-wide, the
+share of plays from under center went from about 27% in 2023 to about 34% in 2025, heavy personnel climbed to a
+decade high, and the neutral fourth-down go rate kept rising.[^trend] The second was the coaching market. Within
+three days in January 2025, the Lions lost both coordinators to head-coaching jobs: Johnson to the Chicago Bears,
+a division rival, and defensive coordinator Aaron Glenn to the New York Jets.[^depart] That is the usual price of
+success for a staff, and it set up the natural experiment in the rest of this chapter.
+
+## After Johnson: Detroit in 2025 and 2026
+
+Campbell hired John Morton, a veteran assistant, as offensive coordinator and play-caller, and Kelvin Sheppard
+replaced Glenn as defensive coordinator. After a loss to Minnesota in Week 9, Campbell took the play sheet himself,
+starting with a 44–22 win over Washington.[^morton] The Lions finished `{python} S["rec_DET_2025"]` and missed the
+playoffs. The offense was still good, `{python} S["det_epa_rk2025"]` in EPA per play, with the same quarterback,
+receivers and running backs, but no longer great, and it looked more like everyone else's: under center
+`{python} S["uc_DET_2025"]` of the time (from `{python} S["uc_DET_2024"]`), play-action on `{python} S["pa_DET_2025"]`
+of dropbacks (from `{python} S["pa_DET_2024"]`). [What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd)
+compares the offense under Morton and under Campbell in detail. After the season Morton was fired, and the Lions
+hired Drew Petzing, previously the Cardinals' coordinator, as their third offensive coordinator in three years;
+Sheppard stayed on defense.[^petzing]
+
+## What transferred to Chicago
+
+The Bears Johnson inherited were a classic Detroit-2021 problem: `{python} S["rec_CHI_2024"]` in 2024, an offense
+`{python} S["chi_epa_rk2024"]` in EPA per play, and a rookie quarterback, Caleb Williams, sacked
+`{python} S["chi_sk24"]` times. In 2025 they went `{python} S["rec_CHI_2025"]`, won the NFC North, beat Green Bay
+31–27 in the wild-card round (the franchise's first playoff win since the 2010 season) and lost to the Rams 20–17 in overtime in the divisional round.[^bears25] The offense
+jumped to `{python} S["chi_epa_rk2025"]` in EPA per play; Williams was sacked `{python} S["chi_sk25"]` times, and his
+EPA per dropback rose from `{python} S["cw24_epa"]` to `{python} S["cw25_epa"]`.
+
+How much of that is Johnson? @fig-transfer compares the two teams' fingerprints before and after he moved.
+
+```{python}
+#| label: fig-transfer
+#| fig-cap: "What moved with Ben Johnson. Each arrow runs from a team's 2024 value to its 2025 value; the grey tick is the 2025 league average. Johnson's habits (under center, play-action and trick plays) jumped in Chicago in his first season and fell back toward the league in Detroit without him. The fourth-down habit belonged to the other coach: Detroit stayed more aggressive than the league under Campbell, while Chicago's go rate rose about as much as the league's did. Trick plays are FTN's flag per 100 runs and passes; play-action is a share of dropbacks; under center and trick plays are shares of runs and passes; the go rate uses neutral fourth downs as in the previous figure. Sources: FTN charting via nflverse; nflverse play-by-play."
+METRICS = [("Under center (% of plays)", HAB["uc"] * 100, HABL["uc"] * 100, "{:.0f}%"),
+           ("Play-action (% of dropbacks)", HAB["pa"] * 100, HABL["pa"] * 100, "{:.0f}%"),
+           ("Trick plays (per 100 plays)", HAB["tr"], HABL["tr"], "{:.1f}"),
+           ("Neutral 4th-down go rate (%)", GR.loc[2022:] * 100, LGR.loc[2022:] * 100, "{:.0f}%")]
+fig, axes = plt.subplots(2, 2, figsize=(6.6, 3.5))
+for ax, (title, tab, lg, fmt) in zip(axes.flat, METRICS):
+    vals = [tab.loc[[2024, 2025], t].values for t in ("DET", "CHI")]
+    hi = max(max(v) for v in vals + [[lg.loc[2025]]])
+    for i, (team, col, v) in enumerate([("Lions", LIONS, vals[0]), ("Bears", BEARS, vals[1])]):
+        y = 1 - i
+        ax.add_patch(FancyArrowPatch((v[0], y), (v[1], y), arrowstyle="-|>", mutation_scale=11, color=col, lw=2.0,
+                                     shrinkA=3, shrinkB=1))
+        ax.plot([v[0]], [y], marker="o", ms=4, color=col, mfc="white", mew=1.4)
+        lo_, hi_ = sorted(v)
+        ax.text(v[0] + (-0.025 if v[0] < v[1] else 0.025) * hi * 1.25, y + 0.3, fmt.format(v[0]), fontsize=6.6,
+                ha="right" if v[0] < v[1] else "left", va="center", color=style.INK_2)
+        ax.text(v[1] + (0.025 if v[0] < v[1] else -0.025) * hi * 1.25, y + 0.3, fmt.format(v[1]), fontsize=6.6,
+                ha="left" if v[0] < v[1] else "right", va="center", color=col, fontweight="bold")
+    ax.axvline(lg.loc[2025], color=style.MUTED, lw=1.2, ymin=0.05, ymax=0.95)
+    ax.set_yticks([1, 0], ["Lions", "Bears"], fontsize=7.6)
+    ax.set_ylim(-0.6, 1.75)
+    ax.set_xlim(0, hi * 1.3)
+    ax.tick_params(axis="x", labelsize=6.8)
+    ax.set_title(title, fontsize=8.4)
+    ax.grid(axis="y", visible=False)
+fig.legend(handles=[Line2D([], [], color=style.INK_2, marker="o", mfc="white", lw=1.6, label="2024 → 2025"),
+                    Line2D([], [], color=style.MUTED, lw=1.2, label="league average, 2025")],
+           loc="lower center", ncol=2, fontsize=7, frameon=False, bbox_to_anchor=(0.5, 0.0))
+fig.tight_layout(h_pad=1.0, w_pad=1.4, rect=(0, 0.06, 1, 1))
+plt.show()
+```
+
+The picture is unusually clean for football data. In one offseason, Chicago went from `{python} S["uc_CHI_2024_rk"]`
+to `{python} S["uc_CHI_2025_rk"]` in under-center rate (`{python} S["uc_CHI_2024"]` to `{python} S["uc_CHI_2025"]`),
+from `{python} S["pa_CHI_2024_rk"]` to `{python} S["pa_CHI_2025_rk"]` in play-action share (`{python} S["pa_CHI_2024"]`
+to `{python} S["pa_CHI_2025"]`), and from `{python} S["tr_CHI_2024_rk"]` to `{python} S["tr_CHI_2025_rk"]` in
+trick-play rate. Detroit's numbers moved the other way. The habits were the play-caller's, and they travelled with
+him.
+
+The fourth-down habit didn't travel the same way. Detroit's neutral go rate fell from `{python} S["det_gr2024"]` to
+`{python} S["det_gr2025"]` but stayed `{python} S["det_gr_rk2025"]` in the league under Campbell; Chicago's rose from
+`{python} S["chi_gr24"]` to `{python} S["chi_gr25"]`, in a season when the whole league rose. Aggression on fourth
+down had been the head coach's.
+
+What the fingerprint can't tell you is how much of Chicago's improvement came from the scheme. The Bears also rebuilt
+the middle of their offensive line before 2025, trading for guards Joe Thuney and Jonah Jackson (a Lions starter in
+Johnson's first two seasons as coordinator) and signing center Drew Dalman,[^bearsol] and Williams was in his second
+season, when most young quarterbacks improve. The sack total falling from `{python} S["chi_sk24"]` to
+`{python} S["chi_sk25"]` belongs to all three. An honest summary: the *style* transferred completely and at once; the
+*results* transferred substantially, with help.
+
+## What survives
+
+The Johnson-Campbell Lions lasted four seasons as a unit, from 2021 to 2024, and they leave a few ideas that have
+outlasted the staff.
+
+- **Under center is a disguise, not a throwback.** The Lions, with the Rams, showed that a modern passing
+  offense can take a large share of its snaps from under center and gain from it, because the run fake and the run
+  look the same. The league followed.
+- **Personnel is a message you can lie with.** A reported lineman, a third tight end, a jumbo set: each tells the
+  defense something, and an offense can choose whether to deliver on it.
+- **Make the defense answer twice.** Shifts layered with motion turn a single snap into two or three communication
+  tests. Most defenses pass most of them; the offense only needs the occasional failure.
+- **Trick plays are part of the system.** Built on the defense's habits and the offense's own self-scout, they are
+  constraint plays with a sense of humour, and their cost is visible on the bad days.
+- **Fourth-down aggression became normal, and its edge got smaller.** When one team goes for it a third of the time,
+  it's a strategy; when the league catches up, the remaining edge is in choosing *which* fourth downs, which is a
+  harder skill to see from the stands.
+- **A rebuild can choose variance.** A bad team that plays to the expected-value math and accepts the ugly
+  failures can turn into a good team that keeps doing it, which is what Detroit did.
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it: the trick detector"}
+Pick a Lions or Bears game (or any team that runs a lot from under center) and flag every snap with something
+unusual in it.
+
+- **Before the snap, listen.** "Number 70 is reporting as eligible": note the down and distance. Then watch the
+  safeties, not the lineman. If they creep down, expect the run fake and a throw behind them.
+- **Count the movements.** One mark for a shift, one for a motion. Snaps with two or more marks are the ones where
+  the defense has to communicate twice; look for a defender still pointing or moving at the snap.
+- **Find the odd alignment.** A quarterback split wide, a running back alone in the backfield taking a direct snap,
+  a receiver stacked right behind another one a yard off the line, a tackle at the end of the line. Write down
+  what the defense did about it.
+- **After the snap: who caught the first ball?** On a short catch near the sideline, keep your eyes on the player
+  *behind* the catcher. If someone is trailing at full speed, the hook-and-lateral is on.
+- **On fourth down, guess first.** Before the offense decides, say go, kick or punt using the rules of thumb from
+  10-04. Then compare with what the coach did, and note whether he was more or less aggressive than you.
+- **At the end of the game,** count your flags and how many of them gained yards. You have just charted a team's
+  disguise rate, the raw material for a [tendency report](../../appendices/glossary.qmd#gl-tendency-report).
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play"}
+**Drill 1.** Second-and-5 at your own 35, first quarter. The offense comes out in @fig-predict-1: six offensive
+linemen, number 70 has reported eligible and stands at the right end of the line, the quarterback is under center
+and the defense has walked a safety down, with only one deep safety left. You have seen this offense run from this
+look three times already today. What is the most likely play, and where is the ball going?
+
+```{python}
+#| label: fig-predict-1
+#| fig-cap: "Drill 1: jumbo with a reported tackle (#70), second-and-5. The strong safety (ringed) has come down to about six yards deep, just outside #70, making eight defenders in the box; one deep safety remains."
+off, dfn = jumbo_look()
+dfn = [q.moved(d=6.2, w=5.6) if q.key == "SS" else q for q in dfn]
+p = Play(off, dfn, los=45, to_go=5, title="Drill 1: number 70 has reported eligible")
+p.highlight("SS", color=style.DEFENSE)
+p.highlight("T70")
+fld = p.draw(width_in=5.6, lateral=(-15.5, 15.5), window=(-9.5, 17.5))
+no_numbers(fld.ax)
+P = P_of(fld, p)
+point_to(fld.ax, P, (10.2, 9.8), (6.2, 5.6), "safety walked down:\neight in the box")
+point_to(fld.ax, P, (-5.6, 8.4), (-0.7, 4.8), "#70 reported eligible")
+point_to(fld.ax, P, (15.0, 7.4), (13.5, -0.5), "one deep safety", color=style.DEFENSE_DARK)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**A play-action pass behind the safety, most likely to a receiver crossing into the space he left.** Everything
+in the picture says run: second-and-short, six linemen, a quarterback under center, and you've seen runs from it.
+The defense agrees, which is why the safety is down. That is the bait half of @fig-jumbo. With eight defenders
+committed to the run and one deep safety in the middle, the space behind the linebackers and outside the deep
+safety is open for a moment after the run fake. The throw to #70 himself (the leak) is the backup, likely only if
+the linebackers flow hard *away* from his side. A plain run is still possible, but the offense has spent three
+snaps teaching this defense to bring the safety down. Detroit cashed exactly this kind of setup in Week 18 of 2023:
+on second-and-5 with Dan Skipper reported eligible, Goff faked the run and hit St. Brown for a 70-yard touchdown
+(the play is in [Formation Rules](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)).
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 2.** Fourth-and-2 at the opponent's 37, second quarter, score tied. @fig-predict-2 shows the field. Your
+kicker makes about two-thirds of his kicks from 50 to 54 yards. What would the 2022–2024 Lions have done, what
+do the rules of thumb say, and if they go for it, what kind of play would you expect from this offense?
+
+```{python}
+#| label: fig-predict-2
+#| fig-cap: "Drill 2: fourth-and-2 at the opponent's 37 (offense moving left to right). A field goal from here is about a 55-yard kick: 37 yards to the goal line, 10 more to the goalposts at the back of the end zone, and about 8 for the snap and hold. A punt would net perhaps 25 to 30 yards."
+fig, ax = plt.subplots(figsize=(6.6, 2.6))
+LOS, Y0 = 110 - 37, 26.65
+fld = Field(ax=ax, orient="horizontal", los=LOS, window=(-22, 48), to_go=2, numbers=False, hashes=True,
+            lateral=(13.0, 40.3))
+ax.add_patch(Ellipse((LOS, Y0), 1.6, 1.0, fc=style.BALL, ec="white", lw=0.6, zorder=9))
+for x, lab in [(60, "50"), (70, "40"), (80, "30"), (90, "20"), (100, "10"), (110, "G")]:
+    ax.text(x, 15.0, lab, fontsize=8, ha="center", va="center", color=style.MUTED, fontweight="bold")
+ax.annotate("", xy=(120, 35.2), xytext=(LOS - 8, 35.2), arrowprops=dict(arrowstyle="<->", color=style.INK_2, lw=1.0))
+ax.text((LOS - 8 + 120) / 2, 37.6, "field goal: about a 55-yard kick (holder ~8 yards back; posts at the end line)",
+        fontsize=7.0, ha="center", va="center", color=style.INK,
+        bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none"))
+ax.annotate("", xy=(LOS + 2, 21.0), xytext=(LOS, 21.0),
+            arrowprops=dict(arrowstyle="-|>", color=style.OFFENSE_DARK, lw=1.4))
+ax.text(LOS + 3.0, 21.0, "2 yards for a first down", fontsize=7.2, ha="left", va="center",
+        color=style.OFFENSE_DARK, bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none"))
+ax.text(LOS - 1.6, 28.6, "fourth-and-2,\nball on the\nopponent's 37", fontsize=7.0, ha="right", va="center",
+        color=style.INK, bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none"))
+ax.text(115, 24.0, "end\nzone", fontsize=7.4, ha="center", va="center", color=style.INK_2)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Go for it, and expect a run or a quick play-action throw from under center.** This is the "go zone" from
+[10-04](../10-situational-football/10-04-clock-and-game-management.qmd): the opponent's 30 to 40, too far for a
+comfortable field goal (a 55-yarder at two-thirds or less) and too close for a punt to gain much. On fourth-and-2
+teams convert a bit more than half the time, and success keeps a drive alive in field-goal range. The 2022–2024
+Lions went for it on about a third of *all* neutral fourth downs, and on fourth-and-1 or 2 between the opponent's
+30 and 40 in the first three quarters they went for it `{python} S["det_d2"]` of the time, a small sample of
+`{python} S["det_d2_n"]` snaps (the league: `{python} S["lg_d2"]`). As for the play: Detroit's short-yardage menu was the same as its base offense, a heavy formation under
+center that threatens a downhill run and the play-action pass off it. Because the defense knows a go is likely, the
+first answer is often the play that looks like the run and isn't. In the 2023 NFC Championship Game, Detroit's
+fourth-and-2 from the 49ers' 28 was a pass, and it fell incomplete: same reasoning, bad result.
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 3.** Second-and-goal from the 3. The offense lines up in @fig-predict-3: the running back is alone in the
+shotgun spot, the quarterback is split out in the left slot, and there are two tight ends to the right, one on the
+line and one on the wing, with a receiver outside them. What is the default play, what is the trick, and whom should the defense not forget?
+
+```{python}
+#| label: fig-predict-3
+#| fig-cap: "Drill 3: a direct snap to the running back (R) at the 3-yard line, with the quarterback (Q, ringed) split out in the left slot and two tight ends (Y on the line, U on the wing) to the right. Illustrative alignment."
+off = line5() + [O("RB", "RB", -5.0, 0.0, "R"), O("QB", "QB", -1.5, -8.0, "Q"), O("X", "WR", -1.5, -13.0, "X"),
+                 O("Y", "TE", -0.7, 4.8, "Y"), O("U", "TE", -1.6, 6.4, "U"), O("Z", "WR", -0.7, 12.5, "Z")]
+dfn = [D("LE", "DE", 0.9, -4.0, "E"), D("LT_", "DT", 0.9, -1.0, "T"), D("RT_", "DT", 0.9, 1.0, "T"),
+       D("RE", "DE", 0.9, 5.6, "E"), D("WILL", "WILL", 3.0, -2.6, "W"), D("MIKE", "MIKE", 3.0, 1.2, "M"),
+       D("SAM", "SAM", 2.6, 7.6, "S"), D("NB", "NB", 2.6, -8.4, "NB"), D("LCB", "CB", 2.0, -13.0, "CB"),
+       D("RCB", "CB", 2.0, 12.5, "CB"), D("FS", "FS", 6.5, -1.0, "FS")]
+p = Play(off, dfn, los=107, to_go=None, title="Drill 3: a direct snap at the 3")
+p.highlight("QB", color=style.THIRD)
+fld = p.draw(width_in=5.6, lateral=(-15.5, 15.5), window=(-8.5, 13.0))
+no_numbers(fld.ax)
+P = P_of(fld, p)
+point_to(fld.ax, P, (-5.4, -11.5), (-1.5, -8.0), "the quarterback,\nsplit out")
+point_to(fld.ax, P, (-6.4, 6.4), (-5.0, 0.0), "direct snap\nto the back")
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The default is a run by the back who takes the snap, behind the wing tight end as an extra blocker; the trick is
+a pass by that back, and the man not to forget is a tight end.** A direct snap at the goal line is a numbers play: the back
+can run without a handoff, and the quarterback, standing in the slot as a receiver, takes a defender with him. The
+defense's eyes go to the back and to the quarterback (everyone knows the quarterback can catch out there). What it
+tends to forget is that the back can throw, and that the tight ends, the players who block on almost every goal-line
+snap, are eligible. In Week 5 of 2025 at Cincinnati, Detroit took a direct snap to David Montgomery on
+second-and-3 from the 3, and Montgomery threw a touchdown pass to tight end Brock Wright.[^cin] If the defense
+covers the quarterback and the back's run, the tight end on the line is the most likely target.
+:::
+:::
+
+## Takeaways
+
+- Detroit's 2021 rebuild had two halves: build the lines and the core through the draft (Sewell, Hutchinson, St.
+  Brown, Gibbs, LaPorta), and **choose variance** as an underdog. The fourth-down aggression came before the good team
+  did.
+- **Ben Johnson's offense (2022–2024)** was a familiar run and play-action base with four habits on top: the
+  quarterback **under center** (the league's highest share in 2022 and 2024), **heavy and jumbo personnel with a
+  reported lineman**, **shifts layered with motion**, and **trick plays built as constraint plays**. Each makes
+  one snap look like several; each costs drilling time, play clock and the occasional disaster.
+- **Campbell's fourth downs** led the league in neutral go rate in 2022–2024 and, by a rough yardstick, gained about
+  two touchdowns a season over kicking, with less value per attempt than more selective teams: aggression has
+  diminishing returns.
+- Opponents mostly couldn't scheme the offense away; they **hired its coordinators**. Johnson went to the Bears and
+  Glenn to the Jets in January 2025. Detroit then went through Morton, Campbell calling plays and, in 2026, Petzing:
+  three coordinators in three years.
+- **What transferred:** in one season Chicago's under-center, play-action and trick-play rates jumped to the top of
+  the league and Detroit's fell back. The **style moved with the play-caller**, the **fourth-down habit stayed with
+  the head coach**, and the Bears' results moved with help from a rebuilt line and a second-year quarterback.
+
+## Connections
+
+**Builds on:** [The Modern Era](../11-history/11-05-the-modern-era.qmd) (the under-center revival and the motion
+boom); [The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd)
+(the go-for-it decision and the 2023 NFC title game); [Formation Rules](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)
+(reporting eligible and the eligible tackle); [Motion and Shifts](../02-personnel-and-formations/02-06-motion-and-shifts.qmd);
+[Play-Action, Bootlegs, and Screens](../04-the-passing-game/04-05-play-action-boots-screens.qmd); and
+[Constraint Theory](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd).
+
+**Sets up:** [Win Probability and Decision Analysis](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd),
+where the rough fourth-down yardstick here becomes a proper model; [Tendencies, PROE, and Charting](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd),
+for building fingerprints like @fig-transfer for any team; and [Building a Roster](../14-the-business-of-scheme/14-01-building-a-roster.qmd),
+for the draft-and-develop side of the rebuild.
+
+**See also (case studies):** [The Shanahan Tree](12-03-shanahan-wide-zone-tree.qmd), the other under-center,
+play-action family; [The Eagles: Trenches, RPOs, and the Tush Push](12-06-eagles-trenches-and-tush-push.qmd), the
+other great fourth-down team of the era; and [Andy Reid and the Kansas City Chiefs](12-04-reid-chiefs.qmd), the
+league's longest-running trick-play laboratory.
+
+**If you want to go deeper:** the Lions' and Bears' All-22 from 2024 and 2025, watched with only the pre-snap
+movement in mind; Ben Baldwin's open fourth-down model and its weekly team rankings (nfl4th); and the FTN charting
+data in nflverse, which lets you rebuild @fig-transfer for any coordinator who changes teams.
+
+[^decker]: nflverse play-by-play, game `2023_17_DET_DAL` (Dec. 30, 2023): "70-D.Skipper reported in as eligible. TWO-POINT CONVERSION ATTEMPT. 16-J.Goff pass to 68-T.Decker is complete. ATTEMPT SUCCEEDS. PENALTY on DET-68-T.Decker, Illegal Touch Pass, 5 yards"; the retry from the 7 failed, and after a Dallas offside a third try failed; Dallas won 20–19. Decker is listed at 6-foot-7 and 324 pounds on the Lions' roster (https://www.detroitlions.com/team/players-roster/taylor-decker/). Accounts from Decker, Skipper, referee Brad Allen and Campbell: CBS Sports, "Taylor Decker on Lions' controversial two-point conversion penalty: 'I did exactly what coach told me to do'": https://www.cbssports.com/nfl/news/taylor-decker-on-lions-controversial-two-point-conversion-penalty-i-did-exactly-what-coach-told-me-to-do/ ; NBC Sports, "Why was the Lions' two-point try vs. Cowboys called off?": https://www.nbcsportsboston.com/nfl/why-was-the-lions-two-point-try-vs-cowboys-called-off/576026/ . The fake punt in the same game: "(Punt formation) Direct snap to 42-J.Reeves-Maybin. 42-J.Reeves-Maybin pass deep right to 30-K.Dorsey to DAL 41 for 31 yards."
+
+[^drought]: The Lions' last championship was the 1957 NFL title. The wild-card win over the Rams on Jan. 14, 2024 (24–23) was their first playoff win since Jan. 5, 1992: WNEM, "Detroit Lions players react to the team's first playoff win since January 5, 1992": https://www.wnem.com/2024/01/15/detroit-lions-players-react-teams-first-playoff-win-since-january-5-1992 . The 2023 NFC North title (clinched Dec. 24, 2023) was their first division title since 1993: NFL.com, "Lions clinch NFC North, first division title since 1993, with win over Vikings": https://www.nfl.com/news/lions-clinch-nfc-north-first-division-title-since-1993-with-win-over-vikings . Records in this chapter are computed from nflverse schedules. Patricia was fired on Nov. 28, 2020, with offensive coordinator Darrell Bevell interim coach for the last five games: ESPN, "Detroit Lions fire coach Matt Patricia, GM Bob Quinn": https://www.espn.com/nfl/story/_/id/30407459/detroit-lions-fire-coach-matt-patricia-gm-bob-quinn . Holmes, the Rams' director of college scouting, was hired on Jan. 14, 2021: CBS Sports, "Lions hire former Rams director of college scouting Brad Holmes as new GM": https://www.cbssports.com/nfl/news/lions-hire-former-rams-director-of-college-scouting-brad-holmes-as-new-gm-per-report .
+
+[^kneecap]: *Sports Illustrated*, "Dan Campbell Promises Lions Will 'Bite a Kneecap Off' in Introductory Press Conference" (Jan. 21, 2021), which also reports his hiring the previous day and his New Orleans role: https://www.si.com/nfl/2021/01/21/dan-campbell-lions-kneecap-bite-press-conference . The "3-13" remark (ESPN's Sarah Spain on *Around the Horn*) is reported in ClickOnDetroit, "Dan Campbell's memorable intro gets mixed reviews from Lions fans, pundits" (Jan. 22, 2021): https://www.clickondetroit.com/sports/2021/01/22/dan-campbells-memorable-intro-gets-mixed-reviews-from-lions-fans-pundits/ . Campbell's career (Giants 1999–2002, Cowboys 2003–05, Lions 2006–08, Saints 2009 on injured reserve: 11 seasons on NFL rosters; Dolphins interim head coach for the last 12 games of 2015, 5–7): "Dan Campbell," Wikipedia: https://en.wikipedia.org/wiki/Dan_Campbell .
+
+[^trade]: CBS Sports, "Matthew Stafford trade: Rams send two first-round picks, a third-round pick and Jared Goff to Lions for QB" (Jan. 30, 2021): https://www.cbssports.com/nfl/news/lions-trade-matthew-stafford-to-the-rams-for-two-first-round-picks-a-third-round-pick-and-jared-goff . The trade became official at the start of the league year in March 2021.
+
+[^draft]: nflverse draft picks (`load_draft_picks`), 2021–2023, Detroit selections. The trades: NFL.com, "Lions trade up to select Alabama WR Jameson Williams at No. 12" (Nos. 32, 34 and 66 to Minnesota for Nos. 12 and 46): https://www.nfl.com/news/lions-trade-up-to-select-alabama-wr-jameson-williams-at-no-12 ; CBS News Detroit, "Detroit Lions trade first-round pick to Arizona Cardinals in 2023 NFL Draft" (No. 6 and a third-rounder for Nos. 12, 34 and 168): https://www.cbsnews.com/detroit/news/detroit-lions-trade-first-round-pick-to-arizona-cardinals-2023-nfl-draft . Jack Campbell (No. 18) and Branch (No. 45) came with Detroit's own picks.
+
+[^fakes21]: nflverse play-by-play, 2021 regular season, Detroit plays from punt formation: Jack Fox passes of 17 yards (Week 7 at the Rams) and 21 yards (Week 16 at Atlanta) and a 28-yard C.J. Moore run (Week 7), all first downs; a fourth, in Week 18 against Green Bay, fell incomplete. Fourth-down attempts here are plays with `play_type` run or pass on fourth down, including fakes.
+
+[^johnson]: "Ben Johnson (American football coach)," Wikipedia: https://en.wikipedia.org/wiki/Ben_Johnson_(American_football_coach) ; Chicago Bears coach biography: https://www.chicagobears.com/team/coaches/ben-johnson . The timeline there: walk-on quarterback at North Carolina (2004–07), degrees in mathematics and computer science (2008), a year as a software developer, Boston College graduate assistant (2009–10) and tight ends coach (2011), Dolphins 2012–18, Lions quality control (2019), tight ends (2020–21), passing-game coordinator (2021) and offensive coordinator (2022–24).
+
+[^acoy]: NFL.com, "Ex-Lions offensive coordinator Ben Johnson named 2024 AP NFL Assistant Coach of the Year" (Feb. 2025; 29 first-place votes): https://www.nfl.com/news/ex-lions-offensive-coordinator-ben-johnson-named-2024-ap-nfl-assistant-coach-of-the-year .
+
+[^lynn]: Detroit Lions, "Four downs: Campbell calls offensive plays in tie with Steelers" (Nov. 2021): https://www.detroitlions.com/news/four-downs-campbell-calls-offensive-plays-in-tie-with-steelers ; NFL.com, "Lions OC Anthony Lynn losing play-calling duties": https://www.nfl.com/news/lions-oc-anthony-lynn-losing-play-calling-dates-demotion-dan-campbell ; Pride of Detroit, "Detroit Lions part ways with Anthony Lynn" (Jan. 10, 2022): https://www.prideofdetroit.com/2022/1/10/22876700/detroit-lions-part-ways-anthony-lynn-no-fit-groove .
+
+[^ftn]: Course calculation from FTN charting data (via nflverse `load_ftn_charting`) joined to nflverse play-by-play: regular-season runs and passes, `qb_location == "U"` for under center; `is_play_action` on dropbacks; `is_motion` (motion before *or at* the snap, FTN's definition). FTN charting starts in 2022, so earlier seasons aren't comparable. League figures are the average over all plays, not over teams.
+
+[^ftn2]: FTN's `is_trick_play` flag, 2022–2025 regular seasons, joined to nflverse EPA. FTN does not publish a definition beyond the flag; it includes fakes, laterals, throws by non-quarterbacks and similar plays, so counts differ from other sources.
+
+[^troll]: nflverse play-by-play, game `2024_06_DET_DAL` (Oct. 13, 2024; Lions 47, Cowboys 9): "16-J.Goff pass short right to 14-A.St. Brown ... Lateral to 58-P.Sewell to DAL 3 for 8 yards ... PENALTY on DET-77-F.Ragnow, Ineligible Downfield Pass ... No Play." For the "familiar play" reading: ClickOnDetroit, "Detroit Lions troll Cowboys by trying familiar play in blowout win" (Oct. 13, 2024): https://www.clickondetroit.com/sports/2024/10/13/detroit-lions-troll-cowboys-by-trying-familiar-play-in-blowout-win/ . The Thanksgiving toss to Sewell (Nov. 28, 2024, against Chicago) is described in *Sports Illustrated*, "Penei Sewell Stiff-Arming Bears Defender on Lions' Trick Play Becomes New Meme": https://www.si.com/nfl/penei-sewell-stiff-arming-bears-defender-lions-trick-play-meme .
+
+[^challenge]: NFL Football Operations, "Approved 2024 playing rules" (a third challenge if either of the first two succeeds, from a Detroit proposal): https://operations.nfl.com/updates/the-rules/approved-2024-playing-rules/ .
+
+[^seeding]: Acme Packing Company, "NFL playoff seeding change: Detroit Lions proposal update" (May 21, 2025): https://www.acmepackingcompany.com/2025/5/21/24434469/nfl-news-playoff-seeding-change-detroit-lions-proposal-update-2025 .
+
+[^trend]: Under-center share from FTN charting (course fact sheet: 27.3% in 2023, 33.6% in 2025); heavy personnel from NFL Next Gen Stats, "NFL trend watch: Heavy personnel could shape Super Bowl LX showdown": https://www.nfl.com/news/nfl-trend-watch-heavy-personnel-could-shape-super-bowl-lx-showdown-between-patriots-and-seahawks ; go rates as in @fig-fourth-down.
+
+[^depart]: Axios Chicago, "Bears hire Ben Johnson as head coach" (Jan. 20, 2025): https://www.axios.com/local/chicago/2025/01/20/bears-hire-ben-johnson-head-coach-offense ; New York Jets, "Jets hire Aaron Glenn as head coach" (Jan. 22, 2025): https://www.newyorkjets.com/news/jets-hire-aaron-glenn-head-coach-01-22-2025 .
+
+[^morton]: ESPN, "Lions offense rolls as Dan Campbell takes over playcalling" (Nov. 2025): https://www.espn.com/nfl/story/_/id/46912993/lions-offense-rolls-dan-campbell-takes-play-calling .
+
+[^petzing]: ESPN, "Sources: Lions finalizing deal to hire Drew Petzing as new OC": https://www.espn.com/nfl/story/_/id/47662766/sources-lions-finalizing-deal-hire-drew-petzing-new-oc ; Kelvin Sheppard as 2026 defensive coordinator per the course fact sheet (2026 staffs).
+
+[^bears25]: 2025 records from nflverse schedules; playoff results from "2025–26 NFL playoffs," Wikipedia: https://en.wikipedia.org/wiki/2025%E2%80%9326_NFL_playoffs ; both Bears scores (31–27 vs. Green Bay on Jan. 10, 2026; 17–20 in overtime vs. the Rams on Jan. 18) match nflverse schedules. First playoff win since the 2010 season: MyNorthwest/AP, "NFC Wild Card: Bears rally from 18 down, stun Packers 31-27": https://sports.mynorthwest.com/nfl/seattle-seahawks/nfc-wild-card-bears-rally-18-down-stun-packers-31-27 .
+
+[^bearsol]: Chicago Bears, "Bears 2025 position review: Offensive line": https://www.chicagobears.com/news/bears-2025-position-review-offensive-line ; ESPN, "Bears 2025 free agency tracker": https://www.espn.com/nfl/story/_/id/44024785/bears-2025-free-agency-tracker-offseason-moves-signings .
+
+[^cin]: nflverse play-by-play, game `2025_05_DET_CIN`, second quarter: "(Shotgun) Direct snap to 5-D.Montgomery. 5-D.Montgomery pass short middle to 89-B.Wright for 3 yards, TOUCHDOWN." FTN's charting records the snap taker in the shotgun with one player in the backfield, so Goff was not behind Montgomery, and the AP game story calls it a wildcat formation; neither says exactly where Goff stood, so the alignment in @fig-predict-3 is illustrative.
