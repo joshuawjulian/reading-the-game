@@ -1,0 +1,1993 @@
+---
+title: "Field Goals, Extra Points, and the Punting Game"
+subtitle: "How a 1.3-second operation turns a drive into three points, why the extra point stopped being automatic, and what eleven men are really doing on fourth down when the punter jogs out."
+description: "Field-goal geometry and range (kicker, wind, cold, altitude, roofs) with nflverse charts of accuracy across eras and conditions; the snap-hold-kick operation, protection rules and block units; the 2015 extra-point change and the two-point tries it produced; punt formations (tight, spread and shield), gunners and vices; directional, coffin-corner, rugby and pooch punts; net punting average and where punts finish; return walls, punt blocks and punt safe; the rules of the kicked ball (fair catch, touchback, muff, first touching, kick-catch interference, out of bounds); and why fakes are rare."
+glossary:
+  "Field goal range": "The yard line beyond which a coach believes his kicker, in today's conditions, makes a field goal often enough that kicking beats going for it or punting. Add 18 to the line of scrimmage for the kick's length; in the NFL range usually begins somewhere around the opponent's 35 to 40."
+  "Snap-hold-kick": "The three-man field-goal and extra-point operation: the long snapper fires the ball about seven or eight yards back, the holder catches it and spots it on its point with the laces turned away, and the kicker strikes it, all in about 1.3 seconds from snap to kick (the 'operation time')."
+  "Shield punt": {def: "The family of modern punt formations: two gunners split wide, a line of interior blockers, and a 'shield' of blockers a few yards in front of the punter that walls off rushers before they reach the spot of the kick. In the NFL the base version is usually called the spread punt, with two wings a yard behind the line and a personal protector about six yards deep forming the shield; the college version puts three blockers side by side.", aliases: ["Spread punt"]}
+  "Vice": {def: "A punt-return player assigned to block a gunner at the line and run with him, usually two to a gunner, to slow the punt team's fastest coverage players. Coaches often spell it 'vise' and, strictly, use it for the two-man bracket, calling a lone blocker on a gunner a 'jammer'.", aliases: ["Jammer"]}
+  "Fair catch": "A catch of a punt or kickoff by a returner who waves one fully extended arm above his helmet while the ball is in the air. He may not be hit, the ball is dead where he catches it, and he may not run with it."
+  "Coffin-corner punt": "A punt aimed to go out of bounds just short of the goal line, near the corner of the field, so the receiving team must start its drive deep in its own territory without a chance to return the kick."
+  "Touchback": "A ball declared dead in or behind a team's own end zone that the opponent kicked or carried there, with the defending team taking over at a fixed yard line instead of risking a safety. After a punt or a missed field goal from inside the 20, the ball goes to the 20; after a kickoff, see the kickoff chapter."
+  "Net punting average": "Punting distance after subtracting return yards and 20 yards for every touchback, divided by the number of punts: the field position a punt actually gained, as opposed to how far it flew (gross average)."
+  "Fake punt / fake field goal": "A play in which the kicking team lines up to punt or kick but runs or passes instead, usually with the punter, holder or personal protector handling the ball, to keep possession on fourth down or score."
+  "Return wall": {def: "A punt return in which most of the return team peels back to one sideline and forms a line of blockers parallel to it, about five yards apart, and the returner runs behind that wall.", aliases: ["Wall return"]}
+  "Punt block": "A return-team call that sends extra rushers, often overloading one side, to block the punt instead of returning it; rushers aim at a spot about a yard in front of the punter where the ball leaves his foot, not at the punter himself."
+  "Punt safe": "A return-team call for when a fake is likely: the defense keeps (or sends on) its regular defenders, covers every eligible receiver and the likely ball carriers, and gives up most of the return to make sure the kicking team doesn't keep the ball."
+  "Rugby punt": "A punt kicked on the run after the punter rolls out toward one side, usually as a low, end-over-end kick that bounces and rolls; it buys time against the rush, makes the ball hard to field, and can turn into a run if the edge is open."
+  "Pooch punt": "A deliberately short, high punt from near midfield or closer, aimed to land inside the opponent's 10-yard line without bouncing into the end zone."
+  "Muff": "Touching a loose ball, such as a punt, without gaining possession of it. A punt muffed by the receiving team can be recovered by the kicking team, which keeps the ball but may not advance it."
+  "First touching": "A kicking-team player touching a punt beyond the line of scrimmage before any receiving player has touched it. It is a violation, not a foul: the ball stays live, and the receiving team may take the ball at the spot of first touching or at the end of the play, whichever it prefers."
+  "Kick-catch interference": "A kicking-team player getting in the way of, or touching, a receiver who is trying to catch a punt or kickoff in the air, whether or not he signaled for a fair catch. The penalty is 15 yards from the spot of the foul."
+  "Personal protector": "The punt team's last blocker and on-field leader, standing about five to seven yards behind the line: he calls the protection, blocks any rusher who gets through, and is a common ball carrier on fake punts."
+---
+
+```{python}
+#| code-summary: "Show the Python (data and drawing helpers for this chapter)"
+#| output: false
+import logging
+import os
+import re
+import shutil
+
+import numpy as np
+import pandas as pd
+import polars as pl
+import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse, FancyArrowPatch, FancyBboxPatch, Patch, Rectangle
+from matplotlib.lines import Line2D
+from matplotlib.colors import LinearSegmentedColormap
+from IPython.display import HTML, Markdown, display
+
+from gridiron import Play, Player, Field, style, draw_marker, frame_strip, animate
+from gridiron.field import FIELD_WIDTH, MIDDLE
+from gridiron.data import nfl
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+OC, DC = style.OFFENSE_DARK, style.DEFENSE_DARK
+GREEN = "#0f7a55"          # darker step of the aqua highlight, for text on the light field
+PURPLE = style.SERIES[6]   # rings on a player to watch
+
+
+# --- markers, labels and arrows on a drawn field ------------------------------------------------
+def O(key, pos, d, w, label=""):
+    """A kicking-team (blue) player at (d, w): d = yards downfield of the line, w = yards to its right."""
+    return Player(key, pos, "off", d, w, label=label)
+
+
+def D(key, pos, d, w, label=""):
+    """A receiving-team (orange) player."""
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def P_(fld, p, d, w):
+    """(d, w) in the kicking team's frame -> plot coordinates on this drawn field."""
+    x, y = fld.xy(*p.to_abs(d, w))
+    return float(x), float(y)
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fs=6.6, ha="center", weight="normal"):
+    """A short on-field label at (d, w)."""
+    x, y = P_(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fs, color=color, ha=ha, va="center", zorder=9, fontweight=weight,
+                linespacing=1.1, bbox=dict(boxstyle="round,pad=0.15", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def lead(fld, p, frm, to, color=style.MUTED):
+    """A thin leader line from a label at `frm` to a player at `to`."""
+    (x0, y0), (x1, y1) = P_(fld, p, *frm), P_(fld, p, *to)
+    fld.ax.plot([x0, x1], [y0, y1], color=color, lw=0.7, zorder=7.5)
+
+
+def ball_arrow(fld, p, frm, to, rad=0.0, lw=1.2, color=style.BALL):
+    """The ball's flight (snap or kick) as a dashed brown arrow."""
+    fld.ax.add_patch(FancyArrowPatch(P_(fld, p, *frm), P_(fld, p, *to), arrowstyle="-|>", mutation_scale=9,
+                                     color=color, lw=lw, ls=(0, (2, 2)), zorder=7,
+                                     connectionstyle=f"arc3,rad={rad}"))
+
+
+def ball_at(fld, p, d, w):
+    x, y = P_(fld, p, d, w)
+    draw_marker(fld.ax, x, y, "ball", "", fld.pts_per_yard())
+
+
+def no_numbers(fld):
+    """Remove the painted yard numbers (they compete with labels on zoomed diagrams)."""
+    for t in list(fld.ax.texts):
+        if t.get_text().isdigit():
+            t.remove()
+
+
+def shade(fld, p, d0, d1, w0, w1, color, alpha=0.10):
+    """A shaded rectangle between depths d0..d1 and widths w0..w1."""
+    (xa, ya), (xb, yb) = P_(fld, p, d0, w0), P_(fld, p, d1, w1)
+    fld.ax.add_patch(Rectangle((min(xa, xb), min(ya, yb)), abs(xb - xa), abs(yb - ya), fc=color,
+                               alpha=alpha, ec="none", zorder=1))
+
+
+# --- animations: gridiron tracking, with the ball's flight replaced by the kick's --------------
+def with_ball(play, ball_fn, t_after=0.6):
+    """Simulated tracking (BDB columns) for a kicking play. gridiron's ball model follows a QB;
+    here `ball_fn(t)` gives the ball's (d, w): snap, hold or catch, then the kick."""
+    df = play.to_tracking(t_after=t_after)
+    m = df.side == "ball"
+    dw = np.array([ball_fn(t) for t in df.loc[m, "time"]])
+    x, y = play.to_abs(dw[:, 0], dw[:, 1])
+    df.loc[m, "x"], df.loc[m, "y"] = x, y
+    return df
+
+
+def lerp(a, b, f):
+    f = min(max(f, 0.0), 1.0)
+    return (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
+
+
+def sxy(play, d, w):
+    """(d, w) -> plot coordinates inside a gridiron frame strip (vertical view)."""
+    x, y = play.to_abs(d, w)
+    return float(FIELD_WIDTH - y), float(x)
+
+
+def strip_text(ax, play, d, w, text, color=style.INK_2, fs=6.0):
+    x, y = sxy(play, d, w)
+    ax.text(x, y, text, fontsize=fs, color=color, ha="center", va="center", zorder=12, linespacing=1.05,
+            bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def show_strip(df, times, annotate=None, title=None, lateral_pad=4.0):
+    """HTML: a scrubbable video of the simulated tracking. PDF: a frame strip at `times`."""
+    if PDF:
+        fig = frame_strip(df, times=times, title=title, lateral_pad=lateral_pad)
+        for ax in fig.axes:          # painted yard numbers land outside the cropped panels; drop them
+            for t in list(ax.texts):
+                if t.get_text().isdigit():
+                    t.remove()
+        fig.tight_layout(h_pad=1.6)
+        if annotate:
+            annotate(fig.axes[:len(times)])
+        plt.show()
+        return
+    anim = animate(df, title=title)
+    if shutil.which("ffmpeg"):
+        html = anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+    else:
+        html = anim.to_jshtml(default_mode="once")
+    plt.close(anim._fig)
+    display(HTML(html))
+
+
+def md_table(rows, header, align):
+    lines = ["| " + " | ".join(header) + " |", "|" + "|".join(align) + "|"]
+    lines += ["| " + " | ".join(map(str, r)) + " |" for r in rows]
+    return Markdown("\n".join(lines))
+
+
+def pct(v, d=0):
+    return f"{100 * v:.{d}f}%"
+```
+
+```{python}
+#| code-summary: "Show the Python (load every kicking play since 1999 from nflverse)"
+#| output: false
+SEASONS = range(1999, 2026)   # nflverse play-by-play starts in 1999; 2025 is the last completed season
+KEEP = ["season", "season_type", "week", "game_id", "posteam", "home_team", "play_type", "desc",
+        "yardline_100", "down", "ydstogo", "kick_distance", "field_goal_result", "extra_point_result",
+        "two_point_conv_result", "two_point_attempt", "roof", "temp", "wind", "weather",
+        "kicker_player_name", "touchback", "punt_inside_twenty", "punt_out_of_bounds", "punt_downed",
+        "punt_fair_catch", "return_yards", "punt_blocked", "first_down"]
+
+
+def kicking_plays():
+    """Field goals, extra points, two-point tries, punts, fourth-down runs and passes, and runs/passes
+    from kick formations."""
+    out = []
+    for s in SEASONS:
+        df = nfl().load_pbp([s])
+        df = df.filter(pl.col("play_type").is_in(["field_goal", "punt", "extra_point"])
+                       | (pl.col("two_point_attempt") == 1)
+                       | ((pl.col("down") == 4) & pl.col("play_type").is_in(["run", "pass"]))
+                       | pl.col("desc").str.contains("Punt formation|Field Goal formation"))
+        out.append(df.select([c for c in KEEP if c in df.columns]).to_pandas())
+    return pd.concat(out, ignore_index=True)
+
+
+K = kicking_plays()
+reg = K[K.season_type == "REG"]
+S = {}                        # numbers quoted in the text
+
+# --- field goals ---------------------------------------------------------------------------------
+fg = reg[reg.play_type == "field_goal"].copy()
+fg["made"] = fg.field_goal_result.eq("made")
+S["fg18"] = pct(((fg.kick_distance - fg.yardline_100) == 18).mean())
+S["fg_blk"] = pct((fg[fg.season.between(2021, 2025)].field_goal_result == "blocked").mean(), 1)
+
+ERA_EDGES, ERA_LABS = [1998, 2005, 2012, 2019, 2025], ["1999–2005", "2006–2012", "2013–2019", "2020–2025"]
+D_EDGES = [17, 24, 29, 34, 39, 44, 49, 54, 59, 80]
+D_LABS = ["18–24", "25–29", "30–34", "35–39", "40–44", "45–49", "50–54", "55–59", "60+"]
+fg["era"] = pd.cut(fg.season, ERA_EDGES, labels=ERA_LABS)
+fg["dbin"] = pd.cut(fg.kick_distance, D_EDGES, labels=D_LABS)
+era_tab = fg.groupby(["era", "dbin"], observed=True).made.agg(["mean", "size"]).reset_index()
+f50 = fg[fg.kick_distance >= 50]
+S["m50_e1"] = pct(f50[f50.era == ERA_LABS[0]].made.mean())
+S["m50_e4"] = pct(f50[f50.era == ERA_LABS[3]].made.mean())
+share50 = fg.groupby("era", observed=True).kick_distance.apply(lambda x: (x >= 50).mean())
+S["sh50_e1"], S["sh50_e4"] = pct(share50.iloc[0]), pct(share50.iloc[3])
+S["att50_99"] = f"{(fg[fg.season == 1999].kick_distance >= 50).sum()}"
+S["att50_25"] = f"{(fg[fg.season == 2025].kick_distance >= 50).sum()}"
+m60 = fg[fg.made & (fg.kick_distance >= 60)].groupby("season").size()
+S["m60_25"] = f"{m60.get(2025, 0)}"
+S["m60_1924"] = f"{m60.loc[2019:2024].mean():.0f}"
+S["m55_25"] = f"{(fg[fg.made & (fg.kick_distance >= 55)].season == 2025).sum()}"
+S["m55_1621"] = f"{fg[fg.made & (fg.kick_distance >= 55) & fg.season.between(2016, 2021)].groupby('season').size().mean():.0f}"
+
+
+# --- weather: roof, temperature and wind for 2010-2025 kicks ------------------------------------
+def from_weather(s, pat):
+    m = re.search(pat, s) if isinstance(s, str) else None
+    return float(m.group(1)) if m else np.nan
+
+
+wx = fg[fg.season.between(2010, 2025)].copy()
+wx["indoor"] = wx.roof.isin(["dome", "closed"])
+wx["tempF"] = wx.temp.fillna(wx.weather.map(lambda s: from_weather(s, r"Temp:\s*(-?\d+)")))
+wx["windmph"] = wx.wind.fillna(wx.weather.map(lambda s: from_weather(s, r"Wind:\s*[A-Za-z]*\s*(\d+)\s*mph")))
+W_EDGES, W_LABS = [17, 29, 39, 49, 54, 80], ["18–29", "30–39", "40–49", "50–54", "55+"]
+wx["wbin"] = pd.cut(wx.kick_distance, W_EDGES, labels=W_LABS)
+out = wx[~wx.indoor]
+cold, warm = out[out.tempF < 40], out[out.tempF >= 60]
+GROUPS = {"Indoors (dome or closed roof)": wx[wx.indoor], "Outdoors": out,
+          "Outdoors, below 40°F": cold, "Outdoors, 60°F or warmer": warm}
+wx_tab = {k: g.groupby("wbin", observed=True).made.agg(["mean", "size"]) for k, g in GROUPS.items()}
+for key, g in [("in", wx[wx.indoor]), ("out", out), ("cold", cold), ("warm", warm)]:
+    S[f"sh50_{key}"] = pct((g.kick_distance >= 50).mean())
+    S[f"m50_{key}"] = pct(g[g.kick_distance >= 50].made.mean())
+calm, windy = out[out.windmph <= 5], out[out.windmph >= 11]
+S["m5054_calm"] = pct(calm[calm.kick_distance.between(50, 54)].made.mean())
+S["m5054_windy"] = pct(windy[windy.kick_distance.between(50, 54)].made.mean())
+S["sh50_calm"], S["sh50_windy"] = pct((calm.kick_distance >= 50).mean()), pct((windy.kick_distance >= 50).mean())
+den = wx.home_team.eq("DEN")
+S["den55"] = pct((wx[den].kick_distance >= 55).mean())
+S["oth55"] = pct((wx[~den].kick_distance >= 55).mean())
+c55 = cold[cold.kick_distance.between(55, 59)]
+w55 = warm[warm.kick_distance.between(55, 59)]
+S["c55"], S["w55"], S["c55n"] = pct(c55.made.mean()), pct(w55.made.mean()), f"{len(c55)}"
+S["c50"] = pct(cold[cold.kick_distance.between(50, 54)].made.mean())
+S["c55p"], S["w55p"] = pct(cold[cold.kick_distance >= 55].made.mean()), pct(warm[warm.kick_distance >= 55].made.mean())
+S["c55pn"] = f"{(cold.kick_distance >= 55).sum()}"
+
+# --- kickers in the film room ----------------------------------------------------------------------
+tk = fg[fg.kicker_player_name.eq("J.Tucker")]
+S["tucker_pct"], S["tucker_att"] = pct(tk.made.mean(), 1), f"{len(tk)}"
+S["tucker24"] = f"{tk[tk.season == 2024].made.sum()} of {(tk.season == 2024).sum()}"
+ab = fg[fg.kicker_player_name.eq("B.Aubrey")]
+S["aub50_24"] = f"{(ab[(ab.season == 2024)].made & (ab[ab.season == 2024].kick_distance >= 50)).sum()}"
+S["aub50att_24"] = f"{(ab[ab.season == 2024].kick_distance >= 50).sum()}"
+S["aub60"] = f"{(ab.made & (ab.kick_distance >= 60)).sum()}"
+S["aub_sh50"] = pct((ab.kick_distance >= 50).mean())
+S["lg_sh50_2325"] = pct((fg[fg.season.between(2023, 2025)].kick_distance >= 50).mean())
+lt = fg[fg.kicker_player_name.eq("C.Little") & (fg.season == 2025)]
+S["little25"] = f"{lt.made.sum()} of {len(lt)}"
+
+# --- the try: extra points and two-point conversions ----------------------------------------
+xp = reg[reg.play_type == "extra_point"]
+tp = reg[(reg.two_point_attempt == 1) & reg.two_point_conv_result.notna()]
+try_tab = pd.DataFrame({
+    "xp_att": xp.groupby("season").size(),
+    "xp_pct": xp.groupby("season").extra_point_result.apply(lambda x: (x == "good").mean()),
+    "tp_att": tp.groupby("season").size(),
+    "tp_pct": tp.groupby("season").two_point_conv_result.apply(lambda x: (x == "success").mean())})
+try_tab["tp_share"] = try_tab.tp_att / (try_tab.tp_att + try_tab.xp_att)
+S["xp14"], S["xp15"] = pct(try_tab.xp_pct[2014], 1), pct(try_tab.xp_pct[2015], 1)
+S["xp_2125"] = pct(try_tab.xp_pct.loc[2021:2025].mean(), 1)
+S["tp14"], S["tp15"] = f"{try_tab.tp_att[2014]}", f"{try_tab.tp_att[2015]}"
+S["tp_1014"] = f"{try_tab.tp_att.loc[2010:2014].mean():.0f}"
+S["tp_2125"] = f"{try_tab.tp_att.loc[2021:2025].mean():.0f}"
+S["tp_pct_1525"] = pct(tp[tp.season >= 2015].two_point_conv_result.eq("success").mean())
+S["tp_val"] = f"{2 * tp[tp.season >= 2015].two_point_conv_result.eq('success').mean():.2f}"
+S["xp_val"] = f"{xp[xp.season >= 2015].extra_point_result.eq('good').mean():.2f}"
+tp_team = tp[tp.season >= 2015].groupby("posteam").size().sort_values(ascending=False)
+TEAM = {"PHI": "Philadelphia", "JAX": "Jacksonville", "TB": "Tampa Bay", "PIT": "Pittsburgh", "CLE": "Cleveland",
+        "WAS": "Washington"}
+S["tp_top"] = f"{TEAM.get(tp_team.index[0], tp_team.index[0])}, with {tp_team.iloc[0]} tries"
+xpb = xp.groupby("season").extra_point_result.apply(lambda x: (x == "blocked").sum())
+S["xpblk_1014"], S["xpblk_1525"] = f"{xpb.loc[2010:2014].mean():.0f}", f"{xpb.loc[2015:2025].mean():.0f}"
+S["xpblk_lo"], S["xpblk_hi"] = f"{xpb.loc[2015:2025].min()}", f"{xpb.loc[2015:2025].max()}"
+S["tp23"], S["tp24"] = pct(try_tab.tp_pct[2023]), pct(try_tab.tp_pct[2024])
+_p, _n = try_tab.tp_pct.loc[2015:2025].mean(), try_tab.tp_att.loc[2021:2025].mean()
+S["tp_moe"] = f"{200 * np.sqrt(_p * (1 - _p) / _n):.0f}"      # two standard errors, in points
+
+# --- punts -----------------------------------------------------------------------------------------
+pu = reg[reg.play_type == "punt"].copy()
+pu["ret"] = pu.return_yards.fillna(0)
+pu["net"] = pu.kick_distance.fillna(0) - pu.ret - 20 * pu.touchback
+pu["fin"] = pu.yardline_100 - pu.kick_distance          # receiving team's yard line where the kick ended
+trend = pu.groupby("season").agg(gross=("kick_distance", "mean"), net=("net", "mean"),
+                                 fc=("punt_fair_catch", "mean"), n=("net", "size"))
+S["gross99"], S["net99"] = f"{trend.gross[1999]:.1f}", f"{trend.net[1999]:.1f}"
+S["gross25"], S["net25"] = f"{trend.gross[2025]:.1f}", f"{trend.net[2025]:.1f}"
+S["ret_9903"] = f"{(trend.gross - trend.net).loc[1999:2003].mean():.1f}"
+S["ret_2125"] = f"{(trend.gross - trend.net).loc[2021:2025].mean():.1f}"
+S["fc99"], S["fc25"] = pct(trend.fc.loc[1999:2003].mean()), pct(trend.fc.loc[2021:2025].mean())
+S["punts99"], S["punts25"] = f"{trend.n[1999]:,}", f"{trend.n[2025]:,}"
+recent = pu[pu.season.between(2021, 2025) & (pu.punt_blocked == 0)]
+mid = recent[recent.yardline_100.between(40, 50)]
+S["mid_tb"] = pct(mid.touchback.mean())
+S["mid_in10"] = pct(((mid.fin <= 10) & (mid.fin > 0)).mean())
+S["mid_n"] = f"{len(mid):,}"
+S["oob10"] = pct(((recent.punt_out_of_bounds == 1) & recent.fin.between(1, 10)).mean(), 1)
+S["down10"] = pct(((recent.punt_downed == 1) & recent.fin.between(1, 10)).mean(), 1)
+deep = recent[recent.yardline_100 >= 80]
+S["deep_fin"] = f"{deep.fin.mean():.0f}"
+S["blk_punts"] = f"{pu[pu.season.between(2021, 2025)].punt_blocked.sum() / 5:.0f}"
+muff = recent.desc.str.contains("MUFFS", na=False)
+S["muffs"] = f"{muff.sum() / 5:.0f}"
+
+# --- fakes: runs and passes the play-by-play tags as coming from a kicking formation ----------------
+scrim = reg[reg.play_type.isin(["run", "pass"]) & reg.season.between(2016, 2025)
+            & ~reg.desc.str.contains("Aborted", na=False)]
+fp = scrim[scrim.desc.str.contains("Punt formation", na=False)]
+ff = scrim[scrim.desc.str.contains("Field Goal formation", na=False)]
+punts_1625 = (pu.season.between(2016, 2025)).sum()
+S["fp_yr"] = f"{len(fp) / 10:.0f}"
+S["fp_conv"] = pct(fp.first_down.mean())
+S["fp_rate"] = pct(len(fp) / (len(fp) + punts_1625), 1)
+S["ff_yr"] = f"{len(ff) / 10:.0f}"
+go4 = reg[(reg.down == 4) & reg.play_type.isin(["run", "pass"]) & reg.season.between(2016, 2025)
+          & ~reg.desc.str.contains("formation\\)", na=False, regex=True)]
+S["c4_6"] = pct(go4[go4.ydstogo == 6].first_down.mean())
+S["ff_9905"] = f"{len(reg[reg.play_type.isin(['run', 'pass']) & reg.season.between(1999, 2005) & reg.desc.str.contains('Field Goal formation', na=False)]) / 7:.0f}"
+```
+
+Fourth-and-7 at the opponent's 36, late in the third quarter, down by four. The broadcast cuts to
+the sideline, where the kicker has been swinging his leg into a practice net for two minutes. The
+graphic says **54-yard attempt**. The head coach looks up at the flags on top of the goal posts,
+which are snapping straight back toward the line of scrimmage (a wind in the kicker's face), says
+something into his headset, and sends out... the punter. The punter, from barely 50 yards away, then
+tries to kick the ball *short*: high, soft, aimed at the 8. Two of his teammates sprint past everyone
+the instant the ball is snapped. The returner stands under it, waves one arm over his head, catches
+it at the 9, and nobody lays a finger on him. Why wasn't 54 yards in range today, when the same
+kicker made a 56-yarder last month? Why would anyone want a short punt? And what was that wave? This
+chapter is about the plays that start with a long snap: the field goal, the extra point and the
+punt. They are about one snap in six, they decide a large share of close games, and they are full
+of rules most viewers have never had explained.
+
+**You'll be able to…**
+
+- Turn any line of scrimmage into a field-goal distance in your head, and judge whether it is in
+  range *for this kicker, today*: roof or open sky, cold, wind, altitude.
+- Watch a field goal as a 1.3-second operation (snap, hold, kick) behind a wall that must not give
+  ground, and spot how a block unit (the defense's kick-blocking team) attacks it.
+- Explain why the extra point moved back in 2015 and what that did to two-point tries.
+- Read an NFL punt formation: name the gunners, the vices, the wings and personal protector who form
+  the shield, and say whether the return team is setting up a return, a block or a "safe" look.
+- Call the rules of a kicked ball as it happens: fair catch, touchback, downing, out of bounds,
+  muff versus fumble, first touching and kick-catch interference.
+- Explain why fakes succeed more often than not and are still rare.
+
+## The third phase in one minute
+
+Every football team is really three teams. The offense and defense get the airtime; the third,
+**special teams**, takes the field for the kicking plays: kickoffs, punts, field goals and extra
+points. Those were 17.5% of NFL plays in 2025, about one snap in six (the count is in
+[What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd)), and they are run by
+their own coach, the
+[special teams coordinator](../01-foundations/01-04-what-a-play-really-is.qmd). You met the
+specialists (kicker, punter, long snapper, holder, returner and gunners) in
+[The Twenty-Two](../01-foundations/01-03-the-twenty-two.qmd). This chapter puts them to work.
+
+Two kinds of kicks are in this chapter. Both are **scrimmage kicks**: they start with a snap from
+the line of scrimmage, like any offensive play, and the offense chooses them, usually on fourth
+down. The field goal tries to score; the punt gives the ball away on purpose in exchange for field
+position. (The kickoff, a *free* kick from a tee that starts each half and follows every score, is
+a different animal with its own fast-changing rules; it has its own chapter,
+[Kickoffs, Returns, and the Dynamic Kickoff](09-02-kickoffs-and-returns.qmd).)
+
+Why should a viewer who cares about schemes care about kicking? Because the kicking game sets the
+price of everything else. How far out a kicker can be trusted decides where a fourth down becomes
+a field-goal try instead of a gamble. How far a punter can pin the opponent decides how much a
+failed fourth-down try costs. Every fourth-down decision you will learn to judge in
+[The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd)
+starts with the numbers in this chapter.
+
+## Field goals: from the line of scrimmage to the crossbar
+
+You already know the basic deal from
+[The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd): a
+[field goal](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd) is three points for kicking
+the ball, held on the ground, through the goal posts, from anywhere on the field, on any down. Here
+we take it apart, starting with the arithmetic every broadcast does for you.
+
+```{python}
+#| label: fig-fg-geometry
+#| fig-cap: "Where a field goal's length comes from, kicking team moving left to right from the opponent's 30. The ball is snapped about 8 yards back to the holder (the curved dashed snap), who spots it there; the kick (solid line) starts from that spot, and the goal posts stand on the end line, 10 yards behind the goal line. So the kick is the yard line plus 18: 30 + 8 + 10 = 48 yards. The uprights are 18 feet 6 inches apart, exactly the width between the NFL's hash marks, so even a kick from a hash meets the posts at only a slight angle."
+def fg_geometry(ax, los_yd, title=None, show_dims=True, extra=None, lat=(-14.5, 14.5), range_line=None):
+    """A field goal from the opponent's `los_yd`, drawn horizontally (kicking left to right).
+    The snap is a curved dashed arrow and the kick a solid one, so the two never read as one line.
+    `range_line`: an opponent's yard line to mark as the kicker's range line (dashed)."""
+    los_x = 110 - los_yd
+    team = [O("LS", "C", -0.7, 0.0, "LS"), O("HOLD", "P", -8.0, 1.1, "Ho"), O("K", "K", -10.4, -2.1, "K")]
+    p = Play(team, [], los=los_x, to_go=None)
+    fld = p.draw(orient="horizontal", window=(-14.0, 120 - los_x), lateral=lat, title=False, ax=ax)
+    ax = fld.ax
+    no_numbers(fld)
+    for xx in range(int(np.ceil((fld.x0 + 2.5) / 10) * 10), 111, 10):
+        lab = "goal line" if xx == 110 else (f"{110 - xx}" if xx > 60 else f"{xx - 10}")
+        if xx == 110 - los_yd or (range_line is not None and abs(xx - (110 - range_line)) < 4):
+            continue
+        nx, ny = fld.xy(xx, MIDDLE + lat[1] - 1.8)
+        ax.text(float(nx), float(ny), lab, ha="center", va="center", fontsize=7, color=style.MUTED,
+                fontweight="bold", zorder=3)
+    ball_at(fld, p, -8.0, 0.0)
+    ball_arrow(fld, p, (0.0, 0.0), (-7.5, -0.3), rad=0.45, lw=1.0)      # the snap, bowed to one side
+    if range_line is not None:
+        rx = 110 - range_line
+        (ax0, ay0), (ax1, ay1) = fld.xy(rx, MIDDLE + lat[0] + 1.0), fld.xy(rx, MIDDLE + lat[1] - 3.2)
+        ax.plot([float(ax0), float(ax1)], [float(ay0), float(ay1)], color=style.LINE_TO_GAIN, lw=1.4,
+                ls=(0, (4, 2)), zorder=4)
+    # goal posts on the end line (BDB x = 120): crossbar 18'6" wide, centred
+    half = 18.5 / 3 / 2
+    (gx0, gy0), (gx1, gy1) = fld.xy(119.7, MIDDLE - half), fld.xy(119.7, MIDDLE + half)
+    ax.plot([gx0, gx1], [gy0, gy1], color=style.LINE_TO_GAIN, lw=3.2, solid_capstyle="butt", zorder=6)
+    for yy in (MIDDLE - half, MIDDLE + half):
+        (ux, uy), _ = fld.xy(119.7, yy), None
+        ax.plot([ux], [uy], marker="o", ms=4, color=style.LINE_TO_GAIN, zorder=6)
+    # the kick's path, spot to the middle of the crossbar: solid, so it can't be mistaken for the snap
+    kx, ky = fld.xy(los_x - 7.4, MIDDLE)
+    ax.add_patch(FancyArrowPatch((float(kx), float(ky)), (float(gx0 + gx1) / 2 - 0.4, float(gy0 + gy1) / 2),
+                                 arrowstyle="-|>", mutation_scale=10, color=style.BALL, lw=1.6, zorder=5))
+    if show_dims:
+        yd = MIDDLE - 11.0   # dimension line a little toward the offense's right
+        segs = [(los_x - 8.0, los_x, "8 yd\n(snap)"), (los_x, 110.0, f"{los_yd} yd\n(line to goal line)"),
+                (110.0, 120.0, "10 yd\n(end zone)")]
+        for a, b, lab in segs:
+            (xa, ya), (xb, yb) = fld.xy(a, yd), fld.xy(b, yd)
+            ax.annotate("", xy=(float(xb), float(yb)), xytext=(float(xa), float(ya)),
+                        arrowprops=dict(arrowstyle="<->", color=style.INK_2, lw=0.9, shrinkA=0, shrinkB=0), zorder=6)
+            ax.text((float(xa) + float(xb)) / 2, float(ya) - 1.2, lab, ha="center", va="top", fontsize=6.6,
+                    color=style.INK_2, zorder=7, linespacing=1.05)
+    return fld, p
+
+
+fig, ax = plt.subplots(figsize=(6.5, 3.3))
+fld, p = fg_geometry(ax, 30)
+say(fld, p, 0.0, 3.3, "line of\nscrimmage\n(opp. 30)", color=OC, fs=6.4)
+say(fld, p, -8.0, 4.4, "spot of\nthe kick", color=OC, fs=6.4)
+say(fld, p, -3.8, -3.0, "snap", color=style.BALL, fs=6.2)
+say(fld, p, 9.0, 1.6, "kick", color=style.BALL, fs=6.2)
+gx, gy = fld.xy(116.4, MIDDLE + 6.4)
+ax.text(float(gx), float(gy) - 1.5, "goal posts\non the\nend line", ha="center", va="center", fontsize=6.4,
+        color=style.INK_2, zorder=9, linespacing=1.05)
+tx, ty = fld.xy(96.0, MIDDLE + 6.0)
+ax.text(float(tx), float(ty), "30 + 8 + 10 = a 48-yard kick", ha="center", va="center", fontsize=8.5,
+        color=style.INK, fontweight="bold", zorder=9,
+        bbox=dict(boxstyle="round,pad=0.3", fc=style.SURFACE, ec=style.BASELINE, lw=0.6))
+plt.show()
+```
+
+The rule of thumb is **add 18**: from the opponent's 30, a 48-yarder; from the 36, a 54-yarder.
+The 18 is the 10-yard end zone (the posts have stood at the back of it, on the end line, since
+1974) plus the distance between the line of scrimmage and the spot where the holder sets the ball:
+about 7 to 8 yards on the field, and 8 by the scorers' convention, which is where "add 18" comes
+from. In nflverse play-by-play since 1999, `{python} S["fg18"]` of all field-goal attempts are
+recorded at exactly the line of scrimmage plus 18.[^fg18] That share reflects the scorers' rule of
+thumb more than a tape measure: nobody measures where the holder's finger actually was. College
+announcers often say "add 17," because many college holders kneel a yard closer.
+
+Why does the holder kneel so far back? Because of the rushers. A kicked ball rises steeply, but it
+needs a few yards of travel to climb above the outstretched hands of the defenders at the line.
+Move the spot closer and the ball is still low when it crosses the line, so it is easier to block.
+Move it farther back and the ball clears the line easily, but now the snap takes longer, the kick is
+longer and less accurate, and edge rushers have more time to get around the end to the spot. Seven
+to eight yards is where a century of trial and error settled.
+
+The goal itself is a crossbar 10 feet off the ground and 18 feet 6 inches wide, with uprights
+reaching 35 feet above it.[^posts] That width is no accident of design: the NFL's hash marks are
+18 feet 6 inches apart too, so a kick from either hash is lined up directly with one upright and
+needs only a mild angle. In college, where the hashes are much wider, kickers face real angles from
+the hash, which is why college teams sometimes waste a down running the ball to the middle of the
+field before a kick. In the NFL the hash matters much less, though many kickers still have a side
+they prefer.
+
+### What "field goal range" means
+
+[**Field goal range**](../../appendices/glossary.qmd#gl-field-goal-range) is the yard line
+beyond which a coach believes his kicker makes the kick often enough, today, that kicking beats the
+alternatives. Notice the three parts of that definition. It is *a coach's belief*, not a fact
+painted on the field. It depends on *today*: the wind, the cold, the roof. And it is *relative to
+the alternatives*: going for it on fourth down, or punting. A 55-yard try that goes in six times in
+ten might be a great call on fourth-and-9 and a poor one on fourth-and-1.
+
+Coaches don't guess at the first part. Before every game, kickers warm up from progressively
+longer distances toward *both* end zones and tell the special teams coordinator their lines: "the
+35 going this way, the 31 going the other way, into the wind." Those yard lines go on the call sheet
+next to the fourth-down plan, and they are why the coach in the opening scene looked at the flags.
+
+The cost of a miss is the other half. A missed field goal isn't like a punt. The other team takes
+over at the spot of the kick, where the holder put the ball down, or at its own 20 if the kick came
+from inside the 20.[^missedfg] So a missed 54-yarder from the opponent's 36 hands the other team the
+ball at its own 44: you didn't score, *and* you gave them a short field. A punt from the same spot
+would have pinned them somewhere near their 10. Range is the yard line where those two prices
+balance. (How often is "often enough"? That depends on the score, the clock and the distance to go,
+and the arithmetic is built in
+[The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd).)
+
+One more way a miss can hurt. A field-goal try that falls short in the field of play or the end zone
+is a live ball, and once a defender touches it the special missed-kick rule no longer applies: it is
+treated like a punt, and he may catch it and run it back.[^fgreturn] That is why defenses station a
+returner under the crossbar on very long tries. On November 4, 2007, at Minnesota, San Diego's
+Antonio Cromartie caught a missed 57-yarder nine yards deep in his own end zone and returned it
+109 yards for a touchdown, at the time the longest play in league history.[^cromartie]
+
+::: {.callout-note title="Madden vs. real life"}
+In a video game the kicker's range is a meter: aim, press, and the leg is exactly as strong on a
+frozen December night in Buffalo as indoors in September. Real range moves from week to week and
+from one end of the field to the other in the same game. The NFL head coach doesn't have a meter;
+he has a pregame report from his kicker, a forecast, the flags on the uprights, and a fourth-down
+chart from his analytics staff. Watch the end of warmups on a windy day and you'll see kickers
+deliberately trying long kicks into the wind to find out where the line is.
+:::
+
+### Kickers keep getting better
+
+```{python}
+#| label: fig-fg-eras
+#| fig-cap: "How often NFL field goals are made, by distance, in four eras (regular seasons). Every era is near-perfect from inside 30 yards; the eras separate at distance. A 50–54-yard kick that was a coin flip around the turn of the century is now made about three times in four, and kicks of 55–59 yards are better today than 45–49-yard kicks were in 1999–2005. Points are shown only where an era has at least 25 attempts in that distance band. Source: nflverse play-by-play."
+fig, ax = plt.subplots(figsize=(6.5, 3.4))
+cols = [style.SERIES[3], style.SERIES[2], style.SERIES[1], style.SERIES[0]]
+for era, col in zip(ERA_LABS, cols):
+    t = era_tab[(era_tab.era == era) & (era_tab["size"] >= 25)]
+    xs = [D_LABS.index(b) for b in t.dbin]
+    ax.plot(xs, t["mean"] * 100, color=col, marker="o", ms=4, lw=2, label=era)
+ax.set_xticks(range(len(D_LABS)), D_LABS)
+ax.set_xlabel("kick distance (yards)")
+ax.set_ylabel("made (%)")
+ax.set_ylim(15, 102)
+ax.legend(loc="lower left", fontsize=8, title="seasons", title_fontsize=8)
+ax.grid(axis="x", visible=False)
+plt.show()
+```
+
+The chart is one of the clearest skill trends in the sport.[^eras] Kicks from 50 yards and beyond
+were made `{python} S["m50_e1"]` of the time in 1999–2005 and `{python} S["m50_e4"]` in 2020–2025.
+Coaches noticed: kicks of 50-plus were `{python} S["sh50_e1"]` of all attempts in the first era and
+`{python} S["sh50_e4"]` in the latest (`{python} S["att50_99"]` such attempts in 1999,
+`{python} S["att50_25"]` in 2025). From 1999 through 2005, seven full seasons, no NFL kicker made a
+field goal of 60 yards or more; in 2025 alone kickers made `{python} S["m60_25"]`.
+
+Why? Several things at once, and nobody can cleanly split the credit:
+
+- **Specialization.** Kickers used to be position players who also kicked. The last of the
+  straight-on, toe-first kickers left the NFL in the 1980s, replaced by soccer-style kickers who swing
+  into the ball with the instep, a technique Hungarian-born Pete Gogolak brought to pro football
+  with the Buffalo Bills of the AFL (the American Football League, the NFL's 1960s rival, which
+  merged with it in 1970) in 1964.[^gogolak] Today's kickers are year-round specialists, many
+  with soccer backgrounds, private kicking coaches and video of every rep.
+- **Competition for jobs.** There are only 32 jobs. A kicker who makes 80% gets cut for one who makes 88%,
+  and the pool of candidates (college, other leagues, soccer) has grown.
+- **The ball.** Through 2024 the special "K-balls" used for kicks were shipped to the officials and
+  handed to each team only an hour before the game, to be prepared with towels and a brush. For
+  2025 the league let teams receive their kicking balls before the season and break them in like
+  quarterbacks' balls. Kickers had long complained that a ball fresh out of the box, not yet broken
+  in, felt hard and dead off the foot. Long-range kicking jumped in 2025:
+  `{python} S["m55_25"]` made kicks of 55-plus yards, against about `{python} S["m55_1621"]` a season
+  from 2016 to 2021.[^kball]
+
+::: {.callout-caution title="Common misconception"}
+"Kicks from 50 yards are a coin flip." That was true in 2000. It hasn't been true for a decade, and
+many fans (and some broadcasters) still talk as if it were. The practical effect is that **field-goal
+range has moved out about five yards in a generation**, from roughly the opponent's 32 to roughly
+the 37–40 for a good kicker indoors. Every one of those yards changes fourth-down math.
+:::
+
+### Wind, cold, altitude and roofs
+
+The ball doesn't know the score, but it knows the air. Four conditions move range:
+
+- **Wind** is the obvious one. A 15-mph wind in the kicker's face can take five or more yards off
+  his range; at his back it adds them. Crosswinds push the ball sideways, which is why kickers aim
+  "off" the upright in a crosswind. That's why kickers study the flags on top of the uprights before
+  every kick.
+- **Cold** costs distance twice. Cold air is denser, so the ball meets more drag, and a cold ball is
+  harder and less lively off the foot. Kickers talk about a cold ball feeling like a rock.
+- **Altitude** gives distance back. Denver's stadium sits about a mile above sea level, where the
+  air is roughly 15% thinner, so the ball carries farther. Coaches lean on it a little: in
+  2010–2025, `{python} S["den55"]` of field-goal attempts in Denver were from 55 yards or more,
+  against `{python} S["oth55"]` everywhere else.
+- **Roofs** remove the first two. A dome is warm and still every week.
+
+```{python}
+#| label: fig-fg-weather
+#| fig-cap: "The weather box: field-goal accuracy by distance, 2010–2025 regular seasons. Left: indoors (domes and closed roofs) against outdoors. Right: outdoor games below 40°F against outdoor games at 60°F or warmer. Kicks inside 40 yards hardly care; the gap opens with distance. And these gaps are smaller than the real effect of the weather, because coaches decline the hardest kicks: in cold and wind they punt or go for it instead, so the long kicks that are tried in bad conditions are the ones the coach liked. Points are shown only where a group has at least 25 attempts. Source: nflverse play-by-play (roof, temperature and wind as recorded for each game)."
+fig, axes = plt.subplots(1, 2, figsize=(6.5, 3.0), sharey=True)
+pairs = [(("Indoors (dome or closed roof)", style.SERIES[0]), ("Outdoors", style.SERIES[1])),
+         (("Outdoors, 60°F or warmer", style.SERIES[3]), ("Outdoors, below 40°F", style.SERIES[6]))]
+for ax, pair in zip(axes, pairs):
+    for name, col in pair:
+        t = wx_tab[name]
+        t = t[t["size"] >= 25]
+        ax.plot([W_LABS.index(b) for b in t.index], t["mean"] * 100, color=col, marker="o", ms=4, lw=2,
+                label=name)
+    ax.set_xticks(range(len(W_LABS)), W_LABS, fontsize=7.5)
+    ax.set_xlabel("kick distance (yards)", fontsize=8)
+    ax.grid(axis="x", visible=False)
+    ax.legend(loc="lower left", fontsize=7)
+axes[0].set_ylabel("made (%)")
+axes[0].set_ylim(35, 102)
+axes[0].set_title("Roof", fontsize=9.5)
+axes[1].set_title("Temperature (outdoor games)", fontsize=9.5)
+plt.show()
+```
+
+The weather box shows the effect, and it also shows the most important trap in sports data:
+**selection bias**, which means the cases in your data were chosen by someone, so they aren't a fair
+sample.[^weather] Four numbers make the point. From 55 yards and beyond, outdoor kickers made
+`{python} S["c55p"]` of their tries in games colder than 40°F and `{python} S["w55p"]` in games at 60°F
+or warmer. But kicks of 50-plus were only `{python} S["sh50_cold"]` of attempts in the cold, against
+`{python} S["sh50_warm"]` in the warm.
+
+Picture how that happens. On a warm, still afternoon a coach lets his kicker try a 55-yarder whenever
+the drive stalls near the opponent's 37. On a freezing night he lets him try it only when everything
+else is in his favor: the wind at his back, a big-legged kicker, the last seconds of a half with
+nothing to lose. So the long kicks in the cold column are a hand-picked, easier-than-average set, and
+they *still* miss more often. The true cost of a long kick in the cold is larger than the gap in the
+chart. Wind works the same way, with a second blur: the data records the wind's speed but not its
+direction, so a gale at the kicker's back counts the same as one in his face.
+
+::: {.callout-note title="Go deeper: the record kick and where it was kicked"}
+The longest field goals in NFL history read like a weather report. Tom Dempsey's 63-yarder for
+New Orleans in 1970 stood as the record for 43 years; it was tied in Denver twice (Jason Elam in
+1998, Sebastian Janikowski in 2011) and once at Green Bay (David Akers, 2012). Matt Prater broke it
+with 64 yards in Denver in December 2013. Justin Tucker's 66 came indoors in Detroit in 2021, and
+Cam Little's 68 came indoors in Las Vegas in November 2025.[^records] Thin air, then roofs: the
+record has spent most of its modern life in places where the air helps.
+:::
+
+## The operation: snap, hold, kick
+
+A field goal looks like one man's moment. It is really a three-man relay with a stopwatch on it.
+
+[**Snap-hold-kick**](../../appendices/glossary.qmd#gl-snap-hold-kick) is the name for that relay,
+and coaches time it from the snap to the moment the foot hits the ball, a number they call
+**operation time**. The professional target is about **1.3 seconds**.[^optime] Here is what has to
+happen inside it:
+
+1. **The snap (roughly 0.4 seconds).** The long snapper, head down and looking backward between
+   his legs, fires a tight spiral seven or eight yards to the holder's hands, ideally with the laces
+   arriving in a predictable position.
+2. **The hold (about half a second).** The holder catches it, puts the point on the ground on his
+   mark, tilts it as his kicker likes and spins the laces to face the goal posts, because a foot
+   that strikes the laces sends the ball off line.
+3. **The kick.** The kicker has already started. He takes a small jab step as the snap leaves the
+   snapper's hands and two strides at an angle, so his plant foot lands beside the ball just as it
+   touches down, and swings through.
+
+```{python}
+#| label: fig-fg-operation
+#| fig-cap: "The 1.3-second operation, simulated tracking in Big Data Bowl format (illustrative timing, not a real play). Snap: the field-goal unit and a ten-man block unit (the defense's kick-blocking team). 0.4 s: the snap reaches the holder (Ho). 0.9 s: the ball is down and the kicker (K) is on his second step; the interior rushers have been stopped at the line. 1.3 s: the kick is away, and the unblocked edge rusher on the overloaded side is still a couple of yards short of the spot where he could block it. Add a tenth of a second to the operation, a slow snap or a bobbled hold, and he gets there."
+def fg_unit(split=1.4):
+    pl_ = [O("LS", "C", -0.7, 0.0, "LS")]
+    for k, w in [("LG", -split), ("RG", split), ("LT", -2 * split), ("RT", 2 * split),
+                 ("LE", -3 * split), ("RE", 3 * split)]:
+        pl_.append(O(k, "OL" if k[1] in "GT" else "TE", -0.7, w, ""))
+    pl_ += [O("LW", "TE", -1.4, -3 * split - 1.3, ""), O("RW", "TE", -1.4, 3 * split + 1.3, ""),
+            O("HOLD", "P", -8.0, 1.1, "Ho"), O("K", "K", -10.4, -2.1, "K")]
+    return pl_
+
+
+def block_unit():
+    """Ten rushers (six on the left of the snapper, the legal maximum) and one player back for a fake."""
+    left = [-0.75, -2.1, -3.5, -4.9, -6.5, -8.1]
+    right = [0.75, 2.1, 3.5, 6.5]
+    pl_ = [D(f"L{i}", "DL", 1.0, w) for i, w in enumerate(left)]
+    pl_ += [D(f"R{i}", "DL", 1.0, w) for i, w in enumerate(right)]
+    pl_ += [D("FAKE", "DB", 7.0, 2.0)]
+    return pl_
+
+
+def fg_actions(p, speed_edge=6.4):
+    # protectors: step inside and hold the line (don't give ground)
+    for k in ("LG", "RG", "LT", "RT", "LE", "RE"):
+        w = p.players[k].w
+        p.block(k, pts=[(-0.35, -0.3 * np.sign(w))])
+    p.block("LW", pts=[(-0.5, -0.8)])
+    p.block("RW", pts=[(-0.5, 0.8)])
+    # interior rushers: driven into the line and stopped
+    for k in ("L0", "L1", "L2", "L3", "R0", "R1", "R2"):
+        w = p.players[k].w
+        p.rush(k, pts=[(-1.1, -0.15 * np.sign(w))], speed=2.4)
+    # edges: the inside edge on each side takes on the wing; the outermost man on the overload is free
+    p.rush("L4", pts=[(-1.6, 0.5)], speed=2.6)
+    p.rush("R3", pts=[(-1.6, -0.5)], speed=2.6)
+    p.rush("L5", pts=[(-3.4, 1.4), (-6.3, 6.4)], speed=speed_edge, delay=0.05)
+    return p
+
+
+SPOT = (-8.0, 0.0)
+fo = fg_actions(Play(fg_unit(), block_unit(), los=75, to_go=None))
+fo.path("K", [(0.25, 0.3), (2.2, 1.25), (1.4, 0.75)], speed=2.6, delay=0.2)
+fo.path("FAKE", [(-1.0, -0.6)], speed=1.5, delay=0.3)
+
+
+def fg_ball(t):
+    if t <= 0:
+        return (0.0, 0.0)
+    if t < 0.38:
+        return lerp((0.0, 0.0), (-7.6, 0.6), t / 0.38)
+    if t < 0.6:
+        return lerp((-7.6, 0.6), SPOT, (t - 0.38) / 0.22)
+    if t < 1.3:
+        return SPOT
+    return (SPOT[0] + 22.0 * (t - 1.3), 0.0)
+
+
+fo_df = with_ball(fo, fg_ball, t_after=0.3)
+
+
+def fo_notes(axes):
+    strip_text(axes[1], fo, -5.0, 6.0, "snap\narrives", color=OC)
+    strip_text(axes[2], fo, -5.0, 6.0, "ball down,\nkicker on 2nd step", color=OC)
+    strip_text(axes[3], fo, -3.2, -9.4, "free edge:\nstill short", color=DC)
+    strip_text(axes[3], fo, -4.6, 5.6, "kick away", color=OC)
+
+
+show_strip(fo_df, times=[0.0, 0.4, 0.9, 1.3], annotate=fo_notes)
+```
+
+Why does a tenth of a second matter so much? Because the rushers are running a race against it. An
+edge rusher who isn't blocked needs roughly a second and a half to cover the eight or nine yards to
+the spot where he can get a hand on the ball. A 1.3-second operation beats him; a 1.5-second
+operation, caused by a snap that arrives high or a holder who bobbles it, doesn't. That's why the
+snapper, holder and kicker practice together every day, and why teams are reluctant to change any
+one of them in midseason. When a team signs a new long snapper in November, watch its kicker's
+numbers.
+
+Two habits of the operation follow from that race. **Icing the kicker** is the defense's attempt to
+break the rhythm: its coach calls a timeout a moment before the snap, so the kicker has to walk back
+and wait. He can only do it once per kick, because the rules allow a team just one timeout in the
+same dead-ball period, and a second one called to "freeze" the kicker is unsportsmanlike conduct, a
+15-yard foul.[^ice] The whistle often comes too late to stop the play, and the kicker gets a free
+practice swing. Going the other way, when the snap is bad or the holder fumbles it, there is no point
+kicking a ball off the ground. The holder shouts a code word ("Fire!" in many systems), the ends and
+wings release as receivers, and he scrambles to run or throw. It rarely works, but it beats a
+certain block.
+
+### Protection: a wall that must not bend
+
+```{python}
+#| label: fig-fg-protection
+#| fig-cap: "Field-goal protection against a block unit that overloads the kicking team's left side (six on the line there, the most the rules allow on one side of the snapper). The seven blockers on the line stand almost shoulder to shoulder, step inside and hold their ground; the two wings, a yard behind and outside the ends, step out at 45 degrees to meet the first edge rusher. That leaves the outermost rusher on the overload free, but with the longest path. The shaded oval is the block point, a yard or two in front of the spot, where the rising ball is still low enough to reach. Rules also forbid a rusher from lining up over the snapper or running and leaping over the line."
+fp_ = fg_actions(Play(fg_unit(), block_unit(), los=75, to_go=None))
+fp_.highlight("L5", color=PURPLE)
+fld = fp_.draw(window=(-12.5, 9.5), lateral=(-14.5, 14.5), title=False)
+no_numbers(fld)
+ball_at(fld, fp_, *SPOT)
+ball_arrow(fld, fp_, (0.0, 0.0), (-7.5, 0.55), lw=1.0)
+bx, by = P_(fld, fp_, -6.2, 0.2)
+fld.ax.add_patch(Ellipse((bx, by), 4.2, 2.0, fc=style.DEFENSE, alpha=0.15, ec=style.DEFENSE, lw=0.8,
+                         ls=(0, (3, 2)), zorder=2))
+say(fld, fp_, -5.7, 5.6, "block point", color=DC)
+lead(fld, fp_, (-5.7, 4.0), (-6.1, 1.9))
+say(fld, fp_, 3.0, 0.0, "blockers: step inside, don't give ground", color=OC)
+say(fld, fp_, -3.6, 9.4, "wing: 45° step\nto the edge", color=OC)
+say(fld, fp_, -6.8, -9.6, "free rusher:\nlongest path", color=DC)
+say(fld, fp_, 5.4, -9.4, "overload: six on\none side (the limit)", color=DC)
+say(fld, fp_, 8.4, 2.0, "one man back\nfor a fake", color=DC)
+say(fld, fp_, -10.3, -5.4, "kicker (K)", color=OC)
+say(fld, fp_, -9.4, 4.1, "holder (Ho)", color=OC)
+plt.show()
+```
+
+Field-goal protection runs on a few blunt rules, and every one of them has a reason:
+
+- **Tight splits.** The linemen stand almost foot to foot, much closer than on a normal play. There
+  is no running lane to open, so there is no reason to leave gaps for rushers.
+- **Step inside, protect inside.** Each blocker is responsible for the gap to his inside, toward the
+  snapper. The kick goes straight up the middle, so a rusher in the middle has the shortest route to
+  the ball's flight. Outside rushers have to travel farther and around bodies.
+- **Don't give ground.** A blocker who gets pushed back a yard has moved the line of hands a yard
+  closer to the rising ball. Interior rushers don't need to get *through*; they need to push the
+  wall back far enough that a raised arm meets the ball. Big defensive linemen on block units try to
+  do exactly that: collapse the middle and reach.
+- **Wings take the edge.** The two wings set at an angle and meet the first rusher off each edge.
+  Any extra rusher outside them is left free, because by the time he arrives the ball should be gone.
+  That is the bet the 1.3-second operation is paying for.
+
+The **block unit** on the other side has its own playbook: overload one side with as many rushers as
+the rules allow, crash a big man into the snapper's gap, time the snap, and send the longest-armed
+players at the block point. The rules put limits on it, mostly to protect players who can't defend
+themselves. The snapper is the clearest case: his head is down between his legs at the snap, so the
+rules treat him as a
+[defenseless player](09-03-contact-rules-and-penalties.qmd) until he has had a chance to protect
+himself, and no defender within a yard of the line may line up over him.[^snapper] On field goals and
+tries, no more than six defenders may be on the line on either side of the snapper, and nobody may
+push a teammate into the formation.[^fgrules] Since 2017 a rusher may not take a running start and leap over the line to
+block a kick, a play that had become popular and that blockers, rising from their stances, could flip
+into a dangerous fall.[^leap] Blocks are rare anyway: `{python} S["fg_blk"]` of NFL field-goal
+attempts from 2021 to 2025. When one happens, check the replay for three things: a low kick (the
+kicker's fault), a blocker pushed back (the protection's fault), or a slow operation (the snap or
+the hold).
+
+::: {.callout-important title="Why it exists: the holder"}
+Why not kick off a tee, as on kickoffs? The NFL's rules don't allow a tee on a field goal or
+extra point,[^tee] so the ball has to be held, and the holder becomes a fourth specialist in the
+operation: usually the punter, who has the best hands among the specialists, already catches long
+snaps for a living, and practices with the kicker and snapper every day. The trade-off is one more pair of hands that can fail, and one more player who can run or
+throw on a fake. Both matter later in this chapter.
+:::
+
+## The extra point, before and after 2015
+
+You met the try after a touchdown in
+[The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd): kick
+the [extra point](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd) for one point or run a
+[two-point conversion](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd) from the 2 for
+two. Mechanically, the extra point is just a short field goal: same snap, same hold, same
+protection, same block units. What makes it worth a section is the experiment the league ran on it.
+
+For decades the kick was snapped from the 2-yard line, a 20-yard kick. In 2014 kickers made
+`{python} S["xp14"]` of them. A play that succeeds 99 times in 100 isn't really a play, and the
+competition committee (the panel of team executives and coaches that proposes rule changes to the
+owners) wanted the try to involve a decision. The league tested a longer kick in the
+2014 preseason, and in May 2015 the owners voted 30–2 to snap the kick from the 15 (a 33-yard
+kick), leave the two-point try at the 2, and let the defense score two points by returning a
+blocked kick or a turnover on the try the length of the field.[^pat2015]
+
+```{python}
+#| label: tbl-try
+#| tbl-cap: "The try before and after the 2015 change, regular seasons. The extra-point kick became a 33-yarder and stopped being automatic; two-point tries roughly doubled but remain a minority of tries. Every season to 2016 is shown, then every other season, plus 2025. Source: nflverse play-by-play (tries wiped out by penalties not counted)."
+rows = []
+for s in [2012, 2013, 2014, 2015, 2016, 2018, 2020, 2022, 2024, 2025]:
+    r = try_tab.loc[s]
+    rows.append([s, f"{int(r.xp_att):,}", pct(r.xp_pct, 1), f"{int(r.tp_att)}", pct(r.tp_pct), pct(r.tp_share, 1)])
+md_table(rows, ["Season", "Extra-point kicks", "Made", "Two-point tries", "Converted", "2-pt share"],
+         [":---", "---:", "---:", "---:", "---:", "---:"])
+```
+
+The results, in three parts:[^patcalc]
+
+1. **The kick got harder, but not hard.** Success dropped from `{python} S["xp14"]` in 2014 to
+   `{python} S["xp15"]` in 2015, and has averaged `{python} S["xp_2125"]` from 2021 to 2025. A
+   33-yard kick is still easy for an NFL kicker; the misses come from wind, cold, bad snaps and blocks
+   (`{python} S["xpblk_1014"]` blocked extra points a season in 2010–2014, `{python} S["xpblk_1525"]` a
+   season since). The snap and the hold are the same distance from the line as before, so why more
+   blocks? There is no clean answer. Since 2015 a blocked kick can be returned for two points, so
+   block units have a reason to rush every try as if it mattered, and the yearly counts are small and
+   jumpy (anywhere from `{python} S["xpblk_lo"]` to `{python} S["xpblk_hi"]` a season since 2015).
+2. **The two options became nearly equal.** Since 2015 two-point tries have succeeded
+   `{python} S["tp_pct_1525"]` of the time, worth about `{python} S["tp_val"]` points per try, against
+   about `{python} S["xp_val"]` for the kick. When two options are worth the same on average, the
+   choice turns on the *score* and on how good your offense is from the 2, and that is a real
+   decision.
+3. **Two-point tries roughly doubled.** From about `{python} S["tp_1014"]` a season in 2010–2014
+   (`{python} S["tp14"]` in 2014) to `{python} S["tp15"]` in 2015 and about `{python} S["tp_2125"]` a
+   season in 2021–2025. The most aggressive team since 2015 is `{python} S["tp_top"]`. Still, it's
+   only about one try in ten: most coaches, offered two choices with the same average, take the
+   safer, more predictable one, except when the scoreboard says otherwise. (Single seasons bounce
+   around: the two-point rate was `{python} S["tp23"]` in 2023 and `{python} S["tp24"]` in 2024, but
+   with only about `{python} S["tp_2125"]` tries a year, a season's rate is uncertain by roughly
+   ±`{python} S["tp_moe"]` points, so swings like that are mostly noise.)
+
+When does the scoreboard say otherwise? Count the margin *after* the touchdown's six points. If you
+now trail by 2, a two-pointer ties the game and a kick doesn't. If you now trail by 5, a two-pointer
+makes it a 3-point game, so a field goal can tie. The best-known modern call comes when you trail by
+14 late and score: you now trail by 8, and analytics favor going for two *right away*. Make it (about
+half the time) and the next touchdown plus a kick wins the game in regulation. Miss it and you need a
+two-pointer after the next touchdown just to tie, but you know that while there is still time to plan
+for it. Over the two tries, going for two first gives roughly a coin-flip chance of winning without
+overtime; kicking twice almost guarantees overtime. The full table, the "two-point chart," and that
+arithmetic live in
+[The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd),
+and the plays teams run from the 2 are in
+[Red Zone, Goal Line, Two-Point Plays, and Short Yardage](../10-situational-football/10-03-red-zone-goal-line-and-short-yardage.qmd).
+
+## The punt: field position for sale
+
+A [punt](../01-foundations/01-02-downs-distance-and-field-position.qmd) gives the ball to the
+other team on purpose, as far down the field as possible.
+[Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd)
+explained the trade: you were probably going to lose the ball on fourth down anyway, so you
+sell possession for roughly 40 yards of
+[field position](../01-foundations/01-02-downs-distance-and-field-position.qmd). Now we look at
+how the sale is made, because a punt is a three-part play: **protect** the punter for two seconds,
+**kick** the ball where the coverage can reach it, and **cover** 40-plus yards of field before the
+returner can do anything with it. Every punt formation is a different answer to one tension:
+players who stay home to block can't run downfield to cover.
+
+### The punt operation
+
+The punter stands about 14 to 15 yards behind the line. The long snapper's target is about
+**0.7 seconds** to the punter's hands; the punter takes a step or two and kicks, and the whole thing,
+snap to kick, is aimed at about **2.0 seconds**. A good NFL punt then hangs in the air about 4.5 to
+5 seconds.[^puntops] Those three numbers explain almost everything about punt formations. The
+blockers need to hold up rushers for about two seconds, and the coverage has about four and a half
+seconds after the kick to get 40 yards downfield.
+
+**Hang time** (how long the ball is in the air) matters as much as distance. A 50-yard punt that
+hangs 3.8 seconds gives a returner a head start on the coverage; a 44-yarder that hangs 5 seconds
+lands with gunners standing next to him. The greatest punter in the sport's history, Ray Guy of the
+Oakland Raiders (1973–86), was famous for exactly this: kicks so high that broadcasters timed them,
+and that made him the first pure punter elected to the Hall of Fame.[^guy]
+
+### Formations: tight, spread, and what "shield" means
+
+```{python}
+#| label: fig-punt-formations
+#| fig-cap: "The two NFL punt formations at the same scale. Left, a tight punt, now a backed-up or emergency look: everybody in close like a field-goal unit, with two wings and a personal protector (PP) in front of the punter (P). It is the safest protection and the slowest coverage. Right, the NFL's base spread punt: the gunners (G) split wide on the line, five interior linemen, two wings a yard behind the line just outside the tackles, and the personal protector about six yards deep. The wings and the PP (dotted triangle) are the shield, the last wall between a rusher and the punter."
+def tight_punt():
+    pl_ = [O("LS", "C", -0.7, 0.0, "LS")]
+    for k, w in [("LG", -1.4), ("RG", 1.4), ("LT", -2.8), ("RT", 2.8), ("LE", -4.2), ("RE", 4.2)]:
+        pl_.append(O(k, "OL", -0.7, w, ""))
+    pl_ += [O("LW", "TE", -1.5, -5.5, ""), O("RW", "TE", -1.5, 5.5, ""),
+            O("PP", "FB", -6.0, 0.9, "PP"), O("P", "P", -14.5, 0.0, "P")]
+    return pl_
+
+
+def spread_punt(gw=19.5):
+    """The NFL's base punt: gunners on the ends of the line, five interior linemen, two wings a yard
+    behind the line outside the tackles, the personal protector about six yards deep."""
+    pl_ = [O("LS", "C", -0.7, 0.0, "LS")]
+    for k, w in [("LG", -1.7), ("RG", 1.7), ("LT", -3.4), ("RT", 3.4)]:
+        pl_.append(O(k, "OL", -0.7, w, ""))
+    pl_ += [O("LW", "TE", -1.6, -4.7, ""), O("RW", "TE", -1.6, 4.7, ""),
+            O("PP", "FB", -6.2, 1.0, "PP"), O("P", "P", -14.5, 0.0, "P"),
+            O("GL", "WR", -0.7, -gw, "G"), O("GR", "WR", -0.7, gw, "G")]
+    return pl_
+
+
+fig, (a1, a2) = plt.subplots(1, 2, figsize=(6.5, 2.6), gridspec_kw={"width_ratios": [20, 46]})
+t1 = Play(tight_punt(), [], los=30, to_go=None)
+f1 = t1.draw(ax=a1, window=(-17.0, 2.5), lateral=(-10.0, 10.0), title=False)
+no_numbers(f1)
+t2 = Play(spread_punt(), [], los=30, to_go=None)
+f2 = t2.draw(ax=a2, window=(-17.0, 2.5), lateral=(-23.0, 23.0), title=False)
+no_numbers(f2)
+a1.set_title("Tight punt (backed up)", fontsize=9, loc="left")
+a2.set_title("Spread punt (the NFL base)", fontsize=9, loc="left")
+# the shield: a dotted triangle joining the two wings and the personal protector
+tri = [P_(f2, t2, -1.6, -4.7), P_(f2, t2, -1.6, 4.7), P_(f2, t2, -6.2, 1.0), P_(f2, t2, -1.6, -4.7)]
+a2.plot([q[0] for q in tri], [q[1] for q in tri], color=OC, lw=0.9, ls=(0, (1.5, 1.5)), zorder=2.5)
+say(f2, t2, -3.4, -19.5, "gunner", color=OC, fs=6)
+say(f2, t2, -3.4, 19.5, "gunner", color=OC, fs=6)
+say(f2, t2, -6.4, 6.9, "personal protector", color=OC, fs=6)
+say(f2, t2, -14.5, 4.6, "punter", color=OC, fs=6)
+say(f2, t2, -4.4, -9.4, "wing", color=OC, fs=6)
+lead(f2, t2, (-3.8, -8.3), (-2.0, -5.3))
+say(f2, t2, -4.4, 11.2, "wing", color=OC, fs=6)
+lead(f2, t2, (-3.8, 10.1), (-2.0, 5.3))
+say(f2, t2, -7.4, -6.4, "the shield:\nwings + PP", color=OC, fs=6)
+lead(f2, t2, (-6.3, -4.6), (-4.3, -2.5))
+fig.tight_layout()
+plt.show()
+```
+
+The oldest answer is the **tight punt**: everyone packed in close to block, like a field-goal unit,
+then everyone runs. It is nearly unblockable and covers slowly, so today you see it mainly when a
+team is backed up inside its own 10, where a blocked punt is likely a touchdown or a
+[safety](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd) for the other team. Backed up,
+the end line squeezes the punter too. With the ball at the 2, the back of the end zone is only 12
+yards behind the line, so he can't stand his usual 14 or 15 yards deep; he sets up a step in front
+of the end line, the snap arrives sooner, and the rushers have less ground to cover. If a snap sails
+over his head there, his first job is to fall on the ball: a punter tackled in his own end zone, or a
+ball that skids out of the back of it, is a safety. Late in a game a team sometimes concedes an
+[intentional safety](../10-situational-football/10-04-clock-and-game-management.qmd) on purpose: two
+points for the opponent, in exchange for kicking the ball away from safer ground instead of punting
+from under its own goal posts.
+
+Everywhere else, the NFL lines up in the **spread punt** (the right of the figure). The two outside
+men on the line, the gunners, split wide near the sidelines. Five interior linemen (the snapper, two
+guards and two tackles) stand on the line with a little more space between them than on a field
+goal. Two wings line up a yard behind the line, just outside the tackles, and one more man, the
+[**personal protector**](../../appendices/glossary.qmd#gl-personal-protector), stands five to seven
+yards deep. He is the punt team's quarterback: he checks the return team's alignment, calls the
+protection ("watch the overload left!"), blocks whoever comes free, and he is the most common ball
+carrier on a fake punt. Most units block with a zone or "slide" scheme: each lineman takes a gap,
+and the personal protector picks out the most dangerous rusher and slides the protection toward
+him, so that the man left unblocked is the one with the longest path to the ball.
+
+Where does "shield" come in? The [**shield punt**](../../appendices/glossary.qmd#gl-shield-punt)
+(also called the [**spread punt**](../../appendices/glossary.qmd#gl-spread-punt); the two names are
+used loosely and overlap) is named for its last line of protection: blockers standing a few yards in
+front of the punter who wall off any rusher well before the spot where the ball leaves his foot. In
+the NFL that shield is the two wings and the personal protector, the dotted triangle in the figure.
+The version with three blockers standing side by side a few yards behind the line, which you'll see
+on college Saturdays, grew up in college football, and some NFL teams borrow it. The two levels
+differ because of one rule.
+
+Under the NFL's rules, only the two end men on the line (the gunners, as long as they are the widest
+players on each side) may run downfield before the ball is kicked; everyone else may not go more
+than a yard past the line until the kick.[^release] The rule dates from 1974, when the league, trying
+to revive punt returns, first barred *every* punt-team player from releasing early and then, after
+coaches complained, carved out the two men on the ends.[^punt74] College has no such restriction, so
+a college punt team can release its whole line at the snap and trust the shield to stop anyone who
+gets through. So what does the shield buy an NFL team, whose linemen must wait anyway? Protection
+with fewer bodies and shorter blocks. With the wings and the personal protector behind them, the
+linemen don't have to win their blocks; they only have to slow a rusher for two seconds, then turn
+and run the instant they hear the foot hit the ball. NFL punt coverage is therefore built around the
+gunners.
+
+### Gunners and vices
+
+The [gunner](../01-foundations/01-03-the-twenty-two.qmd) is the punt team's missile, and the
+return team's answer is the [**vice**](../../appendices/glossary.qmd#gl-vice) (also called a
+[**jammer**](../../appendices/glossary.qmd#gl-jammer)): a blocker, usually a cornerback, who
+lines up across from a gunner and tries to keep him from getting downfield, by jamming him at the
+line and then running with him and shoving him toward the sideline. Most return teams put two vices
+on each gunner, one on either side of him, so the gunner can't simply run around one. That costs
+the return team four players, which is why the gunner is worth so much: one great gunner ties up
+two opponents on every punt. (Coaches usually spell it "vise," like the tool, and strictly they use
+the word for the two-man bracket; a lone blocker on a gunner is a "jammer" or a "single jam." The
+Big Data Bowl files spell it "vises.")
+
+Watch a gunner on the replay and you'll see a little wrestling match on the sideline: the gunner
+trying to swim past one vice (a quick arm-over move) or "stack" him (get even with him and step
+directly in front of his path, so the vice is stuck behind), the vices trying to run him out of
+bounds. The vices can be this rough because the usual pass-defense limits are relaxed here: against
+a punt formation, contact on the end men that would normally be illegal contact or pass interference
+is allowed before the kick, as long as it isn't holding.[^vicecontact] A gunner who voluntarily runs
+out of bounds to avoid a block commits a foul, and one who has been out of bounds, even if he was
+pushed, may not be the first player to touch the punt when he comes back in.[^oob]
+
+```{python}
+#| label: fig-shield-punt
+#| fig-cap: "A spread punt from the kicking team's own 30 under NFL release rules, simulated tracking in Big Data Bowl format (an illustrative play, not a real one). Snap: the gunners (G) wide, each with two vices (V); five linemen; the wings and personal protector (PP) form the shield; the punter (P) about 14 yards deep; the returner (PR) about 45 yards past the line, some 60 yards from the punter. 2.0 s: the kick. The gunners, the only players allowed to leave early, are already 10 to 12 yards downfield with their vices riding them; the linemen and wings release now. 4.2 s: the ball is in the air, and the coverage spreads into lanes about five yards apart so the returner has no seam. 6.4 s: the ball arrives with a gunner on each side of the returner and the lanes closing; the punter and PP trail as the last safeties. The return team is shown in its simplest plan, a token rush and then a retreat for a fair catch, so it sets no blocks."
+def return_team(ret_d=45.0, gw=20.0):
+    """A return team: six men on the line, two vices on each gunner, one returner deep."""
+    pl_ = [D(f"F{i}", "DL", 1.0, w) for i, w in enumerate([-5.5, -3.0, -1.0, 1.0, 3.0, 5.5])]
+    pl_ += [D("VL1", "CB", 1.0, -gw + 1.8, "V"), D("VL2", "CB", 1.0, -gw - 1.8, "V"),
+            D("VR1", "CB", 1.0, gw - 1.8, "V"), D("VR2", "CB", 1.0, gw + 1.8, "V"),
+            D("PR", "DB", ret_d, 0.0, "PR")]
+    return pl_
+
+
+sp = Play(spread_punt(gw=20.0), return_team(ret_d=45.0, gw=20.0), los=40, to_go=None)
+KICK_T, CATCH_T = 2.0, 6.4
+RET = (45.0, 1.5)
+KICK_SPOT = (-12.9, 0.0)
+# gunners: fight through the vices at the line, then bend in toward the returner
+sp.route("GL", [(4.0, -19.4), (20.0, -15.5), (42.5, -2.0)], absolute=True, speed=7.3)
+sp.route("GR", [(4.0, 19.4), (20.0, 15.5), (42.5, 5.0)], absolute=True, speed=7.3)
+# vices ride their gunner: the outside vice on his outside hip, the inside vice on his inside hip
+for k, side, out in (("VL1", -1, False), ("VL2", -1, True), ("VR1", 1, False), ("VR2", 1, True)):
+    dw = 1.5 if out else -1.5
+    sp.path(k, [(3.5, side * (19.4 + dw)), (19.0, side * (15.5 + dw)), (40.0, side * (4.5 + dw) + 1.5)],
+            absolute=True, speed=6.6)
+# linemen and wings: hold up the rush until the kick, then release into lanes about five yards apart
+LANES = {"LW": -14.0, "LT": -9.0, "LG": -4.5, "LS": 0.0, "RG": 4.5, "RT": 9.0, "RW": 14.0}
+for k, lane in LANES.items():
+    sp.block(k, pts=[(-0.4, 0.0)], speed=1.0)                      # 0.4 s set, then hold
+    sp.path(k, [(6.0, lane * 0.9), (33.0, lane * 0.75 + 0.4)], absolute=True, speed=7.0,
+            delay=KICK_T - 0.4 - 0.1)
+sp.block("PP", pts=[(0.0, -0.3)], speed=1.0)
+sp.path("PP", [(3.0, 1.0), (17.0, 3.5)], absolute=True, speed=5.5, delay=KICK_T - 0.3 + 0.2)
+# punter: catches the snap, takes his steps to the spot of the kick, then trails the coverage
+sp.path("P", [KICK_SPOT], absolute=True, speed=1.2, delay=0.75)    # arrives about 2.1 s
+sp.path("P", [(4.0, -3.0)], absolute=True, speed=5.0, delay=0.4)
+# front six: a token rush, then turn and retreat toward the returner
+for i, k in enumerate(["F0", "F1", "F2", "F3", "F4", "F5"]):
+    q = sp.players[k]
+    sp.rush(k, pts=[(-0.9, 0.0)], speed=1.2)
+    sp.path(k, [(18.0 + 1.5 * (i % 2), q.w * 1.6), (26.0 + 1.5 * (i % 2), q.w * 1.3)], absolute=True,
+            speed=5.8, delay=0.1)
+sp.path("PR", [RET], absolute=True, speed=1.5, delay=4.6)
+
+
+def punt_ball(t):
+    if t <= 0:
+        return (0.0, 0.0)
+    if t < 0.75:
+        return lerp((0.0, 0.0), (-14.2, 0.0), t / 0.75)
+    if t < KICK_T:
+        return lerp((-14.2, 0.0), KICK_SPOT, (t - 0.75) / (KICK_T - 0.75))
+    if t < CATCH_T:
+        return lerp(KICK_SPOT, RET, (t - KICK_T) / (CATCH_T - KICK_T))
+    return RET
+
+
+sp_df = with_ball(sp, punt_ball, t_after=0.4)
+
+
+def sp_notes(axes):
+    strip_text(axes[0], sp, 20.0, 0.0, "returner 45 yds\npast the line,\n~60 from punter", color=DC, fs=6.4)
+    strip_text(axes[0], sp, -3.6, -18.0, "G + 2 V", color=OC, fs=6.4)
+    strip_text(axes[0], sp, -3.6, 18.0, "G + 2 V", color=OC, fs=6.4)
+    strip_text(axes[0], sp, -9.5, -7.5, "shield:\nwings + PP", color=OC, fs=6.4)
+    strip_text(axes[0], sp, -14.5, 7.0, "punter", color=OC, fs=6.4)
+    strip_text(axes[1], sp, 18.0, 0.0, "kick: linemen\nrelease now", color=OC, fs=6.4)
+    ax = axes[2]
+    for lane in LANES.values():
+        (x0, y0), (x1, y1) = sxy(sp, 12.0, lane * 0.87), sxy(sp, 30.0, lane * 0.77)
+        ax.plot([x0, x1], [y0, y1], color=OC, lw=0.8, ls=(0, (1, 2)), alpha=0.8, zorder=2)
+    strip_text(ax, sp, 36.0, -14.0, "coverage\nlanes", color=OC, fs=6.4)
+    strip_text(axes[3], sp, 20.0, 12.5, "ball arrives:\na gunner on\neach side of PR", color=OC, fs=6.4)
+
+
+show_strip(sp_df, times=[0.0, KICK_T, 4.2, CATCH_T], annotate=sp_notes)
+```
+
+```{python}
+#| code-summary: "Show the Python (the same picture from real tracking: 2022 Big Data Bowl punts)"
+#| eval: false
+# Not run when the book builds: the data isn't bundled. The 2022 Big Data Bowl was about special teams:
+# every punt, kickoff and field goal of 2018-2020 with tracking, plus PFF scouting data that times the
+# operation (snapTime, operationTime, hangTime) and names the gunners, vises and punt rushers by jersey.
+# Download: https://www.kaggle.com/competitions/nfl-big-data-bowl-2022/data  ->  data/bdb2022/
+import numpy as np
+import pandas as pd
+from gridiron import bdb, show_animation
+
+trk = bdb.load_tracking("data/bdb2022/tracking2020.csv")
+games = pd.read_csv("data/bdb2022/games.csv")
+plays = pd.read_csv("data/bdb2022/plays.csv")
+pff = pd.read_csv("data/bdb2022/PFFScoutingData.csv")
+
+# 2022 tracking marks the teams "home"/"away"; give prepare() the club codes it compares to possessionTeam
+trk = trk.merge(games[["gameId", "homeTeamAbbr", "visitorTeamAbbr"]], on="gameId")
+trk["club"] = np.select([trk.club.eq("home"), trk.club.eq("away")],
+                        [trk.homeTeamAbbr, trk.visitorTeamAbbr], default="football")
+
+punts = plays[plays.specialTeamsPlayType.eq("Punt")].merge(pff, on=["gameId", "playId"])
+print(punts[["operationTime", "hangTime"]].describe())   # check this chapter's ~2.0 s and ~4.5 s
+one = punts[punts.specialTeamsResult.eq("Return") & punts.vises.str.count(";").ge(3)].iloc[0]
+print(one.playDescription, "| gunners:", one.gunners, "| vises:", one.vises)
+show_animation(bdb.prepare(trk, plays, game_id=one.gameId, play_id=one.playId), times=[0, 2.0, 4.2, 6.0])
+```
+
+The coverage is a zone defense run backward. The players fan out into **lanes**, each about five
+yards wide, so that wherever the returner goes there is someone in front of him; the gunners
+attack from the outside and force him back toward the middle; the punter and the personal protector
+hang back as the last line, like safeties. A coverage player who runs straight at the ball and
+leaves his lane opens a seam, and a seam is how a punt becomes a touchdown.
+
+### Where to aim: directional, coffin-corner and pooch punts
+
+A punter isn't only trying to kick it far. From deep in his own territory he wants distance and
+hang time. From midfield the problem flips: there is too *little* field, and a ball that bounces
+into the end zone is a [**touchback**](../../appendices/glossary.qmd#gl-touchback), with the
+receiving team starting at its own 20 (a punt touchback is still the 20, unlike the kickoff's 35).
+A touchback from the opponent's 40 has bought only 20 yards of field position. Three kinds of punts
+answer different versions of that problem.
+
+```{python}
+#| label: fig-directional
+#| fig-cap: "Where punters aim. Left, from the opponent's 42: a coffin-corner punt (1) angles out of bounds near the 6, giving the returner nothing; a high pooch punt (2) lands around the 9 with gunners arriving to down it; a ball kicked too far (3) bounces into the end zone for a touchback at the 20. Right, from the kicking team's own 25: a directional punt of 45-plus yards toward the numbers puts the returner near the sideline, so the coverage only has to squeeze him from one side; the sideline acts as an extra tackler."
+fig, (a1, a2) = plt.subplots(1, 2, figsize=(6.5, 4.6))
+L = 68.0            # line of scrimmage at the opponent's 42 (BDB x)
+fA = Field(ax=a1, orient="vertical", los=L, window=(-30.0, 52.0), to_go=None)
+PX, PY = L - 14.0, MIDDLE
+
+
+def arc(fld, x0, y0, x1, y1, rad, col=style.BALL, lw=1.3):
+    (ax0, ay0), (ax1, ay1) = fld.xy(x0, y0), fld.xy(x1, y1)
+    fld.ax.add_patch(FancyArrowPatch((float(ax0), float(ay0)), (float(ax1), float(ay1)), arrowstyle="-|>",
+                                     mutation_scale=9, color=col, lw=lw, ls=(0, (3, 2)), zorder=6,
+                                     connectionstyle=f"arc3,rad={rad}"))
+
+
+def mark(fld, x, y, side, label):
+    px, py = fld.xy(x, y)
+    draw_marker(fld.ax, float(px), float(py), side, label, fld.pts_per_yard())
+
+
+def txt(fld, x, y, s, color=style.INK_2, fs=6.4, ha="center"):
+    px, py = fld.xy(x, y)
+    fld.ax.text(float(px), float(py), s, fontsize=fs, color=color, ha=ha, va="center", zorder=9, linespacing=1.1,
+                bbox=dict(boxstyle="round,pad=0.15", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+mark(fA, PX, PY, "off", "P")
+arc(fA, PX, PY, 104.0, 0.4, -0.10)                 # (1) coffin corner, out near the 6
+arc(fA, PX, PY, 101.0, MIDDLE - 1.0, -0.03)        # (2) pooch to the 9
+arc(fA, PX, PY, 115.0, 37.0, 0.12)                 # (3) too long: into the end zone
+mark(fA, 100.0, MIDDLE - 4.5, "off", "G")
+mark(fA, 99.5, MIDDLE + 2.5, "off", "G")
+mark(fA, 105.0, MIDDLE + 3.5, "def", "PR")
+txt(fA, 106.5, 8.5, "1 coffin\ncorner")
+txt(fA, 94.0, MIDDLE - 9.5, "2 pooch:\ndowned at 9")
+txt(fA, 115.5, 21.0, "3 touchback (to the 20)")
+txt(fA, PX + 2.0, PY + 7.5, "punt from\nopp. 42", color=OC)
+a1.set_title("Pin them deep", fontsize=9, loc="left")
+
+L2 = 35.0           # own 25
+fB = Field(ax=a2, orient="vertical", los=L2, window=(-16.0, 66.0), to_go=None)
+PX2 = L2 - 14.0
+mark(fB, PX2, MIDDLE, "off", "P")
+arc(fB, PX2, MIDDLE, 83.0, 9.5, 0.12)
+mark(fB, 83.0, 9.5, "def", "PR")
+for (x, y) in [(77.0, 3.5), (76.5, 16.5), (72.0, 22.0), (70.0, 28.0), (68.0, 34.5)]:
+    mark(fB, x, y, "off", "")
+for x, y, dx, dy in [(77.0, 3.5, 4.0, 3.0), (76.5, 16.5, 4.0, -3.0), (72.0, 22.0, 6.0, -6.0),
+                     (70.0, 28.0, 6.0, -9.0), (68.0, 34.5, 7.0, -12.0)]:
+    (sx, sy), (ex, ey) = fB.xy(x, y), fB.xy(x + dx, y + dy)
+    a2.add_patch(FancyArrowPatch((float(sx), float(sy)), (float(ex), float(ey)), arrowstyle="-|>",
+                                 mutation_scale=7, color=style.OFFENSE, lw=1.0, zorder=5))
+(rx0, ry0), (rx1, ry1) = fB.xy(79.0, 0.0), fB.xy(91.0, 9.5)
+a2.add_patch(Rectangle((min(rx0, rx1), min(ry0, ry1)), abs(rx1 - rx0), abs(ry1 - ry0), fc=style.DEFENSE,
+                       alpha=0.10, ec="none", zorder=1))
+txt(fB, 95.3, 7.0, "little room\nto this side", color=DC)
+txt(fB, 88.0, 31.0, "coverage squeezes\nfrom one side", color=OC)
+txt(fB, PX2 + 2.0, MIDDLE + 7.5, "punt from\nown 25", color=OC)
+a2.set_title("Directional: use the sideline", fontsize=9, loc="left")
+fig.tight_layout()
+plt.show()
+```
+
+- A **directional punt** is aimed toward one sideline instead of the middle of the field. It gives up
+  a few yards of distance to put the returner where he has room on only one side, so the coverage
+  can squeeze him with the sideline acting as an extra tackler. Most NFL punts from a team's own
+  territory are directional in this sense; punters practice hitting the numbers on either side.
+- A [**coffin-corner punt**](../../appendices/glossary.qmd#gl-coffin-corner-punt) is the old art of
+  kicking the ball out of bounds just short of the goal line, near the corner. A ball kicked out of
+  bounds is dead where it crosses the sideline, with no return and no touchback.[^oobpunt] The catch
+  is precision: miss by a few yards one way and the ball goes into the end zone; miss the other way
+  and it stays in bounds for the returner.
+- A [**pooch punt**](../../appendices/glossary.qmd#gl-pooch-punt) is the modern answer from near
+  midfield: a deliberately short, very high kick, often struck so the ball turns end over end and
+  "checks up" (bounces backward or dies) instead of rolling forward. It lands around the 10, the
+  returner usually lets it go or fair-catches it, and the gunners down it before it reaches the end
+  zone. From the opponent's 40–50 in 2021–2025, `{python} S["mid_in10"]` of NFL punts finished inside
+  the 10 and `{python} S["mid_tb"]` went for touchbacks (`{python} S["mid_n"]` punts).
+
+The pooch has largely replaced the coffin corner. In 2021–2025 only `{python} S["oob10"]` of all
+punts went out of bounds inside the 10, against `{python} S["down10"]` that were downed there. A big
+reason is the Australian invasion: since Darren Bennett, an Australian rules football player, began
+punting for the San Diego Chargers in 1995, a steady stream of Australians (many trained by the
+ProKick Australia program) has brought end-over-end and spinning kicks that make the ball stop
+where they want it.[^aussie] The same tradition gave the NFL the
+[**rugby punt**](../../appendices/glossary.qmd#gl-rugby-punt): the punter takes the snap, rolls out
+toward one side like a quarterback, and kicks on the run, usually a low, end-over-end ball that
+bounces and rolls. It buys time against the rush (the rushers aimed at the spot where a normal punt
+is kicked), it makes the ball miserable to field, and it carries a threat: if the edge is open, the
+punter can tuck it and run.
+
+### Measuring a punt: gross, net and where it lands
+
+A punter's *gross* average is how far his kicks travel from the line of scrimmage. The number that
+matters for field position is the
+[**net punting average**](../../appendices/glossary.qmd#gl-net-punting-average): gross distance minus
+return yards, minus 20 yards for every touchback (because the ball comes back out to the 20),
+divided by the number of punts. One bookkeeping convention matters: a punt that goes into the end
+zone is credited with its distance *to the goal line*, not to wherever it landed. Net is what the punt team, kicker and coverage together, actually
+bought.
+
+```{python}
+#| label: fig-net-trend
+#| fig-cap: "NFL punting, 1999–2025 regular seasons: gross average (how far punts travel) and net average (after returns and touchbacks). Both rose about six yards. The gap between them, mostly return yards, has narrowed slightly, because returners fair-catch more and coverage units have improved. Source: nflverse play-by-play (blocked punts count as zero yards in the net)."
+fig, ax = plt.subplots(figsize=(6.5, 2.9))
+ax.plot(trend.index, trend.gross, color=style.SERIES[0], lw=2, marker="o", ms=3, label="Gross average")
+ax.plot(trend.index, trend.net, color=style.SERIES[1], lw=2, marker="o", ms=3, label="Net average")
+ax.fill_between(trend.index, trend.net, trend.gross, color=style.GRID, alpha=0.5, lw=0)
+ax.text(2011.5, (trend.gross[2011] + trend.net[2011]) / 2, "returns and\ntouchbacks", fontsize=7.5,
+        color=style.INK_2, ha="center", va="center")
+for s in (1999, 2025):
+    ax.text(s + (0.4 if s == 2025 else -0.4), trend.gross[s] + 0.9, f"{trend.gross[s]:.1f}", fontsize=7.5,
+            color=style.SERIES[0], ha="left" if s == 2025 else "right")
+    ax.text(s + (0.4 if s == 2025 else -0.4), trend.net[s] - 1.2, f"{trend.net[s]:.1f}", fontsize=7.5,
+            color=style.SERIES[1], ha="left" if s == 2025 else "right")
+ax.set_xlim(1996.5, 2027.5)
+ax.set_ylim(31, 50)
+ax.set_ylabel("yards per punt")
+ax.legend(loc="lower right", fontsize=8)
+plt.show()
+```
+
+In 1999 the average NFL punt traveled `{python} S["gross99"]` yards and netted `{python} S["net99"]`;
+in 2025 it traveled `{python} S["gross25"]` and netted `{python} S["net25"]`.[^puntcalc] The gap between
+gross and net, mostly return yards, shrank from about `{python} S["ret_9903"]` yards a punt in
+1999–2003 to `{python} S["ret_2125"]` in 2021–2025, as fair catches rose from `{python} S["fc99"]` of
+punts to `{python} S["fc25"]`. Teams also punt less: `{python} S["punts99"]` punts in 1999,
+`{python} S["punts25"]` in 2025, as offenses improved and coaches went for it more on fourth down.
+
+```{python}
+#| label: fig-punt-heatmap
+#| fig-cap: "Where punts end, by where they are kicked from (2021–2025 regular seasons, blocked punts excluded). Each column is one band of line of scrimmage and sums to 100%; each cell is the share of those punts whose kick ended in that band of the receiving team's field (caught, downed, out of bounds or rolling dead, before any return). From deep in their own territory punters drive it 45-plus yards; once past midfield the ball piles up between the receiving team's 5 and 15, and the touchback row darkens. Source: nflverse play-by-play."
+hm = recent.copy()
+X_EDGES = [100, 90, 80, 70, 60, 50, 40, 30]
+X_LABS = ["own\n1–10", "own\n11–20", "own\n21–30", "own\n31–40", "own\n41–50", "opp.\n49–40", "opp.\n39–30"]
+hm["xb"] = pd.cut(hm.yardline_100, X_EDGES[::-1], labels=X_LABS[::-1], right=False)
+Y_EDGES = [0.5, 5.5, 10.5, 15.5, 20.5, 25.5, 30.5, 35.5, 40.5, 50.5, 101]
+Y_LABS = ["1–5", "6–10", "11–15", "16–20", "21–25", "26–30", "31–35", "36–40", "41–50", "51+"]
+hm["yb"] = pd.cut(hm.fin, Y_EDGES, labels=Y_LABS)
+hm["yb"] = hm.yb.cat.add_categories(["touchback"])
+hm.loc[hm.touchback == 1, "yb"] = "touchback"
+grid = pd.crosstab(hm.yb, hm.xb, normalize="columns").reindex(index=["touchback"] + Y_LABS, columns=X_LABS)
+cmap = LinearSegmentedColormap.from_list("rtg_blue", [style.SURFACE] + style.SEQUENTIAL_BLUE)
+fig, ax = plt.subplots(figsize=(6.5, 4.2))
+ax.imshow(grid.values * 100, cmap=cmap, aspect="auto", vmin=0, vmax=45)
+for i in range(grid.shape[0]):
+    for j in range(grid.shape[1]):
+        v = grid.values[i, j]
+        if v >= 0.02:
+            ax.text(j, i, f"{v:.0%}", ha="center", va="center", fontsize=7,
+                    color="white" if v > 0.24 else style.INK)
+ax.set_xticks(range(len(X_LABS)), X_LABS, fontsize=7.5)
+ax.set_yticks(range(len(grid.index)), ["end zone\n(touchback)"] + [f"their {s}" for s in Y_LABS[:-1]] + ["kicking team's\nside of 50"], fontsize=7.5)
+ax.set_xlabel("punted from (line of scrimmage)")
+ax.set_ylabel("kick ended at")
+ax.grid(False)
+ax.tick_params(length=0)
+for side in ("left", "bottom"):
+    ax.spines[side].set_visible(False)
+plt.show()
+```
+
+Read the heatmap column by column and you can see the punter's job change. From his own 11–20 the
+kicks end anywhere from the opponent's 21 to past midfield; distance is everything. By the
+opponent's 49–40 the kicks bunch up inside the receiving team's 15, with a real share in the end zone
+for touchbacks. That's the pooch at work, and the touchback row is the cost of missing it. A punt
+from deep in your own end, on average, ends near the receiving team's
+`{python} S["deep_fin"]`; the return, if any, comes on top.
+
+::: {.callout-caution title="Common misconception"}
+"A longer punt is a better punt." Not past midfield, and not even always from deep. A 60-yard line
+drive that gets returned 20 yards nets 40; a 45-yarder with 5 seconds of hang time that is
+fair-caught nets 45. A punt from the opponent's 45 that rolls into the end zone goes in the books as 45 yards (to the
+goal line) and nets only 25, because the ball comes out to the 20.
+Judge a punt by where the receiving team *starts*, not by the number on the graphic.
+:::
+
+## The return team: return, block, or play it safe
+
+Now flip to the other side. On every punt the receiving team makes a choice before the snap, and
+the alignment usually gives it away.
+
+### The return
+
+Most of the time the return team wants a return, or at least a clean fair catch. Its two biggest
+jobs are to slow the gunners (the vices) and to hold up the interior coverage long enough to give the
+returner room. The most recognizable design is the
+[**return wall**](../../appendices/glossary.qmd#gl-return-wall) (or
+[**wall return**](../../appendices/glossary.qmd#gl-wall-return)): after a token rush to keep the
+punt team honest, most of the return team peels back toward one sideline and forms a line of blockers
+running parallel to it, about five yards apart. The returner catches the ball, heads for the wall,
+and runs up the field behind it while the blockers turn and seal the coverage players inside. A
+**middle return** does the opposite: blockers take on the coverage man in their lane and try to
+open a seam straight up the field.
+
+```{python}
+#| label: fig-return-vs-safe
+#| fig-cap: "Two return-team plans against the same spread punt. Left, a return wall: after a brief rush, five of the front six peel back to the punt team's left (the returner's right) and set a wall parallel to the sideline. On that side the two vices drive their gunner toward the sideline, out of the returner's lane; on the far side the vices ride the other gunner, one on each hip. The returner (PR) catches the ball and runs up the sideline behind the wall. Right, punt safe on fourth-and-short near midfield: the defense keeps its regular defenders on, covers every eligible punt-team player man to man (dotted lines: cornerbacks, CB, on the gunners; safeties, S, on the wings; a linebacker, LB, on the personal protector; the other linebacker spying the punter), holds its four-man front at the line against a direct snap, and gives up the return to make sure the punt team doesn't keep the ball."
+def safe_team(gw=19.5):
+    pl_ = [D(f"F{i}", "DL", 1.0, w) for i, w in enumerate([-4.6, -1.0, 1.0, 4.6])]
+    pl_ += [D("LB1", "LB", 4.0, -3.5, "LB"), D("LB2", "LB", 4.0, 3.5, "LB"),
+            D("C1", "CB", 1.0, -gw + 0.8, "CB"), D("C2", "CB", 1.0, gw - 0.8, "CB"),
+            D("S1", "S", 6.5, -6.0, "S"), D("S2", "S", 6.5, 6.0, "S"), D("PR", "DB", 40.0, 0.0, "PR")]
+    return pl_
+
+
+fig, (a1, a2) = plt.subplots(1, 2, figsize=(6.5, 4.3))
+rw = Play(spread_punt(), return_team(ret_d=40.0, gw=19.5), los=30, to_go=None)
+# five of the front six peel back to the punt team's left and set the wall; one rushes
+for k, (d, w) in {"F1": (10.0, -16.5), "F2": (16.0, -17.0), "F3": (22.0, -17.5), "F4": (28.0, -18.0),
+                  "F5": (34.0, -18.5)}.items():
+    rw.path(k, [(0.2, rw.players[k].w), (d, w)], absolute=True)
+rw.path("F0", [(-1.5, -3.2)], absolute=True)
+# wall side: the two vices drive their gunner toward the sideline, out of the returner's lane
+rw.route("GL", [(4.0, -21.5), (8.0, -24.6)], absolute=True)
+rw.path("VL1", [(4.5, -20.0), (8.6, -23.1)], absolute=True)
+rw.path("VL2", [(5.0, -23.0), (9.6, -25.6)], absolute=True)
+# far side: the vices ride the gunner, one on each hip, as he heads for the returner
+rw.route("GR", [(8.0, 19.0), (28.0, 9.0)], absolute=True)
+rw.path("VR2", [(8.0, 20.6), (27.0, 10.6)], absolute=True)
+rw.path("VR1", [(7.0, 17.4), (25.0, 7.6)], absolute=True)
+rw.run("PR", [(38.0, -10.0), (34.5, -22.0), (14.0, -22.5)], absolute=True)
+fr = rw.draw(ax=a1, window=(-16.0, 45.0), lateral="full", title=False)
+no_numbers(fr)
+say(fr, rw, 20.0, -13.2, "wall", color=DC, fs=6.4, weight="bold")
+say(fr, rw, 42.6, 0.0, "PR catches", color=DC, fs=6.0)
+say(fr, rw, 40.5, -19.0, "PR runs\nbehind it", color=DC, fs=6.0)
+say(fr, rw, -5.0, -20.5, "vices drive G\nto the sideline", color=DC, fs=6.0)
+say(fr, rw, 13.0, 22.0, "vices\nride G", color=DC, fs=6.0)
+a1.set_title("Return wall", fontsize=9, loc="left")
+
+ps = Play(spread_punt(), safe_team(), los=30, to_go=None)
+for d_, o_ in [("C1", "GL"), ("C2", "GR"), ("S1", "LW"), ("S2", "RW"), ("LB1", "PP"), ("LB2", "P")]:
+    ps.man(d_, o_)
+fs_ = ps.draw(ax=a2, window=(-16.0, 45.0), lateral="full", title=False)
+no_numbers(fs_)
+say(fs_, ps, 14.0, 0.0, "every eligible player\ncovered; front\nholds the line", color=DC, fs=6.2)
+say(fs_, ps, 34.5, 0.0, "returner still\nback, but no wall", color=DC, fs=6.2)
+say(fs_, ps, -10.0, 8.2, "LB spies\nthe punter", color=DC, fs=6.0)
+a2.set_title("Punt safe", fontsize=9, loc="left")
+fig.tight_layout()
+plt.show()
+```
+
+The returner has the hardest decisions on the field, made in the four seconds the ball hangs: catch
+it and run, wave for a fair catch, or let it go. A
+[**fair catch**](../../appendices/glossary.qmd#gl-fair-catch) is his insurance policy. While the
+ball is in the air he fully extends one arm above his helmet and waves it side to side.[^fc] From
+then on, nobody may hit him; the ball is dead where he catches it, and he may not run with it. If he
+waves and then doesn't catch it, he still can't be touched while he tries, and he may not block
+anyone either.
+
+::: {.callout-important title="Why it exists: the fair catch"}
+A returner looking up at a ball falling out of the sky can't protect himself, and a coverage
+player arriving at full speed can hit him the instant it lands in his hands. The fair catch trades
+his right to advance for his safety. It also makes the punt a strategic choice for the returner:
+with coverage in his face he gives up a few yards to avoid a big hit and, more importantly, to
+avoid fumbling. The rules also protect him *without* a signal: the kicking team must give any
+receiver an unobstructed chance to catch a kick in the air, which is the next rule.
+:::
+
+**Kick-catch interference.** A returner trying to catch a punt has the right of way to the ball,
+signal or no signal. A kicking-team player who touches him before or as the ball arrives, or gets in
+his path, has committed
+[**kick-catch interference**](../../appendices/glossary.qmd#gl-kick-catch-interference): 15 yards
+from the spot of the foul.[^kci] That's why you see gunners pull up a yard or two short of a returner
+waiting for a punt, hands out to the side, and pounce only when the ball touches him or the ground.
+(A related oddity, covered in
+[The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd):
+after a fair catch, the receiving team may try a free fair-catch kick for three points, a
+curiosity so rare that Cameron Dicker's 57-yarder for the Chargers in December 2024 was the first one
+made since 1976.[^fckick])
+
+**Why returners don't field punts inside the 10.** A punt that lands inside the 10 will often bounce
+into the end zone for a touchback at the 20. A returner who catches it at the 7 and gets tackled at
+the 12 has *lost* eight yards against letting it go. So returners are taught to stay out of the 10
+and let the ball decide, which is exactly what the pooch punt exploits: land it short enough that
+it doesn't reach the end zone.
+
+### The punt block
+
+The second choice is to go after the kick. A
+[**punt block**](../../appendices/glossary.qmd#gl-punt-block) call sends extra rushers, often seven
+or eight, usually overloading one side so that the protection runs out of blockers. The rushers'
+target is not the punter. They aim at a spot about a yard in front of him, on the side of his kicking
+foot, where the ball leaves his foot. Hitting the punter is a foul: running into the kicker costs 5
+yards, and roughing him (a harder hit, or contact with his plant leg) costs 15 and an automatic first
+down, which turns a failed block into a gift.[^rough] There is no foul, though, if the rusher got a
+hand on the ball before the contact, if he was blocked into the punter, or if the punter ran with
+the ball out of the pocket without clearly setting himself to kick. That is why a rusher who "whiffs" right at the ball and
+then collides with the punter often draws no flag. A blocked punt is one of the biggest swings in
+football, because the ball usually ends up deep in the kicking team's territory or in the end zone.
+They are rare: about `{python} S["blk_punts"]` a season across the whole NFL in 2021–2025. The reason
+is the operation: a 2.0-second snap-to-kick behind a shield leaves very little time, and a block call
+costs the return.
+
+Who gets a blocked kick? It depends on which side of the line it ends up. A blocked punt or field
+goal that stays behind the line is a loose ball that *either* team may pick up and run with. If the
+kicking team recovers it there, it is simply still its down: on fourth down it must carry the ball
+past the line to gain, or the other team takes over where it is stopped. If the ball goes beyond the
+line, the normal kick rules take over: the receiving team may advance it, the kicking team may not.
+(Touching the ball while trying to block it at the line doesn't count as the receiving team touching
+the kick.)[^blocked]
+
+### Punt safe
+
+The third choice is defensive. When the punt team might fake (fourth-and-short, around midfield, a
+coach with a reputation, a punt team that showed a fake on film), the return team calls
+[**punt safe**](../../appendices/glossary.qmd#gl-punt-safe): it keeps its regular defenders on the
+field or brings them on, covers every eligible receiver man to man, keeps its front at the line to
+stop a direct snap, and leaves the returner deep in case the punt comes. Who is eligible on a punt?
+The same rules you learned in
+[The Twenty-Two](../01-foundations/01-03-the-twenty-two.qmd): the two ends of the line (here the
+gunners) and every player lined up off the line (the two wings, the personal protector and the
+punter) may catch a pass; the snapper, guards and tackles may not. That is six men to cover, which is
+why the right side of the figure has six dotted lines. Coaches call the linebacker who spies the
+punter the "rat" or the "spy." It gives up most of the
+return, and in exchange makes sure the punt team doesn't keep the ball. A return team in punt safe
+looks like a defense: corners in tight on the gunners, linebackers in the box, nobody turning to set a
+wall.
+
+## The rules of the kicked ball
+
+Punts produce more rules questions than any other play, because the ball is loose and both teams
+want it. Five rules cover almost everything you'll see.
+
+```{python}
+#| label: fig-kick-rules
+#| fig-cap: "What happens to a punt, depending on who touches it first. The receiving team can always take the ball; the kicking team can only take it if a receiving player touched it first (a muff) or fumbled it. When a kicking-team player possesses the ball beyond the line, the play is over. Rules from NFL Rule 9 (scrimmage kicks) and Rule 10 (fair catch)."
+def box(ax, x, y, w, h, title, body, fc, ec, tfs=8.0, bfs=6.8):
+    ax.add_patch(FancyBboxPatch((x - w / 2, y - h / 2), w, h, boxstyle="round,pad=0.02,rounding_size=1.2",
+                                fc=fc, ec=ec, lw=1.0, zorder=3))
+    ax.text(x, y + h / 2 - 2.3, title, ha="center", va="top", fontsize=tfs, fontweight="bold", color=style.INK,
+            zorder=4)
+    ax.text(x, y + h / 2 - 6.0, body, ha="center", va="top", fontsize=bfs, color=style.INK_2, zorder=4,
+            linespacing=1.2)
+
+
+def arrow(ax, p0, p1):
+    ax.add_patch(FancyArrowPatch(p0, p1, arrowstyle="-|>", mutation_scale=10, color=style.INK_2, lw=1.0,
+                                 shrinkA=2, shrinkB=2, zorder=2))
+
+
+fig, ax = plt.subplots(figsize=(6.5, 5.1))
+ax.set_xlim(0, 100); ax.set_ylim(0, 80); ax.set_axis_off(); ax.grid(False)
+REC, KIC, NEU = style.DEFENSE_TINT, style.OFFENSE_TINT, "#efeee9"
+box(ax, 50, 73.5, 40, 10, "The punt is in the air", "who touches it first, beyond the line?", NEU, style.BASELINE)
+box(ax, 17, 50, 30, 22, "Nobody", "into the end zone: touchback\n(ball at the 20)\nout of bounds: their ball there\ncomes to rest: their ball there",
+    NEU, style.BASELINE)
+box(ax, 50, 50, 30, 22, "The receiving team", "catch after a fair-catch signal:\ndead there, no return\ncatch without one: return it\nnobody may interfere", REC,
+    style.DEFENSE)
+box(ax, 83, 50, 30, 22, "The kicking team", "first touching: a violation,\nnot a foul. Loose, it stays live;\nreceivers may take it at the\nspot of first touching", KIC,
+    style.OFFENSE)
+box(ax, 21, 16, 29, 22, "Muff", "touched, never possessed\n(off a hand, a leg, a helmet).\nEither team may recover;\nkickers may not advance it", REC, style.DEFENSE)
+box(ax, 52, 16, 29, 22, "Fumble", "caught, then dropped.\nEither team may recover\nand advance it, like any\nother fumble", REC, style.DEFENSE)
+box(ax, 83, 16, 29, 22, "Downed", "a kicking-team player catches\nor falls on it first. Possession\nkills the ball: dead there,\nreceivers' ball at that spot", KIC, style.OFFENSE)
+for x in (17, 50, 83):
+    arrow(ax, (50 + (x - 50) * 0.25, 68.4), (x, 61.2))
+arrow(ax, (44, 38.8), (27, 27.2))
+arrow(ax, (51, 38.8), (52, 27.2))
+arrow(ax, (83, 38.8), (83, 27.2))
+h = [Patch(fc=REC, ec=style.DEFENSE, label="receiving team touched it"),
+     Patch(fc=KIC, ec=style.OFFENSE, label="kicking team touched it"),
+     Patch(fc=NEU, ec=style.BASELINE, label="nobody")]
+ax.legend(handles=h, loc="lower center", bbox_to_anchor=(0.5, -0.03), ncol=3, fontsize=7, frameon=False)
+plt.show()
+```
+
+1. **Out of bounds or at rest.** A punt that goes out of bounds is dead where it crossed the
+   sideline, and it's the receiving team's ball there. One that rolls to a stop with nobody trying to
+   pick it up is the receiving team's ball where it stopped.
+2. **The end zone.** A punt that touches the ground in the end zone, or touches a kicking-team
+   player who is standing on or behind the goal line, is a touchback: ball at the 20. That's why you
+   see a gunner leap from the field, bat a bouncing ball back out of the end zone while he's still in
+   the air, and only then land: as long as he hasn't touched the goal line or the end zone before he
+   touches the ball, the ball is still alive and can be downed short of the goal line.[^downing]
+3. **First touching.** A kicking-team player may not be the first to touch a punt beyond the line.
+   If he does, it is [**first touching**](../../appendices/glossary.qmd#gl-first-touching), which is a
+   *violation*, not a foul: no yardage, the ball stays live, and the receiving team may take the ball
+   at the spot of first touching or at the end of the play, whichever it prefers.[^ft] The ball stays
+   live only while nobody holds it, though. The moment a kicking-team player *possesses* the punt
+   beyond the line (catches it or falls on it), the ball is dead, and if no receiver had touched it
+   first, it's the receiving team's ball right there.[^kpossess] That is what "downing" a punt is:
+   first touching that ends in possession. The gunner catches the bouncing ball at the 4, play stops,
+   and the receiving team takes the 4. The rule also gives the returner a cushion: once a coverage
+   man has touched the ball, a returner can scoop it up and try to run, and if he is tackled behind
+   the spot of first touching, his team still takes that spot. It isn't a completely free play: the
+   option is wiped out if possession changes, so a returner who then fumbles to the kicking team can
+   lose the ball.
+4. **Muff versus fumble.** A [**muff**](../../appendices/glossary.qmd#gl-muff) is touching a loose
+   ball without ever possessing it: the punt bounces off a returner's hands, or off the leg of a
+   blocker running past. A muffed punt is a live ball, and the kicking team may recover it, but it
+   may not advance it: the ball is dead at the spot of the recovery, and the kicking team has a fresh
+   first down there.[^muff] A **fumble** is different: the returner caught the ball, possessed it, and
+   then lost it. Then it's an ordinary loose ball and either team may recover *and run with it*. The
+   NFL sees around `{python} S["muffs"]` muffed punts a season, and when the kicking team recovers
+   one the momentum swing is enormous.
+5. **The receiving team's own players.** A punt that touches *any* receiving-team player has been
+   touched by the receiving team, even if he never meant to touch it. That is why returners shout a
+   code word ("Peter!" is the classic) to warn teammates to get away from a ball they're letting go:
+   a punt that clips a blocker's calf is a muff, and the coverage team can fall on it.
+
+::: {.callout-note title="Madden vs. real life"}
+In a video game, a punt that you don't catch is just a bouncing ball that eventually stops. In real
+life a loose punt sets off a chain of rules about who touched it first, and the returner is making a
+risk calculation on every kick: fielding the ball gains yards on average, but a muff turns a routine
+possession change into a turnover deep in his own territory. That's why returners who look timid
+on TV ("Why didn't he catch it?") are often making the right call.
+:::
+
+## Fakes: why they work, and why they're rare
+
+The kicking team has one more option: don't kick. A
+[**fake punt / fake field goal**](../../appendices/glossary.qmd#gl-fake-punt-fake-field-goal) lines
+up as if to kick and runs or passes instead. The common versions: a direct snap to the personal
+protector, who runs through a gap; a punter's pass to a gunner or wing who sneaks into the open while
+everybody watches the returner; and, on field goals, the holder standing up to throw or run, since
+he already has his hands on the ball.
+
+```{python}
+#| label: fig-fake
+#| fig-cap: "A classic fake punt on fourth-and-1: the direct snap goes to the personal protector (PP), not the punter, and he runs through the middle of the line. It works against a return team that has committed to a return: two of the front players have already turned to run back for the wall (orange arrows), and the vices are busy with the gunners. Against a punt-safe look with defenders holding the line, the same play runs into a wall."
+fk = Play(spread_punt(), [q for q in return_team(gw=19.5) if q.key != "PR"], los=50, to_go=None)
+fk.highlight("PP", color=PURPLE)
+fk.path("F2", [(1.0, -1.2), (9.0, -6.0)], absolute=True, speed=5.0)
+fk.path("F3", [(1.0, 1.2), (9.0, 6.0)], absolute=True, speed=5.0)
+fk.block("LS", pts=[(0.6, -0.4)])
+fk.block("LG", pts=[(0.8, 0.4)])
+fk.block("RG", pts=[(0.8, -0.2)])
+fk.block("LT", pts=[(0.6, 0.3)])
+fk.block("RT", pts=[(0.6, -0.3)])
+fk.run("PP", [(-4.0, 0.9), (1.5, 0.9), (7.0, 0.7)], absolute=True)
+fld = fk.draw(window=(-16.5, 13.0), lateral=(-23.0, 23.0), title=False)
+no_numbers(fld)
+ball_arrow(fld, fk, (0.0, 0.0), (-5.8, 0.9), lw=1.0)
+say(fld, fk, -6.6, 5.3, "direct snap\nto the PP", color=OC)
+say(fld, fk, 10.5, -10.0, "two of the front six\nturning to set the wall", color=DC)
+say(fld, fk, -14.5, 4.6, "punter (decoy)", color=OC)
+say(fld, fk, 4.0, -18.0, "vices on gunner", color=DC, fs=6.2)
+say(fld, fk, 4.0, 18.0, "vices on gunner", color=DC, fs=6.2)
+plt.show()
+```
+
+Here's the puzzle. In 2016–2025 the play-by-play tags about `{python} S["fp_yr"]` fake punts a season
+across the whole league, `{python} S["fp_rate"]` of punt-formation snaps, and they picked up a first
+down `{python} S["fp_conv"]` of the time.[^fakes] Fake field goals have nearly disappeared: about
+`{python} S["ff_yr"]` a season tagged in 2016–2025, against about `{python} S["ff_9905"]` a season
+in 1999–2005. If fake punts convert more than half the time, why don't coaches call them more?
+
+1. **They work *because* they are rare.** The conversion rate is high because coaches choose the
+   moment: a look they scouted, a return team turned to set its wall, a short distance. Call fakes
+   every week and return teams play punt safe every week, and the rate collapses. This is game theory
+   in its plainest form: the right number of fakes is small but not zero, so that the other side has
+   to respect the possibility.
+2. **The downside is lopsided.** A punt from your own 35 gives the opponent the ball somewhere around
+   its own 25, while a failed fake gives it the ball at your 35, 40 yards closer, often with momentum
+   and a home crowd behind it. A coach can survive a punt; he gets second-guessed for a week over a failed fake.
+3. **The personnel aren't built for it.** The punt team is backups, linemen and specialists. A
+   punter's pass and a personal protector's run are plays the unit practices a few minutes a week.
+4. **Analytics took the edge off.** Fourth-down models now tell coaches to *go for it* in the open,
+   with the offense on the field, in many of the situations where a fake used to be the only way to
+   try. Why risk a trick with backups when you can run your best short-yardage play with starters?
+
+Fakes also reveal the deeper logic of the kicking game. Every punt-team formation is an offensive
+formation, with the same eligible receivers as any other: the two ends of the line and everyone
+lined up off it. A player wearing a lineman's number (50–79) can still be one of them, but only if he
+reports to the referee before the play, who announces it to the defense; that is how a reserve tackle
+caught a touchdown in the film room below. And every return team is a defense that has to decide what
+it fears. When a punt team lines up, the return team is reading it, and vice versa, just as on any other
+down.
+
+## Film room
+
+::: {.callout-note title="Film room: Ravens 2012–2024, Justin Tucker and the 66-yard kick"}
+For most of his 13 seasons in Baltimore, Justin Tucker was the standard for accuracy: he made
+`{python} S["tucker_pct"]` of his `{python} S["tucker_att"]` regular-season field-goal attempts.
+His most famous kick came on **September 26, 2021, at Detroit**. Baltimore trailed 17–16 with no
+timeouts; a fourth-and-19 completion got the ball to the Lions' 48, and with three seconds left
+Tucker tried a 66-yarder, two yards longer than any field goal ever made. It hit the crossbar, bounced
+up and over, and Baltimore won 19–17.[^tucker66] **What to notice:** the arithmetic (a snap from the
+48 plus 18 yards is 66), the venue (indoors at Ford Field, no wind), and the operation: snapper Nick
+Moore and holder Sam Koch had to be perfect for a kicker to swing that hard. Tucker made
+`{python} S["tucker24"]` in 2024. Baltimore released him in May 2025, the league suspended him for
+ten weeks that summer, and he was still unsigned when the 2026 season began.[^tuckerout]
+:::
+
+::: {.callout-note title="Film room: Cowboys 2023–2025, Brandon Aubrey and the moving range line"}
+Brandon Aubrey took the long way to the NFL: a first-round pick of Toronto FC in the 2017 MLS draft,
+then the USFL's Birmingham Stallions, then a contract with Dallas in July 2023. He made the first 35
+field-goal attempts of his NFL career, a record, and in 2024 he made 14 field goals of 50 yards or
+more (in `{python} S["aub50att_24"]` tries), the most in a season in NFL history.[^aubrey] By the end
+of 2025 he had made `{python} S["aub60"]` from 60-plus yards. **What to notice:** how a kicker like
+that changes the coach's decisions. In 2023–2025 `{python} S["aub_sh50"]` of Aubrey's attempts came
+from 50 yards or more, against `{python} S["lg_sh50_2325"]` for the league as a whole. For Dallas,
+field-goal range started near the opponent's 42, so a drive that stalled at midfield still had a
+reasonable shot at three points, and fourth-and-long near the 40 became a kick instead of a punt.
+:::
+
+::: {.callout-note title="Film room: Jaguars 2025, Cam Little goes to 68"}
+On **November 2, 2025**, at Las Vegas, Jacksonville's second-year kicker Cam Little ended the first
+half with a **68-yard field goal**, breaking Tucker's record by two yards (the Jaguars won 30–29 in
+overtime). In Week 18 he made a 67-yarder at home against Tennessee, the longest ever kicked in an
+open-air stadium.[^little] **What to notice:** the setting of the record (the dome at Allegiant
+Stadium, no wind) and the season it came in, the first with teams breaking in their own kicking balls.
+Little made `{python} S["little25"]` field-goal tries in 2025; the 60-plus-yard kick, a stunt a
+decade ago, had become a planned weapon at the end of a half.
+:::
+
+::: {.callout-note title="Film room: Seahawks, NFC Championship (2014 season), the fake that won a conference"}
+On **January 18, 2015**, Seattle trailed Green Bay 16–0 in the third quarter of the NFC Championship
+Game and lined up for a field goal at the Packers' 19. Holder Jon Ryan, the punter, took the snap,
+sprinted to his left, away from the rush, and threw a 19-yard touchdown pass to Garry Gilliam, a
+rookie offensive tackle wearing No. 79 who was playing the wing and slipped out of the formation
+unnoticed.[^seafake] Seattle went on to win in overtime. **What to notice:** the holder already has
+the ball in his hands; a wing is off the line, so he is a back and an eligible receiver, and a
+player wearing 79 there must have reported to the referee, a detail a block unit sending everyone
+at the kick can easily miss; and nobody stayed home to cover him.
+:::
+
+::: {.callout-note title="Film room: Dolphins and Colts, two direct-snap fake punts"}
+The fake punt in this chapter's figure, a direct snap to an up-back running through the middle, is
+the bread-and-butter version, and it works when the return team isn't looking for it. In the AFC
+Wild Card game at Pittsburgh on **January 8, 2017**, Miami, down 17 in the second quarter, faced
+fourth-and-1 at its own 41. The snap went straight to safety Michael Thomas, who ran up the middle for
+three yards and a first down.[^miafake] For the opposite lesson, find the Colts' fake punt against
+New England on **October 18, 2015**. Most of the punt team shifted to one side; wide receiver Griff
+Whalen became the snapper and safety Colt Anderson lined up behind him. The play was meant only to
+draw the Patriots offside, but Whalen snapped the ball anyway, and Anderson was dropped for a
+one-yard loss (with an illegal-formation flag the Patriots declined). It is remembered as one of the
+worst fakes ever run.[^colts] **What to notice:** a fake needs surprise *and* a sound formation; the
+Dolphins had both, the Colts had neither.
+:::
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it on Sunday: the range finder"}
+**On every fourth down, call it before the offense lines up: go, punt or kick.**
+
+- **Do the arithmetic.** Line of scrimmage plus 18 is the kick. Under 40 yards: a kick is nearly
+  automatic. 50–55: depends on the kicker and the day. Beyond 58: only for a special leg, a roof or
+  thin air, or the end of a half.
+- **Check the conditions.** Roof open or closed? Flags on the uprights (and which way they blow
+  for *this* end)? A cold night? Did the broadcast show the kicker's warmup line?
+- **Read the distance and the score.** Fourth-and-1 at the opponent's 38 is a go in most modern
+  playbooks; fourth-and-8 at the same spot is a kick for a good kicker, a punt for a shaky one.
+- **When the punt team trots out, look at the return team.** Two vices on each gunner and a
+  deep returner: a return. Seven or eight on the line, crowding one side: a block. Defenders on the
+  field, corners in tight on the gunners, no one turning back: punt safe, they fear a fake.
+- **Watch where the punter aims.** From midfield, a high pooch toward the 10 and gunners racing to
+  the spot. From deep, a directional kick to the numbers.
+- **Then watch the returner's hands.** One arm waving above the helmet is a fair catch. A
+  returner backing away from a ball inside his 10 is letting it go for a touchback. Listen for the
+  officials sorting out who touched it first.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: the cold kick"}
+```{python}
+#| label: fig-predict-range
+#| fig-cap: "Fourth-and-6 at the opponent's 37, early in the fourth quarter, tied. An outdoor stadium in December: 34°F and a 15-mph wind blowing straight into the kicker's face. This kicker's pregame line into the wind was the opponent's 33 (dashed): from that line of scrimmage or closer, he'll kick."
+fig, ax = plt.subplots(figsize=(6.5, 3.3))
+fld, p = fg_geometry(ax, 37, show_dims=False, range_line=33)
+say(fld, p, 0.0, 3.6, "4th & 6\nopp. 37", color=OC, fs=6.6)
+say(fld, p, -8.0, 4.6, "spot of\nthe kick", color=OC, fs=6.4)
+(wx0, wy0), (wx1, wy1) = fld.xy(108.0, MIDDLE - 7.5), fld.xy(94.0, MIDDLE - 7.5)
+ax.add_patch(FancyArrowPatch((float(wx0), float(wy0)), (float(wx1), float(wy1)), arrowstyle="simple,head_width=6,head_length=7",
+                             mutation_scale=1.3, color=style.MUTED, alpha=0.7, zorder=4))
+ax.text(float(wx0 + wx1) / 2, float(wy0) - 2.2, "wind 15 mph, in the kicker's face", ha="center", va="top",
+        fontsize=6.6, color=style.INK_2)
+say(fld, p, 7.6, -9.0, "kicker's line\ninto the wind:\nopp. 33", color=style.INK, fs=6.4)
+tx, ty = fld.xy(96.0, MIDDLE + 6.5)
+ax.text(float(tx), float(ty), "34°F, 15-mph wind in his face", ha="center", va="center", fontsize=7.5,
+        color=style.INK, zorder=9, bbox=dict(boxstyle="round,pad=0.3", fc=style.SURFACE, ec=style.BASELINE, lw=0.6))
+plt.show()
+```
+
+**How long is the kick, and what should the coach do?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**It's a 55-yarder (37 + 18), four yards beyond this kicker's line into the wind: punt, or go for
+it, but don't kick.** The chapter's weather numbers point the same way. In outdoor games colder than
+40°F, kickers made `{python} S["c55p"]` of their tries from 55 yards and beyond, and those were the
+hand-picked long kicks coaches chose to attempt in the cold; this one is also into a 15-mph wind. The cost of a miss is
+the spot of the kick, the opponent's 45, a short field in a tied game.
+
+Between the other two options it's close, and teams differ. NFL offenses converted
+`{python} S["c4_6"]` of fourth-and-6 plays in 2016–2025, and a failed try hands the opponent the ball at its own 37. A punt from the 37 is
+the pooch scenario from the heatmap: into the wind it won't carry into the end zone, so the punter can
+aim high at the 10 and the gunners can down it. A conservative coach punts and plays for field position
+in a tied game; an aggressive one goes for it. The kick is the one choice the conditions rule out.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: what is the return team doing?"}
+```{python}
+#| label: fig-predict-block
+#| fig-cap: "Fourth-and-9 at the punting team's own 31, second quarter. The punt team is in its usual spread punt. Count the return team: eight men on the line, three to the punt team's left of the snapper and five to its right; one vice on each gunner instead of two; the returner (not shown) about 40 yards deep."
+blk = [D(f"B{i}", "DL", 1.0, w) for i, w in enumerate([-4.4, -2.6, -1.0, 1.4, 3.0, 4.6, 6.2, 7.8])]
+blk += [D("V1", "CB", 1.0, -18.3, "V"), D("V2", "CB", 1.0, 18.3, "V")]
+pb = Play(spread_punt(), blk, los=41, to_go=None)
+fld = pb.draw(window=(-16.5, 5.5), lateral=(-23.0, 23.0), title=False)
+no_numbers(fld)
+say(fld, pb, 3.6, 4.6, "five on this side", color=DC)
+say(fld, pb, 3.6, -2.7, "three", color=DC)
+say(fld, pb, 3.6, -18.3, "one vice", color=DC, fs=6.2)
+say(fld, pb, 3.6, 18.3, "one vice", color=DC, fs=6.2)
+say(fld, pb, -14.5, 4.4, "punter", color=OC)
+plt.show()
+```
+
+**Return, block or safe? And what should the punt team's personal protector do about it?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**A punt block, overloading the punt team's right side.** The tells: eight on the line instead of the
+usual six, five of them on one side, and only one vice per gunner (strictly, a single "jammer"), because the return team needed the
+extra bodies up front and doesn't care much about the coverage if it gets a hand on the ball. A team
+setting up a return would have two vices on each gunner and players ready to peel back for a wall; a
+punt-safe team would have defenders, not rushers, and nobody committing this many players to one side.
+(A side note on the rules: the limit of six defenders on one side of the snapper applies only to
+field goals and tries, not to punts.[^fgrules6]) Eight on the line is a strong tell, not a guarantee:
+return teams sometimes show exactly this overload and then peel back into a return at the snap.
+
+The personal protector's job is exactly this moment. Before the snap he calls out the overload and
+slides the protection toward it, so the shield (the wings and the PP himself) and the right-side
+blockers take the inside rushers and
+the outermost man is left with the longest path. The punter may also take a slightly quicker drop or
+angle his kick away from the overload. The trade for the return team: with one vice per gunner, a punt
+that gets off cleanly will meet gunners arriving fast, so expect a fair catch. Fourth-and-9 from the 31
+isn't a fake situation, so the punt team just punts, quickly.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: the bounce"}
+```{python}
+#| label: fig-predict-muff
+#| fig-cap: "A punt from midfield comes down at the receiving team's 9. The returner has decided to let it go and is backing away, waving his teammates off, but it takes a short hop and strikes the leg of one of his own teammates (V), a vice who is running back toward the play. A gunner (G) falls on the loose ball at the 7."
+fig, ax = plt.subplots(figsize=(6.5, 3.6))
+fq = Field(ax=ax, orient="horizontal", los=60.0, window=(21.0, 60.0), to_go=None, lateral=(15.0, 38.5))
+no_numbers(fq)
+
+
+def m(x, y, side, label):
+    px, py = fq.xy(x, y)
+    draw_marker(ax, float(px), float(py), side, label, fq.pts_per_yard())
+
+
+def t_(x, y, s, color=style.INK_2, fs=6.8):
+    px, py = fq.xy(x, y)
+    ax.text(float(px), float(py), s, fontsize=fs, color=color, ha="center", va="center", zorder=9, linespacing=1.1,
+            bbox=dict(boxstyle="round,pad=0.15", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def flight(x0, y0, x1, y1, rad, lw=1.3):
+    (ax0, ay0), (ax1, ay1) = fq.xy(x0, y0), fq.xy(x1, y1)
+    ax.add_patch(FancyArrowPatch((float(ax0), float(ay0)), (float(ax1), float(ay1)), arrowstyle="-|>",
+                                 mutation_scale=9, color=style.BALL, lw=lw, ls=(0, (3, 2)),
+                                 connectionstyle=f"arc3,rad={rad}", zorder=6))
+
+
+flight(84.0, MIDDLE + 3.0, 100.5, MIDDLE - 0.2, -0.25)
+flight(101.3, MIDDLE - 0.8, 102.6, MIDDLE - 2.6, 0.0, lw=1.0)
+m(101.0, MIDDLE - 0.4, "ball", "")
+m(101.9, MIDDLE + 1.1, "def", "V")
+m(106.5, MIDDLE + 4.0, "def", "PR")
+m(103.4, MIDDLE - 3.6, "off", "G")
+m(98.5, MIDDLE + 3.6, "off", "G")
+t_(99.0, MIDDLE - 6.0, "hits V's leg\nat the 9")
+t_(106.0, MIDDLE - 7.5, "G falls on it\nat the 7", color=OC)
+t_(106.5, MIDDLE + 7.5, "returner lets\nit go", color=DC)
+t_(86.0, MIDDLE + 7.5, "punt from midfield\n(flight shortened)", color=style.BALL)
+for xx, lab in [(90, "20"), (100, "10"), (105, "5"), (110, "goal line")]:
+    px, py = fq.xy(xx, 16.8)
+    ax.text(float(px), float(py), lab, ha="center", va="center", fontsize=7, color=style.MUTED, fontweight="bold")
+plt.show()
+```
+
+**Whose ball is it, and where?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The kicking team's ball at the 7: first-and-goal.** The ball touched a receiving-team player, so
+the receiving team "touched it first," even though it was an accident and even though the returner
+never wanted it. That makes it a **muff**: the receivers touched it without possessing it. A muffed
+punt is a live ball and the kicking team may recover it. It may not advance it, so the ball is dead
+where the gunner fell on it, and the kicking team has a new set of downs there.
+
+That's why the returner should have been shouting his warning word ("Peter!") as soon as he decided to
+let the ball go: every teammate near a bouncing punt is a liability. Order matters, too. If the ball
+had missed V and the gunner had fallen on it at the 7 untouched by any receiver, the kicking team would
+not have kept it: that is first touching (the gunner simply downed it), and it's the *receiving* team's ball at the 7.
+And if it had bounced into the end zone without touching anyone, it would have been a touchback at the
+20.
+:::
+:::
+
+## Takeaways
+
+- **Add 18.** A field goal is the line of scrimmage plus about 8 yards to the holder and 10 for the end
+  zone. *Field goal range* is a coach's judgment about this kicker today, weighed against going for it
+  and punting, and a miss costs the spot of the kick.
+- **Kickers are far better than they were**, so range has moved out about five yards in a generation.
+  Wind and cold shorten it; altitude and roofs lengthen it. The data understates bad weather's effect,
+  because coaches don't try the kicks they expect to miss.
+- A field goal is a **1.3-second snap-hold-kick operation** behind a wall that steps inside and must not
+  give ground. Block units overload, crash the middle and aim at the block point; the rules ban
+  leaping, covering the snapper and more than six rushers on one side.
+- The **2015 extra-point change** turned a 99% kick into a roughly 94% one and made the kick and the
+  two-point try worth almost the same, so two-point tries doubled and the choice now follows the score.
+- A punt is **protect, kick, cover**. The NFL's base is the spread punt, with the wings and personal
+  protector forming the shield in front of the punter; only the gunners may release before the kick,
+  so two vices on each gunner is the return team's first priority. Judge punts by **net** and by where the opponent starts, not by gross distance.
+- The return team chooses before the snap: **return, block or safe**. The rules of the loose ball
+  (fair catch, touchback, first touching, muff versus fumble, kick-catch interference) all follow from
+  one question: who touched it first? Fake punts succeed more often than not precisely because they are
+  rare.
+
+## Connections
+
+**Builds on:** [Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd)
+(why teams punt, and field position as a currency) and
+[The Twenty-Two](../01-foundations/01-03-the-twenty-two.qmd) (the specialists and the punt and
+field-goal units). The scoring basics, including the try, are in
+[The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd).
+
+**Sets up:** [Kickoffs, Returns, and the Dynamic Kickoff](09-02-kickoffs-and-returns.qmd) (the other
+kicking play, with its very different 2024–2026 rules);
+[Contact Rules and Penalties](09-03-contact-rules-and-penalties.qmd) (blocks in the back and holding on
+returns); [Officiating, Replay, and the Rules of the Ball](09-04-officiating-replay-and-rules-of-the-ball.qmd)
+(touchbacks and the other rules of the ball);
+[Early Downs and Field Zones](../10-situational-football/10-01-early-downs-and-field-zones.qmd);
+[Red Zone, Goal Line, Two-Point Plays, and Short Yardage](../10-situational-football/10-03-red-zone-goal-line-and-short-yardage.qmd);
+and above all [The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd),
+where kicking ranges and punt values become fourth-down decisions. The models behind those decisions are
+built in [Expected Points, EPA, and Success Rate](../13-analytics-and-data/13-02-expected-points-and-success-rate.qmd)
+and [Win Probability and Decision Analysis](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd).
+The coach who most famously built teams around the kicking game, Bill Belichick (who began as a special
+teams assistant), is the subject of [Belichick and Game-Plan Football](../12-case-studies/12-02-belichick-patriots-game-plan.qmd).
+
+::: {.callout-note title="Go deeper"}
+- The **NFL Rulebook** (NFL Football Operations, free online): Rule 9 (scrimmage kicks), Rule 10
+  (opportunity to catch a kick and the fair catch) and Rule 11 (scoring, the try and touchbacks) are
+  short and readable once you know the vocabulary in this chapter.
+- **nflverse play-by-play** (via `nflreadpy`): every kick since 1999 with distance, result, roof,
+  temperature and wind, so you can rebuild every chart in this chapter and test your own kicker.
+  Part 13 shows how.
+- Ben Baldwin's open-source **fourth-down model** and its public outputs (rbsdm.com) for the go/kick/punt
+  arithmetic, game by game.
+- **Kicking System** and similar specialist-coaching sites publish operation-time standards, drills and
+  film breakdowns written by kicking coaches.
+:::
+
+[^fg18]: Course calculation from nflverse play-by-play, 1999–2025 regular seasons: field-goal attempts whose recorded `kick_distance` equals `yardline_100` plus 18. Almost all the rest are plus 17 or plus 19.
+
+[^posts]: NFL Rulebook (2026), Rule 1 (the field): the crossbar is 18 feet 6 inches long with its top face 10 feet above the ground, and the uprights extend 35 feet above it; the hash marks (inbounds lines) are 70 feet 9 inches from each sideline, which leaves 18 feet 6 inches between them on a 160-foot-wide field: https://operations.nfl.com/the-rules/nfl-rulebook/
+
+[^missedfg]: NFL Rulebook (2026), Rule 11, Section 4, Article 2 (missed field goals: the receivers' ball at the spot of the kick, or at the 20 if the spot of the kick was inside the 20).
+
+[^eras]: Course calculation from nflverse play-by-play, regular seasons 1999–2025: all field-goal attempts (made, missed and blocked) by `kick_distance`.
+
+[^gogolak]: Pro Football Daly, "When soccer invaded football," on Pete Gogolak, Hungarian-born, who kicked the first soccer-style field goal in pro football for the AFL's Buffalo Bills on Sept. 13, 1964: https://profootballdaly.com/when-soccer-invaded-football/ ; Cornell Athletics Hall of Fame, Pete Gogolak: https://cornellbigred.com/hof.aspx?hof=414 . Mark Moseley, generally called the last full-time straight-on kicker, retired during the 1986 season (*Sports Illustrated* Vault, "Mark Moseley," 2018: https://vault.si.com/vault/2018/07/02/mark-moseley ).
+
+[^kball]: Minnesota Vikings, "NFL 2025 rule changes" (owners' approval of the K-ball proposal): https://www.vikings.com/news/nfl-2025-rule-changes ; Fox Sports, "NFL kickers are making more 60-yard field goals than ever, and the balls could be part of the reason" (2025), describing the change (60 K-balls delivered to each team before the preseason and prepared like quarterbacks' balls, replacing a 60-minute pregame window with a towel and brush) and the seven teams that proposed it: https://www.foxsports.com/stories/nfl/nfl-kickers-are-making-more-60yard-field-goals-than-ever-and-the-balls-could-be-part-of-the-reason . The 2025 and 2016–2021 counts are a course calculation from nflverse play-by-play.
+
+[^weather]: Course calculation from nflverse play-by-play, regular seasons 2010–2025. Indoors = `roof` of "dome" or "closed"; outdoors = "outdoors" or "open". Temperature and wind come from the game-level `temp` and `wind` fields, filled from the `weather` text where those are missing; neither records the wind's direction relative to the kick. The same pattern shows elsewhere. Indoors, kickers made `{python} S["m50_in"]` of their 50-plus-yard tries and outdoors `{python} S["m50_out"]`, while 50-plus kicks were `{python} S["sh50_in"]` of attempts indoors and `{python} S["sh50_out"]` outdoors. From 50–54 yards, outdoor kickers made `{python} S["m5054_calm"]` with 5 mph of wind or less and `{python} S["m5054_windy"]` at 11 mph or more, and 50-plus kicks were `{python} S["sh50_calm"]` of attempts in calm air against `{python} S["sh50_windy"]` in wind. The cold 55-plus figure rests on only `{python} S["c55pn"]` tries.
+
+[^fgreturn]: NFL Rulebook (2026), Rule 11, Section 4, Article 2, Exception (1): when a missed field goal is touched by the receivers beyond the line, "all general rules for a scrimmage kick will apply," so the receivers may advance it (Rule 9, Section 3, Article 3).
+
+[^cromartie]: The play appears in nflverse play-by-play (2007 Week 9, San Diego at Minnesota, Nov. 4, 2007, end of the second quarter: "8-R.Longwell 57 yard field goal is No Good ... 31-A.Cromartie at LAC -9 for 109 yards, TOUCHDOWN. Longest Play in NFL History").
+
+[^records]: Pro Football Hall of Fame, "Jaguars kicker Cam Little sets NFL record with 68-yard field goal vs. Raiders" (Nov. 2025): https://www.profootballhof.com/news/2025/11/jaguars-kicker-cam-little-sets-nfl-record-with-68-yard-field-goal-vs-raiders ; CBS Sports, "Ravens' Justin Tucker stuns Lions with NFL record-setting 66-yard field goal" (Sept. 2021), which notes the previous record, Matt Prater's 64-yarder for Denver in 2013: https://www.cbssports.com/nfl/news/ravens-justin-tucker-stuns-lions-with-nfl-record-setting-66-yard-field-goal-on-final-play-of-game . ESPN, "What are the longest field goals in NFL history?" (updated Oct. 2026), for the list of 63-yarders (Dempsey 1970, Elam 1998, Janikowski 2011, Akers 2012): https://www.espn.com/nfl/story/_/id/40994229 . Prater's kick (Dec. 8, 2013, vs. Tennessee in Denver), Janikowski's (Sept. 12, 2011, at Denver) and Akers's (Sept. 9, 2012, at Green Bay) are also in nflverse play-by-play; Dempsey's came at New Orleans's Tulane Stadium and Elam's at Denver's Mile High Stadium.
+
+[^optime]: Justin Tucker in *Baltimore* magazine (September 2014), "this 1.3-second field-goal operation, from the snap to the hold to the kick": https://www.baltimoremagazine.com/2014/9/5/justin-tucker-renaissance-raven ; Kicking System (2012), giving 1.2–1.35 seconds as the professional range: https://kickingsystem.com/2012/08/15/special-teams-unit-field-goals-operation-times-working-with-the-snapper-and-holder/ . Published snap times are inconsistent; the roughly 0.4-second snap and half-second hold in the list are approximations (a snap at about 35 to 45 mph covers eight yards in 0.4 to 0.5 seconds) and vary by unit.
+
+[^fgrules]: NFL Rulebook (2026), Rule 9, Section 1, Article 3, Item 2 (field goal or try-kick formation): a defender within one yard of the line must have his entire body outside the snapper's shoulder pads; no more than six defenders on the line on either side of the snapper; no pushing teammates into the formation (15 yards).
+
+[^ice]: NFL Rulebook (2026), Rule 4, Section 5, Article 1, Items 3 and 4 (a second charged timeout in the same dead-ball period is prohibited; an attempt by the defense to call one to "freeze" a kicker before a field goal or try is ignored and is unsportsmanlike conduct) and Rule 12, Section 3, Article 1(v).
+
+[^snapper]: NFL Rulebook (2026), Rule 12, Section 2, Article 9(a)(11) (the player who snaps during any scrimmage kick is a defenseless player until he has had an opportunity to defend himself or moves downfield) and Rule 9, Section 1, Article 3 (on punt, field-goal and try formations, a defender within one yard of the line must have his entire body outside the snapper's shoulder pads).
+
+[^fgrules6]: NFL Rulebook (2026), Rule 9, Section 1, Article 3: Item 1 (punt formation) requires only that defenders within a yard of the line stay outside the snapper's shoulder pads; the six-per-side limit is in Item 2, which covers field-goal and try formations.
+
+[^leap]: Seattle Seahawks, "NFL prohibits leaping block, announces other rule changes for 2017": https://seahawks.com/news/nfl-prohibits-leaping-block-announces-other-rule-changes-for-2017-184783 ; ESPN on the safety concerns behind the ban (2017): https://africa.espn.com/nfl/story/_/id/19021659/nfl-expected-pass-rule-prohibiting-leaper-block-attempts-field-goals-extra-point-attempts . Current text: NFL Rulebook (2026), Rule 12, Section 3, Article 1(r).
+
+[^tee]: NFL Rulebook (2026), Rule 11, Section 3, Article 2(a): "An artificial or manufactured tee shall not be permitted to assist in the execution of a Try kick"; field goals follow the same rule (Rule 11, Section 4).
+
+[^pat2015]: CBS Boston, "NFL votes to move extra-point kick attempts to 15-yard line" (May 19, 2015), on the 30–2 vote (Washington and Oakland against), the 2014 preseason experiment, and the defensive return of a failed try for two points: https://www.cbsnews.com/boston/news/nfl-votes-to-move-extra-point-kick-attempts-to-15-yard-line/ ; current rule: NFL Rulebook (2026), Rule 11, Section 3, Article 1 (the ball spotted 15 yards from the goal line for a try kick, two yards for a run or pass).
+
+[^patcalc]: Course calculation from nflverse play-by-play, regular seasons: rows with an `extra_point_result` (kicks) or a two-point attempt with a `two_point_conv_result`. Team totals are 2015–2025.
+
+[^puntops]: Scouting Academy, "ITP Glossary: Punt" and "ITP Glossary: Long Snapper" (snap-to-kick target about 2.0 seconds, snap to the punter's hands about 0.7 seconds, NFL hang times of 4.5–5.0 seconds): https://scoutingacademy.com/itp-glossary-punt/ ; https://scoutingacademy.com/itp-glossary-long-snapper/
+
+[^guy]: Pro Football Hall of Fame, Ray Guy biography (Raiders 1973–86; the first punter enshrined, Class of 2014): https://www.profootballhof.com/players/ray-guy/
+
+[^release]: NFL Rulebook (2026), Rule 9, Section 1, Article 2: "only the end men (eligible receivers) on each side of the line of scrimmage at the time of the snap, or an eligible receiver who is aligned or in motion behind the line and is more than one yard outside the end man on either side, are permitted to advance more than one yard beyond the line before the ball is kicked." Penalty: five yards.
+
+[^punt74]: *Sports Illustrated*, "The offense is now in command" (Dec. 16, 1974), on the 1974 rule and how coaches found that with nobody released, coverage arrived 12 or 13 yards from the returner, leading the owners to free the wide men on each end: https://vault.si.com/vault/1974/12/16/the-offense-is-now-in-command
+
+[^vicecontact]: NFL Rulebook (2026), Rule 8, Section 4, Article 7 ("If a team presents a punt formation, defensive acts that normally constitute illegal contact ... are permitted, provided that the acts do not constitute defensive holding") and Rule 8, Section 5, Article 3(f) (before the kick, contact that would normally be pass interference against the end man on the line, or a receiver aligned more than a yard outside him, is permitted).
+
+[^oob]: NFL Rulebook (2026), Rule 9, Section 1, Article 5 (a kicking-team player who voluntarily goes out of bounds to avoid a block: five yards) and Rule 9, Section 2, Article 3 (a kicking-team player who has been out of bounds, for any reason, may not be the first to touch the kick beyond the line until another player has touched it; illegal touching, five yards). Explainer: https://www.footballnationusa.com/post/when-does-an-out-of-bounds-punt-gunner-become-eligible-again
+
+[^oobpunt]: NFL Rulebook (2026), Rule 9, Section 4, Article 4 (a scrimmage kick out of bounds between the goal lines is the receivers' ball at the dead-ball spot).
+
+[^aussie]: ESPN, "Why the AFL-NFL punting production line stopped," on Darren Bennett, the Chargers' punter from 1995, as the first of the Australian rules converts: https://www.espn.com/afl/story/_/id/20347293/why-afl-nfl-punting-production-line-stopped ; *Sports Illustrated*, "Mitch Wishnowsky and Utah are setting the pace in a new phase of the Australian punter pipeline" (Aug. 2018), on ProKick Australia, founded by Nathan Chapman and John Smith (sources give 2007 or 2008): https://www.si.com/college/2018/08/16/mitch-wishnowsky-utah-australian-punters-prokick
+
+[^puntcalc]: Course calculation from nflverse play-by-play, regular seasons 1999–2025: gross = mean `kick_distance`; net = (`kick_distance` − `return_yards` − 20 × `touchback`) per punt, with blocked punts counted as zero yards; fair-catch share from `punt_fair_catch`. For a touchback the play-by-play records `kick_distance` to the goal line (true of all 156 punt touchbacks in 2025). The heatmap uses `yardline_100` − `kick_distance` as the spot where the kick ended.
+
+[^fc]: NFL Rulebook (2026), Rule 10, Section 2: a fair-catch signal is valid if made "while the kick is in flight by a player who fully extends one arm above his helmet and waves it from side to side"; after a fair catch the ball is dead, and a player who signals may not block until the ball touches a player. An invalid signal costs five yards from the spot of the signal.
+
+[^kci]: NFL Rulebook (2026), Rule 10, Section 1, Article 1: kicking-team players may not interfere with a receiver attempting to catch an airborne kick, or obstruct his path to it, "regardless of whether any signal was given." Penalty for kick-catch interference: 15 yards from the spot of the foul.
+
+[^fckick]: ESPN, "Obscure rule leads to Chargers making NFL's first fair catch kick since 1976" (Dec. 19, 2024): Dicker's 57-yarder against Denver, the first made since Ray Wersching's 45-yarder on Nov. 21, 1976: https://africa.espn.com/nfl/story/_/id/43068684/obscure-rule-leads-chargers-making-nfl-first-fair-catch-kick-1976
+
+[^rough]: NFL Rulebook (2026), Rule 12, Section 2, Article 12: roughing the kicker (15 yards and an automatic first down) and running into the kicker (five yards, no automatic first down). The article's exceptions include contact that comes after the defender has touched the kick, contact caused by a defender being pushed or blocked into the kicker, and contact when the kicker carries the ball outside the pocket area without clearly establishing a kicking posture.
+
+[^downing]: NFL Rulebook (2026), Rule 9, Section 4, Article 1(a) (a punt that touches the ground on or behind the goal line, or a kicking-team player touching the ground there, is a touchback) and Rule 9, Section 2, Article 2, Note 4 (when a kicking-team player touches the ball in the air above or beyond the goal line before it touches the ground there, the spot of first touching is where he left the field of play, but never inside the one-yard line).
+
+[^ft]: NFL Rulebook (2026), Rule 9, Section 2, Article 2 ("first touching" is a violation; the receivers may take the ball at the spot of first touching or where the ball is dead; the option is disregarded if the receivers commit a foul that is enforced or there is a change of possession).
+
+[^kpossess]: NFL Rulebook (2026), Rule 9, Section 3, Article 2 ("When the kickers catch or recover a kick beyond the line of scrimmage, the ball is dead at the spot of recovery"; Item 2: if no receiver had touched it beyond the line, it is first-and-10 for the receivers at that spot) and Rule 7, Section 2, Article 1(j).
+
+[^blocked]: NFL Rulebook (2026), Rule 9, Section 3, Article 1 (a scrimmage kick caught or recovered by the kicking team behind the line may be advanced, and if the receivers have not touched it beyond the line the existing series of downs continues), Article 3 (the receivers may advance any kick they catch or recover) and Section 2, Article 2, Note 2 (touching near the line in an attempt to block the kick is not touching by the receivers).
+
+[^muff]: NFL Rulebook (2026), Rule 3 (a muff is "the touching of a loose ball by a player in an unsuccessful attempt to obtain possession of it") and Rule 9, Section 3, Article 2, Item 1 (if the receiving team touches the kick beyond the line, a recovery by the kicking team is legal, "but the ball is dead," and it is first-and-10 for the kickers; a recovery in the receivers' end zone is a touchdown). The muff count is a course calculation from nflverse play descriptions containing "MUFFS," 2021–2025, and is approximate.
+
+[^fakes]: Course calculation from nflverse play-by-play, regular seasons: runs and passes whose play description begins "(Punt formation)" or "(Field Goal formation)", excluding aborted snaps. The tag is applied inconsistently across seasons and catches a few broken plays, so treat the counts as approximate; "first down" uses the `first_down` field, which includes first downs by penalty.
+
+[^tucker66]: CBS Sports, "Ravens' Justin Tucker stuns Lions with NFL record-setting 66-yard field goal on final play of game" (Sept. 26, 2021): https://www.cbssports.com/nfl/news/ravens-justin-tucker-stuns-lions-with-nfl-record-setting-66-yard-field-goal-on-final-play-of-game ; *Sports Illustrated* (Sept. 26, 2021): https://www.si.com/nfl/2021/09/26/justin-tucker-66-yard-field-goal-crossbar-ravens-beat-lions . The snapper and holder are from the nflverse play description. Tucker's career figure is a course calculation (regular seasons 2012–2024).
+
+[^tuckerout]: ESPN, "Ex-Ravens kicker Justin Tucker gets 10-week ban from NFL" (June 2025; the Ravens released him on May 5, 2025): https://africa.espn.com/nfl/story/_/id/45591537/ex-ravens-kicker-justin-tucker-gets-10-week-ban-nfl ; Pro Football Rumors player page (workouts with the Saints and Colts in late 2025 and the Jets on Sept. 2, 2026, none leading to a contract): https://www.profootballrumors.com/players/justin-tucker
+
+[^aubrey]: CBS Sports, "Cowboys turn to soccer by signing former MLS player and USFL star Brandon Aubrey" (July 2023): https://www.cbssports.com/nfl/news/cowboys-turn-to-soccer-by-signing-former-mls-player-and-usfl-star-brandon-aubrey-to-compete-for-kicking-job/ ; Toronto FC, on taking him 21st overall in the 2017 MLS SuperDraft: https://www.torontofc.ca/news/toronto-fc-select-brandon-aubrey-2017-mls-superdraft ; CBS Sports, "Cowboys' Brandon Aubrey sets NFL single-season record with 14th made field goal of at least 50 yards" (Dec. 2024): https://mauth.cbssports.com/nfl/news/cowboys-brandon-aubrey-sets-nfl-single-season-record-with-14th-made-field-goal-of-at-least-50-yards/ . The 35 straight to start his career and the 60-plus count are also in nflverse play-by-play (course calculation).
+
+[^little]: CBS Sports, "Cam Little makes NFL history: Jaguars' kicker drills league-record 68-yard field goal vs. Raiders" (Nov. 2, 2025): https://www.cbssports.com/nfl/news/cam-little-makes-nfl-history-jaguars-kicker-drills-league-record-68-yard-field-goal-vs-raiders . CBS Sports, "Cam Little makes NFL history with 67-yard field goal: Jaguars kicker sets record for longest outdoor kick" (Jan. 4, 2026): https://www.cbssports.com/nfl/news/jaguars-cam-little-makes-nfl-history-67-yard-field-goal-record-longest-outdoor-kick . Both kicks, and the absence of any longer outdoor make since 1999, are also in nflverse play-by-play.
+
+[^seafake]: The play appears in nflverse play-by-play (2014 postseason, NFC Championship, third quarter: "(Field Goal formation) 9-J.Ryan pass deep left to 79-G.Gilliam for 19 yards, TOUCHDOWN"). The play-by-play score shows Green Bay leading 16–0 at the snap. Seahawks.com, "Jon Ryan, Garry Gilliam team up for touchdown on Seahawks fake field goal" (Jan. 18, 2015; Gilliam, a rookie tackle, "lined up as an eligible receiver"; Seattle won 28–22 in overtime): https://seahawks.com/news/jon-ryan-garry-gilliam-team-up-for-touchdown-on-seahawks-fake-field-goal--115696 ; ESPN, "Five trick plays that actually worked" (Ryan "sprinted to his left"; Gilliam was "playing the wing"): https://africa.espn.com/nfl/story/_/id/13927142/five-trick-plays-actually-worked . Reporting a change of eligibility: NFL Rulebook (2026), Rule 5, Section 3, Article 1.
+
+[^miafake]: The play appears in nflverse play-by-play (2016 postseason, AFC Wild Card, Miami at Pittsburgh, Jan. 8, 2017, second quarter, fourth-and-1 at the Miami 41, Miami trailing by 17: "(Punt formation) Direct snap to 31-M.Thomas. 31-M.Thomas up the middle to MIA 44 for 3 yards"). Pittsburgh won 30–12.
+
+[^colts]: The play appears in nflverse play-by-play (2015 Week 6, New England at Indianapolis, third quarter: "(Punt formation) 32-C.Anderson up the middle ... for -1 yards ... Illegal Formation, declined"), on fourth-and-3 with the Colts trailing 27–21; New England won 34–27. ESPN Colts blog, "Worst fake punt in NFL history? Relive it with Colts who were there" (Whalen as the snapper, Anderson behind him, and the intent to draw the defense offside): https://www.espn.com/blog/indianapolis-colts/post/_/id/26982/worst-fake-punt-in-nfl-history-relive-it-with-indianapolis-colts-who-were-there ; *Sports Illustrated*/AP, "Behind the call" (Oct. 19, 2015): https://www.si.com/nfl/2015/10/19/ap-fbn-behind-call
