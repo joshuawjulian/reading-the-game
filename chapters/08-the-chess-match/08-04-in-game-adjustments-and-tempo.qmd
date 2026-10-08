@@ -1,0 +1,2062 @@
+---
+title: "In-Game Adjustments, Tempo, and the Sideline Battle"
+subtitle: "What coaches actually change between series and at halftime, why some offenses sprint to the line, how defenses answer, and whether the 'halftime adjustments' story survives the data"
+description: "How a staff adjusts during a game: the coaching booth, sideline tablets and the between-series loop; what can and can't change in a 13-minute halftime; tempo and the hurry-up offense, the substitution-matching rule and the substitution freeze, and the sugar huddle; a short history of going fast (Wyche's Bengals, the Bills' K-Gun, Manning, Chip Kelly's 2013 Eagles); how defenses answer tempo (simplified calls, rule-based checks, versatile personnel, and the gamesmanship the league polices); the coordinator-versus-coordinator 'call after the call'; and a test of the halftime-adjustment narrative with 2006-2025 nflverse data, including Kansas City's second half in Super Bowl LVII."
+glossary:
+  "Coaching booth": "The glassed-in coaches' room at press-box level where part of the staff (often one coordinator, quality control coaches and analysts) watches the game from above, sees all 22 players at once, charts what the opponent is doing and relays it to the sideline by headset."
+  "Halftime adjustment": "A change to the game plan made during the 13-minute halftime break: re-ranking the calls on the sheet, changing a protection, a coverage mix or who covers whom, or leaning on a play that worked. Almost always a choice from plays already practiced that week, not a new play."
+  Tempo: "How fast an offense operates between plays: how quickly it gets to the line and snaps the ball after the previous play ends. Offenses vary it on purpose, from a slow, clock-draining pace to a sprint."
+  "Hurry-up offense": "An offense snapping the ball as fast as it can, usually without a huddle, to run more plays, tire the defense and keep it from substituting or disguising. Every team uses it when it is short of time (the two-minute drill); a few use it as a weapon all game."
+  "Sugar huddle": "A quick huddle a few yards from the ball, broken almost at once, followed by a sprint to the line and a fast snap: the reliability of a huddle without giving the defense time to substitute or set its own call."
+  "Substitution freeze": "The effect of an offense keeping the same eleven players and lining up fast: because the rules protect the defense's right to match only when the offense substitutes, the defense cannot safely change its own players and is 'frozen' in whatever personnel it had on the field."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import logging
+import os
+import shutil
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, FancyBboxPatch, RegularPolygon, Rectangle
+from matplotlib.lines import Line2D
+from gridiron import Play, Player, Field, technique, style
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()                # charts: course palette, recessive grid (field diagrams switch their axes off)
+PURPLE = style.SERIES[6]     # rings on a player to watch: neither offense blue nor defense orange
+RED = style.SERIES[7]        # rings on the defender a play is built to punish
+GREEN = "#0f7a55"            # darker aqua for text and boxes on the light page
+
+
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=key if label is None else label)
+
+
+def D(key, pos, d, w, label=None):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line(labels=False):
+    """Five offensive linemen; unlabeled except the center."""
+    names = ["LT", "LG", "C", "RG", "RT"]
+    return [O(k, k, -0.7, w, k if (labels or k == "C") else "")
+            for k, w in zip(names, (-3.2, -1.6, 0.0, 1.6, 3.2))]
+
+
+def spread():
+    """11 personnel, 2x2 shotgun: X and Z on the line with the five linemen (seven on the line);
+    H (slot receiver) and Y (tight end, flexed into the slot) off the ball."""
+    return line() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -2.0, "R"),
+                     O("X", "WR", -0.7, -12.5, "X"), O("H", "WR", -1.5, -7.5, "H"),
+                     O("Y", "TE", -1.5, 7.5, "Y"), O("Z", "WR", -0.7, 12.5, "Z")]
+
+
+def tight_12():
+    """12 personnel under center, both tight ends attached: five linemen plus Y and U make seven on the
+    line; X and Z are off the ball in tight splits."""
+    return line() + [O("QB", "QB", -1.9, 0.0, "Q"), O("RB", "RB", -7.0, 0.0, "R"),
+                     O("Y", "TE", -0.7, 4.8, "Y"), O("U", "TE", -0.7, -4.8, "U"),
+                     O("X", "WR", -1.5, -11.0, "X"), O("Z", "WR", -1.5, 11.0, "Z")]
+
+
+def flexed_12():
+    """The same 12 personnel spread out from the shotgun: both tight ends flexed into the slots (off the
+    ball), X and Z on the line with the five linemen."""
+    return line() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -2.0, "R"),
+                     O("U", "TE", -1.5, -8.0, "U"), O("Y", "TE", -1.5, 8.0, "Y"),
+                     O("X", "WR", -0.7, -14.0, "X"), O("Z", "WR", -0.7, 14.0, "Z")]
+
+
+def base_vs_tight():
+    """A 4-3 over front with one deep safety against 12 personnel (eight in the box)."""
+    return [D("LDE", "DE", 1.0, -5.6, "E"), D("LDT", "DT", 1.0, technique("1", -1), "T"),
+            D("RDT", "DT", 1.0, technique("3", 1), "T"), D("RDE", "DE", 1.0, 5.6, "E"),
+            D("SAM", "SAM", 3.8, 6.6, "S"), D("MIKE", "MIKE", 4.6, 1.0, "M"), D("WILL", "WILL", 4.6, -2.8, "W"),
+            D("SS", "SS", 7.5, -6.0, "SS"), D("FS", "FS", 13.0, 0.5, "FS"),
+            D("LCB", "CB", 6.5, -11.0, "CB"), D("RCB", "CB", 6.5, 11.0, "CB")]
+
+
+def base_vs_flexed(lbs_out=True):
+    """The same base 4-3 personnel stuck against the flexed 12: the outside linebackers either split the
+    difference (apex, between the box and the slot) or stay in the box."""
+    sam_w, will_w = (5.6, -5.6) if lbs_out else (3.2, -3.0)
+    return [D("LDE", "DE", 1.0, -4.6, "E"), D("LDT", "DT", 1.0, technique("1", -1), "T"),
+            D("RDT", "DT", 1.0, technique("3", 1), "T"), D("RDE", "DE", 1.0, 4.6, "E"),
+            D("SAM", "SAM", 4.6, sam_w, "S"), D("MIKE", "MIKE", 5.0, 0.4, "M"), D("WILL", "WILL", 4.6, will_w, "W"),
+            D("SS", "SS", 11.0, 8.0, "SS"), D("FS", "FS", 11.5, -8.0, "FS"),
+            D("LCB", "CB", 7.0, -14.0, "CB"), D("RCB", "CB", 7.0, 14.0, "CB")]
+
+
+def nickel_2high():
+    """Nickel (4-2-5) two-high against the 2x2: the nickel ($) over H, the safeties at about 12 yards."""
+    return [D("LDE", "DE", 1.0, -4.6, "E"), D("LDT", "DT", 1.0, -2.4, "T"), D("RDT", "DT", 1.0, 0.8, "T"),
+            D("RDE", "DE", 1.0, 4.6, "E"), D("MIKE", "MIKE", 4.6, 1.8, "M"), D("WILL", "WILL", 4.6, -2.2, "W"),
+            D("NB", "NB", 5.0, -7.8, "$"), D("SS", "SS", 12.0, 8.0, "SS"), D("FS", "FS", 12.0, -8.0, "FS"),
+            D("LCB", "CB", 7.0, -12.5, "CB"), D("RCB", "CB", 7.0, 12.5, "CB")]
+
+
+def cover1_look():
+    """Single-high man look against the 2x2: the strong safety down over Y, the free safety in the middle."""
+    return [D("LDE", "DE", 1.0, -4.6, "E"), D("LDT", "DT", 1.0, -2.4, "T"), D("RDT", "DT", 1.0, 0.8, "T"),
+            D("RDE", "DE", 1.0, 4.6, "E"), D("MIKE", "MIKE", 4.6, 1.2, "M"), D("WILL", "WILL", 4.6, -2.2, "W"),
+            D("NB", "NB", 5.5, -7.8, "$"), D("SS", "SS", 6.0, 7.8, "SS"), D("FS", "FS", 13.5, 0.0, "FS"),
+            D("LCB", "CB", 6.0, -12.5, "CB"), D("RCB", "CB", 6.0, 12.5, "CB")]
+
+
+def _P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def go_to(p, key, end, kind="route", delay=0.0, speed=None, via=()):
+    """Move `key` through absolute (d, w) points `via` to `end`, as a route, path, run, block or drop."""
+    start = np.array(p._cur(key))
+    pts = [tuple(np.array(q) - start) for q in (*via, end)]
+    if kind == "route":
+        return p.route(key, pts, frame="field", delay=delay, speed=speed)
+    if kind == "block":
+        return p.block(key, pts=pts, delay=delay, speed=speed)
+    if kind == "drop":
+        return p.drop(key, end, delay=delay, speed=speed)
+    return {"path": p.path, "run": p.run}[kind](key, pts, delay=delay, speed=speed)
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.0, ha="center", weight="normal"):
+    """A short on-field label at (d, w)."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=11, fontweight=weight,
+                linespacing=1.1, bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.92))
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=6.8):
+    """A label with a thin leader line to the player or spot it names."""
+    (xt, yt), (xp, yp) = _P(fld, p, *text_at), _P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha="center", va="center", zorder=11, linespacing=1.1,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=7),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.92))
+
+
+def threat(fld, p, *keys):
+    """Dashed brown rings: defenders threatening to blitz before the snap."""
+    for k in keys:
+        x, y = _P(fld, p, p.players[k].d, p.players[k].w)
+        fld.ax.add_patch(Circle((float(x), float(y)), 1.25, fc="none", ec=style.BALL, lw=1.5, ls=(0, (2.2, 1.4)),
+                                zorder=7))
+
+
+def ghost(fld, p, pts, color=style.DEFENSE, lw=1.4, alpha=0.55, zorder=5):
+    """A faint dashed arrow through absolute (d, w) points: what a player did on earlier snaps."""
+    xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    fld.ax.plot(xs[:-1], ys[:-1], color=color, lw=lw, ls=(0, (3, 2)), alpha=alpha, zorder=zorder)
+    fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=10,
+                                     color=color, lw=lw, alpha=alpha, ls=(0, (3, 2)), zorder=zorder))
+
+
+def clean(ax):
+    """Zoomed diagrams: drop hash ticks and yard numbers, and clip text to the window."""
+    for ln in list(ax.lines):
+        xs, ys = ln.get_data()
+        if len(xs) == 2 and ln.get_linewidth() == 0.5 and np.hypot(xs[1] - xs[0], ys[1] - ys[0]) < 1.0:
+            ln.remove()
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, ax=None, width_in=5.8, **kw):
+    fld = p.draw(ax=ax, width_in=width_in, title=False, **kw)
+    clean(fld.ax)
+    return fld
+
+
+def panel_title(ax, text, fontsize=8.6):
+    ax.set_title(text, fontsize=fontsize, loc="left", color=style.INK, fontweight="bold", pad=3)
+
+
+def pdf_build():
+    return os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+
+# ---- frame strips (print) and videos (web) for simulated plays
+MARK_R = 0.6    # frame-strip marker radius in yards, smaller than the static diagrams'
+
+
+def tracking(play):
+    df = play.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    return df
+
+
+def panel(ax, play, df, t, lateral, window, rings=()):
+    """One moment of a simulated play: markers, trails of on-screen players, rings."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    ylo, yhi = sorted((play.ball_y - lateral[0], play.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=play.los, window=window, numbers=False, hashes=False,
+                lateral=(ylo, yhi), to_go=play.to_go)
+    cur = df[df["frameId"] == fid]
+    shown = cur[cur["x"].between(play.los + window[0] + 0.4, play.los + window[1] - 0.4)
+                & cur["y"].between(ylo + 0.4, yhi - 0.4)]
+    ids = set(shown["_id"])
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(ids) & (df["side"] != "ball")]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=0.9, alpha=0.4, zorder=3)
+    ppy = fld.pts_per_yard()
+    for _, rr in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(rr["x"], rr["y"]))
+        if rr["side"] == "ball":
+            ax.add_patch(Ellipse((x, y + 0.45), 0.7, 0.42, fc=style.BALL, ec="white", lw=0.5, zorder=9))
+            continue
+        lab = str(rr.get("label", "") or "")
+        if rr["side"] == "off":
+            ax.add_patch(Circle((x, y), MARK_R, fc=style.OFFENSE, ec="white", lw=0.6, zorder=8))
+            tc = "white"
+        else:
+            ax.add_patch(RegularPolygon((x, y), 4, radius=MARK_R * 1.3, orientation=np.pi / 4,
+                                        fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0, zorder=8))
+            tc = style.INK
+        fs = max(4.0, min(8.0, ppy * (0.8 if len(lab) <= 1 else 0.6)))
+        ax.text(x, y, lab, ha="center", va="center", fontsize=fs, color=tc, fontweight="bold", zorder=10)
+    for key, col in rings:
+        rr = cur[cur["displayName"] == key].iloc[0]
+        x, y = fld.xy(rr["x"], rr["y"])
+        ax.add_patch(Circle((float(x), float(y)), 1.05, fc="none", ec=col, lw=1.7, zorder=7))
+    # once a pass is in the air: the throw as a dashed brown arrow, and a brown ring on the target
+    passes = [(k, tt) for kind, k, tt in play.ball_events if kind == "pass"]
+    if passes and t >= passes[0][1] + 0.05:
+        target, t_rel = passes[0]
+        b = df[(df["side"] == "ball") & (df["time"] >= t_rel - 1e-6) & (df["time"] <= t + 1e-6)]
+        if len(b) >= 2:
+            xs, ys = fld.xy(b["x"].values, b["y"].values)
+            ax.plot(xs[:-1], ys[:-1], color=style.BALL, lw=1.3, ls=(0, (3, 2)), zorder=8.5)
+            ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=8,
+                                         color=style.BALL, lw=1.3, zorder=8.5))
+        rr = cur[cur["displayName"] == target].iloc[0]
+        x, y = fld.xy(rr["x"], rr["y"])
+        ax.add_patch(Circle((float(x), float(y)), 1.05, fc="none", ec=style.BALL, lw=1.5, zorder=7))
+    return fld
+
+
+def strip(play, times, notes, lateral, window, ncols=2, rings=(), width_in=6.4):
+    """Numbered, captioned frame strip: the PDF stand-in for the video."""
+    df = tracking(play)
+    nrows = int(np.ceil(len(times) / ncols))
+    pw = width_in / ncols
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False,
+                             figsize=(width_in, nrows * (pw * span_d / span_w + 0.55)))
+    for ax in axes.flat[len(times):]:
+        ax.axis("off")
+    for i, (ax, t) in enumerate(zip(axes.flat, times)):
+        panel(ax, play, df, t, lateral, window, rings)
+        ax.set_title(f"{i + 1}.  " + ("snap" if abs(t) < 1e-6 else f"{t:+.1f} s"), fontsize=8.5,
+                     color=style.INK_2, loc="left")
+        ax.text(0.5, -0.03, notes[i], transform=ax.transAxes, ha="center", va="top", fontsize=7.4,
+                color=style.INK, linespacing=1.15)
+    fig.tight_layout(h_pad=1.6, w_pad=0.6)
+    return fig
+
+
+def video(play, times, notes, lateral, window, rings=(), width_in=5.6):
+    """Web version of the strip: every frame, with the strip's notes as running captions."""
+    from matplotlib import animation
+    from IPython.display import HTML, display
+    df = tracking(play)
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w + 0.4))
+    tmap = df.groupby("frameId")["time"].first()
+
+    def update(fid):
+        ax.clear()
+        t = float(tmap[fid])
+        panel(ax, play, df, t, lateral, window, rings)
+        cur = [n.replace("\n", " ") for tt, n in zip(times, notes) if tt <= t + 1e-6]
+        ax.set_title(("snap" if abs(t) < 0.05 else f"{t:+.1f} s") + (("   " + cur[-1]) if cur else ""),
+                     fontsize=8.5, color=style.INK, loc="left")
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=sorted(df["frameId"].unique()), interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def animation_or_strip(play, times, notes, lateral, window, rings=(), ncols=2):
+    """Video on the website; a numbered, captioned frame strip in the PDF."""
+    if pdf_build():
+        strip(play, times, notes, lateral, window, ncols=ncols, rings=rings)
+        plt.show()
+    else:
+        video(play, times, notes, lateral, window, rings=rings)
+
+
+def canvas(fig):
+    """A full-figure axes in 0-100 x 0-100 units for schematic drawings."""
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, 100); ax.set_ylim(0, 100); ax.axis("off")
+    return ax
+
+
+def box(ax, x, y, w, h, title, body="", fc=style.SURFACE, ec=style.BASELINE, lw=1.1, tsize=8.0, bsize=6.7,
+        tcolor=style.INK, gap=3.6):
+    """A rounded box centred at (x, y) with a bold title and a smaller body."""
+    ax.add_patch(FancyBboxPatch((x - w / 2, y - h / 2), w, h, boxstyle="round,pad=0.3,rounding_size=1.2",
+                                fc=fc, ec=ec, lw=lw, zorder=2))
+    ax.text(x - w / 2 + 1.2, y + h / 2 - 1.3, title, ha="left", va="top", fontsize=tsize, fontweight="bold",
+            color=tcolor, zorder=3)
+    if body:
+        ax.text(x - w / 2 + 1.2, y + h / 2 - 1.3 - gap, body, ha="left", va="top", fontsize=bsize,
+                color=style.INK_2, zorder=3, linespacing=1.22)
+
+
+def arrow(ax, x0, y0, x1, y1, color=style.INK_2, lw=1.2, rad=0.0, text=None, tx=None, ty=None, tsize=6.4):
+    ax.add_patch(FancyArrowPatch((x0, y0), (x1, y1), arrowstyle="-|>", mutation_scale=10, color=color, lw=lw,
+                                 connectionstyle=f"arc3,rad={rad}", zorder=1))
+    if text:
+        ax.text(tx if tx is not None else (x0 + x1) / 2, ty if ty is not None else (y0 + y1) / 2, text,
+                fontsize=tsize, color=color, ha="center", va="center", style="italic", zorder=3,
+                bbox=dict(boxstyle="round,pad=0.15", fc=style.SURFACE, ec="none"))
+```
+
+```{python}
+#| code-summary: "Show the Python (load the data: tempo, halftime splits, Super Bowl LVII, the Kelly Eagles)"
+#| output: false
+from gridiron.data import pbp, nfl
+
+# ---------- tempo: game-clock seconds between consecutive snaps when the clock never stopped
+TCOLS = ["season", "season_type", "game_id", "play_id", "posteam", "play_type", "down", "drive", "qtr",
+         "game_seconds_remaining", "half_seconds_remaining", "wp", "no_huddle", "complete_pass", "out_of_bounds",
+         "penalty", "timeout", "touchdown", "fumble_lost", "qb_spike", "epa", "success", "ydstogo"]
+
+
+def snap_gaps(seasons):
+    """Seconds of game clock from one snap to the next, on the same drive, when the clock kept running in
+    between: the earlier play was a run or a completed pass that stayed in bounds, with no penalty, timeout,
+    score, turnover or spike and nothing else logged between the two snaps; both snaps in a neutral game
+    state (win probability 20-80%) and more than 2:30 before the end of the half."""
+    d = pbp(seasons, columns=TCOLS)
+    d = d[d["season_type"] == "REG"].sort_values(["game_id", "play_id"]).copy()
+    d["is_snap"] = d["play_type"].isin(["pass", "run"]) & d["down"].notna()
+    for c in ("complete_pass", "out_of_bounds", "penalty", "timeout", "touchdown", "fumble_lost", "qb_spike"):
+        d[c] = d[c].fillna(0)
+    prev = d.groupby("game_id").shift(1)
+    ok = (d["is_snap"] & prev["is_snap"].fillna(False).astype(bool) & (prev["posteam"] == d["posteam"])
+          & (prev["drive"] == d["drive"]) & (prev["qtr"] == d["qtr"])
+          & ((prev["play_type"] == "run") | (prev["complete_pass"] == 1))
+          & (prev[["out_of_bounds", "penalty", "timeout", "touchdown", "fumble_lost", "qb_spike"]].sum(axis=1) == 0)
+          & (prev["half_seconds_remaining"] > 150) & prev["wp"].between(0.2, 0.8) & d["wp"].between(0.2, 0.8))
+    out = d[ok].copy()
+    out["gap"] = prev.loc[ok, "game_seconds_remaining"] - out["game_seconds_remaining"]
+    return out[out["gap"].between(5, 60)]
+
+
+GAPS = snap_gaps(range(2006, 2026))
+G25 = GAPS[GAPS["season"] == 2025]
+TEAM25 = (G25.groupby("posteam")["gap"]
+          .agg(median="median", mean="mean", q1=lambda v: v.quantile(0.25), q3=lambda v: v.quantile(0.75),
+               fast=lambda v: (v <= 30).mean(), n="size")
+          .sort_values(["mean"]))
+TS = GAPS.groupby(["season", "posteam"])["gap"].agg(mean="mean", fast=lambda v: (v <= 30).mean()).reset_index()
+FASTEST = TS.loc[TS.groupby("season")["mean"].idxmin()].set_index("season")
+NH25 = G25.groupby("no_huddle")["gap"].median()
+WAS_NH = G25.loc[G25["posteam"] == "WAS", "no_huddle"].mean()
+NH_Q05 = GAPS.loc[GAPS["no_huddle"] == 1, "gap"].quantile(0.05)      # the fastest no-huddle snaps
+
+# ---------- does tempo work? fast (within 30 s) vs slower running-clock snaps, 2006-2025
+GAPS["fast"] = GAPS["gap"] <= 30
+YEAR = GAPS.groupby("season").agg(fast=("fast", "mean"), nh=("no_huddle", "mean"))
+RAW = GAPS.groupby("fast")[["epa", "success"]].mean()
+GAPS["dist"] = pd.cut(GAPS["ydstogo"], [0, 2, 5, 9, 10, 15, 99])
+
+
+def same_situation_edge(col):
+    """Fast minus slower, compared within the same down and distance band, weighted like the fast snaps."""
+    cell = GAPS.groupby(["down", "dist", "fast"], observed=True)[col].mean().unstack().dropna()
+    w = GAPS[GAPS["fast"]].groupby(["down", "dist"], observed=True).size().reindex(cell.index)
+    return float(((cell[True] - cell[False]) * w).sum() / w.sum())
+
+
+EDGE_EPA, EDGE_SR = same_situation_edge("epa"), same_situation_edge("success")
+
+# ---------- too many men: defensive fouls by huddle vs no-huddle snaps, 2016-2025 (outside the last 2:00)
+PCOLS = ["season", "season_type", "play_type", "down", "half_seconds_remaining", "penalty_type", "no_huddle"]
+pp = pbp(range(2016, 2026), columns=PCOLS)
+pp = pp[(pp["season_type"] == "REG") & (pp["half_seconds_remaining"] > 120) & pp["down"].notna()
+        & pp["play_type"].isin(["pass", "run", "no_play"])]
+pp["tmm"] = pp["penalty_type"].fillna("") == "Defensive Too Many Men on Field"
+TMM_PER_SEASON = pp["tmm"].sum() / pp["season"].nunique()
+TMM_RATE = 1000 * pp.groupby(pp["no_huddle"].fillna(0))["tmm"].mean()    # per 1,000 snaps
+
+# ---------- defensive-line rotation: share of defensive snaps per lineman, 2025 (PFR snap counts via nflverse)
+sc = nfl().load_snap_counts([2025]).to_pandas()
+dl = sc[(sc["game_type"] == "REG") & sc["position"].isin(["DE", "DT", "NT", "DL"]) & (sc["defense_snaps"] > 0)]
+dlp = dl.groupby("pfr_player_id")["defense_pct"].agg(["size", "mean"])
+dlp = dlp[dlp["size"] >= 10]
+DL_MED, DL_80 = dlp["mean"].median(), (dlp["mean"] >= 0.8).mean()
+DL_USED = dl.groupby(["game_id", "team"]).size().median()
+
+# ---------- the Kelly Eagles: plays run and faced, 2013-2015
+KCOLS = ["season", "season_type", "posteam", "defteam", "rush", "pass", "two_point_attempt", "epa"]
+k = pbp([2013, 2014, 2015], columns=KCOLS)
+k = k[(k["season_type"] == "REG") & ((k["rush"] == 1) | (k["pass"] == 1)) & (k["two_point_attempt"] != 1)]
+KELLY = pd.DataFrame({
+    "off_plays": k.groupby(["season", "posteam"]).size(),
+    "def_faced": k.groupby(["season", "defteam"]).size().rename_axis(["season", "posteam"]),
+    "epa": k.groupby(["season", "posteam"])["epa"].mean()})
+KELLY["faced_rank"] = KELLY.groupby("season")["def_faced"].rank(ascending=False)
+KELLY["epa_rank"] = KELLY.groupby("season")["epa"].rank(ascending=False)
+PHI_K = KELLY.xs("PHI", level="posteam")
+FACED_MED = KELLY.groupby("season")["def_faced"].median()
+
+# ---------- halftime: offense EPA per play by half, team-games 2006-2025
+HCOLS = ["season", "season_type", "game_id", "play_id", "posteam", "defteam", "home_team", "away_team",
+         "play_type", "down", "qtr", "game_half", "half_seconds_remaining", "wp", "epa",
+         "home_coach", "away_coach", "total_home_score", "total_away_score"]
+h = pbp(range(2006, 2026), columns=HCOLS)
+h = h[h["season_type"] == "REG"]
+snaps = h[h["play_type"].isin(["pass", "run"]) & h["down"].notna() & h["game_half"].isin(["Half1", "Half2"])]
+NEU = snaps[(snaps["half_seconds_remaining"] > 120) & snaps["wp"].between(0.1, 0.9)]
+LEAGUE_HALF = NEU.groupby("game_half")["epa"].mean()
+tg = NEU.groupby(["season", "game_id", "posteam", "game_half"])["epa"].agg(["mean", "size"]).unstack("game_half")
+tg = tg[(tg[("size", "Half1")] >= 15) & (tg[("size", "Half2")] >= 10)]
+TG = pd.DataFrame({"h1": tg[("mean", "Half1")], "h2": tg[("mean", "Half2")]}).reset_index()
+TG["decile"] = pd.qcut(TG["h1"], 10, labels=False)
+DEC = TG.groupby("decile")[["h1", "h2"]].mean()
+R_HALVES = TG["h1"].corr(TG["h2"])
+BOTTOM = TG[TG["decile"] <= 1][["h1", "h2"]].mean()      # the worst fifth of first halves
+
+
+def persistence(side):
+    """Team-season (second half minus first half) EPA per play, and its correlation with the next season."""
+    t = NEU.groupby(["season", side, "game_half"])["epa"].mean().unstack()
+    t["diff"] = t["Half2"] - t["Half1"]
+    t["all"] = NEU.groupby(["season", side])["epa"].mean()
+    a = t.reset_index().rename(columns={side: "team"})
+    b = a.copy(); b["season"] -= 1
+    return a.merge(b, on=["season", "team"], suffixes=("", "_next"))
+
+
+PO, PD = persistence("posteam"), persistence("defteam")
+R_DIFF_O, R_ALL_O = PO["diff"].corr(PO["diff_next"]), PO["all"].corr(PO["all_next"])
+R_DIFF_D, R_ALL_D = PD["diff"].corr(PD["diff_next"]), PD["all"].corr(PD["all_next"])
+
+# ---------- points by half and head coach (regulation only)
+reg = h[h["qtr"] <= 4].sort_values(["game_id", "play_id"])
+fin = reg.groupby("game_id").agg(season=("season", "first"), home=("home_team", "first"), away=("away_team", "first"),
+                                 hc=("home_coach", "first"), ac=("away_coach", "first"),
+                                 fh=("total_home_score", "last"), fa=("total_away_score", "last"))
+half = reg[reg["qtr"] <= 2].groupby("game_id").agg(hh=("total_home_score", "last"), ha=("total_away_score", "last"))
+g = fin.join(half)
+PTS = pd.concat([
+    pd.DataFrame({"team": g["home"], "coach": g["hc"], "h1": g["hh"] - g["ha"], "h2": (g["fh"] - g["fa"]) - (g["hh"] - g["ha"])}),
+    pd.DataFrame({"team": g["away"], "coach": g["ac"], "h1": g["ha"] - g["hh"], "h2": (g["fa"] - g["fh"]) - (g["ha"] - g["hh"])}),
+]).reset_index()
+COACH = PTS.groupby("coach").agg(n=("h1", "size"), h1=("h1", "mean"), h2=("h2", "mean"))
+COACH = COACH[COACH["n"] >= 100].copy()
+COACH["swing"] = COACH["h2"] - COACH["h1"]
+PTS["diff"] = PTS["h2"] - PTS["h1"]
+SWING_SE = PTS.groupby("coach")["diff"].std().reindex(COACH.index) / np.sqrt(COACH["n"])
+
+# score effects: a team's second-half margin against what its quality predicts. Quality = the team's average
+# first-half margin in its other games that season minus its opponent's (first halves start tied, so score
+# effects barely touch them); the prediction is the league-wide fit of second-half margin on that quality.
+opp = pd.concat([pd.DataFrame({"game_id": g.index.values, "team": g["home"].values, "opp": g["away"].values}),
+                 pd.DataFrame({"game_id": g.index.values, "team": g["away"].values, "opp": g["home"].values})],
+                ignore_index=True)
+SE_ = PTS.merge(opp, on=["game_id", "team"])
+SE_["season"] = SE_["game_id"].str[:4].astype(int)
+tot = PTS.assign(season=PTS["game_id"].str[:4].astype(int)).groupby(["season", "team"])["h1"].agg(["sum", "size"])
+SE_ = SE_.join(tot, on=["season", "team"]).join(tot.rename(columns={"sum": "osum", "size": "osize"}),
+                                                 on=["season", "opp"])
+SE_["quality"] = (SE_["sum"] - SE_["h1"]) / (SE_["size"] - 1) - (SE_["osum"] + SE_["h1"]) / (SE_["osize"] - 1)
+SLOPE = np.polyfit(SE_["quality"], SE_["h2"], 1)[0]
+SE_["pred"] = SLOPE * SE_["quality"]
+SE_["bin"] = pd.cut(SE_["h1"], [-60, -14, -1, 0, 13, 60], labels=["trail 14+", "trail 1-13", "tied", "lead 1-13", "lead 14+"])
+SCORE = SE_.groupby("bin", observed=True)[["pred", "h2"]].mean().drop("tied")
+SCORE["n"] = SE_.groupby("bin", observed=True).size().drop("tied")
+SE_["effect"] = SE_["bin"].map((SCORE["h2"] - SCORE["pred"]).to_dict()).astype(float).fillna(0.0)
+COACH["score_eff"] = SE_.groupby("coach")["effect"].mean().reindex(COACH.index)
+
+# ---------- Super Bowl LVII (2022 season): each offense by half, with FTN motion charting
+sb = pbp([2022])
+sb = sb[(sb["game_id"] == "2022_22_KC_PHI") & sb["play_type"].isin(["pass", "run"]) & sb["down"].notna()]
+ftn = nfl().load_ftn_charting([2022]).to_pandas()[["nflverse_game_id", "nflverse_play_id", "is_motion"]]
+sb = sb.merge(ftn, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "nflverse_play_id"], how="left")
+sb22 = pbp([2022], columns=["season_type", "game_id", "defteam", "sack", "play_type", "qtr", "posteam"])
+PHI_SACKS22 = sb22.loc[(sb22["season_type"] == "REG") & (sb22["defteam"] == "PHI"), "sack"].sum()
+SACK_LEAD22 = sb22[sb22["season_type"] == "REG"].groupby("defteam")["sack"].sum().idxmax()
+SB_SACKS = sb22.loc[(sb22["game_id"] == "2022_22_KC_PHI") & (sb22["defteam"] == "PHI"), "sack"].sum()
+SB_KO3 = sb22[(sb22["game_id"] == "2022_22_KC_PHI") & (sb22["play_type"] == "kickoff") & (sb22["qtr"] == 3)]
+SB_H2_RECEIVER = SB_KO3["posteam"].iloc[0]
+SB = sb.groupby(["posteam", "game_half"]).agg(snaps=("epa", "size"), epa=("epa", "mean"),
+                                              rush_yds=("rushing_yards", "sum"), pass_rate=("pass", "mean"),
+                                              motion=("is_motion", lambda v: v.astype(float).mean()))
+
+
+def pct(x, nd=0):
+    return f"{100 * x:.{nd}f}%"
+```
+
+```{python}
+#| echo: false
+#| output: false
+# guard the numbers quoted in the text against a data refresh
+assert TEAM25.index[0] == "NO" and 33.5 < TEAM25["mean"].iloc[0] < 35.0
+assert 38.0 < TEAM25["mean"].median() < 39.6 and TEAM25["mean"].iloc[-1] > 39.8
+assert NH25.loc[1.0] <= 32 and NH25.loc[0.0] >= 39
+assert TEAM25.loc["WAS", "median"] >= 38.5 and WAS_NH > 0.5
+assert all(FASTEST.loc[s, "posteam"] == "PHI" for s in (2013, 2014, 2015)) and FASTEST.loc[2016, "posteam"] == "SF"
+assert all(28.0 < FASTEST.loc[s, "mean"] < 30.0 for s in (2013, 2014, 2015))
+assert all(0.55 < FASTEST.loc[s, "fast"] < 0.65 for s in (2013, 2014, 2015))
+assert FASTEST.loc[2012, "posteam"] == "NE" and FASTEST.loc[2025, "posteam"] == "NO"
+assert (PHI_K["faced_rank"] == 1).all() and list(PHI_K["epa_rank"]) == [4, 14, 22]
+assert abs(LEAGUE_HALF["Half1"] - LEAGUE_HALF["Half2"]) < 0.01
+assert 0.04 < R_HALVES < 0.12 and BOTTOM["h2"] - BOTTOM["h1"] > 0.25
+assert abs(R_DIFF_O) < 0.06 and abs(R_DIFF_D) < 0.09 and R_ALL_O > 0.35 and R_ALL_D > 0.18
+assert 30 <= len(COACH) <= 40 and COACH.loc["Bill Belichick", "swing"] < 0 and COACH.loc["Andy Reid", "swing"] < 0
+assert COACH["swing"].abs().max() < 3.0 and (COACH["swing"].abs() < 2 * SWING_SE + 0.01).mean() > 0.85
+assert SB.loc[("KC", "Half1"), "snaps"] == 20 and SB.loc[("PHI", "Half1"), "snaps"] == 44
+assert SB.loc[("KC", "Half2"), "snaps"] == 31 and SB.loc[("KC", "Half2"), "rush_yds"] > 3 * SB.loc[("KC", "Half1"), "rush_yds"]
+assert abs(SB.loc[("KC", "Half2"), "motion"] - SB.loc[("KC", "Half1"), "motion"]) < 0.08
+assert PHI_SACKS22 == 70 and SACK_LEAD22 == "PHI" and SB_SACKS == 0 and SB_H2_RECEIVER == "KC"
+assert SB.loc[("PHI", "Half2"), "snaps"] == 28 and SB.loc[("PHI", "Half2"), "epa"] > SB.loc[("PHI", "Half1"), "epa"]
+assert 19 <= NH_Q05 <= 23
+assert YEAR["fast"].idxmax() in (2014, 2015) and YEAR.loc[2025, "fast"] < YEAR.loc[2014, "fast"] - 0.05
+assert 0.03 < RAW.loc[True, "epa"] - RAW.loc[False, "epa"] < 0.06 and 0.02 < EDGE_EPA < 0.045 and 0.01 < EDGE_SR < 0.025
+assert 20 < TMM_PER_SEASON < 30 and TMM_RATE.loc[1.0] > 3 * TMM_RATE.loc[0.0]
+assert 0.42 < DL_MED < 0.52 and DL_80 < 0.06 and DL_USED >= 6
+assert all(0.5 < abs(SCORE.loc[b, "h2"] - SCORE.loc[b, "pred"]) < 1.1 for b in SCORE.index)
+assert (SCORE.loc["lead 1-13", "h2"] < SCORE.loc["lead 1-13", "pred"]) and (SCORE.loc["lead 14+", "h2"] < SCORE.loc["lead 14+", "pred"])
+assert COACH["score_eff"].abs().max() < 0.35 and COACH.loc["Andy Reid", "score_eff"] < 0
+assert 30 <= (COACH["swing"].abs() < 2 * SWING_SE).sum() <= 34 and abs(COACH.loc["Andy Reid", "swing"]) > 2 * SWING_SE["Andy Reid"]
+```
+
+Second quarter, first-and-10. The offense hits a 20-yard pass, and before the defense's linebackers
+have turned around, the quarterback is already standing behind the center, eight seconds after the
+tackle, waving his receivers into place. On the defensive sideline you can see the coordinator
+frantically waving a fresh defensive back *off*: too late to swap him in. The defense plays the next
+snap with the players who were too tired to cover the last one. Twenty minutes later, coming out of
+the locker room, the analyst says it: "This game will be decided by who makes the better halftime
+adjustments." What actually happens in those two moments? Who decides what, with what information,
+and in how much time? And is the halftime story even true?
+
+**You'll be able to:**
+
+- Describe what a staff can change between series and at halftime, who sees what (the
+  booth, the sideline, the tablets), and why most adjustments are re-rankings and rule tweaks rather
+  than new plays.
+- Tell tempo, the hurry-up and the no-huddle apart, explain how a fast offense uses the
+  substitution-matching rule to freeze a defense in the wrong personnel, and say how much going fast
+  actually gains.
+- Explain the sugar huddle and spot it on a broadcast.
+- Name the defense's answers to tempo (simplified calls, rule-based checks, versatile personnel) and
+  what each costs.
+- Follow a coordinator-versus-coordinator sequence, the "call after the call," across a game.
+- Judge a "halftime adjustments" claim against second-half data: regression to the mean, score
+  effects and possessions.
+
+::: {.callout-note title="You'll need"}
+- **[The Game Plan: A Week Inside an NFL Building](08-03-game-planning-week.qmd)**: the
+  [game plan](08-03-game-planning-week.qmd), the [opening script](08-03-game-planning-week.qmd) and the
+  [situational call sheet](08-03-game-planning-week.qmd), the week's menu that every in-game adjustment
+  chooses from. In one line: by Sunday the staff has cut the playbook to a few dozen plays, sorted by
+  situation, and practiced them; this chapter is about re-sorting that menu in real time.
+- Helpful too: the [play-caller](../../appendices/glossary.qmd#gl-play-caller), the
+  [no-huddle](../../appendices/glossary.qmd#gl-no-huddle), the 15-second radio cut-off and the staff map from
+  [What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd);
+  [substitution matching](../../appendices/glossary.qmd#gl-substitution-matching) from
+  [Personnel Groupings](../02-personnel-and-formations/02-01-personnel-groupings.qmd); the
+  [check-with-me](../../appendices/glossary.qmd#gl-check-with-me) from
+  [The Pre-Snap Phase](../01-foundations/01-05-the-pre-snap-phase.qmd);
+  [tendencies](../../appendices/glossary.qmd#gl-tendency) and sequencing from
+  [Constraint Theory](08-02-constraint-theory-and-sequencing.qmd); and
+  [EPA](../../appendices/glossary.qmd#gl-epa) and [success rate](../../appendices/glossary.qmd#gl-success-rate)
+  from [Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd).
+:::
+
+**How to read the diagrams.** Offense is blue circles, defense orange squares, and *left* and *right*
+are always the offense's. Q is the quarterback, R the running back, F a fullback, Y, U and (once) V the
+tight ends, X and Z the wide receivers and H a slot receiver; C is the center (the other linemen are
+unlabelled). On defense, E and T are the ends and tackles, S, M and W the Sam, Mike and Will linebackers,
+$ the nickel back, CB the cornerbacks and FS and SS the safeties. Solid arrows are routes and rushes,
+dashed arrows zone drops (usually with a shaded zone), and a dashed brown arrow is a throw, with a brown
+ring on its target. A **purple ring** marks a player to watch, and dashed brown rings mark defenders
+threatening to blitz. The blue line across the field is the line of scrimmage and the orange one the
+line to gain (the first-down line). The frame strips are simulated plays in Big Data Bowl format, not
+real tracking.
+
+## The game is re-planned every series
+
+Start with a fact that surprises most fans: once the game starts, nobody installs anything. The plays
+a team will run on Sunday were chosen, taught and practiced from Wednesday to Friday
+([The Game Plan](08-03-game-planning-week.qmd) walks through that week). What changes during a game is
+the *order* of the menu, the *rules* players use inside each play, and the play-caller's beliefs about
+what the opponent is doing. That is still a lot. It's the difference between a chef inventing a dish
+mid-service, which never happens, and a chef noticing that table six hates cilantro, which happens all
+night.
+
+Two kinds of information drive those changes, and they arrive in two places.
+
+**From above.** The [**coaching booth**](../../appendices/glossary.qmd#gl-coaching-booth) is the
+glassed-in coaches' room at press-box level, the place you met in
+[What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd). From up there you see all 22
+players at once, including the safeties 15 yards deep whom nobody on the sideline can see. Typically
+one coordinator, or an assistant who isn't calling plays, sits there with the quality control coaches and
+analysts. While the game goes on they keep running tallies: what coverage did the defense play against
+each personnel group, did the safety rotate toward the motion, which blitzes came on third down, which of
+our linemen is losing. The league even provides a booth dashboard
+for counting personnel groupings and play results in real time.[^booth] It is a coach with a
+spreadsheet and a headset, not a genius with a flash of insight.
+
+**From the sideline.** Since the 2014 season every team has had league-issued Microsoft Surface tablets
+on the sideline and in the booth. On them, within seconds of each snap, coaches and players get
+high-resolution still photos of the formation before the snap and the shape of the play just after
+it.[^surface] Under the league's equity rule each team may use only as many working tablets as its
+opponent has, so a failure on one side shuts down the same number on the other; the same rule switches
+off a team's coach-to-player headsets if the other team's fail
+([What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd)).[^equity] The pictures are
+stills, not video; the point is to answer a specific question ("where was the safety when you released?")
+with a picture instead of an argument.
+
+```{python}
+#| label: fig-adjustment-loop
+#| fig-cap: "Two windows for adjusting a game plan (illustrative; staffs differ). Top: between series, while the other unit is on the field, the booth's tallies and the tablet photos meet the coaches and players on the bench, and the output is small: a rule, an alignment, a protection call, a re-ranked call sheet. Bottom: the 13-minute halftime, roughly how a staff spends it. The bars are a typical order, not a timetable, and the right-hand box is the honest list of what can change."
+fig = plt.figure(figsize=(6.6, 4.5))
+ax = canvas(fig)
+ax.set_ylim(9, 100)
+ax.text(1.5, 97.5, "Between series (the other unit is on the field: a few minutes to a quarter of an hour)",
+        fontsize=8.6, fontweight="bold", color=style.INK, va="top")
+box(ax, 13.5, 78, 24, 19, "Booth (upstairs)", "sees all 22 players\nQC coaches, analysts:\ntallies of coverage,\npressure, personnel,\nwho is losing his block",
+    fc="#e6e4ef")
+box(ax, 13.5, 53, 24, 16, "Tablets", "still photos of every\nsnap, before and just\nafter the snap,\nwithin seconds", fc="#e6e4ef")
+box(ax, 47.5, 66, 27, 27, "Sideline / the bench", "coordinator with the QB\n(or the defensive signal-\ncaller); position coaches\nwith their groups, each with\na tablet: 'where was the\nsafety?' 'who had the\nhook zone?'", fc="#e3ecd7")
+box(ax, 84, 66, 29, 27, "Output: fixes, not new plays", "• a rule: 'take the inside\n   release away from him'\n• an alignment or leverage\n• a protection call\n• re-rank the call sheet:\n   scratch, promote, save one", fc=style.OFFENSE_TINT, ec=style.OFFENSE)
+arrow(ax, 26, 78, 33.6, 72, text="headset", tx=29.5, ty=80.0)
+arrow(ax, 26, 53, 33.6, 60, text="photos", tx=29.5, ty=51.5)
+arrow(ax, 61.4, 66, 69.1, 66)
+ax.text(1.5, 33.5, "Halftime (13 minutes by rule)", fontsize=8.6, fontweight="bold", color=style.INK, va="top")
+segs = [("walk in;\ntreatment", 2.0, "#e3ecd7"), ("coordinators meet;\nbooth comes down", 3.4, "#e6e4ef"),
+        ("units and position\ngroups: photos,\nwhiteboard", 3.6, "#e3ecd7"), ("head\ncoach", 1.4, "#f3ead2"),
+        ("back out;\nwarm up", 2.6, "#e3ecd7")]
+x0, scale, yb = 1.5, 4.1, 18.5
+for txt, mins, fc in segs:
+    ax.add_patch(Rectangle((x0, yb), mins * scale, 10, fc=fc, ec=style.SURFACE, lw=1.6, zorder=2))
+    ax.text(x0 + mins * scale / 2, yb + 5, txt, ha="center", va="center", fontsize=6.3, color=style.INK, zorder=3,
+            linespacing=1.15)
+    x0 += mins * scale
+for m in range(0, 14, 1):
+    xx = 1.5 + m * scale
+    ax.plot([xx, xx], [yb - 1.2, yb], color=style.BASELINE, lw=0.7)
+    if m % 2 == 0 or m == 13:
+        ax.text(xx, yb - 2.6, f"{m}", fontsize=6.2, color=style.MUTED, ha="center", va="top")
+ax.text(1.5 + 6.5 * scale, yb - 7.2, "minutes after the half ends", fontsize=6.4, color=style.MUTED, ha="center")
+box(ax, 81.5, 24.5, 34, 16, "Can change / can't", "can: the call-sheet order,\npersonnel use, protection rules,\ncoverage mix, who covers whom\ncan't: a play nobody practiced",
+    fc=style.SURFACE, ec=GREEN, bsize=6.4)
+plt.show()
+```
+
+The loop in @fig-adjustment-loop runs every time the offense or defense comes off the field. A typical
+exchange takes a few minutes and sounds mundane. The booth says the corner is playing inside leverage on
+the slot every time it sees trips; the receivers coach shows the slot receiver the photo and tells him to
+take the outside release; the coordinator moves a play that attacks outside leverage up his list for the
+next series. On defense: the booth notices the offense has run the same crossing concept against man
+coverage three times, so the coordinator reminds two defenders of the switch rule they practiced for
+it on Thursday.
+
+::: {.callout-important title="Why it exists: the booth and the tablets"}
+Every play has two halves of information: what the defense *showed* before the snap and what it
+*did* after. Players see their own patch of grass; the sideline sees helmets. The booth and the
+tablets exist to give the people making the next decision the whole picture, fast. The cost is
+attention and trust. A coordinator who tries to absorb everything the booth sees stops thinking about
+the next call, so good staffs filter hard: the booth reports only what the play-caller has asked it to
+look for, plus anything that has changed. Which coordinator sits upstairs varies by team, which you can
+usually spot on a broadcast by who is shown wearing a headset in the press box.
+:::
+
+::: {.callout-note title="Madden vs. real life"}
+In a video game, when a play stops working you scroll to a different one: the whole playbook is always
+available. A real team can only run what it practiced that week, and a play that hasn't been repped
+against the opponent's looks is a play somebody will run wrong. So "adjusting" in the NFL mostly means
+choosing differently from a small menu, and changing small rules inside plays (a protection that slides
+the other way, a corner who stops pressing a fast receiver), not drawing up something new in the dirt.
+Coaches do occasionally scribble a wrinkle on a whiteboard, but the bigger the change, the more likely it
+is to be run badly.
+:::
+
+## Halftime: thirteen minutes
+
+The NFL's halftime is 13 minutes by rule.[^halftime] For the staff, that is the one sustained block of the
+game in which every coach and player is in the same room, and the coaches from the booth come down to
+join them. A [**halftime adjustment**](../../appendices/glossary.qmd#gl-halftime-adjustment) is a change
+to the game plan made in that window.
+
+Thirteen minutes is less than it sounds. Players need to walk in, get treatment and use the
+bathroom; they have to be back on the field in time to warm up; and the head coach usually wants a minute
+with the whole team. What's left is a few minutes for coordinators to agree on what they've seen and a
+few minutes for each unit to hear the changes. That shapes what a halftime adjustment can be:
+
+- **Re-ranking the sheet.** The plays that worked move up, the ones that didn't get scratched, and the
+  constraint plays that the first half set up ([Constraint Theory](08-02-constraint-theory-and-sequencing.qmd))
+  get scheduled. This is the commonest and cheapest change.
+- **Changing who does what inside the plays already installed.** Sliding the protection toward a rusher
+  who is winning, keeping a tight end in to help a struggling tackle, moving the best corner onto the
+  receiver who is hurting you, playing more of the coverage that held up and less of the one that didn't.
+- **Changing the mix.** More of one personnel group, more motion, more runs, fewer blitzes. The plays are
+  the same; their frequencies change.
+- **Fixing a tell.** If the opponent seems to know what's coming, a staff looks for what's giving it away
+  (a back's alignment, a linebacker's stance) and changes it.
+- **Re-planning around injuries.** The most common adjustment of all is forced, and it doesn't wait for
+  halftime. When the left tackle or the nickel back goes down, the plan bends around his backup: a tight
+  end or back is assigned to help the backup tackle, the protection slides toward him, a backup corner
+  gets safety help or is hidden in a package, and plays the backup hasn't repped get scratched.
+
+Notice what's missing from the list: new plays. With five minutes per unit and no reps, there is no time
+to teach one.
+
+::: {.callout-caution title="Common misconception"}
+"The second half was won in the locker room." Sometimes the halftime change is real and visible: a
+team that was blitzed to pieces comes out keeping six in to protect, or a defense that was gashed by
+outside runs starts setting the edge differently. But a lot of what gets called a halftime adjustment
+is the scoreboard, the clock and plain luck moving in the other direction, as the last part of this
+chapter shows with data. When you hear the phrase, ask: what *specifically* changed?
+:::
+
+## Tempo: the clock between plays
+
+Now the other weapon a staff can use during a game: speed. When a play ends, the 40-second
+[play clock](../../appendices/glossary.qmd#gl-play-clock) starts, and the offense must snap the ball before
+it reaches zero.[^playclock] What it does with those 40 seconds is its
+[**tempo**](../../appendices/glossary.qmd#gl-tempo): how fast it gets to the line and snaps. Most
+offenses, most of the time, use almost all of it: huddle, line up, shift or motion, look at the defense,
+snap with a few seconds left. A
+[**hurry-up offense**](../../appendices/glossary.qmd#gl-hurry-up-offense) does the opposite and snaps as
+fast as it can. Every team hurries when it's short of time (the
+[two-minute drill](../10-situational-football/10-04-clock-and-game-management.qmd), the subject of
+[The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd)).
+The interesting question is the team that hurries when it *doesn't* have to.
+
+Three words get mixed up on broadcasts, so pin them down:
+
+- **No-huddle** is about *communication*: the call reaches the players at the line, by signals, words or
+  wristbands, instead of in a huddle ([What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd)).
+- **Tempo** is about *speed*: how much of the play clock the offense uses.
+- **Hurry-up** is tempo turned all the way up.
+
+A team can go no-huddle and still be slow (line up fast, then look at the defense and wait for the
+sideline), and a team can huddle and still be fast, as you'll see with the sugar huddle below.
+
+How fast do NFL offenses actually play? The play-by-play data doesn't record the play clock reliably, but it
+does record the game clock at every snap. On snaps where the clock kept running between plays (the earlier
+play was a run or a completed pass that stayed in bounds, with no penalty or timeout), the game-clock
+seconds between two snaps measure how long the play took plus how long the offense took to snap the next
+one.[^tempodata] A team that snaps with the play clock nearly expired lands around 40 seconds or a bit more;
+a true hurry-up offense lands around 25 to 30.
+
+```{python}
+#| label: fig-tempo-2025
+#| fig-cap: "Tempo by team, 2025 regular season: game-clock seconds from one snap to the next when the clock kept running between them, in neutral game states (win probability 20–80%) and outside the last 2:30 of each half. Dots are each team's average and bars span its middle half of snaps; the number on the right is the share of those snaps that came within 30 seconds. Lower is faster. The league is bunched between about 36 and 40 seconds; New Orleans (orange) was the one offense that regularly pushed the pace. Source: nflverse play-by-play."
+t = TEAM25.sort_values("mean", ascending=False)
+fig, ax = plt.subplots(figsize=(6.4, 5.5))
+ys = np.arange(len(t))
+hi = t.index == t["mean"].idxmin()
+ax.hlines(ys, t["q1"], t["q3"], color=np.where(hi, style.SERIES[1], style.BASELINE), lw=3.2, zorder=2)
+ax.scatter(t["mean"], ys, s=30, color=np.where(hi, style.SERIES[1], style.SERIES[0]), zorder=3)
+for y, (team, r_) in zip(ys, t.iterrows()):
+    ax.text(45.6, y, pct(r_["fast"]), fontsize=6.8, color=style.INK_2, va="center", ha="right")
+ax.text(45.6, len(t) + 0.2, "within\n30 s", fontsize=6.6, color=style.INK_2, ha="right", va="bottom", linespacing=1.0)
+ax.set_yticks(ys, t.index, fontsize=7)
+ax.set_xlim(28, 46)
+ax.set_ylim(-0.8, len(t) + 1.6)
+ax.axvline(TEAM25["mean"].median(), color=style.INK_2, lw=0.9, ls=(0, (3, 2)), zorder=1)
+ax.text(TEAM25["mean"].median() - 0.2, len(t) + 0.5, f"median team {TEAM25['mean'].median():.1f} s", fontsize=6.8,
+        color=style.INK_2, ha="right", va="bottom")
+ax.set_xlabel("Seconds of game clock between snaps (running clock): lower is faster", fontsize=8)
+ax.grid(axis="y", visible=False)
+ax.tick_params(axis="x", labelsize=7.5)
+plt.show()
+```
+
+@fig-tempo-2025 says something worth absorbing before any history: the modern NFL barely hurries in normal
+game situations. The median team averaged about `{python} f"{TEAM25['mean'].median():.0f}"` seconds between
+running-clock snaps, which means it snapped near the end of the play clock, and only one team,
+Kellen Moore's New Orleans Saints,[^moore] averaged under 35. No-huddle snaps were faster
+(a median of `{python} f"{NH25.loc[1.0]:.0f}"` seconds against `{python} f"{NH25.loc[0.0]:.0f}"`), but not
+all no-huddle teams are fast: Washington skipped the huddle on about `{python} pct(WAS_NH)` of these snaps
+and still had a median of `{python} f"{TEAM25.loc['WAS', 'median']:.0f}"` seconds. That is the
+"information" no-huddle you met in [What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd),
+and it has a recognizable rhythm: the offense hurries to the line, lets the defense settle into its look,
+and then everyone, quarterback included, turns to the sideline for the real call before snapping late
+in the clock.
+
+### Why go fast?
+
+If almost nobody does it, why does tempo matter? Because when a team turns it on, at the right moment,
+it attacks the defense in five ways.
+
+1. **Fatigue, and the end of the rotation.** Defensive linemen are the biggest men on the field and the
+   ones doing the most violent work, so defenses rotate them constantly. In 2025 the typical regular
+   defensive lineman played only about `{python} pct(DL_MED)` of his team's defensive snaps, only about
+   `{python} pct(DL_80)` averaged 80% or more, and a team used about
+   `{python} f"{DL_USED:.0f}"` linemen a game.[^dlsnaps] A rotation needs substitutions, and tempo takes
+   substitutions away (the next section shows how), so the same four men keep rushing. At a normal pace
+   a lineman gets 30 seconds or more between snaps (@fig-tempo-2025: even New Orleans averaged about 34
+   seconds from snap to snap, which is roughly 28 seconds of rest after a five- or six-second play). A true
+   hurry-up, snapping 20 to 25 seconds after the last snap, cuts that to 15 or 20 seconds. Tired linemen
+   stop winning their blocks and tired defensive backs stop running with receivers.
+2. **The substitution freeze.** The rules let the defense match the offense's personnel only when the
+   offense substitutes. If the offense keeps the same eleven and lines up quickly, the defense is stuck
+   with whoever is on the field. This is big enough to get its own section, next.
+3. **Simplifying the defense.** Disguise, pressure and rotation take time: the call has to be signalled
+   in, relayed, and then the defenders have to walk to their spots and hold a fake picture. Snap fast
+   and the defense has to line up where it will play, which means the quarterback sees the truth.
+4. **More snaps.** More plays per game means more chances for a better offense's edge to show up, the
+   same logic as a better poker player wanting to play more hands.
+5. **Beating the replay.** Scoring plays and turnovers are reviewed automatically, but most other close
+   calls, a catch that might have hit the ground or a spot just short of the line to gain, need a coach's
+   challenge, and a challenge must come before the next snap.[^replay] An offense that likes the call
+   on the field can sprint to the line and snap before the other sideline has seen a replay
+   ([Officiating, Replay, and the Rules of the Ball](../09-special-teams-and-the-rules-that-shape-strategy/09-04-officiating-replay-and-rules-of-the-ball.qmd)).
+
+And the costs, because there are always costs:
+
+- **Your own substitutions get harder.** Changing your own personnel invites the defense to change too and
+  slows you down, so a tempo offense tends to stay in one or two groups and needs players who can do
+  several jobs: a tight end who can block *and* run routes.
+- **Your own players get tired** too, and so do the call and the communication: a tempo offense needs
+  short calls, simple rules and a quarterback who can manage the line.
+- **The other team gets the ball back sooner.** A fast three-and-out (three plays, no first down, and a
+  punt) leaves your own defense on the field after barely sitting down. That last cost turns out to be
+  big, as the Eagles film room below shows.
+
+## The substitution freeze
+
+You met the rule that makes tempo a strategic weapon in
+[Personnel Groupings](../02-personnel-and-formations/02-01-personnel-groupings.qmd):
+[substitution matching](../../appendices/glossary.qmd#gl-substitution-matching). Before the two-minute
+warning, if the offense substitutes, the umpire stands over the ball and the offense may not snap until the
+defense has had a reasonable chance to substitute too.[^subrule] Here it is from the clock's point of view.
+
+Read the rule backwards and you have the tempo offense's loophole: the protection exists *only when the
+offense substitutes*. If the offense sends out the same eleven players, nobody stands over the ball, and
+the offense may snap as soon as it is set. The defense can still change players, but at its own risk, and
+the risk comes in two forms. If the defense has twelve men in its formation when the snap is about to
+come, the officials blow the play dead before it starts: five yards. If the twelfth man is still jogging
+off when the ball is snapped, the play runs, and afterwards the offense chooses between the result and
+the five yards. That "free play" is why quarterbacks hurry the snap when they see a defender running for
+the sideline. Defenses get caught often enough to make the threat real: from 2016 to 2025, outside the
+last two minutes of each half, defenses were flagged for too many men about
+`{python} f"{TMM_PER_SEASON:.0f}"` times a season, and the foul was about
+`{python} f"{TMM_RATE.loc[1.0] / TMM_RATE.loc[0.0]:.0f}"` times as common on no-huddle snaps as on snaps
+after a huddle.[^tmm] The result is the
+[**substitution freeze**](../../appendices/glossary.qmd#gl-substitution-freeze): by keeping its
+personnel and moving fast, the offense freezes the defense in whatever personnel it had on the field.
+
+Two things set the speed limit. The officials still have to spot the ball and the umpire has to get out of
+the way. Only about one no-huddle snap in twenty came within `{python} f"{NH_Q05:.0f}"` seconds of the
+previous snap in the running-clock data, and after a five- to seven-second play that is about 15 seconds
+from tackle to snap, however fast the offense wants to go. And the defense's call travels the same way the offense's does: the green dot's helmet
+radio goes silent at 15 seconds on the play clock, just as the quarterback's does. Against a huddling
+offense the defensive play-caller has twenty seconds or more to decide and signal; against tempo he has
+maybe eight, starting from the moment his personnel caller (the assistant who watches the offense's
+sideline and shouts the grouping) confirms that nobody came on.
+
+```{python}
+#| label: fig-sub-timeline
+#| fig-cap: "The substitution-matching rule along the 40-second play clock (illustrative timings). Top: when the offense substitutes, the umpire stands over the ball until the defense has had time to match, so the snap can't come early. Middle: with the same eleven players and no huddle, nothing holds the snap back. From the moment the offense is set (the earliest snap), the ball can be snapped at any time, so for the rest of the clock a defense that changes players risks being caught with twelve on the field; usually it stays put. Bottom: the sugar huddle, a quick huddle near the ball, then a sprint and a snap with about 30 seconds still on the clock, against the five or so of a team that huddles normally. The dashed line is the 15-second cut-off for both teams' helmet radios. Inside the last two minutes of each half the umpire does not hold the ball for the defense."
+fig, ax = plt.subplots(figsize=(6.6, 3.6))
+ax.set_xlim(41.5, -0.8); ax.set_ylim(-0.75, 4.3); ax.axis("off")
+OFF_T, DEF_T, HOLD = style.OFFENSE_TINT, style.DEFENSE_TINT, "#e9e7df"
+
+
+def seg(lane, a, b, text, fc, ec=style.SURFACE, fs=6.2, color=style.INK):
+    ax.add_patch(Rectangle((b, lane - 0.29), a - b, 0.58, fc=fc, ec=ec, lw=1.4, zorder=2))
+    ax.text((a + b) / 2, lane, text, ha="center", va="center", fontsize=fs, color=color, zorder=3, linespacing=1.05)
+
+
+def snap(lane, t, text="snap"):
+    ax.add_patch(Ellipse((t, lane), 1.0, 0.13, fc=style.BALL, ec="white", lw=0.7, zorder=4))
+    ax.text(t - 0.8, lane, text, ha="left", va="center", fontsize=6.4, color=style.BALL, fontweight="bold",
+            linespacing=1.0)
+
+
+lanes = {3.45: "1. Offense substitutes (huddle)", 2.1: "2. Same eleven, no huddle: the freeze",
+         0.75: "3. Sugar huddle"}
+for y, lab in lanes.items():
+    ax.text(41.2, y + 0.38, lab, fontsize=7.6, fontweight="bold", color=style.INK, ha="left", va="bottom")
+seg(3.45, 40, 32, "huddle; new players\nrun on", OFF_T)
+seg(3.45, 32, 24, "umpire over the ball;\ndefense matches", HOLD)
+seg(3.45, 24, 17, "break, line up", OFF_T)
+seg(3.45, 17, 6.5, "shift, motion, look, check", OFF_T)
+snap(3.45, 5.6)
+seg(2.1, 40, 33, "hustle to the\nline, set", OFF_T)
+seg(2.1, 33, 0.0, "", DEF_T)
+for xx_, txt_ in ((23.4, "from here on, the snap can\ncome at any moment"),
+                  (7.9, "a defense that swaps players now\nrisks 12 men on the field at the\nsnap, so it usually stays put")):
+    ax.text(xx_, 2.1, txt_, ha="center", va="center", fontsize=6.0, color=style.INK, zorder=3, linespacing=1.05)
+ax.add_patch(Ellipse((31.9, 2.1), 1.0, 0.13, fc=style.BALL, ec="white", lw=0.7, zorder=4))
+ax.text(31.9, 2.1 - 0.34, "earliest snap", fontsize=6.0, color=style.BALL, fontweight="bold", ha="center", va="top")
+seg(0.75, 40, 34.0, "quick huddle\nnear the ball", OFF_T)
+seg(0.75, 34.0, 31.2, "sprint,\nset", OFF_T)
+snap(0.75, 30.4, "snap with about\n:30 left")
+ax.plot([15, 15], [0.3, 4.0], color=style.INK_2, lw=1.0, ls=(0, (3, 2)), zorder=1)
+ax.text(15, 4.05, "radio off at :15", fontsize=6.6, color=style.INK_2, ha="center", va="bottom")
+for s_ in range(40, -1, -5):
+    ax.plot([s_, s_], [0.0, 0.12], color=style.BASELINE, lw=0.8)
+    ax.text(s_, -0.08, f":{s_:02d}", fontsize=6.4, color=style.MUTED, ha="center", va="top")
+ax.plot([40, 0], [0.06, 0.06], color=style.BASELINE, lw=0.8)
+ax.text(20, -0.45, "play clock (seconds left)", fontsize=6.8, color=style.MUTED, ha="center", va="top")
+plt.show()
+```
+
+@fig-sub-timeline also shows why matching matters so much to a defense in the first place. Modern defenses
+are built in packages: [base](../../appendices/glossary.qmd#gl-base-defense) personnel with three
+linebackers against heavy offenses, [nickel](../../appendices/glossary.qmd#gl-nickel) and
+[dime](../../appendices/glossary.qmd#gl-dime) with extra defensive backs against three and four receivers
+([A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)). Each package
+is right against some offensive groups and wrong against others. A tempo offense wants to pick the wrong
+one for the defense and then keep it on the field.
+
+The classic version is in @fig-freeze. The offense runs a play with two tight ends attached to the line,
+a run look, and the defense sensibly matches with base personnel. Then, with the same eleven players, the
+offense hurries to the line in a spread formation, both tight ends split out like slot receivers. The
+defense can't safely bring in its nickel back, so its base linebackers have to deal with a spread
+formation they weren't chosen for.
+
+```{python}
+#| label: fig-freeze
+#| fig-cap: "The substitution freeze. Left: on the previous snap the offense was in 12 personnel with both tight ends (Y, U) attached to the line, a run look, and the defense matched with base personnel (three linebackers, eight in the box). Right: the same 22 players a few seconds later. The offense kept its eleven and hurried to the line in a spread formation with both tight ends flexed into the slots. The defense can't safely substitute a nickel back, so the outside linebackers (purple rings) split the difference between the box and the tight ends. Now the box has five defenders against five linemen, and each tight end is covered, if at all, by a linebacker in space."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.8))
+LAT, WIN = (-16.2, 16.2), (-8.8, 14.6)
+p = Play(tight_12(), base_vs_tight(), los=40, to_go=None)
+f = draw(p, ax=axes[0], lateral=LAT, window=WIN)
+panel_title(axes[0], "Snap 1 (huddle): 12 personnel, base defense")
+say(f, p, -7.2, 9.0, "two TEs attached:\na run look", fontsize=6.4, color=style.OFFENSE_DARK)
+say(f, p, 11.0, -9.5, "base: 3 LBs,\n8 in the box", fontsize=6.4, color=style.DEFENSE_DARK)
+p = Play(flexed_12(), base_vs_flexed(True), los=40, to_go=None)
+p.highlight("SAM", "WILL", color=PURPLE)
+f = draw(p, ax=axes[1], lateral=LAT, window=WIN)
+panel_title(axes[1], "Snap 2 (no huddle): same 22 players")
+say(f, p, -7.2, 8.0, "TEs flexed out", fontsize=6.4, color=style.OFFENSE_DARK)
+say(f, p, 8.4, 0.4, "5 in the box", fontsize=6.4, color=style.DEFENSE_DARK)
+point_to(f, p, (12.6, -3.5), (4.6, -5.6), "LB on a TE\nin space?", color=style.DEFENSE_DARK, fontsize=6.4)
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+Notice what the freeze does *not* do. It doesn't guarantee a good play: base linebackers can cover tight
+ends, and many defenses have a call ready for exactly this. What it does is take away the defense's
+best tool, choosing the right players, and force the defense to solve the problem with alignment and
+rules, which is harder and more error-prone. And the offense gets to choose its moment: tempo is usually a
+change-up, turned on after a big gain (when the defense is tired and wants to substitute), or when the
+offense sees a personnel group it likes on the field.
+
+::: {.callout-important title="Why it exists: the freeze is the matching rule's other half"}
+The matching rule's bargain ([Personnel Groupings](../02-personnel-and-formations/02-01-personnel-groupings.qmd)
+explains why it exists) is that the offense chooses its players first and the defense gets a fair moment
+to answer. The freeze is that bargain run in reverse: give up your own right to substitute, and you take
+away the defense's protection. The league keeps adjusting the edges of the trade. Since 2025 officials have been told to close the
+substitution window if a defense deliberately slow-walks its substitutes, and an offense that fakes a
+substitution (a player jogging onto the field and back off to draw a defensive response) now opens a
+substitution window, with a warning first and a 15-yard penalty after that. The trigger was a Packers
+fake substitution in Week 3 of the 2025 season.[^zebras25]
+:::
+
+### The sugar huddle
+
+Between the huddle and the no-huddle sits a hybrid. In a
+[**sugar huddle**](../../appendices/glossary.qmd#gl-sugar-huddle) the offense huddles quickly, a few yards
+from the ball instead of the usual seven or eight, breaks almost at once, sprints to the line and snaps
+fast. It gets the huddle's strengths (everyone hears the whole call in one voice, the defense can't read
+signals) without giving the defense its usual time to substitute, signal its call and set a disguise.
+Offenses save it for moments when they have a call they love and want to run it before the defense can
+reorganize. Ben Johnson's Lions were known for it at key moments, and Chicago expected him to bring it
+with him when he became the Bears' head coach in 2025.[^sugarlions]
+
+You can tell it from a team that merely huddles a little closer by the clock. A normal huddle breaks with
+20-odd seconds left and the snap comes with about five on the play clock; after a sugar huddle the
+players are in their stances a second or two after it breaks and the snap comes with 25 to 30 seconds
+still showing (@fig-sub-timeline, bottom). The huddle itself forms *very* close to the ball, sometimes
+with the quarterback facing the line. On the defensive side, watch for defenders looking to the
+sideline for a call that hasn't arrived.
+
+## A short history of going fast
+
+Tempo has a richer history than most schemes, because every time an offense used it, the league and the
+defenses argued about whether it was fair.
+
+**Cincinnati, 1988.** The first NFL team to make the no-huddle a standard weapon was Sam Wyche's
+Bengals, who called it their "attack offense": shortened huddles very close to the line (what today
+would be called a sugar huddle), or none at all. In the 1988 playoffs the Seahawks answered it with a
+transparent tactic: their defensive tackle Joe Nash went down "injured" on third down after third down,
+stopping the clock so Seattle could bring in its nickel package. When Bills coach Marv Levy said he'd do
+the same in the AFC Championship Game, the league told Wyche, about two hours before kickoff, that the
+Bengals would be penalized 15 yards every time they ran the no-huddle. Wyche, a former NFL quarterback with
+a gambler's nerve, demanded the commissioner and threatened to tell the world after the game that the
+league's penalties had beaten him. The ruling was reversed within seconds, and Cincinnati won 21–10.[^wyche]
+
+**Buffalo, 1990.** The team that lost that game learned from it. The Bills built their own version, the
+*K-Gun*, a no-huddle offense built around three wide receivers and a tight end who could block
+and catch (Keith McKeller, whose nickname "Killer" gave the offense its K, by most accounts) and
+quarterback Jim Kelly calling the plays at the line.[^kgun] Under head coach Marv Levy and offensive
+coordinator Ted Marchibroda, Buffalo went 13–3 in 1990, led the league with 428 points, beat the Raiders
+51–3 in the AFC Championship Game, and went on to play in four straight Super Bowls.[^xxv] The K-Gun was
+tempo as a *system*: the same personnel all game, the defense frozen in whatever personnel it
+started the drive with, the quarterback choosing the play after seeing the defense.
+
+It also produced one of the most famous answers to tempo, which wasn't a defensive scheme at all. In
+Super Bowl XXV, the New York Giants kept the ball for 40 minutes and 33 seconds, a Super Bowl record, by
+running the ball and sustaining long drives, and won 20–19. The best defense against a fast offense is
+an offense that keeps it on the bench. (Bill Belichick's defensive plan for that game, which invited the
+Bills to run rather than throw, is drawn in
+[The Belichick Patriots](../12-case-studies/12-02-belichick-patriots-game-plan.qmd).)
+
+**Indianapolis and Denver, 2000s–2013.** Peyton Manning's no-huddle was the information version: line
+up early, read the defense, and change the play at the line while the defense, frozen in its personnel,
+could only disguise ([What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd) tells his
+"Omaha" story, and [The Pre-Snap Phase](../01-foundations/01-05-the-pre-snap-phase.qmd) his check-with-me
+system). When Manning wanted to, he could also go fast: his 2012 and 2013 Broncos were among the quickest
+teams in @fig-tempo-history, alongside the 2012 Patriots, who had turned their no-huddle into a true
+hurry-up.
+
+**Philadelphia, 2013.** Then came the most famous tempo experiment in NFL history.
+
+```{python}
+#| label: fig-tempo-history
+#| fig-cap: "Twenty seasons of tempo. Each dot is one team-season's average game-clock seconds between running-clock snaps in neutral situations (same filters as the previous figure); the axis is flipped, so faster is higher. Chip Kelly's teams (orange: the 2013–2015 Eagles and the 2016 49ers) were the fastest in the league in all four of his seasons, and the 2013–2015 Eagles were faster than any other team-season in these twenty years; the 2012 Patriots and the 2012–2013 Manning Broncos (blue) were the next fastest, just before and alongside him (the 2013 Bills, a grey dot near 31 seconds, matched them). The dashed line is the median team. Source: nflverse play-by-play, regular seasons 2006–2025."
+fig, ax = plt.subplots(figsize=(6.5, 3.4))
+kelly = {(2013, "PHI"), (2014, "PHI"), (2015, "PHI"), (2016, "SF")}
+pre = {(2012, "NE"), (2012, "DEN"), (2013, "DEN")}
+key = list(zip(TS["season"], TS["posteam"]))
+col = [style.SERIES[1] if kk in kelly else (style.SERIES[0] if kk in pre else style.BASELINE) for kk in key]
+size = [34 if (kk in kelly or kk in pre) else 12 for kk in key]
+rng = np.random.default_rng(4)
+jit = rng.uniform(-0.18, 0.18, len(TS))
+order = np.argsort([s > 12 for s in size])
+ax.scatter((TS["season"] + jit).values[order], TS["mean"].values[order], s=np.array(size)[order],
+           c=np.array(col)[order], zorder=3, lw=0)
+med = TS.groupby("season")["mean"].median()
+ax.plot(med.index, med.values, color=style.INK_2, lw=1.0, ls=(0, (3, 2)), zorder=2)
+ax.invert_yaxis()
+ax.set_ylim(43.5, 27.0)
+for (s, tm), txt, dx, dy in [((2013, "PHI"), "Kelly's Eagles\n2013–15", 0.0, -1.1), ((2016, "SF"), "Kelly's\n49ers 2016", 0.9, -0.2),
+                             ((2012, "NE"), "Patriots 2012", -0.3, -0.1), ((2012, "DEN"), "Broncos 2012–13", -0.3, 0.1)]:
+    y = TS.loc[(TS["season"] == s) & (TS["posteam"] == tm), "mean"].iloc[0]
+    ax.text(s + dx, y + dy, txt, fontsize=6.8, color=style.INK, ha="right" if dx < 0 else ("left" if dx > 0 else "center"),
+            va="center", linespacing=1.05)
+ax.text(2005.6, med.loc[2006] - 0.35, "median team", fontsize=6.8, color=style.INK_2, ha="left", va="bottom")
+ax.set_ylabel("Seconds between snaps (faster is higher)", fontsize=8)
+ax.set_xticks(range(2006, 2026, 2))
+ax.tick_params(labelsize=7.5)
+ax.grid(axis="x", visible=False)
+plt.show()
+```
+
+::: {.callout-note title="Film room: Philadelphia Eagles 2013 (Chip Kelly)"}
+Chip Kelly came to Philadelphia from Oregon, where as head coach from 2009 to 2012 his offense snapped
+the ball faster than almost anyone in college football, with sideline signal boards and a roster
+conditioned to play that way.[^kellybio] In his first NFL season the Eagles went 10–6, won the NFC East
+and led the league in rushing.[^phi13] They were also, by a distance, the fastest team in
+@fig-tempo-history: about `{python} f"{FASTEST.loc[2013, 'mean']:.1f}"` seconds between running-clock
+snaps, with `{python} pct(FASTEST.loc[2013, 'fast'])` of those snaps inside 30 seconds, when the
+median team was near 38. They stayed the fastest team in 2014 and 2015, and Kelly's 2016 49ers were the
+fastest team that year too.
+
+**What to notice:** the tempo and the scheme were one idea. The Eagles ran a small number of plays
+(inside zone and its read-option and bubble-screen packaged plays, the RPOs of
+[RPOs](../04-the-passing-game/04-06-rpos.qmd)) from a small number of formations and personnel groups,
+so they *could* snap fast and so the defense, frozen and tired, had to defend the same plays with the
+same players over and over. On a good day it looked like the defense was a step slow on everything.
+
+**Then notice the bill.** Kelly's defense faced more plays than any other defense in the league in all
+three of his Eagles seasons: `{python} f"{PHI_K.loc[2013, 'def_faced']:.0f}"` runs and passes in 2013,
+against a league median of `{python} f"{FACED_MED.loc[2013]:.0f}"`. A fast offense that goes three-and-out
+sends its own defense back out after a minute of rest. And the offense itself faded. The Eagles' offense ranked
+`{python} f"{PHI_K.loc[2013, 'epa_rank']:.0f}"`th in EPA per play in 2013,
+`{python} f"{PHI_K.loc[2014, 'epa_rank']:.0f}"`th in 2014 and `{python} f"{PHI_K.loc[2015, 'epa_rank']:.0f}"`nd
+in 2015.[^kellydata] Personnel changed a lot in those years (DeSean Jackson was released after 2013 and LeSean McCoy
+traded after 2014), so not all of the decline belongs to defenses catching up, but a scheme built on doing
+a few things fast is also a scheme that opponents get many reps against: by the third season, every
+defense on the schedule had a full year of film on the same handful of plays. The general tools a
+defense brings to that problem are the next section. Kelly was let go before the end of the 2015
+season.[^kellyexit]
+:::
+
+## How defenses answer tempo
+
+A defense facing tempo has a problem with three parts: it can't change players, it has little time to get
+a call in (maybe eight seconds instead of twenty), and it has no time to disguise. Its answers go after
+each part, and each has a price.
+
+**Substitute first.** The cleanest answer to the freeze is to beat it to the punch: change players the
+instant the whistle blows, before the offense is set, as defenses already do with their third-and-long
+and short-yardage packages ([Personnel Groupings](../02-personnel-and-formations/02-01-personnel-groupings.qmd)).
+A defense that expects a hurry-up after a big gain can send its nickel on immediately. The cost is a
+guess: if the offense then substitutes, it gets to choose last, and if it snaps while the swap is still
+under way, the defense is the one with twelve men.
+
+**Simplify the call.** Every defense that expects tempo has a short list of *tempo calls*: one word, or
+one hand signal, that tells all eleven players the front, the coverage and the rush, with nothing that
+requires a walk-up, a shift or a disguised rotation. The idea is to be *sound* rather than clever: a call
+that has an answer for every formation and every run, so that nobody can be caught out of position. The
+cost is plain in @fig-tempo-defense: the defense that lines up where it will play gives the quarterback an
+honest picture, and gives up the disguise and pressure tricks of
+[Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)
+and [Zone Blitzes and Simulated Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd).
+
+```{python}
+#| label: fig-tempo-defense
+#| fig-cap: "The same defense with time and under tempo (illustrative). Left, with time: a disguised pressure. Before the snap the defense shows two deep safeties and two linebackers walked up into the A gaps (dashed brown rings), so the quarterback expects a two-deep coverage and maybe a six-man blitz. At the snap the Mike rushes and the Will drops into the middle hole; the nickel blitzes off the edge, and the left end (purple ring) drops into the curl-flat zone the nickel left; the strong safety comes down to the other curl-flat; the corners bail to deep thirds and the free safety spins to the middle third. Five rush, with three deep and three under behind them: the quarterback got a two-high, six-man picture and gets a one-high, five-man play. All of that needs the call in early and twenty seconds to set the picture. Right, under tempo: a one-word call, four rush and a two-high zone (quarters) behind them, everyone aligned where he will play. It is sound against every formation, and it shows the quarterback the shell it will play (quarters defenders still read the routes after the snap, but nobody is pretending)."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.9))
+LAT, WIN = (-15.5, 15.5), (-9.6, 18.8)
+# the pressure look: both tackles in 3-techniques (outside the guards) so the two linebackers can mug the A gaps
+mug = {"WILL": dict(d=2.2, w=-1.0), "MIKE": dict(d=2.2, w=1.0), "LDT": dict(w=-2.4), "RDT": dict(w=2.4),
+       "NB": dict(d=3.0, w=-7.4)}
+mug = [q.moved(**mug[q.key]) if q.key in mug else q for q in nickel_2high()]
+p = Play(spread(), mug, los=35, to_go=None)
+for k_ in ("LDT", "RDT", "RDE", "MIKE"):
+    p.rush(k_)
+p.rush("NB", pts=[(-3.2, 1.0), (-8.0, 4.6)])
+# three under: the dropping end replaces the blitzing nickel in the curl-flat, the Will takes the hole
+p.drop("LDE", (6.5, -8.5), zone=(4, 5)); p.drop("WILL", (7.0, -0.5), zone=(4, 5)); p.drop("SS", (7.5, 7.0), zone=(4, 5))
+# three deep: the corners bail to the outside thirds, the free safety spins to the middle third
+p.drop("LCB", (14.5, -12.0), zone=(4, 6)); p.drop("RCB", (14.5, 12.0), zone=(4, 6)); p.drop("FS", (14.5, 0.0), zone=(4, 7))
+p.highlight("LDE", color=PURPLE)
+f = draw(p, ax=axes[0], lateral=LAT, window=WIN)
+threat(f, p, "MIKE", "WILL")
+panel_title(axes[0], "With time: show one thing, play another")
+point_to(f, p, (4.8, 4.6), (2.2, 1.0), "M rushes", color=style.DEFENSE_DARK, fontsize=6.0)
+point_to(f, p, (10.6, -4.4), (6.2, -0.8), "W drops", color=style.DEFENSE_DARK, fontsize=6.0)
+say(f, p, 3.4, 11.2, "two-high look,\nspins to one", fontsize=6.0, color=style.DEFENSE_DARK)
+p = Play(spread(), nickel_2high(), los=35, to_go=None)
+for k_ in ("LDE", "LDT", "RDT", "RDE"):
+    p.rush(k_)
+p.drop("LCB", (13.5, -11.0), zone=(6, 6)); p.drop("FS", (13.0, -4.0), zone=(6, 6))
+p.drop("SS", (13.0, 4.0), zone=(6, 6)); p.drop("RCB", (13.5, 11.0), zone=(6, 6))
+p.drop("NB", (6.0, -8.5), zone=(4, 5)); p.drop("WILL", (6.5, -2.5), zone=(4, 5)); p.drop("MIKE", (6.5, 3.5), zone=(4, 5))
+f = draw(p, ax=axes[1], lateral=LAT, window=WIN)
+panel_title(axes[1], "Under tempo: one word, no disguise")
+say(f, p, -6.6, 8.6, "4 rush, quarters:\nwhat you see is\nwhat you get", fontsize=6.0, color=style.DEFENSE_DARK)
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+**Let the players adjust by rule.** The defensive version of a
+[check-with-me](../../appendices/glossary.qmd#gl-check-with-me) is a call that isn't finished until the
+offense lines up: the sideline sends a front and a coverage family, and the players finish it themselves
+according to the formation they see (set the strength to the tight end, play quarters against two
+receivers on a side and a different rule against three). The [green-dot](../../appendices/glossary.qmd#gl-green-dot) linebacker or the safeties
+communicate the finishing touches with one or two words. This moves the decision from the coordinator,
+who is now too slow, to the players. The price is practice time and brainpower: every rule has to be
+repped against every formation during the week, a single player who gets the rule wrong breaks the
+coverage, and a defense built on rules is predictable to an offense that has studied them.
+
+**Recruit players who don't need to come off.** The deepest answer is roster construction. If your
+"linebacker" can cover a slot receiver and your nickel back can fit a run like a linebacker, the
+freeze stops hurting, because your base defense and your nickel defense are the same eleven men. The
+league-wide rise of hybrid safety-linebackers and the
+[big nickel](../../appendices/glossary.qmd#gl-big-nickel) (a third safety as the fifth defensive
+back) is partly a response to tempo and spread offenses: it's the defense's way of buying back the
+substitution the freeze took away. The price here is size and scarcity. A 210-pound hybrid who can
+cover a slot receiver gets moved by a 315-pound guard when the offense runs at him, and a linebacker big
+enough to take on that guard usually can't run with a receiver. Players who can do both are rare, and
+expensive.
+
+**Slow the game down.** And then there are the answers the league polices. The 1988 Seahawks' fake
+injuries were not the last: in September 2011, after two Giants defenders went down at the same moment
+against the Rams' no-huddle on *Monday Night Football*, the league sent every team a memo warning of
+fines, suspensions and even lost draft picks for faking injuries.[^giants11] The rules add a cost of their
+own: before the two-minute warning, a player whose injury stops the game must leave for at least one
+down,[^injury] so a fake costs the defense the faker. Defenses can also take a timeout, the cleanest
+reset there is, if they're willing to spend it. In college football, where tempo became far more
+extreme, the rules committee in 2014 proposed a ten-second window at the start of each play clock in
+which the offense couldn't snap, to let defenses substitute. It drew loud opposition from tempo coaches
+and was shelved.[^ncaa10]
+
+```{python}
+#| label: fig-tempo-snap
+#| fig-cap: "Tempo catching a defense unset (simulated, BDB-format tracking). The defense's call is a perfectly good one: a two-high nickel look (quarters behind four rushers), with the nickel ($, purple ring) to line up over H, the slot receiver. Panel 1: the offense, which kept its personnel after the last play, is set two seconds before the snap while the defense is still getting the call and moving into place: the cornerback is jogging out to X and the nickel is still well inside, walking toward H. Panel 2: a second before the snap, the nickel is still a few yards inside H. Panel 3: the snap comes while he is moving, inside H's shoulder. Panel 4: H breaks to the outside, away from him, and the ball (dashed brown arrow) arrives on H (brown ring) before the nickel can recover. Nothing about the call was wrong; the defense simply never got lined up to play it."
+def tempo_play():
+    dfn = nickel_2high()
+    start = {"LCB": (8.5, -6.0), "NB": (6.8, -2.0), "WILL": (4.2, 0.6), "FS": (8.0, -3.5),
+             "MIKE": (4.0, 4.0), "SS": (9.0, 4.5)}
+    end = {"LCB": (7.0, -12.5), "NB": (5.4, -5.0), "WILL": (4.6, -2.4), "FS": (11.0, -7.0),
+           "MIKE": (4.6, 1.8), "SS": (11.5, 7.5)}
+    dfn = [q.moved(d=start[q.key][0], w=start[q.key][1]) if q.key in start else q for q in dfn]
+    p = Play(spread(), dfn, los=45, to_go=10)
+    for k_, spd in (("LCB", 2.9), ("NB", 1.45), ("WILL", 1.3), ("FS", 2.0), ("MIKE", 1.0), ("SS", 1.5)):
+        p.motion(k_, to=end[k_], speed=spd)
+    p.route("H", [(0, 0), (3.0, 0.0), (3.4, 4.0)], side=-1)
+    p.route("X", [(0, 0), (12.0, 0.0)], side=-1)
+    p.route("Y", [(0, 0), (6.0, 0.0), (6.0, -3.0)])
+    p.route("Z", [(0, 0), (10.0, 0.0)])
+    p.dropback(1.5)
+    p.block("RB", pts=[(0.4, -1.4)])
+    for k_ in ("LT", "LG", "C", "RG", "RT"):
+        p.block(k_, pts=[(-1.0, 0.0)])
+    for k_ in ("LDE", "LDT", "RDT", "RDE"):
+        p.rush(k_, pts=[(-1.4, 0.0)], speed=1.6)
+    go_to(p, "NB", (3.2, -7.4), "path", delay=0.45, speed=2.6)
+    go_to(p, "LCB", (10.0, -11.4), "path", speed=4.0)
+    go_to(p, "WILL", (5.5, -4.0), "path", delay=0.2, speed=3.0)
+    go_to(p, "MIKE", (5.5, 2.5), "path", delay=0.2, speed=3.0)
+    go_to(p, "RCB", (9.5, 12.5), "path", delay=0.2, speed=3.0)     # backpedal with Z
+    go_to(p, "SS", (13.0, 8.5), "path", delay=0.2, speed=1.8)      # shuffle out over the top
+    go_to(p, "FS", (12.5, -7.5), "path", delay=0.2, speed=1.6)
+    p.pass_to("H", t=0.7)
+    return p
+
+
+animation_or_strip(tempo_play(), [-2.0, -0.8, 0.0, 1.4],
+                   ["offense set; defense\nstill moving in", "nickel still inside H", "snap: $ is moving,\ninside H",
+                    "H breaks out, away from $;\nthe throw arrives on rhythm"],
+                   lateral=(-17.0, 14.5), window=(-7.5, 15.0), rings=(("NB", PURPLE),))
+```
+
+::: {.callout-tip title="Watch for it"}
+When an offense goes fast, take your eyes off the ball for one snap and watch the defense's sideline
+and its secondary. Is anyone running *off* the field as the ball is snapped? Is a defender still
+pointing or walking to his spot? Is the defense lining up in a plain look it hasn't shown all day? Those
+are the costs of tempo being paid, and they tell you why the offense chose that moment.
+:::
+
+## Does tempo work, and why did it fade?
+
+The obvious question about all of this: does going fast actually gain yards? The running-clock data can
+give a rough answer. Of the snaps in @fig-tempo-2025's sample from 2006 to 2025, call a snap "fast" if it
+came within 30 seconds of the previous one. Fast snaps averaged
+`{python} f"{RAW.loc[True, 'epa']:+.3f}"` [EPA](../../appendices/glossary.qmd#gl-epa) per play and a
+`{python} pct(RAW.loc[True, 'success'])` [success rate](../../appendices/glossary.qmd#gl-success-rate),
+against `{python} f"{RAW.loc[False, 'epa']:+.3f}"` and `{python} pct(RAW.loc[False, 'success'])` for the rest
+(@fig-tempo-work, right). Part of that gap is the situation, not the speed: fast snaps are more often
+second- or third-and-short, where every offense does well. Comparing only snaps on the same down and a
+similar distance shrinks the edge to about `{python} f"{EDGE_EPA:+.2f}"` EPA per play and
+`{python} f"{100 * EDGE_SR:.1f}"` points of success rate.[^tempowork]
+
+So tempo works, a little, *as it is used*. That last phrase matters. Offenses go fast when they like what
+they see (a tired defense, a mismatch frozen on the field), so this measures tempo at the moments a
+play-caller chose, not what would happen if a team snapped fast every time. An edge of three hundredths of
+a point per play is worth having on the snaps you pick; it is not big enough to pay the bill Kelly's
+defenses paid if you go fast all game.
+
+That may be why the league tried tempo and then mostly put it back on the shelf. In the left panel, the
+share of fast snaps rose from about one in twelve in the late 2000s to about one in seven in Kelly's years,
+then drifted back. Three things probably explain the retreat. The bill is real: a fast offense that stalls
+puts its own defense back on the field. Defenses found the answers in the previous section, above all the
+versatile players who make the freeze hurt less. And the style of offense that took over uses the play
+clock instead of racing it: pre-snap shifts and motion, which take seconds every snap, rose from 37.6% of
+plays in 2014 to 63.9% in 2025 by PFF's charting,[^pffmotion] and an offense that changes personnel
+groups from play to play opens the matching window every time it does
+([Motion and Shifts](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)). Going fast survives as a
+change-up, which is what the data says it is good for.
+
+```{python}
+#| label: fig-tempo-work
+#| fig-cap: "Does tempo work? Running-clock snaps in neutral situations, regular seasons 2006–2025 (same filters as the tempo chart). Left: the share of snaps that came within 30 seconds of the previous one, and the share run without a huddle, by season. Both rose to a peak in Chip Kelly's Eagles years (shaded) and then fell back. Right: EPA per play on fast snaps and on the rest. The raw gap (bars) is partly situation; comparing the same down and distance leaves an edge of about three hundredths of a point per play. Source: nflverse play-by-play."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 2.9), gridspec_kw={"width_ratios": [1.7, 1]})
+ax = axes[0]
+ax.axvspan(2012.5, 2015.5, color=style.SERIES[1], alpha=0.12, lw=0, zorder=0)
+ax.plot(YEAR.index, YEAR["fast"], color=style.SERIES[0], lw=1.8, marker="o", ms=3, label="within 30 s", zorder=3)
+ax.plot(YEAR.index, YEAR["nh"], color=style.SERIES[2], lw=1.8, marker="o", ms=3, label="no huddle", zorder=3)
+ax.text(2014, 0.197, "Kelly's\nEagles", fontsize=6.6, color=style.INK_2, ha="center", va="top", linespacing=1.0)
+ax.set_ylim(0, 0.2)
+ax.set_yticks([0, 0.05, 0.10, 0.15, 0.20])
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+ax.set_xticks(range(2006, 2026, 3))
+ax.tick_params(labelsize=7)
+ax.set_title("Share of running-clock snaps", fontsize=8.2)
+ax.legend(fontsize=6.6, loc="lower right", frameon=False)
+ax.grid(axis="x", visible=False)
+ax = axes[1]
+vals = [RAW.loc[True, "epa"], RAW.loc[False, "epa"]]
+ax.bar([0, 1], vals, width=0.55, color=[style.SERIES[1], style.BASELINE], zorder=3)
+for i, v in enumerate(vals):
+    ax.text(i, v + 0.002, f"{v:+.3f}", ha="center", va="bottom", fontsize=6.8, color=style.INK)
+ax.set_xticks([0, 1], ["within\n30 s", "slower"], fontsize=7)
+ax.set_ylim(0, 0.075)
+ax.tick_params(axis="y", labelsize=6.8)
+ax.set_title("EPA per play", fontsize=8.2)
+ax.text(0.5, 0.071, f"same down & distance:\nedge {EDGE_EPA:+.2f}", fontsize=6.4, color=style.INK_2, ha="center", va="top")
+ax.grid(axis="x", visible=False)
+fig.tight_layout(w_pad=1.2)
+plt.show()
+```
+
+## The call after the call
+
+Everything so far has been about each side adjusting to what the other *did*. The best play-callers go one
+step further and call for what the other side is *about to do*. That is the coordinator-versus-coordinator
+contest that coaches sometimes call "the call after the call": you don't call the play that beats what
+the defense just ran; you call the play that beats what the defense will run *in response* to what you just
+did.
+
+@fig-call-ladder is a small, illustrative version over one half. Each box is an answer to the box before
+it, and each side is trying to stay a move ahead.
+
+```{python}
+#| label: fig-call-ladder
+#| fig-cap: "The call after the call (illustrative, one half). Read the boxes in order, zig-zagging between the offense's play-caller (left) and the defense's (right). Each call answers the last answer. The offense opens by attacking its three-receiver side; the defense rotates its coverage there; the offense punishes the side the rotation left; the defense helps on that side; the offense goes back to the side that has lost its help (and, with three defenders spread out over the trips receivers and a safety committed to X, runs at a light box); the defense starts disguising which one it's playing; and the offense uses motion to make the defense show its hand before the snap. Every step is a play from the week's plan; what changes is the order."
+fig = plt.figure(figsize=(6.6, 6.2))
+ax = canvas(fig)
+ax.text(24, 97.5, "Offense's play-caller", fontsize=9, fontweight="bold", color=style.OFFENSE_DARK, ha="center", va="top")
+ax.text(76, 97.5, "Defense's play-caller", fontsize=9, fontweight="bold", color=style.DEFENSE_DARK, ha="center", va="top")
+steps = [
+    ("L", 86, "1. Attack the trips side", "three receivers to one side: a quick\nconcept against three defenders"),
+    ("R", 75, "2. Rotate to the trips", "the safety spins toward the three\nreceivers: four defenders on three"),
+    ("L", 62, "3. Isolate the backside", "the lone receiver (X) now has a corner\nwith no help: slant, dig, back-shoulder"),
+    ("R", 51, "4. Help on X", "the backside safety stays over X (a\nbracket); trips side plays three-on-three"),
+    ("L", 38, "5. Back to the trips side", "3-on-3 with no help: a rub or flood; and with\n3 out on the trips and a safety over X, the\nbox is light: run"),
+    ("R", 27, "6. Disguise which one", "show the bracket, play the rotation\n(or the reverse) to make the read a guess"),
+    ("L", 14, "7. Make them show it", "motion before the snap: whoever follows\ntells the QB which coverage it is; check"),
+]
+pos = {}
+for side, y, t_, b_ in steps:
+    x = 24 if side == "L" else 76
+    ec = style.OFFENSE if side == "L" else style.DEFENSE
+    fc = style.OFFENSE_TINT if side == "L" else style.DEFENSE_TINT
+    box(ax, x, y, 44, 10.5, t_, b_, fc=fc, ec=ec, bsize=6.5)
+    pos[t_[:2]] = (x, y)
+ys_ = [s[1] for s in steps]
+for i in range(len(steps) - 1):
+    (s0, y0, *_), (s1, y1, *_) = steps[i], steps[i + 1]
+    x0 = 46.5 if s0 == "L" else 53.5
+    x1 = 53.5 if s1 == "R" else 46.5
+    arrow(ax, x0, y0 - 2.0, x1, y1 + 2.0, color=style.INK_2, lw=1.1)
+ax.text(50, 3.2, "Each call is chosen to beat the answer it expects next, not the last play.",
+        fontsize=7.4, color=style.INK, ha="center", va="center", style="italic",
+        bbox=dict(boxstyle="round,pad=0.45", fc="#f3ead2", ec="none"))
+plt.show()
+```
+
+A few things make this contest more than rock-paper-scissors.
+
+**Both sides keep score.** The booth's tallies are not just for the play-caller's own side. The offensive
+staff is also tracking the defense's *answers*: when we showed trips, what did they do; when we
+motioned, who followed. After a couple of series, each staff has a little in-game tendency report on the
+other, the live version of the self-scouting and tendency work in
+[Constraint Theory](08-02-constraint-theory-and-sequencing.qmd).
+
+**The second answer is often the money call.** A play-caller can deliberately run a play he expects the
+defense to adjust to, *in order to* set up the play that beats the adjustment. That's the sequencing idea
+from [Constraint Theory](08-02-constraint-theory-and-sequencing.qmd) applied across a game, and the reason
+the most dangerous moment for a defense is often right after it has fixed a problem.
+
+**Nobody can go infinitely deep.** If the offense calls for the defense's adjustment, the defense can
+skip the adjustment and stay where it was, and now the offense's clever call is running into the very
+defense it was designed to avoid. In practice coordinators think about one or two moves ahead, and
+the deciding factor is usually what the players can execute. A defense with one coverage it plays brilliantly
+can ignore much of this contest; a defense with five it plays adequately is always one step from a bust.
+
+Here is a single adjustment and its answer as frame pairs. In the first half the defense plays man
+coverage on third down, and the offense beats it repeatedly with
+[mesh](../../appendices/glossary.qmd#gl-mesh), two shallow crossers that run past each other so the
+defenders chasing them in man have to fight through traffic. At halftime the defense keeps the same look
+but changes the rule for the two inside defenders: instead of each chasing one crosser all the way across
+the field, each sits in his area and takes whichever crosser comes to him, a
+[banjo](../../appendices/glossary.qmd#gl-banjo)-style "pass it off" rule (a
+[combo coverage](../../appendices/glossary.qmd#gl-combo-coverage)).
+
+```{python}
+#| label: fig-before-after
+#| fig-cap: "A halftime adjustment as frame pairs (simulated, BDB-format tracking; illustrative). Each row shows the same third-and-7 play at the snap and 2.3 seconds later. Top, first half: man coverage behind a six-man rush (both linebackers blitz; the back stays in to block). H (from the left, at about five yards) and Y (from the right, a yard deeper) cross over the ball. The nickel ($) chasing H and the strong safety (SS) chasing Y each have to get through the other crosser, so each ends up a step or two behind his man; H is open as he clears the traffic and the ball (dashed brown arrow) is already on its way to him. Bottom, second half: the same look, the same six rushers and the same play, but the two inside defenders (purple rings) no longer chase. Each sits at five to six yards in his own area and takes whichever crosser comes to him: the nickel takes Y, the strong safety takes H, and each crosser runs straight at a waiting defender. The play didn't change; one rule did."
+def mesh(second_half):
+    p = Play(spread(), cover1_look(), los=55, to_go=7)
+    # mesh: two crossers about a yard apart in depth (H under at 4.5-5, Y over at 5.5-6), meeting over the ball
+    go_to(p, "H", (5.0, 12.0), "route", via=[(4.4, -5.5)])
+    go_to(p, "Y", (6.1, -12.0), "route", via=[(5.6, 5.5)])
+    go_to(p, "X", (15.0, -13.0), "route"); go_to(p, "Z", (15.0, 13.0), "route")
+    p.dropback(1.5)
+    for k_ in ("LT", "LG", "C", "RG", "RT"):
+        p.block(k_, pts=[(-1.0, 0.0)])
+    p.block("RB", pts=[(0.6, 1.0)])
+    p.man("LCB", "X"); p.man("RCB", "Z")
+    go_to(p, "FS", (15.0, 0.0), "drop", speed=1.5)
+    for k_ in ("LDE", "LDT", "RDT", "RDE"):
+        p.rush(k_, pts=[(-1.4, 0.0)], speed=1.6)
+    go_to(p, "MIKE", (0.4, 2.4), "path", speed=3.0)     # right B gap (the tackle has the right A gap)
+    go_to(p, "WILL", (0.6, -0.8), "path", speed=3.0)    # left A gap
+    if not second_half:
+        # man: each chaser trails his crosser by a step or two, on his hip, and loses ground in the traffic
+        go_to(p, "NB", (4.9, 3.6), "path", via=[(4.6, -5.6), (4.5, -1.4)], speed=4.5)
+        go_to(p, "SS", (6.3, -3.4), "path", via=[(6.2, 5.6), (6.3, 1.6)], speed=4.4)
+        p.pass_to("H", t=1.75)
+    else:
+        # banjo: each sits in his area and takes whichever crosser comes to him
+        go_to(p, "NB", (6.3, -6.6), "path", speed=2.4)
+        go_to(p, "SS", (4.9, 6.6), "path", speed=2.4)
+    return p
+
+
+LAT, WIN = (-16.0, 16.0), (-7.8, 18.2)
+T2 = 2.3
+fig, axes = plt.subplots(2, 2, figsize=(6.4, 5.9))
+for row, sh in enumerate((False, True)):
+    p = mesh(sh)
+    df = tracking(p)
+    rings = (("NB", PURPLE), ("SS", PURPLE)) if sh else ()
+    for col, t in enumerate((0.0, T2)):
+        ax = axes[row, col]
+        f = panel(ax, p, df, t, LAT, WIN, rings=rings)
+        half = "Second half" if sh else "First half"
+        ax.set_title(f"{half}: " + ("snap" if t == 0 else f"+{t:.1f} s"), fontsize=8.4, color=style.INK, loc="left",
+                     fontweight="bold")
+        if col == 1:
+            hd, hw = p.position("H", t)
+            yd, yw = p.position("Y", t)
+            if not sh:
+                say(f, p, 12.0, -6.5, "man: each chaser\na step behind", fontsize=6.3, color=style.DEFENSE_DARK)
+                say(f, p, hd + 3.0, hw + 2.6, "H open", fontsize=6.3, color=style.OFFENSE_DARK)
+            else:
+                point_to(f, p, (12.0, -8.5), (6.3, -6.6), "$ takes Y", color=style.DEFENSE_DARK, fontsize=6.3)
+                point_to(f, p, (12.0, 9.0), (4.9, 6.6), "SS takes H", color=style.DEFENSE_DARK, fontsize=6.3)
+                say(f, p, -5.6, 9.5, "nobody open", fontsize=6.3, color=style.OFFENSE_DARK)
+        else:
+            say(f, p, 10.0, -9.0, "same look\nboth halves", fontsize=6.3, color=style.INK_2)
+fig.tight_layout(h_pad=1.0, w_pad=0.6)
+plt.show()
+```
+
+The second-half picture in @fig-before-after looks like a win for the defense, and for a series or two it
+is. But every fix gives something away, and this one does too: the two inside defenders now *stop* and
+wait. What that hands the offense is the next call after the call, and you'll get to make it yourself in
+the second drill at the end of the chapter.
+
+::: {.callout-note title="Go deeper: the same pair from real tracking data"}
+With Big Data Bowl tracking data you can build @fig-before-after from real plays: find two snaps from
+the same game, the same offense and a similar look, one from each half, and draw each at the snap and a
+couple of seconds later. The online version of this chapter includes a short code sketch that does it
+with `gridiron.bdb` (it isn't run here, because the tracking files are a separate download from Kaggle). The 2025 edition's files cover weeks 1–9
+of the 2022 season, with pre-snap frames included ([Tracking Data and the Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd)).
+:::
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (the real-data version: one play from each half of the same game)"
+import pandas as pd
+from gridiron import bdb, frame_strip
+
+trk = bdb.load_tracking("data/bdb/tracking_week_*.csv")        # Big Data Bowl 2025 files (2022 season, weeks 1-9)
+plays = pd.read_csv("data/bdb/plays.csv")
+game = plays[plays["gameId"] == 2022091100]                       # pick a game
+third = game[(game["down"] == 3) & (game["passResult"].notna())]
+first_half = third[third["quarter"] <= 2].iloc[0]
+second_half = third[third["quarter"] >= 3].iloc[0]
+for row in (first_half, second_half):
+    one = bdb.prepare(trk, plays, game_id=row["gameId"], play_id=row["playId"])
+    frame_strip(one, times=[0.0, 2.3], title=f"Q{row['quarter']}: {row['pff_passCoverage']}")
+```
+
+## Do halftime adjustments decide games? Testing the narrative
+
+Back to the analyst's line. If halftime adjustments decide games, three things should show up in the data:
+second halves should look different from first halves in a way that favors the team with the better
+staff; a team's first-half performance shouldn't tell you much about its second half (the adjustment
+breaks the pattern); and some coaches should be consistently better than others at turning a game around
+after halftime. The play-by-play data lets us check each one. All the numbers below use regular-season
+games from 2006 to 2025 and leave out the last two minutes of each half and snaps where one team's
+[win probability](../../appendices/glossary.qmd#gl-win-probability) (a model's estimate of each team's
+chance of winning from that moment, built in
+[Win Probability and Decision Analysis](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd))
+was above 90%, so that two-minute drills and garbage time (the late minutes of a lopsided game, which
+analysts [filter out](../../appendices/glossary.qmd#gl-garbage-time-filter)) don't dominate.[^halfdata]
+
+**First: second halves look exactly like first halves, on average.** League-wide, offenses averaged
+`{python} f"{LEAGUE_HALF['Half1']:+.3f}"` EPA per play in first halves and
+`{python} f"{LEAGUE_HALF['Half2']:+.3f}"` in second halves. If defenses (or offenses) systematically
+out-adjusted the other side at halftime, you'd expect a gap. There isn't one, which is what you'd expect if
+both sides adjust about equally well, and if most adjusting happens every series rather than once.
+
+**Second: the first half tells you very little about the second half, and that's mostly not adjustment.**
+@fig-halftime-test (left) splits about `{python} f"{len(TG):,}"` team-games by how well each offense played in
+the first half. Offenses that were terrible before halftime were much better after it, and offenses that
+were brilliant came back to earth. The correlation between a team's first-half and second-half EPA per
+play in the same game is only `{python} f"{R_HALVES:.2f}"`, on a scale where 0 means the first half tells
+you nothing about the second and 1 means it tells you everything.
+
+That looks like a story about adjustments, and it's the classic trap of
+*regression to the mean*. A first half is about 25 to 35 snaps, and EPA per play over that few snaps is
+mostly noise: a fumble, a dropped pass, a 60-yard run. An offense that had an awful first half was
+usually an ordinary offense having an unlucky half, and its next half looks ordinary, *whether or not
+anyone adjusted anything*. The team that "came out a different team after halftime" was often just the
+same team without the bad bounces. The same arithmetic makes the hot first-half team cool off.
+
+```{python}
+#| label: fig-halftime-test
+#| fig-cap: "Testing the halftime narrative, 2006–2025 regular seasons (neutral snaps). Left: team-games grouped into tenths by the offense's first-half EPA per play; each dot is a group's average first half (x) against its second half (y). If the first half carried over, the dots would lie on the dashed diagonal; instead they lie almost flat: bad first halves were followed by about average second halves, and great ones too. That is regression to the mean, not proof of adjustment. Right: is 'improving after halftime' a team trait? Each dot is a team-season's second-half minus first-half EPA per play, plotted against the same team's number the next season. There is essentially no relationship (r near zero), while a team's overall EPA per play carries over from one season to the next quite strongly (r about 0.4). Source: nflverse play-by-play."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.2))
+ax = axes[0]
+lim = (-0.62, 0.55)
+ax.plot(lim, lim, color=style.BASELINE, lw=1.0, ls=(0, (3, 2)), zorder=1)
+ax.axhline(0, color=style.BASELINE, lw=0.8, zorder=1)
+ax.plot(DEC["h1"], DEC["h2"], color=style.SERIES[0], lw=1.2, zorder=2)
+ax.scatter(DEC["h1"], DEC["h2"], s=26, color=style.SERIES[0], zorder=3)
+ax.set_xlim(*lim); ax.set_ylim(*lim)
+ax.set_xlabel("First-half EPA per play", fontsize=7.8)
+ax.set_ylabel("Second-half EPA per play", fontsize=7.8)
+ax.set_title("A bad first half, then an average second", fontsize=8.4)
+ax.text(0.12, 0.33, "if the first half\ncarried over", fontsize=6.6, color=style.INK_2, ha="right", va="center")
+ax.annotate("worst tenth of\nfirst halves", (DEC["h1"].iloc[0], DEC["h2"].iloc[0]), xytext=(-0.42, 0.24),
+            fontsize=6.6, color=style.INK, ha="center", arrowprops=dict(arrowstyle="-", color=style.INK_2, lw=0.7))
+ax.tick_params(labelsize=7)
+ax = axes[1]
+ax.scatter(PO["diff"], PO["diff_next"], s=9, color=style.SERIES[0], alpha=0.45, lw=0, zorder=2)
+ax.axhline(0, color=style.BASELINE, lw=0.8, zorder=1); ax.axvline(0, color=style.BASELINE, lw=0.8, zorder=1)
+ax.set_xlim(-0.32, 0.32); ax.set_ylim(-0.32, 0.32)
+ax.set_xlabel("2nd-half minus 1st-half EPA/play, season N", fontsize=7.8)
+ax.set_ylabel("Same, season N+1", fontsize=7.8)
+ax.set_title("'Second-half team' is not a trait", fontsize=8.4)
+ax.text(0.30, -0.24, f"r = {R_DIFF_O:.2f}\n(overall EPA/play: r = {R_ALL_O:.2f})", fontsize=6.8, color=style.INK,
+        ha="right", va="center", bbox=dict(boxstyle="round,pad=0.3", fc=style.SURFACE, ec=style.BASELINE, lw=0.6))
+ax.tick_params(labelsize=7)
+fig.tight_layout(w_pad=1.4)
+plt.show()
+```
+
+**Third: no team or coach is reliably a "second-half team."** The right panel of @fig-halftime-test asks
+whether improving after halftime is a repeatable trait. If some staffs adjusted better than others, a team
+that improved after halftime in one season should tend to do it again the next. It doesn't: the
+year-to-year correlation of a team's second-half-minus-first-half EPA per play is
+`{python} f"{R_DIFF_O:.2f}"` for offenses and `{python} f"{R_DIFF_D:.2f}"` for defenses, against
+`{python} f"{R_ALL_O:.2f}"` and `{python} f"{R_ALL_D:.2f}"` for how good the offense and defense are
+overall. Being good carries over from one season to the next; being better after halftime doesn't.
+
+Coaches are the natural place to look next, since a reputation for halftime magic attaches to a person.
+@fig-coach-halves plots every head coach with at least 100 games in these seasons by his teams' average
+scoring margin in first halves and in second halves.
+
+```{python}
+#| label: fig-coach-halves
+#| fig-cap: "Head coaches with at least 100 regular-season games, 2006–2025: average scoring margin per game in first halves (x) and in second halves, regulation only (y); bigger dots coached more games. The dashed diagonal is 'just as good after halftime as before.' Good coaches are good in both halves, so the dots rise from left to right. A 'halftime adjuster' would sit well above the diagonal; nobody does by more than about two and a half points a game, a gap that luck alone produces over 100 to 300 games. The two coaches with the best reputations as game planners, Bill Belichick and Andy Reid, sit *below* it: their teams were better before halftime. Source: nflverse play-by-play."
+fig, ax = plt.subplots(figsize=(6.4, 4.1))
+lim = (-3.6, 5.2)
+ax.plot(lim, lim, color=style.BASELINE, lw=1.0, ls=(0, (3, 2)), zorder=1)
+ax.axhline(0, color=style.BASELINE, lw=0.7, zorder=1); ax.axvline(0, color=style.BASELINE, lw=0.7, zorder=1)
+ax.scatter(COACH["h1"], COACH["h2"], s=COACH["n"] / 6, color=style.SERIES[0], alpha=0.75, lw=0, zorder=3)
+label_at = {"Bill Belichick": (-0.5, 0.55), "Andy Reid": (0.25, -0.55), "Sean Payton": (-1.2, 0.55),
+            "Pete Carroll": (-1.5, 0.35), "Mike Tomlin": (-0.2, -0.75), "John Harbaugh": (0.3, 0.45),
+            "Sean McDermott": (-0.4, 0.62), "Kyle Shanahan": (0.4, -0.6), "Kevin Stefanski": (0.3, -0.45),
+            "Mike Shanahan": (-1.1, -0.45)}
+for nm, (dx, dy) in label_at.items():
+    if nm in COACH.index:
+        x, y = COACH.loc[nm, "h1"], COACH.loc[nm, "h2"]
+        ax.annotate(nm, (x, y), xytext=(x + dx, y + dy), fontsize=6.6, color=style.INK, ha="center", va="center",
+                    arrowprops=dict(arrowstyle="-", color=style.INK_2, lw=0.6, shrinkA=1, shrinkB=3))
+ax.text(5.0, -3.0, "dashed line: as good after\nhalftime as before", fontsize=6.6, color=style.INK_2, ha="right", va="bottom")
+ax.set_xlim(*lim); ax.set_ylim(-3.2, 4.8)
+ax.set_xlabel("First-half scoring margin per game", fontsize=8)
+ax.set_ylabel("Second-half scoring margin per game", fontsize=8)
+ax.tick_params(labelsize=7.5)
+plt.show()
+```
+
+So what *does* explain the dots, and the second-half swings fans remember? Three things, and they work at
+different scales.
+
+- **Chance, for the coaches.** A coach's second-half-minus-first-half margin over 100 to 300 games still
+  wobbles by about a point either way from luck alone (the statistician's "standard error"). Thirty-five
+  coaches is a lot of coin-flippers, and you'd expect one or two of them to land more than two of those
+  wobbles from zero by chance. That is what @fig-coach-halves shows:
+  `{python} f"{(COACH['swing'].abs() < 2 * SWING_SE).sum()}"` of the
+  `{python} f"{len(COACH)}"` coaches sit inside that band. Reid's gap is one of the few outside it, which
+  is about as many as luck predicts, and if it means anything, it says his teams were unusually good
+  *before* halftime, not bad after it.
+- **Score effects, for teams that lead.** Teams that lead at halftime play differently afterwards: they
+  run more, take fewer risks and drain the clock, while teams that trail throw more and gamble. You can
+  see it in @fig-score-effects. A team leading at halftime is usually the better team, so you'd expect it
+  to keep outscoring its opponent; instead, leaders by one to 13 points were *outscored* in the second
+  half, and big leaders barely broke even. Measured against what their quality predicted, halftime leaders
+  gave back about `{python} f"{(SCORE.loc['lead 1-13', 'pred'] - SCORE.loc['lead 1-13', 'h2']):.1f}"`
+  points in the second half. That is real, but small next to the dots: even for the coaches who led most
+  often, it moves the second-half margin by only about `{python} f"{COACH['score_eff'].abs().max():.1f}"`
+  of a point. Score effects change how a game *looks* (more runs, fewer deep shots, a comeback that comes
+  up short) far more than they change the final margin.
+- **Possessions, for single games.** Second halves start with a kickoff to the team that didn't receive
+  the opening one, and most coaches who win the coin toss defer so they get the ball to start the second
+  half ([The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd)).[^defer]
+  In one game that matters: a team that kicked off to start the game, then watched the other offense hold
+  the ball for long drives, can come out after halftime with the ball and a fresh set of downs, and look
+  like a new team. Over 100 or more games who gets the ball first evens out, so possessions explain
+  individual turnarounds like Super Bowl LVII, below, not a coach's dot.
+
+```{python}
+#| label: fig-score-effects
+#| fig-cap: "Score effects, 2006–2025 regular seasons: second-half scoring margin by halftime score. Light bars are what each team's quality predicted (its average first-half margin in its other games that season, against its opponent's, scaled by how much first halves predict second halves league-wide); dark bars are what actually happened. Leaders, who are usually the better teams, should have kept outscoring their opponents; instead they gave back most of that edge (and trailing teams, necessarily, gained the mirror image). The effect is real but worth well under a point. Source: nflverse play-by-play."
+fig, ax = plt.subplots(figsize=(6.2, 2.6))
+xs_ = np.arange(len(SCORE))
+ax.bar(xs_ - 0.19, SCORE["pred"], width=0.36, color=style.BASELINE, label="predicted by team quality", zorder=3)
+ax.bar(xs_ + 0.19, SCORE["h2"], width=0.36, color=style.SERIES[0], label="actual", zorder=3)
+for i, (pv, av) in enumerate(zip(SCORE["pred"], SCORE["h2"])):
+    for xx_, v in ((i - 0.19, pv), (i + 0.19, av)):
+        ax.text(xx_, v + (0.06 if v >= 0 else -0.06), f"{v:+.1f}", ha="center", va="bottom" if v >= 0 else "top",
+                fontsize=6.6, color=style.INK)
+ax.axhline(0, color=style.INK_2, lw=0.8, zorder=2)
+ax.set_xticks(xs_, [f"{b}\n({n:,} games)" for b, n in zip(["trailing by 14+", "trailing by 1–13", "leading by 1–13",
+                                                             "leading by 14+"], SCORE["n"])], fontsize=7)
+ax.set_ylim(-1.45, 1.45)
+ax.set_ylabel("2nd-half margin (points)", fontsize=7.6)
+ax.tick_params(axis="y", labelsize=7)
+ax.legend(fontsize=6.8, loc="upper left", frameon=False)
+ax.grid(axis="x", visible=False)
+plt.show()
+```
+
+None of this means adjustments are fake. Coaches adjust constantly; the between-series loop is real work
+that wins plays. The data says something narrower: adjustment is not a *halftime* event that reliably
+separates staffs, and a big second-half swing is usually explained by luck, the scoreboard and who had the
+ball before you need to credit genius. When a team does turn a game around, look for the specific change.
+
+```{python}
+#| label: fig-sb57
+#| fig-cap: "Super Bowl LVII by half (runs and passes only). Kansas City's offense ran only 20 plays before halftime to Philadelphia's 44; its EPA per play rose from about +0.15 to about +0.5 (small samples) and its rushing yards from 36 to 126, while its motion rate barely moved. More snaps, a run game and two well-timed calls, not a new motion offense. Sources: nflverse play-by-play; FTN charting (`is_motion`)."
+fig, axes = plt.subplots(1, 4, figsize=(6.6, 2.05))
+H = ["Half1", "Half2"]
+xl = ["1st", "2nd"]
+ax = axes[0]
+w = 0.38
+for i, (tm, c) in enumerate((("KC", style.SERIES[0]), ("PHI", style.SERIES[1]))):
+    vals = [SB.loc[(tm, hh), "snaps"] for hh in H]
+    ax.bar(np.arange(2) + (i - 0.5) * w, vals, width=w, color=c, label=tm, zorder=3)
+    for j, v in enumerate(vals):
+        ax.text(j + (i - 0.5) * w, v + 1, f"{v:.0f}", ha="center", va="bottom", fontsize=6.4, color=style.INK)
+ax.set_title("Offensive snaps", fontsize=7.8); ax.set_ylim(0, 58)
+ax.legend(fontsize=6.2, loc="upper right", handlelength=1.0, borderaxespad=0.2)
+for ax, col, ttl, fmt, ylim in ((axes[1], "epa", "KC: EPA per play", "{:+.2f}", (0, 0.7)),
+                                (axes[2], "rush_yds", "KC: rushing yards", "{:.0f}", (0, 150)),
+                                (axes[3], "motion", "KC: motion rate", "{:.0%}", (0, 0.7))):
+    vals = [SB.loc[("KC", hh), col] for hh in H]
+    ax.bar(np.arange(2), vals, width=0.55, color=style.SERIES[0], zorder=3)
+    for j, v in enumerate(vals):
+        ax.text(j, v + ylim[1] * 0.02, fmt.format(v), ha="center", va="bottom", fontsize=6.4, color=style.INK)
+    ax.set_title(ttl, fontsize=7.8); ax.set_ylim(*ylim)
+for ax in axes:
+    ax.set_xticks(range(2), xl, fontsize=6.8); ax.tick_params(axis="y", labelsize=6.2)
+    ax.set_xlabel("half", fontsize=6.6)
+    ax.grid(axis="x", visible=False)
+axes[3].yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+fig.tight_layout(w_pad=0.9)
+plt.show()
+```
+
+::: {.callout-note title="Film room: Kansas City Chiefs, Super Bowl LVII (2022 season)"}
+Super Bowl LVII (February 12, 2023) is everyone's favorite example of a halftime turnaround. The Eagles
+led 24–14 at the half; Patrick Mahomes had re-aggravated his injured ankle late in the second quarter; and
+the Chiefs scored on all four of their second-half possessions to win 38–35, including two fourth-quarter
+touchdowns on the same motion play (the story of "Corn Dog" is told in
+[Motion and Shifts](../02-personnel-and-formations/02-06-motion-and-shifts.qmd) and
+[What Beats What](08-01-concepts-versus-coverages.qmd)).[^sb57] "Kansas City's halftime adjustments" is the
+usual summary, and a Super Bowl halftime, stretched for the show, gives a staff far more than the usual 13
+minutes to make them. What does the data say changed?
+
+
+**What to notice:** start with the first panel of @fig-sb57. Kansas City's offense barely played in the first half:
+`{python} f"{SB.loc[('KC', 'Half1'), 'snaps']:.0f}"` runs and passes against Philadelphia's
+`{python} f"{SB.loc[('PHI', 'Half1'), 'snaps']:.0f}"`, because the Eagles' offense held the ball for long
+drives. The Chiefs had been effective when they did have it, about
+`{python} f"{SB.loc[('KC', 'Half1'), 'epa']:+.2f}"` EPA per play, and the second half gave them
+`{python} f"{SB.loc[('KC', 'Half2'), 'snaps']:.0f}"` snaps, starting with the ball: Philadelphia had
+received the opening kickoff, so Kansas City received the second-half kickoff and drove for a touchdown.
+That is the possessions effect in a single game. Some of the change was real and visible: the
+run game went from `{python} f"{SB.loc[('KC', 'Half1'), 'rush_yds']:.0f}"` rushing yards to
+`{python} f"{SB.loc[('KC', 'Half2'), 'rush_yds']:.0f}"`, with Isiah Pacheco and Jerick McKinnon running
+well and Mahomes scrambling on the bad ankle. What *didn't*
+change much was the motion: by FTN's charting the Chiefs used motion on
+`{python} pct(SB.loc[('KC', 'Half1'), 'motion'])` of first-half snaps and
+`{python} pct(SB.loc[('KC', 'Half2'), 'motion'])` after halftime.[^ftn] The two motion touchdowns were a
+game-plan call used at the right moment near the goal line (the second one set up by Kadarius Toney's
+65-yard punt return, the longest in Super Bowl history), not a new offense invented in the locker room.
+
+One thing held in *both* halves. Philadelphia's defense led the league with
+`{python} f"{PHI_SACKS22:.0f}"` sacks in the 2022 regular season and sacked Mahomes
+`{python} "zero times" if SB_SACKS == 0 else f"{SB_SACKS:.0f} times"` in the Super Bowl, even on a bad
+ankle. Kansas City's protection plan, built during the week, worked from the first snap. And
+Philadelphia's offense didn't collapse after halftime: it ran
+`{python} f"{SB.loc[('PHI', 'Half2'), 'snaps']:.0f}"` plays at a *better* EPA per play
+(`{python} f"{SB.loc[('PHI', 'Half2'), 'epa']:+.2f}"`, up from
+`{python} f"{SB.loc[('PHI', 'Half1'), 'epa']:+.2f}"`), and scored 11 points. The Eagles lost the
+second half because their defense, after keeping the Chiefs' offense off the field for most of the first
+half, couldn't get a single stop.
+
+So was it halftime adjustments? Partly: the Chiefs ran more and ran better, and the staff saved its best
+red-zone call for the moments that mattered. But the honest summary also includes the second-half
+kickoff, a punt return, a protection plan that never needed adjusting, and an Eagles defense that simply
+didn't stop anything. (If anyone's defense was worn down, it was Kansas City's, which had been on the
+field for 44 first-half plays.) That's the habit this chapter wants you to build: when someone credits
+halftime, ask what changed, and check how much of it was the clock and the bounces.
+:::
+
+::: {.callout-tip title="Watch for it on Sunday: the adjustment hunter"}
+Pick one team for a game and keep a short list in two columns, first half and second half.
+
+**Before the snap**
+
+- **Personnel:** which groups does the offense use, and does the defense still match them? A team that
+  lived in 11 personnel and comes out in 12 has changed its plan.
+- **Tempo:** does the offense go fast after big plays? Does the defense look rushed, with players running
+  off at the snap or a plain, undisguised look?
+- **Motion:** more or less of it after halftime, and does the defense still follow it the same way?
+- **Coverage shell:** two-high or one-high before the snap, and does it change after the half?
+
+**After the snap**
+
+- **Pressure:** count rushers on third down in each half. Did a blitz that worked disappear, or one that
+  got burned stop coming?
+- **Protection:** is a back or tight end staying in to help a struggling tackle after halftime?
+- **The fix and the answer:** when the defense changes something, watch the next series. Does the offense
+  call the play that beats the change? That's the call after the call.
+
+Then check the box score: who had more snaps in each half, and who led at halftime? Before you credit an
+adjustment, ask whether the scoreboard and the clock explain the second half.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: one fresh receiver"}
+```{python}
+#| label: fig-predict-sub
+#| fig-cap: "First-and-10, second quarter. On the previous snap the offense, in 12 personnel with both tight ends attached, gained 19 yards on a play-action pass, and the defense was in base personnel (three linebackers). The offense wants to keep the pace up and attack those linebackers with receivers, so as it hustles to the line its tired second tight end (U, purple ring) jogs off and a third wide receiver (H) runs on to the slot. The quarterback is in the shotgun waving everyone into place, and the defense's nickel back is standing on its sideline."
+off = line() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, 2.0, "R"),
+                O("X", "WR", -0.7, -14.0, "X"), O("H", "WR", -1.5, -8.0, "H"),
+                O("Y", "TE", -1.5, 8.0, "Y"), O("Z", "WR", -0.7, 14.0, "Z"), O("U", "TE", -7.5, -12.6, "U")]
+p = Play(off, base_vs_flexed(False), los=50, to_go=None)
+p.highlight("U", color=PURPLE)
+f = draw(p, lateral=(-19.0, 17.5), window=(-10.6, 15.5), width_in=5.6)
+ghost(f, p, [(-4.6, -16.6), (-2.8, -11.5), (-1.9, -8.9)], color=style.OFFENSE, alpha=0.8, lw=1.5)
+ghost(f, p, [(-7.3, -11.4), (-7.6, -16.4)], color=style.OFFENSE, alpha=0.8, lw=1.5)
+say(f, p, -4.6, -12.6, "H running on", fontsize=6.4, color=style.OFFENSE_DARK)
+say(f, p, -8.9, -9.3, "U jogging off", fontsize=6.4, color=style.OFFENSE_DARK)
+say(f, p, 13.4, 1.8, "base: 3 LBs\n(nickel on the sideline)", fontsize=6.4, color=style.DEFENSE_DARK)
+plt.show()
+```
+
+**The offense wants to snap fast and throw at those linebackers. What happens before the snap, and what
+matchup will the offense actually get?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The substitution kills the tempo. Because the offense changed a player, the umpire stands over the ball
+until the defense has had time to answer, and the defense sends its nickel on for a linebacker. The offense
+gets three receivers against a nickel defense: the ordinary matchup, not the one it wanted.** The rule
+doesn't care that it was only one player, or that the offense was in a hurry: *any* offensive substitution
+before the two-minute warning opens the defense's window. If the quarterback snaps while the umpire is
+still over the ball, the first time costs a warning and a replayed down, and after that 15 yards.
+
+Compare @fig-freeze. There the offense kept the same eleven and *moved* its tight ends into the slots
+instead of swapping one for a receiver, and the defense was stuck with linebackers on them. Same goal, and
+the difference is one player crossing the sideline. That is the cost listed earlier, "your own
+substitutions get harder," in action: the tired tight end has to stay on the field if the offense wants
+the freeze, which is why tempo teams prize tight ends who can block *and* run routes, and why they pick
+the moments they go fast. (Why sub here at all? Maybe U was gassed, or hurt, or the coach simply wanted his
+receiver more than he wanted the freeze. Sometimes that's the right trade.)
+
+If the defense, for its own reasons, *doesn't* bring the nickel on, the offense gets exactly what it
+wanted: H, a receiver, against a linebacker in the slot. That is the throw.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: the call after the call"}
+```{python}
+#| label: fig-predict-sit
+#| fig-cap: "Third-and-6, third quarter. Same offense, same 2x2 formation as in the first half, when mesh (two shallow crossers) beat the defense's man coverage three times. Since halftime the defense has shown the same single-high look, but its two inside defenders (purple rings) now sit at five to six yards and pass the crossers off to each other, and it has stopped three straight crossing plays. The dashed circles show where those two defenders sat on those plays, waiting for whichever crosser came to them."
+p = Play(spread(), cover1_look(), los=62, to_go=6)
+p.highlight("NB", "SS", color=PURPLE)
+f = draw(p, lateral=(-16.5, 16.5), window=(-8.6, 15.5), width_in=5.6)
+for spot in ((6.3, -5.4), (4.9, 5.4)):     # where the two sat on the crossing plays since halftime
+    x_, y_ = _P(f, p, *spot)
+    f.ax.add_patch(Circle((float(x_), float(y_)), 1.9, fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0,
+                          ls=(0, (3, 2)), alpha=0.6, zorder=4))
+point_to(f, p, (10.8, -2.0), (6.3, -5.4), "since halftime: sit here,\ntake whoever comes", color=style.DEFENSE_DARK,
+         fontsize=6.6)
+plt.show()
+```
+
+**The offense has seen the adjustment. What does it call now, and who is it aimed at?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**A route that uses the sitting defenders' new habit against them: most likely a pivot (whip) route by a slot
+receiver, or a crosser that keeps climbing behind them, with the target being the space the sitter just
+committed to leave.** The second-half rule tells each inside defender to stop at five or six yards and take
+whoever comes into his area. A slot receiver who runs straight at that defender as if he's crossing, then
+plants and snaps back the way he came, is working against a man who has just committed to the cross; the
+defender is standing still and has to turn and chase. Many offenses pair it with a crosser from the other
+side that, instead of flattening at five yards, keeps climbing to eight or ten, behind the sitters and in
+front of the deep safety.
+
+This is the call after the call: the offense isn't trying to beat the first-half man coverage any more,
+and it isn't simply running mesh again. It's punishing the specific way the defense fixed mesh. Expect the
+defense to answer that, too, perhaps by mixing the man coverage back in so the sitters can't be read in
+advance. Another good answer is the running back: a back who releases late on a wheel or rail route up the
+sideline is running away from defenders who are looking inside for crossers. If you said "run the ball,"
+that's reasonable partial credit: two defenders standing at five yards looking for crossers are a step
+slower to the run, but on third-and-6 most play-callers would rather attack the adjustment directly.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: no waiting"}
+```{python}
+#| label: fig-predict-sugar
+#| fig-cap: "Fourth-and-1 near midfield, early in the fourth quarter. On third down the offense was stopped a yard short. Instead of waiting, it has gathered in a tight huddle about five yards behind the ball, with the same players who were on the field for third down: three tight ends (Y, U and V) and a fullback (F). The defense still has its base personnel out there; its heavier short-yardage group is on its sideline. The play clock shows 35."
+huddle = []
+names = [("QB", "QB", "Q"), ("C", "C", "C"), ("LG", "LG", ""), ("RG", "RG", ""), ("LT", "LT", ""), ("RT", "RT", ""),
+         ("RB", "RB", "R"), ("FB", "FB", "F"), ("Y", "TE", "Y"), ("U", "TE", "U"), ("V", "TE", "V")]
+for i, (k_, pos_, lab) in enumerate(names):
+    a_ = 2 * np.pi * i / len(names) + np.pi / 2
+    huddle.append(O(k_, pos_, -4.8 + 2.2 * np.cos(a_), 2.9 * np.sin(a_), lab))
+p = Play(huddle, base_vs_tight(), los=58, to_go=1)
+f = draw(p, lateral=(-15.0, 15.0), window=(-9.6, 15.5), width_in=5.4)
+say(f, p, -5.0, 8.4, "tight huddle\nabout 5 yards back", fontsize=6.6, color=style.OFFENSE_DARK)
+say(f, p, 10.2, -5.0, "base defense still on;\nshort-yardage group\non the sideline", fontsize=6.4, color=style.DEFENSE_DARK)
+plt.show()
+```
+
+**What is the offense trying to do, and when? Then switch sides: you are the defensive coordinator. Do you
+call a timeout, and what does each choice cost you?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**It's a sugar huddle, and the offense wants to snap before the defense can get its short-yardage personnel
+on the field or set its own call: expect a fast snap, with twenty-five or more seconds still on the play
+clock, and a short-yardage run, most likely a quarterback sneak or an inside run behind the extra tight
+ends.** The huddle lets the offense give a precise call to everyone at once (no signals for the defense to
+steal) and still get to the line almost immediately. Because the offense already has its heavy personnel on
+the field from third down and isn't substituting now, the umpire won't stand over the ball for the
+defense: if the defense starts sending in its goal-line players, it risks being caught with twelve on the
+field.
+
+**The defense's choice.** *No timeout:* play the down with the base players on the field and a simple
+short-yardage call (everyone low, fill the gaps). It keeps the timeout for the end of the game, but it is
+defending fourth-and-1 with lighter players than it wants. *Timeout:* it gets its short-yardage group on and
+a proper call in, but it spends one of its three second-half timeouts with a quarter to play, and it gives
+the offense the same minute to think, change its play or bring on its own short-yardage specialists. On a
+fourth down near midfield the timeout is often worth spending, because the down is worth more than the
+timeout; skipping it makes sense for a defense that trusts its call. Either way the sugar huddle has already won something:
+it has forced the defense to choose.
+:::
+:::
+
+## Takeaways
+
+- **Adjusting is constant and small.** Between series, the booth's tallies and the tablet photos meet the
+  coaches and players on the bench, and what comes out is a rule, an alignment, a protection call or a
+  re-ranked call sheet, chosen from plays already practiced.
+- **Tempo is a weapon about the rules, not just speed.** The defense may match personnel only when the
+  offense substitutes, so an offense that keeps its eleven and goes fast freezes the defense in the wrong
+  players, tires it, and strips away its disguise. The sugar huddle gets the same benefits with a huddle's
+  clarity.
+- **Tempo costs the offense too.** Few personnel groups, simple calls, tired players and, above all, its own
+  defense back on the field after a fast three-and-out. Kelly's Eagles were the fastest offense in the
+  league for three seasons and their defense faced the most plays each year.
+- **Tempo works, a little, as a change-up.** Fast snaps gain about three hundredths of a point of EPA per
+  play more than slow ones in the same situation, at the moments play-callers choose them. That is why
+  the league tried going fast all game in the mid-2010s and then went back to using it in spots.
+- **Defenses answer tempo by being sound rather than clever:** substituting at the whistle, one-word calls,
+  rules the players finish themselves, and versatile players who never need to come off. Each has a
+  price. The league polices the rest.
+- **The call after the call** is choosing the play that beats the defense's *next* answer. Watch the series
+  after a team fixes something.
+- **"Halftime adjustments" mostly don't survive the data as a decisive, repeatable skill.** First and second
+  halves look the same league-wide, bad halves regress to the mean, being better after halftime doesn't carry
+  over from season to season, and luck, the scoreboard and who had the ball explain most big swings. Ask
+  what changed.
+
+## Connections
+
+**Builds on:** [The Game Plan](08-03-game-planning-week.qmd) (the menu every adjustment chooses from),
+[What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd) (the staff, the booth, the
+no-huddle and the 15-second cut-off), [Personnel Groupings](../02-personnel-and-formations/02-01-personnel-groupings.qmd)
+(substitution matching), [The Pre-Snap Phase](../01-foundations/01-05-the-pre-snap-phase.qmd) (checks and
+check-with-me), [Constraint Theory](08-02-constraint-theory-and-sequencing.qmd) (sequencing and
+tendencies, here played out within a game), and
+[Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)
+(what tempo takes away from a defense).
+
+**Sets up:** [The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd)
+(tempo when time is short, and the timeout decisions that halftime and the end of a game force);
+[Officiating, Replay, and the Rules of the Ball](../09-special-teams-and-the-rules-that-shape-strategy/09-04-officiating-replay-and-rules-of-the-ball.qmd)
+(the replay rules a fast snap can beat);
+[The Belichick Patriots](../12-case-studies/12-02-belichick-patriots-game-plan.qmd) (Super Bowl XXV's answer
+to the K-Gun); [Tendencies: PROE, Personnel, Motion, and Coverage](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd)
+(charting a game the way the booth does); and
+[Watching Live](../15-capstone/15-01-watching-live.qmd), which turns this chapter's adjustment hunter into a
+full live-game checklist.
+
+::: {.callout-note title="Go deeper"}
+Geoff Hobson's Bengals.com history of the 1988 season (in the notes) tells the no-huddle showdown from
+Wyche's side. The NFL rulebook's Rule 5, Section 2 is short and worth reading in full: it is the whole
+legal basis of the substitution game, and Football Zebras (footballzebras.com) explains each season's
+changes to it in plain language. Chris B. Brown's *The Art of Smart Football* (2015) is a readable collection of essays on how
+offensive ideas, tempo among them, move from college football to the NFL. For the analytics, regression to the mean is the single most useful idea to
+carry into any sports argument; this chapter's code is a template for testing any "second-half team"
+claim, and [Win Probability and Decision Analysis](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd)
+covers the score effects behind @fig-coach-halves.
+:::
+
+[^booth]: NFL Football Operations, "Sideline Technology," which describes the league-provided "analytics device" in the
+    coaches' booth (since 2025 a Copilot-powered Excel dashboard) that "supports real-time evaluation of offensive and
+    defensive personnel groupings, snap counts, play results, yards gained, and lineup tendencies":
+    <https://operations.nfl.com/the-game/technology/sideline-of-the-future/>. What each staff puts in its booth, and who
+    sits there, varies by team.
+
+[^surface]: NFL Football Operations, "Sideline Technology": "Starting in the 2014 season, all teams have sideline access
+    to league-provided, specially configured Microsoft Surface tablets, on which they receive high-resolution color
+    images almost instantaneously": <https://operations.nfl.com/the-game/technology/sideline-of-the-future/>. The league
+    tested video on the tablets in the 2015 preseason; regular-season use has been limited to still images. See
+    NFL.com, "Surface tablets might have found permanent home on NFL sideline":
+    <https://www.nfl.com/news/surface-tablets-might-have-found-permanent-home-on-nfl-sideline-0ap3000000430360>.
+    Proposals to add video were made but not adopted; when college football first allowed in-game video on its sideline
+    tablets in 2024, the NFL still allowed only still images (Sportico, Aug. 2024:
+    <https://www.sportico.com/leagues/college-sports/2024/college-football-sideline-tablet-video-rules-2024-1234793971>),
+    and the league's own page, updated for the 2025 switch to Surface Copilot+ PCs, still describes images only.
+
+[^equity]: NFL Football Operations, "NFL Equity Rule," which limits each club to as many working sideline and booth
+    viewing devices as its opponent has, and requires each club's coach-to-player system to be working, taking the
+    other club's out of use if one fails: <https://operations.nfl.com/gameday/behind-the-scenes/nfl-equity-rule>.
+
+[^halftime]: NFL Rulebook (2026), Rule 4, Section 1, Article 3: "Between the second and third periods, there shall be an
+    intermission of 13 minutes": <https://operations.nfl.com/the-rules/nfl-rulebook/>. Super Bowl halftimes run longer
+    for the show.
+
+[^playclock]: NFL Rulebook (2026), Rule 4, Section 6, Article 1 (the 40-second play clock, which starts when a play ends)
+    and Article 2 (a 25-second clock after certain administrative stoppages):
+    <https://operations.nfl.com/the-rules/nfl-rulebook/>.
+
+[^tempodata]: Course calculation from nflverse play-by-play (`game_seconds_remaining`), regular seasons. A pair of
+    snaps counts when both are runs or passes on the same drive and quarter, nothing else is logged between them, the
+    earlier play was a run or a completed pass that did not go out of bounds and had no penalty, timeout, touchdown,
+    lost fumble or spike, both snaps came with win probability between 20% and 80%, and the earlier snap came with more
+    than 2:30 left in the half (so the two-minute warning and the late-half out-of-bounds clock rules can't interfere).
+    Gaps under 5 or over 60 seconds are dropped as clock errors. The number includes the duration of the earlier play
+    (usually 4–7 seconds), so it is not the same as time left on the play clock; nflverse's `play_clock` field is not
+    usable for this. The 30-second threshold is this chapter's choice.
+
+[^subrule]: NFL Rulebook (2026), Rule 5, Section 2, Article 10 ("If a substitution is made by the offense before the
+    two-minute warning of either half, the offense shall not be permitted to snap the ball until the defense has been
+    permitted to respond with its substitutions"; "The Umpire will stand over the ball until the Referee deems that the
+    defense has had a reasonable time to complete its substitutions"; a first violation brings a warning and a replay of
+    the down, later ones a 15-yard unsportsmanlike conduct foul) and Article 11 (simulated substitutions):
+    <https://operations.nfl.com/the-rules/nfl-rulebook/>.
+
+[^defer]: The option to defer was added in 2008; coin-toss winners deferred 8% of the time in 2008 and 76% in the first half
+    of the 2015 season (Ben Goessling, ESPN, Nov. 5, 2015:
+    <https://www.espn.com/blog/nfcnorth/post/_/id/72630/for-nfl-teams-deferring-after-winning-coin-toss-is-more-than-a-50-50-choice>),
+    and about five times in six by 2018 (Zach Barnett, FootballScoop, Sept. 7, 2018:
+    <https://footballscoop.com/news/number-nfl-coaches-deferring-kickoff-skyrocketed-past-decade>).
+
+[^tmm]: Course calculation from nflverse play-by-play, regular seasons 2016–2025: accepted or declined fouls logged as
+    "Defensive Too Many Men on Field" on snaps with a down, more than two minutes left in the half, split by the
+    `no_huddle` flag. Rates: `{python} f"{TMM_RATE.loc[1.0]:.1f}"` per 1,000 no-huddle snaps against
+    `{python} f"{TMM_RATE.loc[0.0]:.1f}"` per 1,000 other snaps. Rule 5, Section 1 of the NFL Rulebook (2026) makes
+    twelve or more defenders in the formation with the snap imminent a dead-ball foul, and twelve or more on the
+    field at the snap a live-ball foul: <https://operations.nfl.com/the-rules/nfl-rulebook/>.
+
+[^zebras25]: Football Zebras, "NFL officials instructed on new procedures for substitution tactics" (Oct. 2, 2025): defenses
+    that substitute "at less than normal speed" have the window closed; a simulated substitution opens a substitution
+    period, with a warning and then a 15-yard unsportsmanlike conduct foul if the offense snaps during it; field goals
+    and the last two minutes are exempt; prompted by a Green Bay simulated substitution in Week 3:
+    <https://www.footballzebras.com/2025/10/nfl-officials-instructed-on-new-procedures-for-substitution-tactics/>.
+
+[^sugarlions]: Kirsten Tanis, "One big change coming to the Chicago Bears' new offense," *Sports Illustrated* Bear Digest
+    (July 10, 2025), on Johnson's use of "sugar huddles, where the normal huddle takes place but then is broken rapidly
+    and the play quickly executed": <https://www.si.com/nfl/bears/onsi/news/one-big-change-coming-to-the-chicago-bears-new-offense-nfl>;
+    Pride of Detroit, film breakdown of the Lions' fourth-down attempts against Green Bay (Dec. 10, 2024):
+    <https://www.prideofdetroit.com/2024/12/10/24317435/detroit-lions-film-breakdown-all-22-green-bay-packers-fourth-down-attempts-thursday-night-football>.
+
+[^wyche]: Geoff Hobson, "The Day the Bengals Made History and the Future," Bengals.com (Jan. 18, 2019), on Joe Nash's
+    injuries in the divisional round, Levy's threat, the league's plan to penalize the no-huddle, Wyche's response and the
+    21–10 win with 50 rushing attempts: <https://www.bengals.com/news/the-day-the-bengals-made-history-and-the-future>.
+    The game was played on Jan. 8, 1989. Wyche's own retellings differ in the details (how long the reversal took, what
+    he said); see also "Ten questions with Sam Wyche," Fox Sports:
+    <https://www.foxsports.com/stories/nfl/ten-questions-with-sam-wyche>. Wikipedia's "Hurry-up offense" article credits the
+    1988 Bengals as the first NFL team to use the no-huddle as a standard strategy:
+    <https://en.wikipedia.org/wiki/Hurry-up_offense>.
+
+[^kgun]: On the name: "Keith McKeller," Wikipedia, which says the K-Gun was named for McKeller's nickname "Killer" rather
+    than for Jim Kelly: <https://en.wikipedia.org/wiki/Keith_McKeller>; Wikipedia's "Hurry-up offense" says the same while
+    noting the name "is commonly thought" to come from Kelly, so the attribution is the usual one rather than settled. On
+    the date usually given for the K-Gun's debut, the Dec. 2, 1990 home game against the Eagles, when Buffalo opened
+    without huddling: Buffalo Rumblings, "December 2, 1990: Bills unveil no-huddle offense":
+    <https://www.buffalorumblings.com/2010/12/2/1848736/december-2-1990-bills-unveil-no-huddle-offense>. The Bills had used
+    the no-huddle in spots before that, as many teams did late in halves.
+
+[^xxv]: "Super Bowl XXV," Wikipedia (Giants 20, Bills 19, Jan. 27, 1991; New York's 40:33 time of possession, a Super
+    Bowl record; Buffalo's 13–3 record and league-leading 428 points in 1990; the 51–3 AFC Championship win over the
+    Raiders): <https://en.wikipedia.org/wiki/Super_Bowl_XXV>. The four straight Super Bowls were XXV–XXVIII (1990–1993
+    seasons).
+
+[^kellybio]: "Chip Kelly," Wikipedia (Oregon head coach 2009–2012; Eagles 2013–2015; 49ers 2016):
+    <https://en.wikipedia.org/wiki/Chip_Kelly>.
+
+[^kellyexit]: The Eagles released DeSean Jackson on March 28, 2014 (ESPN, "Eagles release DeSean Jackson": <https://www.espn.com/nfl/story/_/id/10688873>),
+    agreed to trade LeSean McCoy to Buffalo for Kiko Alonso in March 2015 (CBS Sports, "We grade the trade":
+    <https://www.cbssports.com/nfl/news/we-grade-the-trade-lesean-mccoy-to-bills-kiko-alonso-to-eagles>), and released
+    Kelly on Dec. 29, 2015, with one game left and the team 6–9 (PhillyVoice:
+    <https://phillyvoice.com/philadelphia-eagles-release-head-coach-chip-kelly>).
+
+[^moore]: The Saints hired Moore, the Eagles' offensive coordinator, as head coach on Feb. 11, 2025 (ESPN:
+    <https://africa.espn.com/nfl/story/_/id/43630181/new-orleans-saints-hiring-kellen-moore-philadelphia-eagles-super-bowl-2025>).
+
+[^tempowork]: Course calculation from nflverse play-by-play, regular seasons 2006–2025, using the running-clock snap pairs
+    described in the note on the tempo chart. "Same down and distance" compares fast and slower snaps within each
+    down and distance band (1–2, 3–5, 6–9, 10, 11–15 and 16+ yards to go) and weights the differences by how often
+    fast snaps occur in each band. Success rate is the share of plays with positive EPA, as in nflverse.
+
+[^pffmotion]: Daire Carragher, "NFL pre-snap motion usage reaches new highs across the NFL," PFF (Feb. 23, 2026), pre-snap
+    shift or motion rate by season: <https://www.pff.com/news/nfl-pre-snap-motion-usage-reaches-new-highs-across-the-nfl>.
+    PFF's definition differs from the FTN `is_motion` flag used later in this chapter, so the two series aren't comparable.
+
+[^dlsnaps]: Course calculation from Pro Football Reference snap counts via nflverse (`load_snap_counts`), 2025 regular
+    season: players listed as DE, DT, NT or DL with at least ten games, each player's average share of his team's
+    defensive snaps. Many edge rushers in 3-4 defenses are listed as linebackers and aren't counted.
+
+[^replay]: "Replay review in gridiron football," Wikipedia: in the NFL, scoring plays (since 2011) and turnovers (since
+    2012) are reviewed only at the replay official's initiative, and "a questionable call may not be challenged
+    once the next play is underway, so coaches may be forced to make a quick decision without the benefit of seeing
+    a replay": <https://en.wikipedia.org/wiki/Replay_review_in_gridiron_football>. The details of who may initiate a
+    review, and of the replay assist added in 2025, are in the NFL Rulebook (2026), Rule 15:
+    <https://operations.nfl.com/the-rules/nfl-rulebook/>.
+
+[^phi13]: Pro Football Reference, 2013 Philadelphia Eagles (10–6, first in the NFC East; LeSean McCoy led the league in
+    rushing): <https://www.pro-football-reference.com/teams/phi/2013.htm>. In this course's nflverse count the Eagles also
+    led all teams in rushing yards that season.
+
+[^kellydata]: Course calculation from nflverse play-by-play, regular seasons 2013–2015, runs and passes (scrambles and
+    sacks counted as passes; two-point tries excluded). Offensive rank is by EPA per play among 32 teams. Tempo numbers
+    use the method in the note on the tempo chart.
+
+[^giants11]: Associated Press, "NFL memo warns teams on faking injuries" (Sept. 21, 2011), after Deon Grant and Jacquian
+    Williams went down against the Rams' no-huddle; the memo warned of "fines, suspensions and loss of draft picks":
+    <https://www.washingtontimes.com/news/2011/sep/21/nfl-memo-warns-teams-on-faking-injuries/>. Grant denied faking.
+
+[^injury]: NFL Rulebook (2026), Rule 4, Section 5, Article 3 (injury timeouts before the two-minute warning: "the
+    injured player must leave the game for the completion of one down," with exceptions):
+    <https://operations.nfl.com/the-rules/nfl-rulebook/>.
+
+[^ncaa10]: *Sports Illustrated*, "NCAA proposes rule change to allow time for defensive substitutions" (Feb. 12, 2014),
+    on the proposal that offenses could not snap until 29 seconds remained on the play clock, outside the last two
+    minutes of each half: <https://www.si.com/college/2014/02/12/ncaa-rule-change-defensive-substitutions-targeting>.
+    The rules committee tabled it on March 5, 2014, before the Playing Rules Oversight Panel could vote on it: Associated
+    Press, "NCAA tables 10-second football rule proposal," *Bangor Daily News* (March 5, 2014):
+    <https://www.bangordailynews.com/2014/03/05/sports/ncaa-tables-10-second-football-rule-proposal/>.
+
+[^halfdata]: Course calculation from nflverse play-by-play, regular seasons 2006–2025. Snaps are runs and passes with a
+    down recorded, more than two minutes left in the half and win probability between 10% and 90%. A team-game is kept if
+    the offense had at least 15 such snaps in the first half and 10 in the second. Season-to-season correlations pair
+    each team with itself the next season (608 pairs). The coach chart uses actual scores at the end of the second and
+    fourth quarters (overtime excluded) and each game's listed head coach; coaches with at least 100 games in these
+    seasons are shown. Under pure chance, the standard error of a coach's second-half-minus-first-half margin over a few
+    hundred games is about 0.5–1 point, so differences of up to about 2 points are unremarkable.
+
+[^sb57]: "Super Bowl LVII," Wikipedia (Kansas City 38, Philadelphia 35, Feb. 12, 2023; 24–14 Philadelphia at
+    halftime): <https://en.wikipedia.org/wiki/Super_Bowl_LVII>; *Sports Illustrated*, "Patrick Mahomes Reinjures Ankle in
+    Second Quarter of Super Bowl LVII" (Feb. 13, 2023):
+    <https://www.si.com/nfl/2023/02/13/patrick-mahomes-reinjures-ankle-second-quarter-super-bowl-lvii>; Chiefs.com,
+    "Kadarius Toney Comes Through in a Big Way as Part of Record-Setting Super Bowl" (65-yard punt return, the longest in
+    Super Bowl history): <https://www.chiefs.com/news/kadarius-toney-comes-through-in-a-big-way-as-part-of-record-setting-super-bowl>.
+    Snap counts, EPA and rushing yards by half are a course calculation from nflverse play-by-play.
+
+[^ftn]: FTN charting via nflverse (`load_ftn_charting`), whose `is_motion` flag means motion occurred on the play before
+    *or at* the snap: <https://nflreadr.nflverse.com/articles/dictionary_ftn_charting.html>. It is not comparable with
+    PFF's shift-and-motion series.
