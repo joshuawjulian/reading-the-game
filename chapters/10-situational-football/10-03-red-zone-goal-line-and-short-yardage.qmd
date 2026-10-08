@@ -1,0 +1,2042 @@
+---
+title: "Red Zone, Goal Line, Two-Point Plays, and Short Yardage (Including the Tush Push)"
+subtitle: "Why football gets harder as the end zone gets closer, and the plays built for the last twenty yards and the last yard"
+description: "The compressed field and why deep zones vanish and man coverage takes over near the goal line; red-zone pass concepts (fade, back-shoulder, slant, rubs, shovel, sprint-out); designing a two-point play from the 2; goal-line personnel and the 6-2 and 5-3 goal-line defenses; the quarterback sneak and the tush push, the mid-2000s rule change that made pushing legal and the 2025 ban vote; and what nflverse data says about red-zone touchdowns, two-point tries and sneak success."
+glossary:
+  "Compressed field": "The shrunken playing area near the goal line: the end line, at most 10 yards behind the goal line, caps how deep routes and zones can go, so the defense has far less grass to protect and defenders stand closer together."
+  Fade: "A route in which the receiver releases outside and runs toward the back corner of the end zone, with the ball thrown over his outside shoulder where only he can reach it; the classic red-zone throw against press-man coverage."
+  "Back-shoulder throw": "A pass deliberately thrown short and behind a receiver who is running a vertical or fade route, to his back (usually outside) shoulder, so he stops and turns to catch it while the defender running with him is carried past."
+  "Shovel pass": "A short underhand forward pass, usually flipped by a quarterback moving sideways to a teammate crossing just in front of him behind the line of scrimmage. Because it is a forward pass, a drop is an incompletion, not a fumble."
+  "Goal-line defense": "A defensive package for the last yard or two, in which extra linemen and linebackers replace defensive backs (classically a 6-2 or 5-3 front) so that every gap along the line is filled by a defender lined up low and close to the ball."
+  "QB sneak": "A designed run in which the quarterback takes the snap under center and immediately drives forward behind his center, usually to gain a yard or less."
+  "Tush push": "A quarterback sneak in which two or three teammates line up directly behind the quarterback and shove him forward from behind at the snap; made famous by the Philadelphia Eagles from 2022 and nicknamed the Brotherly Shove."
+  "Assisting the runner": {def: "The NFL rule on teammates helping a ball carrier forward. Since the mid-2000s (2005 or 2006; accounts differ) teammates may push the runner; pulling him (grabbing and hauling him forward) is still a 10-yard foul.", aliases: ["Push rule"]}
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import os
+import re
+import logging
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from matplotlib.patches import Ellipse, FancyArrowPatch, Rectangle, Patch
+from matplotlib.lines import Line2D
+
+from gridiron import Play, Player, Field, style, draw_marker
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+READ_GREEN = "#0f7a55"           # darker step of the aqua highlight, for text and read lines
+OD, DD = style.OFFENSE_DARK, style.DEFENSE_DARK
+LINE_D, OFF_BALL, GUN, UC = -0.7, -1.5, -5.0, -1.7
+FW = 160 / 3
+
+
+def opp(n):
+    """Line of scrimmage (BDB x) for a ball on the opponent's n-yard line. The goal line is x = 110."""
+    return 110 - n
+
+
+# ---------------------------------------------------------------- players and alignments
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=key if label is None else label)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line5(split=1.6, names=False, d=LINE_D):
+    """Five offensive linemen; only the center is lettered unless names=True."""
+    out = []
+    for k, m in (("LT", -2), ("LG", -1), ("C", 0), ("RG", 1), ("RT", 2)):
+        out.append(O(k, k, d, m * split, k if names else ("C" if k == "C" else "")))
+    return out
+
+
+def spread(rb_w=-1.5, x_w=-15.0, h_w=-9.0, y_w=9.0, z_w=15.0, y_pos="TE"):
+    """11 personnel, shotgun 2x2: X and Z on the line (seven on the line with the five linemen),
+    H and Y a step off the ball in the slots."""
+    return line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, rb_w, "R"),
+                      O("X", "WR", LINE_D, x_w), O("H", "WR", OFF_BALL, h_w),
+                      O("Y", y_pos, OFF_BALL, y_w), O("Z", "WR", LINE_D, z_w)]
+
+
+def dline(w=(-5.4, -0.8, 2.4, 5.4), d=1.0):
+    return [D("WDE", "DE", d, w[0], "E"), D("WDT", "DT", d, w[1], "T"),
+            D("SDT", "DT", d, w[2], "T"), D("SDE", "DE", d, w[3], "E")]
+
+
+def moved(players, extra=None):
+    extra = extra or {}
+    return [q.moved(d=extra[q.key][0], w=extra[q.key][1]) if q.key in extra else q for q in players]
+
+
+def route_to(p, key, *pts, delay=0.0, speed=None):
+    """A route through absolute (d, w) points."""
+    start = np.array(p._cur(key))
+    return p.route(key, [tuple(np.array(q) - start) for q in pts], frame="field", delay=delay, speed=speed)
+
+
+def move_to(p, key, *pts, kind="path", delay=0.0, speed=None, target=None):
+    """Any other movement through absolute (d, w) points: path, run, block or pull."""
+    start = np.array(p._cur(key))
+    rel = [tuple(np.array(q) - start) for q in pts]
+    if kind == "block":
+        return p.block(key, pts=rel, delay=delay, speed=speed)
+    if kind == "pull":
+        return p.pull(key, rel, target=target, delay=delay, speed=speed)
+    if kind == "rush":
+        return p.rush(key, pts=rel, delay=delay, speed=speed)
+    return {"path": p.path, "run": p.run}[kind](key, rel, delay=delay, speed=speed)
+
+
+# ---------------------------------------------------------------- drawing helpers
+def P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def clean(ax, numbers=False):
+    """Drop the painted yard numbers unless asked (they sit where receivers stand); clip all text."""
+    for t in list(ax.texts):
+        if not numbers and t.get_text().isdigit() and t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, width_in=6.0, ax=None, numbers=False, **kw):
+    fld = p.draw(width_in=width_in, ax=ax, title=False, **kw)
+    clean(fld.ax, numbers)
+    return fld
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.0, ha="center", weight="normal", box=True):
+    x, y = P(fld, p, d, w)
+    fld.ax.text(float(x), float(y), text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=13,
+                fontweight=weight, linespacing=1.15,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9) if box else None)
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=7.0, ha="center"):
+    (xt, yt), (xp, yp) = P(fld, p, *text_at), P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha=ha, va="center", zorder=13, linespacing=1.15,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=7),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def branch(fld, p, pts, color=style.DEFENSE, lw=1.5, dash=(0, (3, 2.2)), end="arrow", z=5):
+    """A path through absolute (d, w) points: by default a defender's reaction (orange dashes)."""
+    xs, ys = P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    fld.ax.plot(xs, ys, color=color, lw=lw, ls=dash, zorder=z, solid_capstyle="round")
+    if end == "arrow":
+        fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>",
+                                         mutation_scale=10, color=color, lw=lw, zorder=z))
+
+
+def throw(fld, p, a, b, rad=-0.12):
+    """The ball's flight from spot a to spot b (brown dashes)."""
+    (x0, y0), (x1, y1) = P(fld, p, *a), P(fld, p, *b)
+    fld.ax.add_patch(FancyArrowPatch((float(x0), float(y0)), (float(x1), float(y1)), arrowstyle="-|>",
+                                     mutation_scale=10, color=style.BALL, lw=1.4, ls=(0, (2, 2)), zorder=6,
+                                     connectionstyle=f"arc3,rad={rad}"))
+
+
+def oval(fld, p, center, size, color=style.DEFENSE, label=None, alpha=0.13, fs=7.0, ls=(0, (3, 2))):
+    """A shaded area (depth, width) with an optional italic label at its centre."""
+    x, y = P(fld, p, *center)
+    fld.ax.add_patch(Ellipse((float(x), float(y)), size[1], size[0], fc=color, alpha=alpha, ec=color, lw=0.9,
+                             ls=ls, zorder=1.6))
+    if label:
+        fld.ax.text(float(x), float(y), label, ha="center", va="center", fontsize=fs, color=style.INK_2,
+                    style="italic", zorder=3)
+
+
+def vdim(fld, p, w, d0, d1, text, fs=6.5, side=1, color=style.INK_2):
+    """A vertical dimension line at width w from depth d0 to d1, labelled beside it."""
+    (x0, y0), (x1, y1) = P(fld, p, d0, w), P(fld, p, d1, w)
+    fld.ax.annotate("", (float(x1), float(y1)), xytext=(float(x0), float(y0)),
+                    arrowprops=dict(arrowstyle="<->", color=color, lw=0.9), zorder=6)
+    say(fld, p, (d0 + d1) / 2, w + side * 2.6, text, fontsize=fs, color=color)
+
+
+def goal_marks(fld, p, w, fs=6.3, end=True):
+    """Small 'goal line' / 'end line' tags at width w (only where the window shows them)."""
+    gl = 110 - p.los
+    say(fld, p, gl + 0.55, w, "goal line", fontsize=fs, color=style.MUTED, box=False)
+    if end and p.los + gl + 9.5 <= fld.x1:
+        say(fld, p, gl + 8.4, w, "end line", fontsize=fs, color=style.MUTED, box=False)
+
+
+def panel_title(ax, text, fs=8.6):
+    ax.set_title(text, fontsize=fs, loc="left", color=style.INK, fontweight="bold")
+
+
+def under_note(ax, text, fs=6.9):
+    ax.text(0.5, -0.02, text, transform=ax.transAxes, ha="center", va="top", fontsize=fs, color=style.INK,
+            linespacing=1.2)
+
+
+LEGEND = {
+    "route": Line2D([], [], color=style.OFFENSE, lw=1.8, label="route"),
+    "carrier": Line2D([], [], color=style.OFFENSE_DARK, lw=2.6, label="ball carrier"),
+    "block": Line2D([], [], color=style.OFFENSE_DARK, lw=1.8, marker="|", ms=7, label="block"),
+    "man": Line2D([], [], color=style.DEFENSE, lw=0.9, ls=(0, (1, 2)), label="man assignment"),
+    "react": Line2D([], [], color=style.DEFENSE, lw=1.4, ls=(0, (3, 2.2)), label="defender's path"),
+    "rush": Line2D([], [], color=style.DEFENSE, lw=1.8, label="rusher"),
+    "ring": Line2D([], [], marker="o", ls="", ms=11, mfc="none", mec=style.THIRD, mew=2, label="player to watch"),
+    "area": Patch(fc=style.DEFENSE, alpha=0.2, ec=style.DEFENSE, label="zone a defender guards"),
+    "ltg": Line2D([], [], color=style.LINE_TO_GAIN, lw=2.2, label="line to gain"),
+    "pass": Line2D([], [], color=style.BALL, lw=1.3, ls=(0, (2, 2)), label="the throw"),
+    "option": Line2D([], [], color=style.THIRD, lw=1.6, ls=(0, (3, 2.2)), label="option / second choice"),
+}
+
+
+def field_legend(ax, keys, fs=7.0, ncol=None, y=0.0):
+    hs = [LEGEND[k] for k in keys]
+    ax.legend(handles=hs, loc="upper center", bbox_to_anchor=(0.5, y), ncol=ncol or min(len(hs), 4),
+              fontsize=fs, frameon=False, handlelength=2.0, columnspacing=1.2, borderaxespad=0.2)
+
+
+# ---------------------------------------------------------------- motion: keyframes, frame strips, video
+def set_tracks(p, tracks, t_end=None):
+    """Hand-made keyframes {key: [(t, d, w), ...]} for some players, after all routes are added.
+    gridiron's man() ends on top of the receiver and cannot be slowed by traffic, so defenders
+    who get rubbed, and every body in a pile, are keyframed by hand."""
+    kf, t0, t1 = p._compile()
+    kf = dict(kf)
+    for key, rows in tracks.items():
+        q = p.players[key]
+        rows = [(min(t0, -1.0), q.d, q.w), (0.0, q.d, q.w)] + [tuple(r_) for r_ in rows]
+        kf[key] = np.array(rows, dtype=float)
+    p._compiled = (kf, t0, max(t1, t_end or 0.0, *[rows[-1][0] for rows in tracks.values()]))
+
+
+def ease(points, step=0.05):
+    """Smooth keyframes through (t, d, w) waypoints (ease in and out on each leg)."""
+    rows = []
+    for (ta, da, wa), (tb, db, wb) in zip(points[:-1], points[1:]):
+        for tt in np.arange(ta, tb, step):
+            f = (tt - ta) / (tb - ta)
+            f = f * f * (3 - 2 * f)
+            rows.append((round(float(tt), 3), da + (db - da) * f, wa + (wb - wa) * f))
+    rows.append(tuple(points[-1]))
+    return rows
+
+
+def frame(ax, p, t, lateral, window, rings=(), ltg=True, numbers=False, mr=0.75):
+    """Everyone at time t, with faint trails of where they have been and the ball's flight so far."""
+    ylo, yhi = sorted((p.ball_y - lateral[0], p.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=p.los, window=window, numbers=numbers, lateral=(ylo, yhi),
+                to_go=p.to_go if ltg else None)
+    ppy = fld.pts_per_yard()
+    wl, wr = sorted(lateral)
+    ring = dict(rings)
+    for k, q in p.players.items():
+        d, w = p.position(k, t)
+        if not (window[0] + 0.4 < d < window[1] - 0.4 and wl + 0.4 < w < wr - 0.4):
+            continue
+        if t > 0:
+            pts = np.array([p.position(k, tt) for tt in np.linspace(0.0, t, 40)])
+            if np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) > 0.3:
+                xs, ys = P(fld, p, pts[:, 0], pts[:, 1])
+                ax.plot(xs, ys, color=style.OFFENSE if q.side == "off" else style.DEFENSE, lw=1.0,
+                        alpha=0.5, zorder=3)
+        x, y = P(fld, p, d, w)
+        draw_marker(ax, float(x), float(y), q.side, q.label, ppy, ring=ring.get(k), r=mr)
+    for kind, to, te in p.ball_events:
+        if kind == "pass" and t > te:
+            ts = np.linspace(te, t, 20)
+            b = np.array([p.ball_position(tt) for tt in ts])
+            xs, ys = P(fld, p, b[:, 0], b[:, 1])
+            ax.plot(xs, ys, color=style.BALL, lw=1.4, ls=(0, (2, 1.5)), zorder=9)
+            ax.add_patch(Ellipse((float(xs[-1]) - 0.9, float(ys[-1])), 1.0, 0.62, fc=style.BALL, ec="white",
+                                 lw=0.5, zorder=11))
+    clean(ax, numbers)
+    return fld
+
+
+def strip_grid(p, times, notes, lateral, window, rings=(), ncols=2, width_in=6.5, deco=None, fs=6.9, ltg=True,
+               mr=0.75):
+    """Print stand-in for an animation: numbered panels, each with a sentence underneath."""
+    nrows = int(np.ceil(len(times) / ncols))
+    pw = width_in / ncols
+    ph = pw * (window[1] - window[0]) / abs(lateral[1] - lateral[0])
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False, figsize=(width_in, nrows * (ph + 0.8)))
+    for ax in axes.flat[len(times):]:
+        ax.axis("off")
+    for i, (ax, t) in enumerate(zip(axes.flat, times)):
+        fld = frame(ax, p, t, lateral, window, rings, ltg=ltg, mr=mr)
+        if deco:
+            deco(t, fld, p)
+        lab = "before the snap" if t < -1e-6 else ("snap" if abs(t) < 1e-6 else f"+{t:.1f} s")
+        panel_title(ax, f"{i + 1}.  {lab}")
+        under_note(ax, notes[i], fs=fs)
+    fig.tight_layout(h_pad=3.2, w_pad=0.8)
+    return fig
+
+
+def video(p, lateral, window, t_end, rings=(), width_in=5.6, t_start=-0.4, notes=None, times=None, ltg=True,
+          mr=0.75, deco=None):
+    """Web version of a strip: the same frame drawn every tenth of a second, with the strip's
+    notes as a running caption."""
+    from IPython.display import HTML, display
+    span_w, span_d = abs(lateral[1] - lateral[0]), window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w + 0.5))
+    ts = np.round(np.arange(t_start, t_end + 1e-9, 0.1), 2)
+
+    def update(i):
+        ax.clear()
+        t = float(ts[i])
+        fld = frame(ax, p, max(0.0, t), lateral, window, rings, ltg=ltg, mr=mr)
+        if deco:
+            deco(max(0.0, t), fld, p)
+        txt = "before the snap" if t < -1e-6 else ("snap" if abs(t) < 1e-6 else f"+{t:.1f} s")
+        if notes and times:
+            cur = [n for tt, n in zip(times, notes) if tt <= t + 1e-6]
+            if cur:
+                txt += "   " + cur[-1].replace("\n", " ")
+        ax.set_title(txt, fontsize=8, loc="left", color=style.INK)
+        return []
+
+    fig.tight_layout()
+    anim = animation.FuncAnimation(fig, update, frames=len(ts), interval=100, blit=False)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def pct(x, nd=0):
+    return f"{100 * x:.{nd}f}%"
+```
+
+```{python}
+#| code-summary: "Show the Python (the numbers behind this chapter: nflverse play-by-play, FTN charting and participation)"
+#| output: false
+from gridiron.data import nfl, pbp
+
+SEAS = [2022, 2023, 2024, 2025]
+_cols = ["game_id", "play_id", "season", "season_type", "posteam", "down", "ydstogo", "yardline_100",
+         "play_type", "qb_dropback", "qb_kneel", "qb_scramble", "first_down", "touchdown", "td_team",
+         "goal_to_go", "fixed_drive", "fixed_drive_result", "wp", "half_seconds_remaining", "air_yards",
+         "pass_location", "complete_pass", "sack", "pass_touchdown", "interception", "two_point_attempt"]
+PB = pbp(SEAS, columns=_cols)
+PB = PB[PB["season_type"] == "REG"].copy()
+_ftn = nfl().load_ftn_charting(seasons=SEAS).to_pandas()[["nflverse_game_id", "nflverse_play_id", "is_qb_sneak"]]
+PB = PB.merge(_ftn, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "nflverse_play_id"], how="left")
+# FTN has no tush-push flag: is_qb_sneak covers the plain sneak and the pushed version alike
+PB["sneak"] = PB["is_qb_sneak"].eq(True) & PB["play_type"].eq("run")
+PB["conv"] = PB["first_down"].eq(1) | PB["touchdown"].eq(1)
+# scrimmage plays only: no kicks, no kneel-downs, and no tries (the extra point is snapped from the 15 and the
+# two-point try from the 2, so leaving them in would invent "red-zone trips" for every touchdown)
+PLAYS = PB[PB["play_type"].isin(["pass", "run"]) & PB["qb_kneel"].ne(1) & PB["down"].notna()
+           & PB["two_point_attempt"].ne(1)].copy()
+
+# --- short yardage: sneaks vs everything else, 1 yard to go
+ONE = PLAYS[PLAYS["ydstogo"] == 1]
+SNK1 = ONE[ONE["sneak"]]
+RUN1 = ONE[(ONE["play_type"] == "run") & ~ONE["sneak"] & ONE["qb_scramble"].ne(1)]
+PAS1 = ONE[ONE["qb_dropback"] == 1]
+SN_RATE, RUN_RATE, PAS_RATE = SNK1["conv"].mean(), RUN1["conv"].mean(), PAS1["conv"].mean()
+SN_N = len(SNK1)
+SN_SEASON = SNK1.groupby("season")["conv"].mean()
+SN2 = PLAYS[(PLAYS["ydstogo"] == 2) & PLAYS["sneak"]]
+# by team: sneaks on 1 or 2 to go
+TEAM = (PLAYS[PLAYS["sneak"] & PLAYS["ydstogo"].between(1, 2)]
+        .groupby("posteam")["conv"].agg(n="size", rate="mean"))
+SN12_RATE = PLAYS[PLAYS["sneak"] & PLAYS["ydstogo"].between(1, 2)]["conv"].mean()
+USE = ONE.groupby("posteam")["sneak"].mean()          # share of 1-to-go snaps that were sneaks
+USE_MED = USE.median()
+
+# --- from the 1: touchdown rate by play type
+G1 = PLAYS[PLAYS["yardline_100"] == 1].copy()
+G1["kind"] = np.where(G1["sneak"], "sneak", np.where(G1["qb_dropback"] == 1, "dropback", "run"))
+G1["td"] = G1["td_team"].eq(G1["posteam"])
+TD1 = G1.groupby("kind")["td"].agg(["mean", "size"])
+
+# --- red-zone trips and first-and-goal
+_rz = PLAYS[PLAYS["yardline_100"] <= 20].groupby(["game_id", "posteam", "fixed_drive"])["fixed_drive_result"].first()
+RZ_TD, RZ_FG = _rz.eq("Touchdown").mean(), _rz.eq("Field goal").mean()
+RZ_SHARE = _rz.value_counts(normalize=True)
+RZ_N = len(_rz)
+_fg = (PLAYS[(PLAYS["down"] == 1) & PLAYS["goal_to_go"].eq(1)].sort_values(["game_id", "play_id"])
+       .groupby(["game_id", "posteam", "fixed_drive"]).first().reset_index())
+_fg["tdd"] = _fg["fixed_drive_result"].eq("Touchdown")
+FG_TD = _fg[_fg["yardline_100"] <= 10].groupby("yardline_100")["tdd"].agg(["mean", "size"])
+
+# --- pass rate by field zone (downs 1-3, win probability 10-90%, not the last 2 minutes of a half)
+_n = PLAYS[PLAYS["down"].isin([1, 2, 3]) & PLAYS["wp"].between(0.1, 0.9) & (PLAYS["half_seconds_remaining"] > 120)]
+ZONES = ["1–5", "6–10", "11–20", "21+"]
+_n = _n.assign(z=pd.cut(_n["yardline_100"], [0, 5, 10, 20, 100], labels=ZONES))
+PASS_RATE = _n.groupby("z", observed=True)["qb_dropback"].mean()
+
+# --- throws into the end zone from inside the 10
+_t = PLAYS[(PLAYS["play_type"] == "pass") & PLAYS["air_yards"].notna() & PLAYS["sack"].ne(1)
+           & (PLAYS["yardline_100"] <= 10)]
+_ez = _t[(_t["air_yards"] >= _t["yardline_100"]) & _t["pass_location"].isin(["left", "right"])]
+_sh = _t[_t["air_yards"] < _t["yardline_100"]]
+EZ_OUT, SHORT_IN = _ez["complete_pass"].mean(), _sh["complete_pass"].mean()
+EZ_TD, SHORT_TD = _ez["pass_touchdown"].mean(), _sh["pass_touchdown"].mean()       # touchdowns per throw
+EZ_INT, SHORT_INT = _ez["interception"].mean(), _sh["interception"].mean()
+
+# --- coverage near the goal line (FTN-charted participation, one charting source: 2023-2025)
+_part = nfl().load_participation(seasons=[2023, 2024, 2025]).to_pandas()[
+    ["nflverse_game_id", "play_id", "defense_coverage_type"]]
+CV = (PLAYS[(PLAYS["qb_dropback"] == 1) & (PLAYS["season"] >= 2023)]
+      .merge(_part, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"], how="inner"))
+# COVER_9 is left out of both groups: staffs use the name for a rotated Cover 3 and for split-field calls
+CV = CV[CV["defense_coverage_type"].notna()
+        & ~CV["defense_coverage_type"].isin(["BLOWN", "COMBO", "PREVENT", "COVER_9"])]
+CV["two_high"] = CV["defense_coverage_type"].isin(["COVER_2", "2_MAN", "COVER_4", "COVER_6"])
+TWO_HIGH_5 = CV.loc[CV["yardline_100"] <= 5, "two_high"].mean()
+TWO_HIGH_21 = CV.loc[CV["yardline_100"] > 20, "two_high"].mean()
+
+# --- two-point tries since the extra point moved back (2015-2025) and quarterback careers on 1 to go
+_two = pbp(list(range(2000, 2026)), columns=["season", "season_type", "posteam", "two_point_attempt",
+                                               "two_point_conv_result", "play_type", "rusher_player_name",
+                                               "ydstogo", "down", "first_down", "touchdown", "qb_kneel"])
+TP = _two[(_two["two_point_attempt"] == 1) & (_two["season_type"] == "REG") & _two["season"].between(2015, 2025)
+          & _two["play_type"].isin(["pass", "run"])].copy()
+TP["ok"] = TP["two_point_conv_result"].eq("success")
+TP_ALL, TP_N = TP["ok"].mean(), len(TP)
+TP_KIND = TP.groupby("play_type")["ok"].agg(["mean", "size"])
+_xp = pbp(list(range(2015, 2026)), columns=["season", "season_type", "extra_point_attempt", "extra_point_result"])
+_xp = _xp[(_xp["season_type"] == "REG") & (_xp["extra_point_attempt"] == 1)]
+XP_RATE = _xp["extra_point_result"].eq("good").mean()           # the 33-yard kick, 2015-2025
+
+
+def _count(s, pos):
+    """Players of the given positions in a participation personnel string ('1 C, 2 G, ..., 3 WR')."""
+    return sum(int(n) for n, q in re.findall(r"(\d+) ([A-Z]+)", str(s)) if q in pos)
+
+
+# --- what defenses play on two-point tries, and how heavy personnel uses play-action (2023-2025 participation)
+_pp = nfl().load_participation(seasons=[2023, 2024, 2025]).to_pandas()[
+    ["nflverse_game_id", "play_id", "offense_personnel", "defense_personnel", "defense_coverage_type",
+     "defenders_in_box"]]
+_pb = PB[(PB["season"] >= 2023) & PB["play_type"].isin(["pass", "run"])].merge(
+    _pp, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"], how="inner")
+_pb["dbs"] = _pb["defense_personnel"].map(lambda s: _count(s, {"CB", "FS", "SS", "S", "DB"}))
+_pb["wrs"] = _pb["offense_personnel"].map(lambda s: _count(s, {"WR"}))
+_tp = _pb[_pb["two_point_attempt"] == 1]
+TP_NICKEL = (_tp["dbs"] >= 5).mean()                              # five or more defensive backs
+TP_GOALLINE = (_tp["dbs"] <= 3).mean()                            # three or fewer: a goal-line package
+_tpc = _tp[(_tp["qb_dropback"] == 1) & _tp["defense_coverage_type"].notna()
+           & ~_tp["defense_coverage_type"].isin(["BLOWN", "COMBO", "PREVENT", ""])]
+TP_MAN = _tpc["defense_coverage_type"].isin(["COVER_0", "COVER_1", "2_MAN"]).mean()
+TP_N3 = len(_tp)
+TP_BOX67 = _tp["defenders_in_box"].between(6, 7).mean()
+_ftnpa = nfl().load_ftn_charting(seasons=[2023, 2024, 2025]).to_pandas()[
+    ["nflverse_game_id", "nflverse_play_id", "is_play_action"]]
+_g3 = _pb[(_pb["yardline_100"] <= 3) & _pb["down"].notna() & _pb["qb_kneel"].ne(1) & _pb["two_point_attempt"].ne(1)]
+_g3 = _g3.merge(_ftnpa, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "nflverse_play_id"], how="left")
+_g3["heavy"] = _g3["wrs"] <= 1                                    # at most one wide receiver
+_g3db = _g3[_g3["qb_dropback"] == 1]
+HEAVY_PASS = _g3.loc[_g3["heavy"], "qb_dropback"].mean()
+HEAVY_PA = _g3db.loc[_g3db["heavy"], "is_play_action"].mean()
+LIGHT_PA = _g3db.loc[~_g3db["heavy"], "is_play_action"].mean()
+
+
+def qb_one(name, team=None):
+    q = _two[(_two["rusher_player_name"] == name) & (_two["play_type"] == "run") & (_two["ydstogo"] <= 1)
+             & _two["down"].notna() & _two["qb_kneel"].ne(1)]
+    if team:
+        q = q[q["posteam"] == team]
+    return len(q), (q["first_down"].eq(1) | q["touchdown"].eq(1)).mean()
+
+
+BRADY = qb_one("T.Brady")
+ALLEN = qb_one("J.Allen", "BUF")
+HURTS = qb_one("J.Hurts", "PHI")
+```
+
+Third-and-goal from the 6. For three quarters this offense has gone up and down the field: its
+receivers have been open, its quarterback has had time, its average play has gained six yards. Now,
+with the end zone close enough to hit with a thrown helmet, it gains one yard on first down, nothing on
+second, and on third the quarterback holds the ball, finds nobody, and throws it out of the back of
+the end zone. The kicker comes on. The announcer sighs about "red-zone efficiency" as if the offense
+had lost its nerve. It didn't. The field got smaller, and a smaller field is a different game: some
+plays stop working, others start, and the defense gets to do things it could never do at midfield.
+This chapter is about that different game, from the 20-yard line to the last inch.
+
+**You'll be able to:**
+
+- Explain the **compressed field**: why deep zones vanish near the goal line, why man coverage and
+  press take over, and what that does to the offense's options.
+- Recognize the main red-zone pass concepts on a broadcast (the fade, the back-shoulder throw, the
+  slant, the rub, the shovel pass and the sprint-out) and say what each is built to beat.
+- Sketch two or three good two-point plays from the 2 and explain why they are good bets.
+- Identify goal-line personnel on both sides, including the 6-2 and 5-3 goal-line defenses, and say why
+  "low man wins" there.
+- Explain how the quarterback sneak and the tush push work, the mid-2000s rule change that made pushing legal,
+  and where the ban debate stands for 2026.
+- Read the numbers: how often red-zone trips end in touchdowns, how each yard closer changes the odds,
+  how often two-point tries and sneaks succeed, and what those rates do and don't tell you.
+
+::: {.callout-note title="You'll need"}
+- **[Third Down: The Money Down](10-02-third-down.qmd)**: down-and-distance buckets, the line to gain
+  (the "sticks"), and the defense's situational packages and pressures. This chapter moves the same
+  thinking to the end of the field.
+- **[Contact Rules and Penalties as Strategy](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd)**:
+  [offensive pass interference](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd)
+  (a receiver may not block a defender more than a yard downfield before the pass is touched), which decides
+  when a rub becomes an illegal pick.
+- **[Option Football](../03-the-run-game/03-04-option-football.qmd)**: why a quarterback who runs adds a
+  blocker (the "extra hat"), and QB power, the designed quarterback run.
+- Helpful too: [Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd) (Cover 0 and Cover 1, press
+  technique, banjo calls against stacks) and the
+  [rub route](../04-the-passing-game/04-04-dropback-concepts.qmd) from Dropback Concepts.
+:::
+
+**How to read the diagrams.** Offense is blue circles, defense orange squares, and *left* and *right*
+always mean the offense's. On offense, Q is the quarterback, R the running back, F a fullback, X and Z the
+wide receivers, H the slot receiver (in the heavy goal-line pictures, H is instead a
+[wing](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd): a tight end or H-back lined
+up a step off the line, just outside the end man), Y and U tight ends, and P a pusher in the tush push; C is
+the center, G a pulling guard, and the other linemen are unlettered unless a picture needs them. On defense, E and T are the ends and tackles of the defensive line,
+N a nose tackle, M, W and S linebackers, CB a cornerback, \$ the nickel back (the fifth defensive back), and
+SS and FS the safeties. Solid blue arrows are routes, the thick dark arrow is the ball carrier, lines ending
+in a short bar are blocks, dotted orange lines are man-coverage assignments, dashed orange lines are a
+defender's path, and brown dashes are the ball in the air. The shaded rectangle at the top of most pictures
+is the end zone.
+
+## The field runs out
+
+Start with geometry, because everything in this chapter follows from it. The
+[**red zone**](../01-foundations/01-02-downs-distance-and-field-position.qmd) is the last 20 yards before
+the goal line. Behind the goal line is the end zone, 10 yards deep, and behind that the **end line**, the
+back edge of the playable field. A pass caught beyond the end line is out of bounds. So from the
+opponent's 20, the offense has at most 30 yards to work with; from the 10, 20 yards; from the 2, where
+two-point tries are snapped, 12.
+
+```{python}
+#| label: fig-rz-map
+#| fig-cap: "The last 35 yards of the field, offense moving up the page. The red zone starts at the 20; inside the 10 and inside the 5, the offense and defense change personnel and plays. Two snaps happen at fixed spots: the extra-point kick from the 15 and the two-point try from the 2. The arrows on the right show the whole depth the defense has to protect, from the ball to the end line, from three spots: it shrinks from 30 yards to 12."
+fig, ax = plt.subplots(figsize=(6.4, 5.3))
+fld = Field(ax=ax, orient="vertical", los=50, window=(25, 70), numbers=True)   # x = 75 .. 120
+for t_ in list(ax.texts):                     # keep the yard numbers on the left only (arrows go on the right)
+    if t_.get_position()[0] > FW / 2:
+        t_.remove()
+
+
+def band(x0, x1, alpha, color=style.DEFENSE):
+    ax.add_patch(Rectangle((0, x0), FW, x1 - x0, fc=color, alpha=alpha, ec="none", zorder=0.5))
+
+
+band(90, 110, 0.07)
+band(100, 110, 0.07)
+band(105, 110, 0.08)
+
+
+def txt(px, x, s, ha="left", fs=7.6, color=style.INK, weight="normal", box=True):
+    ax.text(px, x, s, ha=ha, va="center", fontsize=fs, color=color, fontweight=weight, zorder=12,
+            linespacing=1.2, bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none", alpha=0.85)
+            if box else None)
+
+
+txt(2.2, 82.5, "OUTSIDE THE 20\nthe whole field to defend", fs=7.2, color=style.INK_2)
+txt(2.2, 95.5, "RED ZONE\nthe 20 to the goal line", weight="bold")
+txt(2.2, 103.0, "INSIDE THE 10", weight="bold")
+txt(2.2, 107.6, "GOAL-LINE AREA\ninside the 5", weight="bold", fs=7.2)
+txt(2.2, 115.0, "END ZONE\n10 yards deep", weight="bold", color=style.INK_2)
+# snap spots
+for x, s in ((95, "extra-point kick: snapped from the 15"), (108, "two-point try: snapped from the 2")):
+    ax.plot([19.0, 34.0], [x, x], color=style.INK_2, lw=1.2, ls=(0, (3, 2)), zorder=3)
+    ax.plot([FW / 2], [x], marker="o", ms=4, color=style.BALL, zorder=4)
+    txt(FW / 2, x + 1.15, s, ha="center", fs=6.8, color=style.INK_2)
+txt(FW / 2, 118.3, "end line", ha="center", fs=6.8, color=style.INK_2, box=False)
+txt(FW / 2, 110.9, "goal line", ha="center", fs=6.8, color=style.INK_2, box=False)
+# depth to the end line from the 20, the 10 and the 2
+for px, x0, lab in ((44.0, 90, "30 yd"), (47.5, 100, "20 yd"), (51.0, 108, "12 yd")):
+    ax.annotate("", (px, 120), xytext=(px, x0), arrowprops=dict(arrowstyle="<->", color=OD, lw=1.0), zorder=6)
+    ax.text(px, x0 - 1.3, lab, ha="center", va="center", fontsize=6.6, color=OD, fontweight="bold", zorder=12,
+            bbox=dict(boxstyle="round,pad=0.15", fc=style.SURFACE, ec="none", alpha=0.9))
+ax.text(47.5, 85.6, "ball to\nend line", ha="center", va="center", fontsize=6.6, color=OD, zorder=12)
+plt.show()
+```
+
+Why does that matter so much? Because of what defenses do between the 20s. A normal defense spends its
+safeties, and sometimes its corners, on the deepest part of the field, 15, 25, 40 yards away, because a
+receiver who gets behind everyone there scores. The defense has to keep its depth. Near the goal line that
+problem disappears: the end line protects the deepest part of the field for free. It is the twelfth
+defender that never misses a tackle. Every defender who had been guarding grass 30 yards downfield is now
+available to do something else: crowd the receivers, cover a man, or rush. That is the
+[**compressed field**](../../appendices/glossary.qmd#gl-compressed-field): less grass to defend, the
+same eleven defenders to defend it.
+
+```{python}
+#| label: fig-compressed
+#| fig-cap: "If the defense stays in zone: the same Cover 3 (three deep defenders, four underneath; see the Cover 3 chapter) at midfield and at the opponent's 10, with each defender drawn where he ends his drop. Left: at midfield the deep defenders must keep backing up, because there are 30-odd yards of field behind them, so a hole about five yards tall opens between the underneath zones and the deep ones. That hole is where intermediate routes are caught. Right: at the 10 the end line caps the deep zones, so the deep defenders can stop at the goal line and sit almost on top of the underneath layer. The hole between the levels shrinks to a yard or two, and all seven zones fit into the 20 yards in front of the end line. Shaded ovals are zones."
+def cover3_panel(ax, los, deep_d, deep_c, deep_h, under_d, window, title):
+    off = spread(y_pos="TE")
+    dfn = dline() + [D("MIKE", "MIKE", under_d, -4.0, "M"), D("WILL", "WILL", under_d, 4.0, "W"),
+                     D("NB", "NB", under_d - 0.5, -12.5, "$"), D("SS", "SS", under_d - 0.5, 12.5, "SS"),
+                     D("LCB", "CB", deep_d, -16.5, "CB"), D("RCB", "CB", deep_d, 16.5, "CB"),
+                     D("FS", "FS", deep_d + 0.5, 0.0, "FS")]
+    p = Play(off, dfn, los=los, to_go=None)
+    fld = draw(p, ax=ax, lateral=(-21.5, 21.5), window=window)
+    for w in (-17.8, 0.0, 17.8):
+        oval(fld, p, (deep_c, w), (deep_h, 17.6))
+    for w, wid in ((-4.0, 7.5), (4.0, 7.5), (-12.5, 9.0), (12.5, 9.0)):
+        oval(fld, p, (under_d, w), (5.0, wid))
+    panel_title(ax, title)
+    return p, fld
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.1))
+# midfield: underneath zones reach about 10.5 yards, the deep zones start about 16 and run off the picture
+p, f = cover3_panel(axes[0], 60, 18.5, 22.0, 12.0, 8.0, (-6.5, 30.5), "At midfield")
+vdim(f, p, -8.4, 10.5, 16.0, "hole:\n5 yd", fs=6.4, side=-1, color=OD)
+(xa, ya) = P(f, p, 27.6, 9.0)
+axes[0].annotate("", (float(xa), float(ya) + 2.2), xytext=(float(xa), float(ya) - 0.4),
+                 arrowprops=dict(arrowstyle="-|>", color=OD, lw=1.1), zorder=8)
+say(f, p, 28.4, -2.0, "30+ more yards behind them", fontsize=6.4, color=OD)
+# at the 10: underneath zones run to the goal line, the deep zones sit between the goal line and the end line
+p, f = cover3_panel(axes[1], opp(10), 12.5, 15.2, 8.2, 7.0, (-6.5, 22.6), "At the opponent's 10")
+(xh0, yh0), (xh1, yh1) = P(f, p, 9.2, -8.4), P(f, p, 11.4, -8.4)
+axes[1].annotate("", (float(xh1), float(yh1)), xytext=(float(xh0), float(yh0)),
+                 arrowprops=dict(arrowstyle="<->", color=OD, lw=0.9), zorder=6)
+say(f, p, 10.3, -3.4, "hole: 1–2 yd", fontsize=6.4, color=OD)
+say(f, p, 20.4, 0.0, "end line: nothing behind them", fontsize=6.4, color=OD, box=False)
+fig.tight_layout(w_pad=1.0)
+field_legend(axes[0], ["area"], fs=6.8, y=-0.01)
+plt.show()
+```
+
+Defenses use that freedom in three big ways, and you can see all three on any red-zone snap.
+
+**Deep zones shrink, then disappear.** A zone defense asks defenders to guard areas. The picture above shows
+what happens *if* the defense stays in zone: the deep areas get squeezed against the end line until they
+are barely deeper than the underneath ones, the hole between the two layers closes, and the spaces between
+defenders, the "windows" a quarterback throws into, get small. But a zone with nothing behind it is
+wasting its deep defenders, which is why, inside the 10, many defenses stop pretending: with no deep middle to protect, they bring the safeties down. In FTN's charting of
+2023–2025 dropbacks, two-deep shells (Cover 2, Cover 4 and their relatives, which keep two safeties deep)
+were called on `{python} pct(TWO_HIGH_21)` of plays outside the red zone but only `{python} pct(TWO_HIGH_5)`
+inside the 5.[^twohigh]
+
+**Man coverage and press take over.** Man coverage's great weakness is the receiver who beats his man
+deep, with no help behind. Near the goal line, "deep" doesn't exist: a receiver who runs past his man
+runs out of the end zone. So defenses play much more man coverage, and much more of it
+[**press**](../06-pass-coverage/06-01-coverage-fundamentals.qmd), with the defender a yard from the
+receiver at the snap, jamming him to wreck the timing. In
+[Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd) you saw that charters label roughly four in
+five dropbacks inside the 5 as man, and that
+[**Cover 0**](../06-pass-coverage/06-02-man-coverage.qmd) (man coverage with nobody deep at all) becomes
+the single most common call there.
+
+**The box fills up.** Every defender not needed in deep coverage can line up near the ball. That squeezes
+the run game: the extra defenders take away the cutback lanes and the creases a running back finds between
+the 20s.
+
+The freed defenders have two more jobs, both from [Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd).
+A safety who no longer needs to stay deep can **rob the middle**: in a Cover 1
+[robber](../06-pass-coverage/06-02-man-coverage.qmd) or
+[lurk](../06-pass-coverage/06-02-man-coverage.qmd) call he sits a few yards deep in the middle of the end
+zone, reading the quarterback, waiting for the slant or the crossing route. And a defense with a defender
+to spare can **double the best target**: a
+[bracket](../06-pass-coverage/06-02-man-coverage.qmd), two defenders on one star tight end or receiver, is
+expensive at midfield and affordable when nobody is needed deep.
+
+The offense suffers in quieter ways too. Its deep routes are gone, so the threat that stretches the
+defense vertically, the one that keeps safeties honest between the 20s, is gone with them. Every route is
+shorter, so every throw arrives with defenders closer to the catch point. Yards after the catch shrink,
+because there are fewer yards left to gain. And the playbook narrows: concepts that need 15 or 20 yards of
+depth to develop (the deep crosser, the post, most of
+[Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd)) simply don't fit.
+
+One rule quietly tilts the last few yards toward the run. A
+[touchdown](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd) is scored the instant any part of the
+ball, held by a runner, *breaks the plane* of the goal line, the invisible wall rising from its front edge.
+A quarterback stopped dead on a sneak scores if he got the ball over the line before he was stopped. A
+receiver has a harder test: to make a
+[catch](../09-special-teams-and-the-rules-that-shape-strategy/09-04-officiating-replay-and-rules-of-the-ball.qmd)
+in the end zone he must control the ball and get both feet (or a knee) down in bounds, and every red-zone
+throw near the sideline or the end line is a fight with that boundary as well as with the defender.[^scoring]
+
+::: {.callout-important title="Why it exists"}
+The compressed field isn't a scheme; it's a consequence of the rulebook's geometry. But it explains a whole
+family of schemes. Defenses get more aggressive near the goal line because the end line gives them deep
+help for free: man coverage, press and Cover 0 are cheap there in a way they never are at midfield.
+Offenses answer with plays that win *quickly* and *close to the line* (slants, rubs, fades thrown before
+the safety can help, quarterback runs) or that create a numbers advantage the defense can't cover. The
+trade: everything is faster and more crowded, so mistakes cost more. A tipped ball near the goal line is
+an interception risk in a crowd; a one-yard loss on third-and-goal can be the difference between seven
+points and three.
+:::
+
+### What each yard is worth
+
+The numbers make the squeeze concrete. Across the 2022–2025 regular seasons, `{python} f"{RZ_N:,}"`
+drives ran at least one play inside the opponent's 20. Of those, `{python} pct(RZ_TD)` ended in a
+touchdown and `{python} pct(RZ_FG)` in a field goal; the rest ended in turnovers, failed fourth downs,
+missed kicks or the end of a half.[^rz] That 4-point gap between a touchdown (with its extra point) and a
+field goal is the whole economics of the red zone, and it is why coaches judge their red-zone offense by
+the share of trips that end in touchdowns, not by yards.
+
+Look closer and the value of each yard is steep. The chart follows every drive that reached a
+first-and-goal and asks how often it ended in a touchdown, depending on where that first-and-goal was
+snapped.
+
+```{python}
+#| label: fig-fg-td
+#| fig-cap: "How often a drive scored a touchdown after reaching first-and-goal at each yard line, 2022–2025 regular seasons. From the 1, nine drives in ten score; from the 10, under six in ten. The bars count only the first first-and-goal snap of each drive, so a drive that moved from the 8 to the 2 counts at the 8. Data: nflverse play-by-play."
+fig, ax = plt.subplots(figsize=(6.4, 2.9))
+ys = FG_TD.index.astype(int)
+vals = FG_TD["mean"].values * 100
+bars = ax.bar(ys, vals, color=style.SERIES[0], width=0.7)
+for b, v, n in zip(bars, vals, FG_TD["size"].values):
+    ax.text(b.get_x() + b.get_width() / 2, v + 1.5, f"{v:.0f}%", ha="center", va="bottom", fontsize=7.5,
+            color=style.INK)
+ax.set_xticks(ys)
+ax.set_xticklabels([f"{y}" for y in ys], fontsize=8)
+ax.set_xlabel("First-and-goal snapped from the opponent's ... yard line", fontsize=8)
+ax.set_ylabel("Drives ending in a TD", fontsize=8)
+ax.set_ylim(0, 105)
+ax.set_yticks([0, 25, 50, 75, 100])
+ax.set_yticklabels(["0%", "25%", "50%", "75%", "100%"], fontsize=7.5)
+ax.grid(axis="x", visible=False)
+ax.invert_xaxis()
+ax.set_title("Touchdown rate after first-and-goal, by starting yard line", fontsize=9.5)
+fig.tight_layout()
+plt.show()
+```
+
+Read the chart from left to right, the way the offense moves. From the 10 to the 5, each yard gained adds
+about `{python} f"{(FG_TD.loc[5, 'mean'] - FG_TD.loc[10, 'mean']) * 20:.0f}"` percentage points of touchdown
+chance; from the 2 to the 1, it adds about
+`{python} f"{round(FG_TD.loc[1, 'mean'] * 100) - round(FG_TD.loc[2, 'mean'] * 100):.0f}"`. Those last
+yards are the hardest to gain and the most valuable, which is why the last part of this chapter is devoted
+to plays designed to gain exactly one.
+
+The playbook shifts with the field. In neutral situations (first to third down, neither team running
+away with the game, outside the last two minutes of a half), offenses passed on
+`{python} pct(PASS_RATE.loc["11–20"])` of plays between the 11 and the 20, a little below the
+`{python} pct(PASS_RATE.loc["21+"])` everywhere farther out, but on only `{python} pct(PASS_RATE.loc["1–5"])` inside the 5.[^passrate] Near the goal line
+the run comes back, for reasons you will see: when there are only a few yards to gain, a play that gains
+them by force is as good as a play that gains them by deception.
+
+::: {.callout-caution title="Common misconception"}
+"At the goal line, smart teams pass; running into a crowd is old-fashioned." From the 1, passing and
+handing off come out about even, and the quarterback sneak beats both. In 2022–2025, dropbacks snapped from
+the 1 scored on `{python} pct(TD1.loc["dropback", "mean"])` of plays and ordinary runs on
+`{python} pct(TD1.loc["run", "mean"])`, while quarterback sneaks scored on
+`{python} pct(TD1.loc["sneak", "mean"])`.[^fromone] (These are rates per *play*; the 90% in the chart above
+is per *drive*, which gets up to four tries. The sneak section returns to why one yard at the goal line is
+harder than one yard anywhere else.) A pass needs a receiver to beat tight man coverage in a tiny space; a
+run needs one yard. Neither play is always right, and the best goal-line offenses keep both alive so the
+defense can't sell out against either.
+:::
+
+## Red-zone pass concepts
+
+Because the field is short and the coverage is tight and usually man, red-zone pass plays share a style. They
+are quick (the ball is out in a second or two), they attack a specific matchup or leverage, and many of
+them are built to create separation that man coverage can't prevent, rather than to find holes in zones.
+Here are the six you will see most.
+
+### The fade
+
+The [**fade**](../../appendices/glossary.qmd#gl-fade) is the simplest red-zone pass and the most
+argued-about. The receiver releases outside his defender and runs for the back corner of the end zone;
+the quarterback throws the ball high and outside, over the receiver's outside shoulder, toward the
+pylon, to a spot where only the receiver can catch it. It needs room, so the receiver usually lines up
+with five to eight yards between himself and the sideline: room for the ball to land outside him and still
+in bounds, with space for both feet. Line up much wider and there is no room for the ball; much narrower,
+and the safety in the middle has a shorter run to help. And it needs a matchup: a tall receiver with
+strong hands, ideally against a smaller corner.
+
+Why does it fit the red zone? The fade beats a pressed corner with no deep help outside, and the
+compressed field produces plenty of those. If the corner lines up inside the receiver (inside
+[leverage](../04-the-passing-game/04-03-quick-game.qmd), to take away the slant), the receiver releases
+outside, and the corner is left chasing from behind and inside, unable to see the ball. The safety is
+usually in the middle of the end zone, too far away to arrive before a ball that is in the air for barely
+a second.
+
+### The back-shoulder throw
+
+Against a corner who has learned to run with the fade, stride for stride and over the top, the
+[**back-shoulder throw**](../../appendices/glossary.qmd#gl-back-shoulder-throw) is the answer. The
+quarterback throws *short and behind* the receiver, to his back (outside) shoulder. The receiver,
+reading the throw, stops, turns back to the ball and catches it, while the defender, running full speed
+with his back to the quarterback, is carried a step or two past. A defender taught to take away the deep
+ball can't take this away without opening the deep ball again.
+
+```{python}
+#| label: fig-fade-bs
+#| fig-cap: "Two throws from one route, from the opponent's 8 (the goal line is 8 yards up the page). X is lined up about 7 yards from the sideline. Left, the fade: the corner (CB) presses with inside leverage, so X releases outside and the ball is dropped over his outside shoulder toward the back pylon, where the corner, trailing underneath, can't see it and the safety in the middle of the end zone can't reach it in time. Right, the back-shoulder throw: this corner runs with X stride for stride, on his inside hip, to take away the fade. The ball is thrown early, low and behind X's outside shoulder, away from the corner; X stops, turns back and catches it a yard or two deep in the end zone, near the sideline, while the corner, running with his back to the ball, is carried past. Short of the goal line, a back-shoulder catch is just a new set of downs."
+def fade_panel(ax, kind):
+    off = [O("C", "C", LINE_D, 0.0), O("LG", "LG", LINE_D, -1.6, ""), O("LT", "LT", LINE_D, -3.2, ""),
+           O("QB", "QB", GUN, 0.0, "Q"), O("X", "WR", LINE_D, -19.5)]
+    cb_w = -18.7
+    dfn = [D("CB", "CB", 1.1, cb_w, "CB"), D("FS", "FS", 11.5, -6.0, "FS"), D("T", "DT", 1.0, -0.8, "T"),
+           D("E", "DE", 1.0, -4.4, "E")]
+    p = Play(off, dfn, los=opp(8), to_go=None)
+    if kind == "fade":
+        route_to(p, "X", (2.0, -20.4), (8.0, -21.6), (13.6, -22.3))
+    else:
+        route_to(p, "X", (2.5, -19.9), (10.5, -20.0), (9.3, -21.2))
+    p.highlight("X")
+    fld = draw(p, ax=ax, lateral=(-26.67, 1.6), window=(-6.5, 18))
+    goal_marks(fld, p, -3.0)
+    if kind == "fade":
+        branch(fld, p, [(1.1, -18.7), (5.0, -19.8), (11.6, -21.0)], color=style.DEFENSE)
+        branch(fld, p, [(11.5, -6.0), (12.2, -10.0), (12.8, -13.0)], color=style.DEFENSE)
+        throw(fld, p, (-5.0, 0.0), (13.0, -22.2), rad=-0.15)
+        say(fld, p, 16.0, -15.4, "over the outside\nshoulder, to the pylon", fontsize=6.4, color=style.BALL)
+        say(fld, p, 4.6, -14.0, "corner trails\nunderneath", fontsize=6.4, color=DD)
+        say(fld, p, 14.6, -6.5, "safety too\nfar inside", fontsize=6.4, color=DD)
+        panel_title(ax, "Fade: win outside, throw over the top")
+    else:
+        branch(fld, p, [(1.1, -18.7), (5.0, -18.9), (12.5, -19.1)], color=style.DEFENSE)
+        throw(fld, p, (-5.0, 0.0), (9.2, -21.0), rad=-0.1)
+        say(fld, p, 14.4, -13.2, "corner runs with\nhis back to the ball", fontsize=6.4, color=DD)
+        say(fld, p, 4.4, -10.5, "thrown low and behind;\nX stops and turns", fontsize=6.4, color=style.BALL)
+        say(fld, p, 9.6, -12.0, "caught in\nthe end zone", fontsize=6.4, color=OD)
+        panel_title(ax, "Back-shoulder: throw behind him")
+    return fld
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.9))
+fade_panel(axes[0], "fade")
+fade_panel(axes[1], "bs")
+fig.tight_layout(w_pad=1.0)
+field_legend(axes[0], ["route", "react", "pass"], fs=6.6, ncol=3, y=-0.01)
+plt.show()
+```
+
+The fade is famous for being thrown too often. It looks easy (one receiver, one defender, a jump ball)
+and it fails a lot: the ball has to be put in a small space near the sideline and the end line, and a
+corner who stays on the receiver's hip can knock it away at the last moment. In 2022–2025, passes thrown
+into the end zone toward the outside from inside the 10, a rough stand-in for fades and back-shoulder
+throws that the public data can't separate, were completed `{python} pct(EZ_OUT)` of the time, against
+`{python} pct(SHORT_IN)` for throws that stayed short of the goal line. But a completion in the end zone *is*
+a touchdown, and a short completion usually isn't: per throw, the end-zone throws scored
+`{python} pct(EZ_TD)` of the time and the short ones `{python} pct(SHORT_TD)`.[^ezthrows] So the fade is not
+a bad play. It fails more often than it works, but when it works it ends the drive in the best possible
+way; a short completion often just moves the ball a few yards closer and leaves another down to win.
+The danger is the offense that has nothing else and throws it on every third-and-goal, where a
+defense that knows it is coming can sit on it.
+
+Contact helps the fade too. Defensive
+[pass interference](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd)
+in the end zone gives the offense a first down at the 1, the most valuable spot on the field (nine drives in
+ten score from there, as the first-and-goal chart showed), so a corner who grabs a fading receiver is gambling
+too. The other way round, penalties near the goal line lose their teeth:
+[half the distance](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd)
+means a 5-yard foul on the 4 moves the ball only 2 yards.
+
+::: {.callout-note title="Film room: Green Bay Packers, the Rodgers–Nelson years (2010s)"}
+The back-shoulder throw belongs to many quarterbacks, but its most famous partnership was Aaron Rodgers and
+Jordy Nelson in Mike McCarthy's Green Bay offense. The Packers' Hall of Fame profile of Nelson notes that the
+throw began as a red-zone play and that the two of them took it all over the field; Nelson, 6-foot-3, described
+it as a reaction rather than a set call: no signal, no pre-snap adjustment, just the ball arriving behind him
+when the corner ran too well.[^bs] **What to notice:** the receiver's head. On a fade he keeps running and
+looks up late; on a back-shoulder throw he snaps his head around early, sinks his hips, and the corner keeps
+running. If you see a corner win a fade early in a game, watch for the back-shoulder throw against him next
+time.
+:::
+
+### The slant, and leverage
+
+If the corner shades *outside* to take away the fade, the receiver has the inside, and the quick
+[slant](../04-the-passing-game/04-01-passing-fundamentals.qmd) (two steps up, then a sharp break inside) is
+the answer. It is caught a yard or two into the end zone, in the space between the corner and whoever is
+playing the middle, before either can close. Often a second receiver runs to the flat underneath it, the
+[slant-flat](../04-the-passing-game/04-03-quick-game.qmd) pairing from Quick Game, so the defender between
+them can't take both. Put the two together and you have the red zone's first lesson about leverage: **the
+corner can take away the fade or the slant, not both**, and the receiver's release attacks the side he
+gives up.
+
+Defenses know the odds, and most red-zone corners play *inside* leverage on purpose. They use the sideline
+and the end line as help and concede the fade, the lowest-percentage throw on the field, to take away the
+slant, a high-percentage one thrown at their backs. The leverage game is a bet on both sides: the corner
+bets the quarterback can't make the hard throw, and the offense bets on its receiver against that corner.
+
+The slant's risk lives in the middle of the field. The throw goes inside, where linebackers and safeties
+stand, so a defender who reads it can jump in front. That's what happened on the most famous red-zone
+slant ever thrown, coming up in the film room on rubs.
+
+### The sprint-out
+
+The fourth concept moves the quarterback. On a sprint-out he takes the snap and runs toward one
+sideline, with a group of routes flooding that side at three depths: high (a corner route to the back
+pylon), middle (an out at the goal line) and low (a flat route in front of the goal line). The sprint-out does three things
+near the goal line. It cuts the field in half, so the quarterback reads only one side. It moves the launch
+point away from the middle of the pocket, where interior rushers come free quickest. And it makes the
+quarterback a runner, so the defender in the flat faces a choice: cover the receiver in front of him, or
+come up to stop the quarterback. Either answer is wrong.
+
+```{python}
+#| label: fig-slant-sprint
+#| fig-cap: "Two quick red-zone answers. Left, from the 5, slant-flat: the corner shades outside to take away the fade, so X takes the inside on a slant, caught a yard into the end zone. H runs to the flat underneath, which pulls the nickel (\\$) outside and empties the slant's window. The danger is the linebacker (W): if he reads the throw and drives on it, the slant becomes an interception. Right, from the 7, a sprint-out: the quarterback runs right behind the running back's block, with three routes flooding that side at three depths: high (Z to the back pylon), middle (Y's out at the goal line) and low (H to the flat). The nickel (\\$), ringed, has the flat. If he widens with H, the quarterback runs inside him (green); if he comes up for the quarterback, the ball goes to H, or to Y above him."
+def slant_panel(ax):
+    off = spread()
+    dfn = dline() + [D("MIKE", "MIKE", 4.0, -1.5, "M"), D("WILL", "WILL", 4.0, -6.0, "W"),
+                     D("NB", "NB", 3.0, -9.5, "$"), D("SS", "SS", 3.5, 9.5, "SS"),
+                     D("LCB", "CB", 1.1, -15.9, "CB"), D("RCB", "CB", 1.1, 15.9, "CB"),
+                     D("FS", "FS", 11.0, -2.0, "FS")]
+    p = Play(off, dfn, los=opp(5), to_go=None)
+    route_to(p, "X", (1.8, -15.0), (6.4, -9.8))
+    route_to(p, "H", (0.9, -9.8), (2.7, -12.4), (3.1, -18.0))
+    p.highlight("X")
+    fld = draw(p, ax=ax, lateral=(-21.5, 3.5), window=(-6.5, 15))
+    goal_marks(fld, p, -19.0)
+    branch(fld, p, [(1.1, -15.9), (3.6, -15.6), (5.2, -12.6)], color=style.DEFENSE)
+    branch(fld, p, [(4.0, -6.0), (5.0, -7.6), (5.6, -8.6)], color=style.DEFENSE)
+    branch(fld, p, [(3.0, -9.5), (3.8, -11.6), (4.2, -14.2)], color=style.DEFENSE)
+    say(fld, p, -2.8, -11.4, "H to the flat\npulls the $ out", fontsize=6.2, color=OD)
+    throw(fld, p, (-5.0, 0.0), (6.0, -10.3), rad=0.08)
+    say(fld, p, -3.6, -17.4, "corner shades\noutside", fontsize=6.4, color=DD)
+    say(fld, p, 8.6, -12.6, "caught a yard\ninto the end zone", fontsize=6.4, color=OD)
+    point_to(fld, p, (8.2, -2.6), (5.0, -7.2), "the danger:\nW jumps it", fontsize=6.4, color=DD)
+    panel_title(ax, "Slant from the 5")
+    return fld
+
+
+def sprint_panel(ax):
+    off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, 1.5, "R"),
+                     O("X", "WR", LINE_D, -15.0), O("Y", "TE", LINE_D, 4.8),
+                     O("H", "WR", OFF_BALL, 10.0), O("Z", "WR", OFF_BALL, 14.5)]
+    dfn = dline(w=(-5.4, -0.8, 2.4, 6.0)) + [
+        D("MIKE", "MIKE", 4.0, 0.5, "M"), D("WILL", "WILL", 4.0, -4.5, "W"),
+        D("NB", "NB", 3.0, 10.5, "$"), D("SS", "SS", 8.0, 9.0, "SS"),
+        D("LCB", "CB", 5.0, -15.0, "CB"), D("RCB", "CB", 4.5, 17.0, "CB"),
+        D("FS", "FS", 11.0, -3.0, "FS")]
+    p = Play(off, dfn, los=opp(7), to_go=None)
+    move_to(p, "QB", (-5.6, 2.6), (-4.6, 6.6), (-3.8, 8.2), kind="run")
+    move_to(p, "RB", (-3.4, 4.6), (-0.4, 5.8), kind="block")
+    route_to(p, "Z", (4.5, 15.0), (12.8, 18.0))
+    route_to(p, "Y", (5.4, 4.8), (6.6, 14.8))                 # middle: out at the goal line
+    route_to(p, "H", (0.6, 10.9), (1.2, 16.4))                # low: the flat
+    for k in ("LT", "LG", "C", "RG", "RT"):
+        p.block(k, pts=[(-0.6, 1.0)])
+    p.highlight("NB")
+    fld = draw(p, ax=ax, lateral=(-7.0, 21.0), window=(-6.5, 17))
+    goal_marks(fld, p, 1.5)
+    branch(fld, p, [(-3.8, 8.2), (-1.6, 8.0), (2.4, 8.0)], color=style.THIRD, lw=1.6)
+    point_to(fld, p, (-4.9, 15.6), (3.0, 10.5), "$: the flat (H)\nor the QB?", fontsize=6.4, color=READ_GREEN)
+    say(fld, p, 13.4, 14.6, "high", fontsize=6.4, color=OD)
+    say(fld, p, 8.2, 13.2, "middle", fontsize=6.4, color=OD)
+    say(fld, p, -0.6, 17.6, "low", fontsize=6.4, color=OD)
+    say(fld, p, 15.2, 6.4, "three levels,\none side", fontsize=6.4, color=OD)
+    panel_title(ax, "Sprint-out from the 7")
+    return fld
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.8))
+slant_panel(axes[0])
+sprint_panel(axes[1])
+fig.tight_layout(w_pad=1.0)
+field_legend(axes[0], ["route", "carrier", "react", "pass"], fs=6.4, ncol=2, y=-0.01)
+field_legend(axes[1], ["block", "option", "ring"], fs=6.4, ncol=2, y=-0.01)
+plt.show()
+```
+
+### Rubs: the man-beater's home field
+
+The rub is the red zone's signature pass. A [rub route](../04-the-passing-game/04-04-dropback-concepts.qmd)
+is a route designed to cross close to a teammate's, so a defender chasing one receiver has to go around
+the other. Near the goal line it is at its most powerful, for a simple reason: the compressed field
+produces the man coverage rubs are built to beat. A zone defender doesn't care if two receivers cross in
+front of him; a man defender who has to follow one particular receiver does.
+
+Offenses set up rubs with alignment. Two receivers lined up one behind the other (a
+[stack](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)) or three in a tight
+triangle (a [bunch](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)) put their
+defenders close together, where any crossing route creates traffic. Watch the animation (the frame strip
+in print): the front man in a stack runs a slant inside, the back man runs out toward the pylon, and the
+nickel back covering the back man has to get through the slant to follow him. The stack can be run either
+way round: the front man can run the "pick" and the back man the slant, as Seattle did in the Super Bowl
+coming up below. What matters is that one receiver's route crosses the path of the other's defender.
+
+```{python}
+#| label: fig-rub
+#| fig-cap: "A stack rub against man coverage from the opponent's 4, simulated (BDB-format tracking generated by gridiron, not recorded). Z, the front of the stack, breaks into a slant after one step. H, a step behind him, runs out toward the corner of the end zone. The corner (CB) presses Z and goes with him. The nickel (\\$, ringed green), two yards off and inside H, has to cross Z's path to follow H outside; Z never blocks him, he just runs his route, and the paths cross within about two yards of the line, but the nickel must go over the top of Z and loses a step. The ball is out at 1.0 second (panel 3), before the nickel has recovered; by the catch, toward the corner of the end zone, H is about three yards clear and the nickel is chasing from above and inside, behind the throw."
+def rub_play():
+    off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.5, "R"),
+                     O("X", "WR", LINE_D, -15.0), O("Y", "TE", LINE_D, -4.8),
+                     O("Z", "WR", LINE_D, 11.0), O("H", "WR", -2.2, 11.4)]
+    dfn = dline(w=(-6.4, -0.8, 2.4, 5.0)) + [
+        D("MIKE", "MIKE", 3.5, 1.0, "M"), D("WILL", "WILL", 3.5, -4.0, "W"),
+        D("NB", "NB", 2.0, 9.4, "$"), D("RCB", "CB", 1.0, 12.3, "CB"),
+        D("LCB", "CB", 1.0, -15.6, "CB"), D("SS", "SS", 2.5, -5.5, "SS"),
+        D("FS", "FS", 9.5, 1.0, "FS")]
+    p = Play(off, dfn, los=opp(4), to_go=None)
+    for k in ("LT", "LG", "C", "RG", "RT"):
+        p.block(k, pts=[(-1.0, 0.0)])
+    for k in ("WDE", "WDT", "SDT", "SDE"):
+        p.rush(k, pts=[(-1.4, 0.0)], speed=2.0)
+    p.dropback(1.0)
+    route_to(p, "Z", (1.0, 11.0), (4.0, 7.2), (5.6, 5.0), speed=6.5)
+    route_to(p, "H", (-0.4, 12.6), (1.4, 15.0), (4.0, 18.2), (6.0, 20.2), speed=6.0)
+    p.pass_to("H", t=0.95)
+    tc = catch_time(p)
+    set_tracks(p, {
+        # the corner presses Z from outside and trails him inside, about a yard and a half behind
+        "RCB": ease([(0.0, 1.0, 12.3), (0.3, 1.1, 12.0), (0.6, 1.4, 10.9), (1.0, 2.9, 8.7), (1.5, 3.9, 7.4),
+                     (tc, 4.4, 6.6)]),
+        # the nickel starts two yards off, inside H; Z's slant crosses his path, so he goes over the top
+        "NB": ease([(0.0, 2.0, 9.4), (0.3, 2.6, 9.9), (0.6, 3.6, 10.6), (1.0, 4.2, 12.0), (1.4, 4.8, 13.8),
+                    (1.8, 6.0, 15.6), (tc, 7.6, 17.2)]),
+        "MIKE": ease([(0.0, 3.5, 1.0), (0.6, 3.6, 2.4), (1.6, 3.8, 4.0)]),
+    }, t_end=tc + 0.1)
+    return p
+
+
+def catch_time(p, which=0):
+    """When the ball arrives, the way gridiron times a pass (ball speed and the receiver's path)."""
+    from gridiron.play import BALL_SPEED, _interp
+    kf, _, _ = p._compile()
+    kind, to, te = [e for e in p.ball_events if e[0] == "pass"][which]
+    start, t_arr = p.ball_position(te), te + 0.5
+    for _ in range(4):
+        t_arr = te + float(np.linalg.norm(_interp(kf[to], t_arr) - start)) / BALL_SPEED
+    return round(t_arr, 1)
+
+
+def rub_deco(t, fld, p):
+    if t <= 0:
+        goal_marks(fld, p, 4.0, end=False)
+
+
+RUB = rub_play()
+RUB_TC = catch_time(RUB)
+RUB_T = [0.0, 0.6, 1.0, RUB_TC]
+RUB_N = ["Stack: Z in front, H behind.\nCB presses Z; $ sits inside on H.",
+         "Z slants inside, right across\nthe $'s path; H breaks outside.",
+         "Ball out. The $ has to go over\nthe top of Z: a step behind.",
+         "H catches it toward the corner,\nthree yards clear of the $."]
+RUB_LAT, RUB_WIN = (-3.0, 23.5), (-7.0, 12.0)
+if PDF:
+    strip_grid(RUB, RUB_T, RUB_N, RUB_LAT, RUB_WIN, rings=(("NB", style.THIRD),), ltg=False, mr=0.62,
+               deco=rub_deco)
+    plt.show()
+else:
+    video(RUB, RUB_LAT, RUB_WIN, RUB_TC + 0.1, rings=(("NB", style.THIRD),), notes=RUB_N, times=RUB_T, ltg=False,
+          mr=0.62, deco=rub_deco)
+```
+
+**When does a rub become a pick?** The receiver in front may run his route; he may not *block*. The NFL
+calls [offensive pass interference](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd)
+on a receiver who deliberately initiates contact with a defender more than one yard past the line of
+scrimmage, before the pass is touched, to get a teammate open. So offenses teach the rub man to run *through
+the defender's path* rather than at the defender, and to keep running, and they design the crossing to
+happen as close to the line as they can. Officials judge intent at full speed, and a quarterback can't
+know in advance whether the flag will come, which is part of why rubs are both effective and maddening.
+
+**How defenses answer.** The cleanest answer is not to be in pure man. Against a stack or bunch, defenders
+can play a [**banjo**](../06-pass-coverage/06-02-man-coverage.qmd): instead of each locking onto one
+receiver before the snap, they decide at the release, the outside defender taking whoever breaks outside
+and the inside defender whoever breaks inside, so nobody has to fight through the traffic. Another
+answer is to stop the rub at its source: a defender who jams the front receiver at the line knocks the
+traffic out of the way before it can form. That second answer decided a Super Bowl.
+
+::: {.callout-note title="Film room: Seattle vs. New England, Super Bowl XLIX (2014 season)"}
+February 1, 2015, Glendale, Arizona. The Patriots led 28–24, and Seattle had the ball second-and-goal at
+New England's 1 with about 26 seconds left and one timeout. Seattle had three wide receivers on the field;
+New England sent in its goal-line defense. Instead of handing off to Marshawn Lynch, Seattle threw. Pete
+Carroll said afterward that the goal-line personnel gave his receivers the better matchups, and that he
+wanted to use the down while keeping enough clock for all of his remaining plays. The receivers were
+stacked on the right: Jermaine Kearse in front, to run a pick route, and Ricardo Lockette behind him, to
+slant inside. Patriots cornerback Brandon Browner, lined up on the front man, jammed Kearse at the line, so
+the rub never happened, and rookie Malcolm Butler, off the ball on the back man, drove in front of Lockette
+and intercepted Russell Wilson's pass at the goal line. "I remembered the formation they were in, two
+receivers stacked," Butler said; "I just knew they were going to [a] pick route." New England won
+28–24.[^xlix] **What to notice:** every ingredient of this chapter. A stack rub against man coverage near
+the goal line, the picture in the frame strip above with the routes swapped; a slant thrown into the
+middle, where defenders live; and the defense's two answers to the rub: a press jam that removed the
+traffic, and an off defender who had studied the formation. The call was second-guessed for years, but the
+concept was a standard one. It failed because one defender beat the rub at the line and another read it.
+:::
+
+### The shovel pass
+
+The [**shovel pass**](../../appendices/glossary.qmd#gl-shovel-pass) is a run play that happens to be a pass.
+The quarterback takes the snap and moves sideways along the line, as if rolling out or keeping the ball; a
+teammate (a tight end, a back, sometimes a slot receiver) comes across just in front of him, behind the
+line of scrimmage, and the quarterback flips the ball to him underhand. The receiver then runs behind a
+pulling lineman into the gap the defense has just vacated.
+
+```{python}
+#| label: fig-shovel
+#| fig-cap: "A shovel pass from the opponent's 9. The play-side end (E, ringed green) is left unblocked on purpose; he rushes at the quarterback, who steps right as if to run or throw. The left guard (G, ringed purple, his path in purple) pulls behind the line and turns up through the hole to block the Will linebacker. The tight end (Y), lined up on the left, crosses behind the line just behind the guard, takes an underhand flip from the quarterback (brown dashes), a forward pass caught behind the line of scrimmage, and follows the guard up into the gap the unblocked end has just left. The running back swings the other way, and H's route takes the nickel (\\$) out of the picture."
+off = line5(names=False) + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.6, "R"),
+                           O("X", "WR", LINE_D, -15.0), O("Y", "TE", OFF_BALL, -6.0),
+                           O("H", "WR", OFF_BALL, 10.0), O("Z", "WR", LINE_D, 15.0)]
+dfn = dline(w=(-5.4, -0.8, 2.4, 5.6)) + [
+    D("MIKE", "MIKE", 4.0, -1.8, "M"), D("WILL", "WILL", 4.0, 2.6, "W"), D("NB", "NB", 3.5, 10.6, "$"),
+    D("SS", "SS", 6.0, -9.0, "SS"), D("LCB", "CB", 2.0, -15.5, "CB"), D("RCB", "CB", 2.0, 15.5, "CB"),
+    D("FS", "FS", 11.0, 2.0, "FS")]
+off = [O("LG", "LG", LINE_D, -1.6, "G") if q.key == "LG" else q for q in off]   # letter the puller
+p = Play(off, dfn, los=opp(9), to_go=None)
+move_to(p, "QB", (-4.6, 2.2), (-4.4, 3.8), kind="path")
+move_to(p, "Y", (-3.0, -2.2), (-2.7, 1.6), (-0.4, 4.5), (6.4, 4.9), kind="run")
+move_to(p, "LG", (-1.5, -1.4), (-1.6, 2.4), (0.4, 3.6), (2.6, 3.0), kind="pull")
+move_to(p, "LT", (0.1, -4.6), kind="block")
+move_to(p, "C", (0.1, -0.9), kind="block")
+move_to(p, "RG", (0.1, 2.0), kind="block")
+move_to(p, "RT", (0.4, 1.4), (0.2, 2.6), kind="block")
+move_to(p, "RB", (-5.8, -4.6), (-3.4, -9.4), kind="path")
+move_to(p, "SDE", (-1.6, 4.6), (-3.6, 3.4), kind="rush")
+route_to(p, "H", (6.0, 10.0), (10.0, 8.0))
+p.highlight("SDE")
+p.highlight("LG", color=style.SERIES[6])
+fld = draw(p, width_in=6.0, lateral=(-12.0, 13.5), window=(-8.0, 14))
+branch(fld, p, [(LINE_D, -1.6), (-1.5, -1.4), (-1.6, 2.4), (0.4, 3.6), (2.6, 3.0)], color=style.SERIES[6], lw=2.0,
+       dash="-", z=4.5)                                   # the puller's path, in his ring colour
+point_to(fld, p, (2.7, -4.7), (-0.7, -1.6), "G pulls", fontsize=6.6, color=style.SERIES[6])
+throw(fld, p, (-4.4, 3.8), (-2.8, 1.8), rad=0.3)
+goal_marks(fld, p, -9.0)
+say(fld, p, -2.6, 5.0, "1", fontsize=8.5, color=DD, weight="bold")
+say(fld, p, -3.7, 1.0, "2", fontsize=8.5, color=style.BALL, weight="bold")
+say(fld, p, 6.6, 2.0, "3", fontsize=8.5, color=OD, weight="bold")
+fld.ax.text(0.5, -0.005, "1  the unblocked end chases the QB     2  underhand flip: a forward pass, caught behind the line"
+            "     3  Y follows the pulling guard", transform=fld.ax.transAxes, ha="center", va="top", fontsize=6.8,
+            color=style.INK)
+field_legend(fld.ax, ["route", "carrier", "block", "pass"], fs=6.8, y=-0.045)
+plt.show()
+```
+
+Why does it work so well near the goal line? Because goal-line defenses are built to *attack*. Defensive
+ends charge upfield at a rolling quarterback; linebackers fly toward the first thing they see. The shovel
+pass turns that aggression into empty space: the end who chases the quarterback has taken himself out of
+the gap the ball is about to come through.
+
+The flip is a forward pass, and that has two consequences. The good one: a dropped shovel is merely an
+incomplete pass, not a fumble. The constraint: because it counts as a pass, the offensive linemen may not
+run upfield until it is thrown. The NFL's
+[ineligible-downfield rule](../04-the-passing-game/04-06-rpos.qmd) applies to every forward pass, even one
+caught behind the line: no lineman may be more than a yard past the line before the throw unless he got
+there while blocking.[^ineligible] So the flip comes fast, while the linemen are still fighting at the line,
+and only then does the pulling guard lead the way up the field. College spread offenses made the shovel
+option famous; in the NFL it is a change-up, used a few times a season, usually near the goal line or on a
+short third down. Andy Reid's Kansas City offenses have used it for years: the go-ahead touchdown in a
+27–20 win over Philadelphia in September 2017 was a 15-yard shovel to tight end Travis Kelce, from a look
+that for its first half-second resembled a quarterback keep.[^shovel]
+
+## Two-point plays: designing a play from the 2
+
+After a touchdown, the scoring team gets one more snap, a **try**. It can kick an
+[extra point](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd) for one point or run a play from
+the 2-yard line for two: the
+[**two-point conversion**](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd). The NFL adopted it in
+1994, borrowing it from college football (which snaps its try from the 3) and from the
+[American Football League](../11-history/11-01-single-wing-to-scoring-drought.qmd), the NFL's 1960s rival,
+which had used it throughout its ten seasons. In
+2015 the league moved the extra-point kick back to the 15-yard line, turning a near-automatic kick into a
+33-yard attempt, and began letting the defense score two points by returning a failed try to the other
+end zone.[^twopt] (The rules are unchanged for 2026: still snapped from the 2.) *Whether* to go for two,
+and when the scoreboard demands it, belongs to
+[The Clock, the Two-Minute Drill, and Fourth Down](10-04-clock-and-game-management.qmd). This section is
+about *what to call*.
+
+From 2015 to 2025, NFL teams converted `{python} pct(TP_ALL)` of their `{python} f"{TP_N:,}"` regular-season
+two-point tries (counting only tries that produced a run or a pass, not the ones wiped out by penalties).
+Runs converted `{python} pct(TP_KIND.loc["run", "mean"])` of the time, passes
+`{python} pct(TP_KIND.loc["pass", "mean"])`, yet teams passed on about
+`{python} pct(TP_KIND.loc["pass", "size"] / TP_N)` of tries.[^twodata] (Is going for two worth it at all?
+Two points times `{python} pct(TP_ALL)` is about `{python} f"{2 * TP_ALL:.2f}"` points a try, almost exactly
+what the `{python} pct(XP_RATE)` extra-point kick is worth. That near-tie is why the scoreboard, not the
+average, decides, and it is 10-04's subject.) Why not run every time?
+
+Part of the answer is selection. The teams that run on two-point tries are mostly the ones built to:
+a running quarterback, a heavy line, a reliable short-yardage play. Passes include the desperate tries
+late in games, when everyone knows the offense needs two and the defense has called its best pass defense.
+The bigger part is game theory. A two-point try is a single snap the defense knows is coming, from a spot
+it has studied all week. If an offense ran every time, defenses would load the box with every man they
+have, and the run rate would fall. The value of a two-point play depends on what the defense expects, and
+the best calls are ones that work against more than one defense.
+
+The defense's side of the try looks like any goal-to-go snap. It matches the offense's personnel rather
+than bringing in a goal-line package: on the 2023–2025 tries charted with personnel, the defense had five or
+more defensive backs on the field `{python} pct(TP_NICKEL)` of the time and a goal-line group of three or
+fewer only `{python} pct(TP_GOALLINE)`, because most offenses went for two with three wide receivers. Its
+coverage is the red zone's, only more so: `{python} pct(TP_MAN)` of charted two-point dropbacks faced man
+coverage.[^tpdef]
+
+That gives a simple design rule for a two-point play: **two good options that put one defender in
+conflict**, ideally a run threat and a pass, or a man-beater and a zone-beater on the same snap. Here are
+four common shapes. (The public data can't say which shape converts best: play-by-play records the run or
+the pass, not the concept, so the case for each is in the football, not in a success rate.)
+
+```{python}
+#| label: fig-twopoint
+#| fig-cap: "Four two-point shapes from the 2 (the goal line is 2 yards up the page; the end line 12). A, bunch rub against man: Y and Z cross just behind H, the point man (the front receiver of the bunch), so the defenders covering them must sort out the traffic; any hesitation leaves one open. B, snag against zone: three receivers make a triangle (shaded) against the two defenders in that area: H's corner route high, Z's snag in the middle (five yards, then sit down facing the quarterback) and the back's flat route low. C, sprint-out option: the tight end seals the end inside, the back stays in to protect, and the quarterback runs at the flat defender (the nickel, \\$, ringed), who must choose between H in the end-zone flat and the quarterback running (green); Z's vertical route clears the corner away. D, QB power, blocked as in Option Football: the tight end and right tackle double-team the tackle in front of them, the right guard climbs to the backside linebacker, the running back, who would otherwise carry, kicks out the end, and the pulling guard (G, ringed purple, his path in purple) leads through the hole for the Mike, with the quarterback right behind him through the hole between the tight end's down block and the back's kick-out. Everyone else blocks too: ten blockers for one runner."
+def tp_base(variant):
+    if variant == "bunch":
+        off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.5, "R"),
+                         O("X", "WR", LINE_D, -15.0), O("H", "WR", LINE_D, 8.0),
+                         O("Y", "TE", -2.2, 6.4), O("Z", "WR", -2.2, 9.6)]
+    elif variant == "snag":
+        off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, 1.5, "R"),
+                         O("X", "WR", LINE_D, -15.0), O("Y", "TE", LINE_D, 4.8),
+                         O("H", "WR", OFF_BALL, 8.5), O("Z", "WR", OFF_BALL, 13.0)]
+    elif variant == "sprint":
+        off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, 1.5, "R"),
+                         O("X", "WR", LINE_D, -15.0), O("Y", "TE", LINE_D, 4.8),
+                         O("H", "WR", OFF_BALL, 11.5), O("Z", "WR", OFF_BALL, 14.5)]
+    else:
+        off = [O("LG", "LG", LINE_D, -1.6, "G") if q.key == "LG" else q for q in line5(names=True)]
+        off = off + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, 1.5, "R"),
+                                   O("X", "WR", LINE_D, -15.0), O("Y", "TE", LINE_D, 4.8),
+                                   O("H", "WR", OFF_BALL, 9.5), O("Z", "WR", OFF_BALL, 14.5)]
+    return off
+
+
+def tp_panel(ax, variant, title):
+    off = tp_base(variant)
+    base_d = dline(w=(-5.4, -0.8, 2.4, 7.0 if variant == "power" else 6.4))
+    if variant == "bunch":
+        dfn = base_d + [D("MIKE", "MIKE", 3.5, 0.0, "M"), D("WILL", "WILL", 3.5, -3.6, "W"),
+                        D("NB", "NB", 2.0, 9.6, "$"), D("SS", "SS", 3.6, 5.2, "SS"),
+                        D("RCB", "CB", 3.6, 10.8, "CB"), D("LCB", "CB", 1.0, -15.6, "CB"),
+                        D("FS", "FS", 9.0, -1.0, "FS")]
+    elif variant == "snag":
+        dfn = base_d + [D("MIKE", "MIKE", 3.5, 1.0, "M"), D("WILL", "WILL", 3.5, -3.5, "W"),
+                        D("NB", "NB", 5.0, 7.2, "$"), D("SS", "SS", 9.2, 3.0, "SS"),
+                        D("RCB", "CB", 2.6, 15.2, "CB"), D("LCB", "CB", 4.0, -15.0, "CB"),
+                        D("FS", "FS", 9.0, -3.0, "FS")]
+    else:
+        dfn = base_d + [D("MIKE", "MIKE", 3.5, 1.0, "M"), D("WILL", "WILL", 3.5, -3.5, "W"),
+                        D("NB", "NB", 2.6, 10.6, "$"), D("SS", "SS", 7.0, 6.0, "SS"),
+                        D("RCB", "CB", 4.0, 15.2, "CB"), D("LCB", "CB", 4.0, -15.0, "CB"),
+                        D("FS", "FS", 9.0, -3.0, "FS")]
+    p = Play(off, dfn, los=opp(2), to_go=None)
+    lat, win = (-6.5, 17.5), (-6.5, 12)
+    if variant == "bunch":
+        route_to(p, "H", (4.6, 8.0), (9.6, 13.4))
+        route_to(p, "Y", (0.6, 7.2), (1.8, 13.6), (2.4, 15.6))
+        route_to(p, "Z", (0.4, 9.6), (2.6, 6.2), (3.4, 2.4))
+        for dk, ok in (("NB", "H"), ("SS", "Y"), ("RCB", "Z")):
+            p.man(dk, ok)
+        p.highlight("Y", "Z")
+        fld = draw(p, ax=ax, lateral=lat, window=win)
+        point_to(fld, p, (-3.8, 13.5), (0.5, 8.6), "Y and Z cross\nbehind H: traffic", fontsize=6.4, color=OD)
+    elif variant == "snag":
+        route_to(p, "Z", (4.6, 13.0), (5.0, 9.8))
+        route_to(p, "H", (4.6, 8.5), (9.6, 15.0))
+        route_to(p, "RB", (-3.6, 5.5), (0.8, 15.6))
+        fld = draw(p, ax=ax, lateral=lat, window=win)
+        tri = [(5.0, 9.8), (9.6, 15.0), (0.8, 15.6), (5.0, 9.8)]
+        xs, ys = P(fld, p, np.array([q[0] for q in tri]), np.array([q[1] for q in tri]))
+        ax.fill(xs, ys, color=style.THIRD, alpha=0.12, zorder=1.7)
+        ax.plot(xs, ys, color=READ_GREEN, lw=1.0, ls=(0, (2, 2)), zorder=1.8)
+        say(fld, p, -5.0, 11.4, "shaded: 3 receivers\nv 2 defenders", fontsize=6.3, color=READ_GREEN)
+    elif variant == "sprint":
+        move_to(p, "QB", (-5.5, 2.6), (-4.6, 6.0), (-3.4, 8.0), kind="run")
+        move_to(p, "RB", (-3.8, 3.0), (-1.6, 3.6), kind="block")                 # stays in: inside protection
+        move_to(p, "Y", (0.4, 6.0), kind="block")                                 # seals the end inside
+        route_to(p, "Z", (2.6, 13.6), (9.4, 13.0))                                # clears the corner
+        route_to(p, "H", (1.0, 12.0), (1.6, 15.0))                                # the end-zone flat
+        p.highlight("NB")
+        fld = draw(p, ax=ax, lateral=lat, window=win)
+        branch(fld, p, [(-3.4, 8.0), (-1.4, 8.6), (2.2, 8.8)], color=style.THIRD, lw=1.6)
+        point_to(fld, p, (8.8, 9.4), (2.6, 10.6), "flat defender:\nH or the QB?", fontsize=6.4, color=READ_GREEN)
+    else:
+        move_to(p, "QB", (-4.0, 0.6), (-2.4, 3.2), (-0.6, 4.6), (1.4, 4.9), (3.6, 4.9), kind="run")
+        move_to(p, "RB", (-3.2, 4.6), (0.0, 6.1), kind="block")                 # kicks out the end
+        move_to(p, "LG", (-1.6, -1.4), (-1.6, 2.6), (0.2, 4.2), (2.6, 2.0), kind="pull")   # leads for the Mike
+        move_to(p, "C", (0.2, -0.5), kind="block")                               # back on the backside tackle
+        move_to(p, "LT", (-1.2, -3.4), kind="block")                             # hinge
+        move_to(p, "RG", (0.6, 1.2), (2.8, -2.6), kind="block")                  # climbs to the backside Will
+        move_to(p, "RT", (0.3, 2.7), kind="block")                               # down on the 3-technique
+        move_to(p, "Y", (0.4, 3.4), kind="block")                                # down, with the tackle
+        move_to(p, "H", (1.6, 10.4), kind="block")
+        move_to(p, "Z", (3.0, 14.4), kind="block")
+        p.highlight("QB")
+        p.highlight("LG", color=style.SERIES[6])
+        fld = draw(p, ax=ax, lateral=lat, window=win)
+        branch(fld, p, [(LINE_D, -1.6), (-1.6, -1.4), (-1.6, 2.6), (0.2, 4.2), (2.6, 2.0)], color=style.SERIES[6],
+               lw=2.0, dash="-", z=4.5)
+        say(fld, p, -4.4, 11.6, "the back blocks:\n10 blockers, 1 runner", fontsize=6.4, color=OD)
+    panel_title(ax, title, fs=8.2)
+    return fld
+
+
+fig, axes = plt.subplots(2, 2, figsize=(6.6, 6.2))
+tp_panel(axes[0, 0], "bunch", "A  Bunch rub (vs man)")
+tp_panel(axes[0, 1], "snag", "B  Snag triangle (vs zone)")
+tp_panel(axes[1, 0], "sprint", "C  Sprint-out option")
+tp_panel(axes[1, 1], "power", "D  QB power")
+fig.tight_layout(h_pad=1.4, w_pad=1.0)
+plt.show()
+```
+
+Each shape answers a defensive call. Against the man coverage that dominates the goal line, the bunch rub
+(A) is the classic: three receivers starting close together, two crossing just behind the third, and three
+defenders who must either fight through traffic or switch assignments perfectly. Against zone, the
+[snag](../04-the-passing-game/04-03-quick-game.qmd) triangle (B), from Quick Game (the snag itself is a
+receiver who runs five yards and sits down facing the quarterback), puts three receivers in one area guarded
+by two defenders: whichever receiver the defenders leave, the quarterback throws to. The sprint-out option (C) doesn't care much which coverage it gets,
+because it attacks one defender with two threats. And the quarterback run (D), the extra-hat idea from
+[Option Football](../03-the-run-game/03-04-option-football.qmd), gives the offense one more blocker than a
+handoff can, which matters most when two yards is all it needs.
+
+Notice what's missing: deep routes, long developing reads, anything that needs a second and a half to come
+open. From the 2 the end line is 12 yards away, and a pass rush arrives in about two and a half seconds.
+Two-point plays are designed to be decided by the quarterback's first look.
+
+::: {.callout-note title="Film room: New England, Super Bowl LI (2016 season)"}
+Down 28–3 in the third quarter against Atlanta, the Patriots needed two two-point conversions just to tie,
+and got both. The first, after Danny Amendola's touchdown catch made it 28–18 with about six minutes left,
+was a [direct snap](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd) to running back
+James White: Brady stood in the shotgun, White motioned in beside him, the center snapped the ball straight
+to White, and he ran it up the middle for 28–20. The second, after
+White's own 1-yard touchdown run with 57 seconds left, was a quick throw from Tom Brady to Amendola for
+28–28. New England won in overtime, 34–28.[^li] **What to notice:** two different answers on the same night,
+a run with the quarterback out of the play and a quick pass; a defense that had seen one couldn't sit on it
+the next time. Why take the quarterback out of a run, when this chapter keeps saying a running quarterback
+adds a blocker? Because Brady was never a running threat, so the extra-hat arithmetic didn't apply to him.
+What the direct snap bought was speed and surprise: the ball went straight to the runner, with no handoff,
+against a defense set up to stop a Brady pass.
+:::
+
+## Goal-line personnel: the biggest people on the field
+
+Inside the 3 or so, both teams change their players. The offense brings in its heaviest
+[personnel](../02-personnel-and-formations/02-01-personnel-groupings.qmd): two or three tight ends, a
+fullback, sometimes a sixth offensive lineman (a
+[jumbo](../02-personnel-and-formations/02-01-personnel-groupings.qmd) package) who has to
+[report as eligible](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd): tell the
+referee, who announces it, because a lineman's number normally makes him an ineligible receiver. And
+sometimes the extra body is a defensive
+lineman playing fullback. The most famous of those was William "The Refrigerator" Perry, the Chicago Bears'
+rookie defensive tackle, who scored a 1-yard touchdown in Super Bowl XX in January 1986.[^fridge] The idea is
+simple arithmetic: every receiver taken off the field is replaced by a blocker, so the offense can match
+the defense body for body near the ball.
+
+The defense answers in kind with a [**goal-line defense**](../../appendices/glossary.qmd#gl-goal-line-defense):
+extra linemen and linebackers in place of defensive backs, everyone lined up close to the ball, every gap
+along the line filled before the snap. The two classic shapes are the **6-2** (six down linemen, two
+linebackers, three defensive backs) and the **5-3** (five down linemen, three linebackers, three defensive
+backs). Both put eight defenders within about three yards of the ball.
+
+Why two shapes? Against an offense with a tight end at each end of the line there are eight gaps to fill
+(A, B, C and D on each side, from
+[The Language of the Run Game](../03-the-run-game/03-01-run-game-language.qmd)). The 6-2 puts six of those eight defenders on the line, in the gaps, low, and lets the two
+linebackers fill the last two: it is the stronger shape right at the ball, built to win the first yard by
+force. The 5-3 takes one lineman off the line and adds a third linebacker. It gives up a little of that
+force, but it gains a defender standing up, who can see the play, fill whichever gap the run goes to, or
+pick up a tight end or fullback who slips out for a pass. So the 6-2 suits the last yard against an
+offense that just pounds the ball, and the 5-3 suits a defense that fears play-action from the same look.
+
+```{python}
+#| label: fig-goalline-fronts
+#| fig-cap: "Goal-line personnel on both sides, ball on the 1. The offense is in 23 personnel (a fullback F and a running back R, plus three tight ends: Y and U on the line and H as a wing just outside Y), with tight line splits. Left, a 6-2 goal-line defense: six linemen in the gaps along the line, low, the two linebackers filling the last two gaps, and three defensive backs for the tight ends and the wing. Right, a 5-3: a nose tackle (N) on the center, four more linemen, three linebackers. Both fill every gap from tight end to tight end at the snap. The defenders' letters show their usual positions; on goal-line snaps the labels matter less than the gaps."
+def jumbo():
+    return line5(split=1.55) + [O("QB", "QB", -2.0, 0.0, "Q"), O("FB", "FB", -4.2, 0.0, "F"),
+                                 O("RB", "RB", -6.4, 0.0, "R"), O("Y", "TE", LINE_D, 4.65),
+                                 O("U", "TE", LINE_D, -4.65, "U"), O("W", "TE", -2.0, 6.3, "H")]
+
+
+def gl_panel(ax, kind):
+    if kind == "62":
+        dfn = [D("E1", "DE", 0.9, -6.0, "E"), D("T1", "DT", 0.9, -3.9, "T"), D("T2", "DT", 0.9, -0.85, "T"),
+               D("T3", "DT", 0.9, 0.85, "T"), D("T4", "DT", 0.9, 3.9, "T"), D("E2", "DE", 0.9, 6.3, "E"),
+               D("LB1", "LB", 2.8, -2.3, "M"), D("LB2", "LB", 2.8, 2.3, "W"),
+               D("CB1", "CB", 2.4, -8.2, "CB"), D("CB2", "CB", 2.6, 8.4, "CB"), D("SS", "SS", 5.0, 4.6, "SS")]
+        notes = [("6 linemen +\n2 LBs: 8 gaps", (-4.6, -7.0))]
+    else:
+        dfn = [D("E1", "DE", 0.9, -5.3, "E"), D("T1", "DT", 0.9, -2.3, "T"), D("N", "NT", 0.9, 0.0, "N"),
+               D("T2", "DT", 0.9, 2.3, "T"), D("E2", "DE", 0.9, 5.5, "E"),
+               D("LB1", "LB", 2.8, -3.6, "W"), D("LB2", "LB", 2.8, 0.0, "M"), D("LB3", "LB", 2.8, 3.8, "S"),
+               D("CB1", "CB", 2.4, -8.2, "CB"), D("CB2", "CB", 2.6, 8.4, "CB"), D("SS", "SS", 5.0, -1.9, "SS")]
+        notes = [("5 linemen,\n3 linebackers", (-4.6, -7.0))]
+    p = Play(jumbo(), dfn, los=opp(1), to_go=None)
+    fld = draw(p, ax=ax, lateral=(-10.5, 10.5), window=(-8.0, 8.5))
+    for text, at in notes:
+        say(fld, p, at[0], at[1], text, fontsize=6.6, color=DD)
+    say(fld, p, 6.8, -5.0, "end zone", fontsize=6.6, color=style.MUTED, box=False)
+    panel_title(ax, "6-2 goal line" if kind == "62" else "5-3 goal line")
+    return fld
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.7))
+gl_panel(axes[0], "62")
+gl_panel(axes[1], "53")
+fig.tight_layout(w_pad=1.0)
+plt.show()
+```
+
+Football coaches have a three-word rule for this part of the field: **low man wins**. When two big men
+collide at the line, the one whose pads are lower gets under the other, lifts him and drives him back. On
+an ordinary down that matters; at the goal line it is almost everything, because the play will be decided
+within a yard of the ball. So goal-line defensive linemen often line up in four-point stances, both hands
+on the ground, and fire *under* the blockers, aiming to knock the offensive line back into the backfield
+and create a pile the runner can't cross. Linebackers fill whatever gap is left, often by going over the
+top of the pile.
+
+What does the offense run into all that? Mostly the same handful of downhill runs you met in
+[Gap and Power Runs](../03-the-run-game/03-03-gap-and-power-runs.qmd), and the simplest is the one below:
+the [iso](../03-the-run-game/03-03-gap-and-power-runs.qmd), a fullback leading into a gap onto the one
+linebacker who fills it.
+
+```{python}
+#| label: fig-goalline-iso
+#| fig-cap: "The run a goal-line defense is built to stop: an iso from the I formation against the 6-2, ball on the 1. The right guard blocks the A-gap tackle down and the right tackle blocks the C-gap tackle out, which opens the right B gap; the fullback (F) leads through it onto the linebacker who fills it (W, ringed), and the running back (R) follows him in, needing only to get the ball across the goal line a yard away. The other linebacker (M) tries to come over the top of the pile. Every other blocker simply fires low into the man in front of him. At the goal line this is low man wins in its purest form: whoever gets lower at the hole wins it."
+p = Play(jumbo(), [D("E1", "DE", 0.9, -6.0, "E"), D("T1", "DT", 0.9, -3.9, "T"), D("T2", "DT", 0.9, -0.85, "T"),
+                   D("T3", "DT", 0.9, 0.85, "T"), D("T4", "DT", 0.9, 3.9, "T"), D("E2", "DE", 0.9, 6.3, "E"),
+                   D("LB1", "LB", 2.8, -2.3, "M"), D("LB2", "LB", 2.8, 2.3, "W"),
+                   D("CB1", "CB", 2.4, -8.2, "CB"), D("CB2", "CB", 2.6, 8.4, "CB"), D("SS", "SS", 5.0, 4.6, "SS")],
+         los=opp(1), to_go=None)
+move_to(p, "RG", (0.1, 1.0), kind="block")                 # down on the A-gap tackle
+move_to(p, "RT", (0.2, 4.2), kind="block")                 # out on the C-gap tackle
+for k, w in (("LT", -3.3), ("LG", -1.7), ("C", -0.4)):
+    move_to(p, k, (0.1, w), kind="block")
+move_to(p, "Y", (0.2, 5.9), kind="block")
+move_to(p, "U", (0.2, -5.6), kind="block")
+move_to(p, "FB", (-3.0, 0.9), (-0.6, 1.9), (1.5, 2.2), kind="block")    # leads through the B gap onto W
+move_to(p, "RB", (-5.0, 1.1), (-2.6, 2.5), (-0.6, 2.7), (0.9, 2.6), kind="run")   # follows him into the hole
+p.highlight("LB2")
+fld = draw(p, width_in=5.6, lateral=(-10.0, 10.0), window=(-8.0, 7.2))
+branch(fld, p, [(2.8, -2.3), (3.1, -0.6), (2.6, 0.9)], color=style.DEFENSE)
+point_to(fld, p, (5.2, -4.4), (3.1, -0.8), "M: over the top", fontsize=6.6, color=DD)
+point_to(fld, p, (-5.6, 5.4), (-1.8, 1.4), "F leads into\nthe B gap", fontsize=6.6, color=OD)
+say(fld, p, 5.4, 7.4, "end zone", fontsize=6.6, color=style.MUTED, box=False)
+field_legend(fld.ax, ["carrier", "block", "react", "ring"], fs=6.6, ncol=4, y=-0.01)
+plt.show()
+```
+
+::: {.callout-important title="Why it exists"}
+A goal-line defense exists because near the goal line the run is a real threat on every snap and the pass
+has little room to hurt you. Trading cornerbacks and safeties for linemen and linebackers trades coverage,
+which the compressed field has made cheap, for gap control and size, which the last yard has made
+precious. **What it gives up:** coverage. Goal-line defenses are built to stop a run up the middle, and
+their worst nightmare is the play that looks exactly like that run and isn't: the play-action pass to a
+tight end or a fullback slipping out, or a quarterback rollout to the edge where fewer defenders are
+standing. That is why, when heavy personnel does throw near the goal line, it almost always fakes the run
+first: inside the 3 in 2023–2025, offenses with one wide receiver or none passed on only
+`{python} pct(HEAVY_PASS)` of snaps, but `{python} pct(HEAVY_PA)` of those dropbacks were play-action, against
+`{python} pct(LIGHT_PA)` from lighter groupings.[^heavy]
+:::
+
+## The quarterback sneak
+
+The shortest play in football is the
+[**QB sneak**](../../appendices/glossary.qmd#gl-qb-sneak). The quarterback takes the snap under center and
+immediately drives forward behind his center, usually into one of the gaps beside him, to gain a yard or
+less. No handoff, no fake, no read.
+
+It is the most reliable play in the book for one yard, and the reasons are worth spelling out:
+
+- **The ball starts closest to the line.** On a handoff, the ball goes backward to a running back five to
+  seven yards deep, who then has to gain all of that back before he gains anything. On a sneak, the ball
+  is a foot behind the line when the quarterback has it.
+- **It is the fastest play there is.** The ball goes from the center's hands to the quarterback's
+  and forward in a fraction of a second, before linebackers can read the play and fill.
+- **The quarterback is the extra blocker's dividend.** On every other run, the quarterback hands off and
+  stops being a factor; on the sneak he *is* the runner, so every other player can block, the same extra-hat
+  arithmetic as QB power.
+- **The defense can't see it coming any differently.** A quarterback under center on third-and-1 might
+  sneak, hand off, or fake and throw. Defenses have to defend all three.
+
+And its blocking is simple. Coaches call it **wedge** blocking: every lineman drives low and forward toward
+the center's hip, so the front moves as one block with no seams for a defender to slip through, often with
+the center and a guard double-teaming whoever lines up over the ball. The quarterback's coaching point is
+just as simple: follow the center's backside into the first crease. And the
+[cadence](../01-foundations/01-05-the-pre-snap-phase.qmd), the quarterback's call that tells his line when
+the ball will be snapped, is a weapon either way. A *quick count* snaps the ball on the first sound, before
+the defense has settled into its stances; a
+[hard count](../01-foundations/01-05-the-pre-snap-phase.qmd), a long, loud call with a sudden bark meant to
+draw the defense offside, aims for the free yard without snapping it at all.
+
+```{python}
+#| label: fig-sneak-vs-push
+#| fig-cap: "Two ways to gain a yard, third-and-1, from the same heavy formation: tight ends Y and U on the ends of the line, a wing (H) outside Y, and tight line splits. Left, the classic quarterback sneak: the quarterback (Q) alone under center, a fullback (F) and running back (R) deep, so the defense has to respect a handoff. At the snap the center and guards drive forward and the quarterback follows his center into the nearest crease, here the right A gap, between center and guard. Right, the tush push: the same sneak, but the backs have been replaced by two pushers (P) lined up almost against the quarterback's hips (drawn a little apart here so the letters show), who drive into him at the snap and shove the whole pile forward. The defense, crowding the A gaps, lines up the same way against both. The yellow line is the line to gain, one yard away."
+SNEAK_SPLIT = 1.3          # nearly foot to foot: the push line closes its splits
+
+
+def sneak_off(push, p_d=-2.8):
+    """Short-yardage offense: tight splits, tight ends on both ends of the line, the quarterback under center."""
+    off = line5(split=SNEAK_SPLIT) + [O("QB", "QB", -1.9, 0.0, "Q"), O("Y", "TE", LINE_D, 3.95),
+                                      O("U", "TE", LINE_D, -3.95, "U"), O("W", "TE", -1.7, 5.4, "H")]
+    if push:
+        off += [O("P1", "RB", p_d, -0.75, "P"), O("P2", "TE", p_d, 0.75, "P")]
+    else:
+        off += [O("RB", "RB", -6.2, 0.0, "R"), O("FB", "FB", -4.1, 0.0, "F")]
+    return off
+
+
+def short_def():
+    """A short-yardage front: six linemen low (two in the A gaps beside the center), three linebackers."""
+    return [D("E1", "DE", 0.9, -5.4, "E"), D("T1", "DT", 0.9, -2.3, "T"), D("T2", "DT", 0.9, -0.75, "T"),
+            D("T3", "DT", 0.9, 0.75, "T"), D("T4", "DT", 0.9, 2.3, "T"), D("E2", "DE", 0.9, 5.4, "E"),
+            D("MIKE", "LB", 2.6, -1.4, "M"), D("WILL", "LB", 2.6, 1.4, "W"), D("SAM", "LB", 2.3, 6.4, "S"),
+            D("CB1", "CB", 3.0, -8.0, "CB"), D("SS", "SS", 5.0, 0.0, "SS")]
+
+
+def carrier_arrow(fld, p, pts):
+    """The ball carrier's path through the pile: drawn over the markers but see-through, so the letters
+    it crosses stay readable."""
+    xs, ys = P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    fld.ax.plot(xs, ys, color=OD, lw=2.2, alpha=0.55, zorder=11, solid_capstyle="round")
+    fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=12,
+                                     color=OD, lw=2.2, zorder=11))
+
+
+def sneak_panel(ax, push):
+    p = Play(sneak_off(push, p_d=-3.2), short_def(), los=opp(35), to_go=1)
+    for k in ("LG", "C", "RG"):
+        p.block(k, pts=[(0.6, 0.0)])
+    if push:
+        p.highlight("P1", "P2")
+    fld = draw(p, ax=ax, lateral=(-9.5, 9.5), window=(-7.0, 6.5))
+    if push:
+        carrier_arrow(fld, p, [(-1.9, 0.0), (-0.2, 0.0), (2.0, 0.0), (2.6, 0.0)])
+        say(fld, p, -4.9, -4.0, "2 pushers, tight\nbehind the QB", fontsize=6.6, color=READ_GREEN, weight="bold")
+    else:
+        carrier_arrow(fld, p, [(-1.9, 0.0), (-0.3, 0.4), (2.0, 0.4), (2.6, 0.4)])
+        say(fld, p, -3.6, -4.0, "QB alone:\nfollow the center", fontsize=6.6, color=OD)
+    panel_title(ax, "Tush push" if push else "Quarterback sneak")
+    return fld
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.5))
+sneak_panel(axes[0], False)
+sneak_panel(axes[1], True)
+fig.tight_layout(w_pad=1.0)
+plt.show()
+```
+
+::: {.callout-note title="Film room: Tom Brady (2000–2022) and Josh Allen (2018–2025)"}
+Two quarterbacks show the two ways to be a great sneaker. Tom Brady, a 6-foot-4 pocket passer who was never
+fast and never needed to be, won with *timing*. Counting every run he made with a yard or less to go,
+regular season and playoffs, nflverse play-by-play has Brady carrying `{python} BRADY[0]` times and gaining
+the first down or the touchdown on `{python} pct(BRADY[1])` of them; almost all were sneaks.[^qbone] The
+Patriots often ran it on a quick count, and Brady was over the center's back before the linebackers had
+moved. Josh Allen, one of the biggest and strongest quarterbacks in the league, wins with *size*: he sneaks,
+pushes and runs QB power with equal comfort, and Buffalo ran the second-most sneaks of 2022–2025. On every
+Allen carry for the Bills with a yard or less to go, nflverse has him converting `{python} pct(ALLEN[1])` of
+`{python} ALLEN[0]` tries, essentially level with Brady's career mark.[^qballen] **What to notice:** on old
+Patriots film, how *quickly* the ball is snapped; on Bills film, where Allen goes. A pure sneak goes
+straight ahead; Allen often bounces a step to the A or B gap where the pile is softest, using his size like
+a running back's.
+:::
+
+## The tush push
+
+The [**tush push**](../../appendices/glossary.qmd#gl-tush-push) is a quarterback sneak with help from behind.
+Two or three teammates (usually a running back and a tight end, sometimes a third player) line up directly
+behind the quarterback, and at the snap they drive into him and push. The offensive line fires low and
+forward; the quarterback, crouched behind his center, surges into the line; the pushers add their weight
+from behind, and the whole mass moves forward, usually just far enough. Philadelphia fans called it the
+Brotherly Shove.
+
+```{python}
+#| label: fig-tush-push
+#| fig-cap: "The tush push, simulated (BDB-format tracking generated by gridiron, not recorded): third-and-1 at the opponent's 35. 1: the quarterback (ringed) is under center with two pushers (P) directly behind him. 2: at the snap, the offensive line fires low into the defensive linemen before they can rise. 3: the center and right guard drive the two A-gap tackles back and apart, opening a seam between them; the quarterback slides into it and the pushers drive into his back, while the linebackers (M, W) come forward to meet the pile at the top. 4: the pile, still moving as one, carries the ball (brown) more than a yard past the yellow line. The whole play is decided in about a second, and the front of the pile moves only a yard or two. Markers are drawn a little smaller than in the other diagrams so that engaged players stay visible."
+def push_play():
+    """Keyframes for every body at the snap, first contact, mid-push and the finish. The pile moves as a
+    block, so each moment is placed by hand to keep engaged players about a yard and a quarter apart."""
+    p = Play(sneak_off(True), short_def(), los=opp(35), to_go=1)
+    K = {   # key: [(d, w) at t = 0.4, 0.8, 1.2]
+        "LT": [(-0.25, -2.6), (0.05, -2.75), (0.3, -2.85)], "LG": [(-0.15, -1.3), (0.45, -1.5), (0.9, -1.65)],
+        "C": [(-0.1, 0.0), (0.55, -0.35), (1.5, -0.75)], "RG": [(-0.15, 1.3), (0.55, 1.5), (1.5, 1.75)],
+        "RT": [(-0.25, 2.6), (0.3, 2.8), (0.6, 2.95)], "U": [(-0.4, -3.95), (-0.2, -4.1), (0.0, -4.2)],
+        "Y": [(-0.4, 3.95), (-0.2, 4.1), (0.0, 4.2)], "W": [(-1.5, 5.2), (-1.3, 5.1), (-1.1, 5.0)],
+        "QB": [(-1.5, 0.05), (0.0, 0.5), (1.6, 0.7)],
+        "P1": [(-2.4, -0.6), (-1.0, -0.05), (0.4, 0.05)], "P2": [(-2.4, 0.8), (-1.0, 1.25), (0.4, 1.4)],
+        "E1": [(1.0, -5.5), (1.05, -5.55), (1.1, -5.6)], "T1": [(0.95, -2.4), (1.2, -2.6), (1.5, -2.8)],
+        "T2": [(0.95, -0.8), (1.6, -1.2), (2.5, -1.7)], "T3": [(0.95, 0.85), (1.6, 1.8), (2.5, 2.6)],
+        "T4": [(0.95, 2.4), (1.35, 3.1), (1.8, 3.65)], "E2": [(1.0, 5.6), (1.05, 5.8), (1.1, 5.9)],
+        "MIKE": [(2.4, -1.3), (2.9, -0.8), (3.6, -0.3)], "WILL": [(2.4, 1.3), (2.8, 1.0), (3.4, 1.3)],
+        "SAM": [(2.3, 6.3), (2.4, 6.1), (2.6, 6.0)], "SS": [(4.8, 0.0), (4.7, 0.2), (4.6, 0.4)],
+        "CB1": [(3.0, -8.0), (3.0, -7.8), (3.0, -7.6)],
+    }
+    tr = {}
+    for k, pts in K.items():
+        q = p.players[k]
+        tr[k] = ease([(0.0, q.d, q.w)] + [(t, d, w) for t, (d, w) in zip((0.4, 0.8, 1.2), pts)])
+    set_tracks(p, tr, t_end=1.3)
+    return p
+
+
+def push_ball(t, fld, p):
+    """The ball, held out in front of the quarterback once he has it."""
+    if t <= 0.05:
+        return
+    d, w = p.position("QB", t)
+    bd = d + 0.75
+    x, y = P(fld, p, bd, w)
+    fld.ax.add_patch(Ellipse((float(x), float(y)), 0.55, 0.85, fc=style.BALL, ec="white", lw=0.6, zorder=12))
+
+
+PUSH = push_play()
+PUSH_T = [0.0, 0.4, 0.8, 1.2]
+PUSH_N = ["Under center, two pushers\nstacked behind the QB.",
+          "Snap: the line fires low into\nthe linemen before they rise.",
+          "QB slides in behind the center;\npushers drive into his back.",
+          "The pile carries the ball\nwell past the line to gain."]
+PUSH_LAT, PUSH_WIN = (-7.2, 7.2), (-4.6, 5.0)
+if PDF:
+    strip_grid(PUSH, PUSH_T, PUSH_N, PUSH_LAT, PUSH_WIN, rings=(("QB", style.THIRD),), mr=0.55, deco=push_ball)
+    plt.show()
+else:
+    video(PUSH, PUSH_LAT, PUSH_WIN, 1.3, rings=(("QB", style.THIRD),), notes=PUSH_N, times=PUSH_T,
+          t_start=-0.3, mr=0.55, deco=push_ball)
+```
+
+Why does a shove from behind help that much? Physics, mostly. A sneak is a pushing contest at the line: the
+offense's linemen and quarterback against the defense's linemen and linebackers, both sides trying to move a
+pile a yard. Two pushers behind the quarterback add a few hundred pounds of driving force at exactly the
+point of the contest, and they add it *immediately*, at the snap, before the defense's second level can
+arrive. The defense can't add the same force, because its extra bodies have to come from the other side of
+a pile they can't get into. And the quarterback, pushed from behind, can stay low and keep his feet driving
+instead of being stopped upright by the first linebacker to hit him.
+
+Notice what the push gives up. A plain sneak hides inside a formation that could also hand off or throw;
+the push announces itself, because nobody lines up two players against the quarterback's hips for anything
+else. The push trades disguise for force, and over one yard, force wins far more often than not.
+
+### How it became legal: assisting the runner
+
+For most of the NFL's history, the tush push was illegal. The rule on
+[**assisting the runner**](../../appendices/glossary.qmd#gl-assisting-the-runner) said teammates could
+not push or pull a ball carrier forward, a 10-yard foul. In the mid-2000s (accounts differ by a year) the
+NFL removed "push" from the rule and kept the ban on *pulling*. The reason was practical: in a pile, officials could never tell who was pushing whom (a runner, a teammate
+in contact with the runner, the pile itself), so the rule was close to unenforceable. As Mike Pereira,
+another former officiating chief, put it, pushing "became really too difficult to officiate," so the
+league simply made it legal.[^push2005] Pulling is still a
+foul: a teammate who grabs the runner's arm or jersey and hauls him forward costs his team 10 yards. Watch
+for it in a tush-push pile. The college rulebook followed in 2013.[^ncaa]
+
+The timing carries a footnote of its own. On October 15, 2005, USC's Matt Leinart scored the winning
+touchdown at Notre Dame with running back Reggie Bush shoving him across the goal line from behind, the
+"Bush Push." College rules still banned pushing then, no flag was thrown, and the play became a legend:
+the illegal, unforgettable ancestor of a play that is now legal in the NFL.[^bushpush]
+
+For more than 15 years after the change, NFL teams pushed runners only in passing, as piles formed. Then
+the Philadelphia Eagles turned it into a designed play.
+
+::: {.callout-note title="Film room: Philadelphia Eagles, 2022–2025"}
+Starting in 2022, Philadelphia ran the push more often and more reliably than anyone had, with the right
+ingredients: Jalen Hurts, a quarterback with exceptional leg strength; center Jason Kelce, small for a
+center but famously quick off the ball and low; an elite line around him, including right tackle Lane
+Johnson; and line coach Jeff Stoutland (with the Eagles through 2025), who drilled the timing. On 1 yard to go, FTN's charters
+flagged `{python} pct(USE.loc["PHI"])` of the Eagles' 2022–2025 snaps as quarterback sneaks or pushes,
+against a league median of `{python} pct(USE_MED)`; counting every Hurts carry with a yard or less to go,
+nflverse has him converting `{python} pct(HURTS[1])` of `{python} HURTS[0]` tries.[^phi] Kelce retired after
+the 2023 season; Cam Jurgens, a guard in 2023, took over at center in 2024, and the play kept
+working.[^jurgens] Hurts scored the first touchdown of Super Bowl LIX
+(February 2025, a 40–22 win over Kansas City) on a tush push.[^lix] **What to notice:** the snap. The
+Eagles' line moves as one at the exact instant of the snap, and the defensive linemen are already being
+driven back before they have risen out of their stances. The push from behind finishes a play that the
+line's timing has mostly won already. (The Eagles' push as a talent and coaching advantage, and how it
+compares with the rest of the league, is the subject of
+[The Eagles: Trenches, RPOs, and the Tush Push](../12-case-studies/12-06-eagles-trenches-and-tush-push.qmd).)
+:::
+
+### The ban debate
+
+The push's success made it controversial. Critics made three arguments: **safety** (a pile of the
+heaviest players on the field driving forward with heads down), **aesthetics** (a near-automatic yard
+is dull football), and **fairness** (one team's mastery of a play is a reason to rethink it). Defenders
+of the play answered that injuries on it were rare, that other teams could copy it, and that you don't
+ban a play for being executed well.
+
+In 2025 Green Bay proposed a ban. Its first version, barring teammates from pushing the quarterback
+immediately at the snap, was tabled at the spring league meeting; a broader revision, barring any pushing,
+pulling, lifting or assisting of the runner except by blocking opponents, came to a vote on May 21, 2025, and **failed
+22–10**, two votes short of the 24 needed (rule changes need three-quarters of the 32 owners). The league
+tightened its officiating guidance instead. In practice that meant watching for linemen who move before the
+snap (a false start, easy to miss when everyone is crouched shoulder to shoulder) and for players lined up
+in or across the neutral zone, the ball-length strip between the two lines; the officiating department's
+own training video in September 2025 said an Eagles guard should have been flagged for moving early on one
+push.[^poe] For
+2026, **no team proposed a ban**; the competition committee's co-chairman said in February 2026 that he
+didn't expect one, and the league said it would only "lightly" revisit how the play is officiated. The
+tush push is legal for the 2026 season.[^ban]
+
+::: {.callout-caution title="Common misconception"}
+"The tush push is unstoppable." It isn't, and the next section's numbers show that. Defenses stop it by
+winning the snap: crowding both A gaps beside the center, timing the count so their linemen are moving
+first, and sending linebackers over the top to meet the quarterback before the pile moves. (Leaping over
+the pile is legal on a running play; many fans assume it isn't.[^leap]) Defensive linemen also try to jump
+the snap count, accepting the occasional offside penalty for the chance of getting into the backfield
+early. What the push does is shift the odds of a one-yard contest, and on one yard that shift is worth a
+great deal.
+:::
+
+### Does it work? The sneak in the data
+
+FTN's charting service marks every play it thinks was a quarterback sneak (`is_qb_sneak`), and the flag
+covers the plain sneak and the push alike, because FTN does not chart them separately. So the numbers
+below are for sneaks of every kind.[^ftnflag]
+
+On 1 yard to go, 2022–2025 regular seasons, sneaks gained the first down or the touchdown
+`{python} pct(SN_RATE)` of the time (`{python} f"{SN_N:,}"` plays). Other runs on 1 yard to go converted
+`{python} pct(RUN_RATE)`, and passes `{python} pct(PAS_RATE)`. A gap of
+`{python} f"{(SN_RATE - RUN_RATE) * 100:.0f}"` percentage points on a play
+that decides whether a drive lives is an enormous difference. With 2 yards to go, sneaks were far rarer and
+far less successful (`{python} pct(SN2["conv"].mean())` of `{python} len(SN2)`), which tells you what the
+play is for: the last yard, not the last two. A sneak is a pile moving forward, and a pile of a dozen big
+men moves a yard, maybe a yard and a half, before it stalls (watch the frame strip above). Ask it for two
+and it usually stops short.
+
+You have now met three numbers for "one yard": sneaks from the 1 scored on
+`{python} pct(TD1.loc["sneak", "mean"])` of plays, sneaks on any 1-yard-to-go snap converted
+`{python} pct(SN_RATE)`, and drives with first-and-goal at the 1 scored `{python} pct(FG_TD.loc[1, "mean"])`
+of the time. They measure different things. The drive number is highest because a drive gets up to four
+tries at the yard. And the yard before the goal line is harder than the yard before a first down: there the
+defense's back line is the goal line itself, so it can put every defender within a few yards of the ball,
+and it brings in its goal-line personnel to do it. In the middle of the field, a defense crowding the line on
+third-and-1 still has to worry about a pass over its head.
+
+```{python}
+#| label: fig-sneak-teams
+#| fig-cap: "Quarterback sneaks (including tush pushes) on 1 or 2 yards to go, by team, 2022–2025 regular seasons. Left: how many each team ran. Right: the share that gained a first down or a touchdown, with a bar showing the range that chance alone could easily produce (a 90% interval) around each team's rate; teams with fewer than 15 attempts are left out of the right panel. The dashed line is the league rate. Philadelphia (blue) ran far more than anyone; Buffalo (orange) was second. Data: nflverse play-by-play joined to FTN charting (is_qb_sneak)."
+T = TEAM.sort_values("n", ascending=True)
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 6.2), sharey=True, gridspec_kw={"width_ratios": [1, 1.25]})
+ypos = np.arange(len(T))
+cols = [style.SERIES[0] if t == "PHI" else (style.SERIES[1] if t == "BUF" else style.BASELINE) for t in T.index]
+axes[0].barh(ypos, T["n"], color=cols, height=0.7)
+for y, n in zip(ypos, T["n"]):
+    axes[0].text(n + 2, y, f"{n}", va="center", fontsize=6.5, color=style.INK_2)
+axes[0].set_yticks(ypos)
+axes[0].set_yticklabels(T.index, fontsize=6.8)
+axes[0].set_xlabel("Sneaks run", fontsize=8)
+axes[0].set_title("How many", fontsize=9)
+axes[0].set_xlim(0, T["n"].max() * 1.18)
+axes[0].grid(axis="y", visible=False)
+ok = T["n"] >= 15
+se = np.sqrt(T["rate"] * (1 - T["rate"]) / T["n"])
+for y, (t, row), s, c, keep in zip(ypos, T.iterrows(), se, cols, ok):
+    if not keep:
+        continue
+    lo, hi = max(0, row["rate"] - 1.645 * s), min(1, row["rate"] + 1.645 * s)
+    axes[1].plot([lo * 100, hi * 100], [y, y], color=c if c != style.BASELINE else style.MUTED, lw=1.4,
+                 alpha=0.6)
+    axes[1].plot([row["rate"] * 100], [y], marker="o", ms=5, color=c if c != style.BASELINE else style.INK_2)
+axes[1].axvline(SN12_RATE * 100, color=style.INK_2, lw=1.0, ls=(0, (4, 3)))
+axes[1].text(SN12_RATE * 100 + 0.8, 1.0, f"league\n{SN12_RATE * 100:.0f}%", fontsize=6.8,
+             color=style.INK_2, va="center")
+axes[1].set_xlim(45, 102)
+axes[1].set_xlabel("Converted (first down or TD), %", fontsize=8)
+axes[1].set_title("How often it worked", fontsize=9)
+axes[1].grid(axis="y", visible=False)
+for ax in axes:
+    ax.tick_params(labelsize=7)
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+Two lessons hide in that chart. First, **volume, not rate, is what separates the teams**. Most teams'
+conversion rates overlap once you account for sample size: 40 sneaks is not enough to tell an 80% team
+from an 85% team. What differs enormously is how often teams *call* the play. The Eagles stand
+alone at one end; at the other, Kansas City was charted with `{python} int(TEAM.loc["KC", "n"])` in four
+seasons, because Andy Reid's offense almost never asks Patrick Mahomes to sneak.
+
+If the sneak converts that often, why don't the other teams run it more? None of the reasons is foolish.
+The sneak puts the quarterback, usually the most valuable and most expensive player on the roster, at the
+bottom of a pile of the biggest men on the field. Many modern offenses live in the shotgun, so their
+quarterback rarely takes a snap under center, and the sneak is a play they would have to practise
+specially. And the play needs a line that can win the first half-second together, which not every team
+has. A coach weighing a few extra yards a season against those costs can reasonably say no.
+
+Second, **a high rate is partly selection**. Teams sneak when the distance is truly short, often inches
+rather than a full yard (the play-by-play records both as "1 to go"), and most teams sneak only when they
+like the look. That explains a puzzle you may have noticed. The push adds hundreds of pounds of force, yet
+Philadelphia's sneak rate in the chart sits close to the league line, and Hurts's mark in the film room is
+no better than Brady's or Allen's on their own. The Eagles called the play on about half of all their
+1-yard downs: on full yards as well as inches, against defenses that knew it was coming and lined up to stop
+it. Other teams sneaked only when the spot and the look were good. Comparing the two rates compares a play
+run every time with a play run only when it was easy, which is why the Eagles' rate is more impressive than
+it looks. How much the push really adds once you account for that is a harder question, taken up in
+[the Eagles case study](../12-case-studies/12-06-eagles-trenches-and-tush-push.qmd).
+
+## Putting it together: a red-zone possession
+
+Here is how the pieces fit on one drive. First-and-10 at the opponent's 18: the defense still has some
+depth to protect, so you'll see two-high safeties, zone coverage and the offense's normal playbook. A
+completion to the 7 makes it first-and-goal, and the picture changes: the safeties come down, the corners
+press, and the coverage is mostly man. The offense answers with quick throws: a slant or a fade on the
+outside if it likes a matchup, a rub from a bunch if it sees man, a sprint-out if it wants an easy read.
+Inside the 3, both teams change personnel: jumbo against goal-line defense. Now it's a run, a quarterback
+sneak or push, or the play-action pass that the heavy personnel sets up. And if the drive ends in a
+touchdown, there's one more decision: kick, or one more play from the 2.
+
+::: {.callout-tip title="Watch for it on Sunday: fade or rub?"}
+*When the ball crosses the 20*
+
+- Count the safeties. Two deep at the 18 is normal; one or none inside the 10 means the defense has
+  traded depth for bodies near the ball.
+- Look at the corners' depth. A corner a yard off the receiver is pressing: expect man coverage.
+
+*Inside the 10: read the receivers' splits*
+
+- **A receiver alone, wide, with 5 to 8 yards to the sideline?** That spacing is for a fade or back-shoulder
+  throw. Check the corner's leverage: lined up inside him, think fade; outside him, think slant.
+- **Receivers bunched or stacked, tight to the formation?** That's rub territory. Predict a crossing
+  pattern against man, and watch whether the defenders switch (banjo) or chase through the traffic.
+- **The quarterback in the gun with receivers flooded to one side?** Look for a sprint-out to that side.
+
+*Inside the 3*
+
+- Heavy personnel on both sides? Watch the quarterback: under center with players stacked directly behind
+  him is a tush push; a fullback and tailback deep behind him is a handoff or play-action.
+- On the push, watch the snap and the first half-second, not the pile: whichever line fires first and lower
+  usually wins.
+
+*After a touchdown*
+
+- If the offense stays on the field, guess the concept before the snap from its formation: bunch (rub),
+  spread with a back beside the quarterback (QB run or sprint-out), or heavy (run or play-action).
+
+For your prediction log ([01-06](../01-foundations/01-06-how-to-watch-a-broadcast.qmd)): inside the 10, write
+one word before each snap, from the splits alone: *fade* (fade or back-shoulder), *rub*, *quick* (slant or
+out), *sprint* (sprint-out) or *run*.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: the receiver alone"}
+```{python}
+#| label: fig-predict-iso
+#| fig-cap: "Second-and-goal at the opponent's 7. Three receivers to the right, X alone on the left. Read the corner and the safeties before you read the answer."
+off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.5, "R"),
+                 O("X", "WR", LINE_D, -19.5), O("Y", "TE", LINE_D, 4.8),
+                 O("H", "WR", OFF_BALL, 9.0), O("Z", "WR", OFF_BALL, 14.5)]
+dfn = dline() + [D("MIKE", "MIKE", 4.0, 1.5, "M"), D("WILL", "WILL", 4.0, -3.5, "W"),
+                 D("NB", "NB", 3.5, 9.5, "$"), D("SS", "SS", 6.0, 6.5, "SS"),
+                 D("RCB", "CB", 2.0, 15.0, "CB"), D("LCB", "CB", 1.1, -18.3, "CB"),
+                 D("FS", "FS", 11.0, 4.0, "FS")]
+p = Play(off, dfn, los=opp(7), to_go=None)
+fld = draw(p, lateral=(-26.67, 17.5), window=(-7.0, 17))
+goal_marks(fld, p, -9.0)
+plt.show()
+```
+
+**Where is the ball most likely going, and what would change your answer after the snap?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**To X on the left, most likely a fade.** Everything about the alignment points there. X is alone on his side,
+lined up with about 7 yards to the sideline, exactly the room a fade needs. The corner is pressing a yard
+off him and lined up a step *inside* him: inside leverage, which takes away the slant and gives up the
+outside release. And the safety help has rotated toward the three receivers on the right: the strong safety
+has walked over them and the free safety sits in the end zone just outside the right hash, much too far away
+to reach a ball thrown toward the left pylon a second after the snap. The three receivers on the right are
+there partly to *pull* that help away. Coaches call this a "backside" or isolation fade.
+
+**What would change it:** if the corner ran with X stride for stride over the top, the better throw is the
+back-shoulder: thrown early, behind X's outside shoulder, and caught a yard or two deep in the end zone. If
+the corner had lined up outside X, the slant would be open instead. And if the free safety had stayed in the
+middle or shaded left, the quarterback would likely work the three-receiver side, where the defense would
+then be short a man.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: call the two-point play"}
+```{python}
+#| label: fig-predict-twopoint
+#| fig-cap: "A two-point try from the 2. The offense is in the shotgun with two receivers on each side and the running back beside the quarterback. The defense has brought in six defensive backs: one on each receiver, pressed or close, and two safeties standing in the end zone. Count the defenders in the box between the tight ends' spots, within five yards of the ball."
+off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, 1.5, "R"),
+                 O("X", "WR", LINE_D, -15.0), O("H", "WR", OFF_BALL, -9.0),
+                 O("Y", "TE", OFF_BALL, 9.0), O("Z", "WR", LINE_D, 15.0)]
+dfn = dline() + [D("MIKE", "MIKE", 4.0, 0.5, "M"),
+                 D("LCB", "CB", 1.0, -14.4, "CB"), D("NB", "NB", 1.6, -8.4, "$"),
+                 D("DB", "DB", 1.6, 8.4, "$"), D("RCB", "CB", 1.0, 14.4, "CB"),
+                 D("SS", "SS", 5.6, -6.8, "SS"), D("FS", "FS", 5.6, 6.8, "FS")]
+p = Play(off, dfn, los=opp(2), to_go=None)
+fld = draw(p, lateral=(-19.0, 19.0), window=(-7.0, 12))
+x0, y0 = P(fld, p, 5.0, -4.6)
+x1, y1 = P(fld, p, -0.2, 4.6)
+fld.ax.add_patch(Rectangle((min(x0, x1), min(y0, y1)), abs(x1 - x0), abs(y1 - y0), fc=style.MUTED, alpha=0.08,
+                           ec=style.MUTED, lw=0.8, ls=(0, (3, 2)), zorder=1))
+say(fld, p, 5.7, 0.0, "the box", fontsize=6.6, color=style.INK_2, box=False)
+plt.show()
+```
+
+**You have the four shapes from the two-point figure (A–D) on your call sheet. Which one do you call
+against this look, and why?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**D, the quarterback run (QB power), with the sprint-out option (C) as the second choice.** Count the box:
+four linemen and one linebacker, five defenders. Count your blockers on a quarterback run: five linemen
+plus the running back, six, and the quarterback carries the ball. That is one more blocker than the box has
+defenders, the extra-hat arithmetic, and the two safeties are standing three or four yards deep in the end
+zone, so the runner needs only two yards before they arrive. The defense has bet everything on stopping a
+pass: a defender on every receiver and two more behind them. The bunch rub (A) and the snag (B) would throw
+into that bet.
+
+**What would change it:** a safety walking down into the box before the snap (or, harder to see, timing his
+run to arrive at the snap). Then the count is even and the pass becomes the better bet, because a defender
+has left the coverage. That trade, the defense guessing and the offense counting, is the whole two-point
+game. Most defenses avoid this look for exactly this reason: on the 2023–2025 two-point tries in the
+participation data, they had six or seven defenders in the box on `{python} pct(TP_BOX67)` of them.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: second-and-goal at the 1"}
+```{python}
+#| label: fig-predict-goalline
+#| fig-cap: "Second-and-goal at the opponent's 1. On first down the offense ran an iso from this same formation and was stopped short. Same personnel on both sides: the offense in 23 personnel (Y and U on the line, H as a wing, the fullback and running back stacked behind the quarterback under center); the defense in its 6-2 goal-line defense. This time its three defensive backs have crept up close to the line."
+dfn = [D("E1", "DE", 0.9, -6.0, "E"), D("T1", "DT", 0.9, -3.9, "T"), D("T2", "DT", 0.9, -0.85, "T"),
+       D("T3", "DT", 0.9, 0.85, "T"), D("T4", "DT", 0.9, 3.9, "T"), D("E2", "DE", 0.9, 6.3, "E"),
+       D("LB1", "LB", 2.6, -2.3, "M"), D("LB2", "LB", 2.6, 2.3, "W"),
+       D("CB1", "CB", 1.8, -7.4, "CB"), D("CB2", "CB", 1.8, 8.2, "CB"), D("SS", "SS", 2.8, 5.0, "SS")]
+p = Play(jumbo(), dfn, los=opp(1), to_go=None)
+fld = draw(p, width_in=5.2, lateral=(-10.5, 10.5), window=(-8.0, 7.0))
+say(fld, p, 5.0, -5.0, "end zone", fontsize=6.6, color=style.MUTED, box=False)
+plt.show()
+```
+
+**The defense has packed everyone in to stop the run. What call makes it pay, and which offensive player
+should you watch?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Play-action from the same look.** The quarterback fakes the iso to the running back behind the fullback;
+the line fires out exactly as it did on first down, so every defender's eyes go to the pile. Then a tight
+end who seemed to be blocking slips into the end zone: Y or U blocks for a count and releases, or the wing,
+H, leaks to the corner of the end zone. Watch **the backside tight end, U**. On a run he blocks the end in
+front of him; on play-action he chips the end and releases, and the defensive back responsible for him,
+crept up to help against the run, is the one who has to see it.
+
+This is exactly what goal-line offenses do. Inside the 3 in 2023–2025, offenses with one wide receiver or
+none passed on only `{python} pct(HEAVY_PASS)` of snaps, but `{python} pct(HEAVY_PA)` of those passes came
+off a run fake. **What could go wrong:** a defense in a 5-3 has an extra linebacker standing up who can see
+the release, and a quarterback under center who fakes and turns his back has very little time against a
+front built to get into the backfield. One more run is never a bad answer either; the threat of the pass is
+what keeps those three defensive backs honest.
+:::
+:::
+
+## Takeaways
+
+- Near the goal line the **end line becomes the deepest defender**. The compressed field squeezes zones,
+  frees safeties to come down, and makes man coverage, press and Cover 0 cheap. The offense loses its deep
+  threat, and every throw arrives into a crowd.
+- Red-zone pass concepts win quickly and close: the **fade** and **back-shoulder throw** against press with no
+  outside help, the **slant** when the corner takes away the fade, **rubs** from stacks and bunches against
+  man, the **shovel pass** against an attacking front, and the **sprint-out** that puts a flat defender in
+  conflict.
+- A good **two-point play** gives the offense two answers that put one defender in conflict, so it works
+  against more than one defensive call. Runs have converted more often than passes since 2015, partly
+  because of who chooses to run, and a try is worth about what the kick is, so the scoreboard decides.
+- **Goal-line defenses** (6-2, 5-3) trade defensive backs for linemen and linebackers and fill every gap;
+  low man wins. Their weakness is the play that looks like the run and isn't, which is why heavy personnel
+  that throws near the goal line almost always fakes a run first.
+- The **QB sneak** is the best one-yard play in football: the ball starts closest to the line, the play is
+  instant, and the quarterback-as-runner adds a blocker. The **tush push** adds pushers behind him; it has
+  been legal since the NFL removed the ban on pushing the runner in the **mid-2000s** (2005 or 2006; pulling is still a foul),
+  survived a **22–10 ban vote in 2025**, and is legal in **2026**.
+- In the data, a little under six red-zone trips in ten end in touchdowns; a first-and-goal from the 1 scores
+  about nine times in ten (a drive gets four tries); and sneaks convert about four in five on 1 yard to go,
+  but only about half the time on 2. Teams differ far more in how often they sneak than in how well, and the
+  teams that sneak most face the hardest looks.
+
+## Connections
+
+**Builds on:** [Third Down](10-02-third-down.qmd) (situational packages, the sticks),
+[Contact Rules and Penalties as Strategy](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd)
+(pass interference and the rub-versus-pick line), [Option Football](../03-the-run-game/03-04-option-football.qmd)
+(the quarterback as the extra hat), [Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd) (Cover 0,
+press, banjo, robbers and brackets), [Quick Game](../04-the-passing-game/04-03-quick-game.qmd) (slant-flat,
+snag, leverage) and [Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd) (rub routes).
+
+**Sets up:**
+
+- [The Clock, the Two-Minute Drill, and Fourth Down](10-04-clock-and-game-management.qmd): whether to go for
+  two, the two-point chart, and when a short fourth down is worth the risk, which leans on the sneak numbers
+  here.
+- [The Eagles: Trenches, RPOs, and the Tush Push](../12-case-studies/12-06-eagles-trenches-and-tush-push.qmd):
+  the tush push as a talent and coaching edge, and how the Eagles compare with the rest of the league.
+- [Appendix B, the Concept Atlas](../../appendices/appendix-b-concept-atlas.qmd) and
+  [Appendix C, the Defensive Atlas](../../appendices/appendix-c-defense-atlas.qmd): one-page cards for the
+  red-zone, two-point and short-yardage concepts, and for the goal-line fronts.
+
+**If you want to go deeper:** Chris B. Brown's *The Art of Smart Football* on red-zone passing and the
+leverage game; ESPN's and the Packers' pieces on the back-shoulder throw cited in this chapter; and any
+season's goal-line snaps on the All-22 film, watched with nothing but the corners' leverage and the
+receivers' splits in mind.
+
+::: {.callout-note title="Go deeper"}
+**From simulation to real tracking data.** The two animations in this chapter (the rub and the tush push) are gridiron simulations
+written in NFL Big Data Bowl (BDB) coordinates. The 2025 Big Data Bowl release (2022 season, weeks 1–9) has
+every player's position ten times a second, before and after the snap, so you can find real quarterback
+sneaks and tush pushes (the Eagles ran plenty in those weeks) and draw them with the same code. The data lives
+on Kaggle and needs your own free login, so this cell is not run when the book is built.
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (real Big Data Bowl tracking; not run in the build)"
+import pandas as pd
+from gridiron import bdb, show_animation
+
+plays = pd.read_csv("data/bdb/plays.csv")
+# short-yardage quarterback runs: 1 yard to go, play description names the quarterback up the middle
+sneaks = plays[(plays["yardsToGo"] <= 1)
+               & plays["playDescription"].str.contains("up the middle|sneak", case=False, na=False)
+               & plays["playDescription"].str.contains("Hurts|Allen", na=False)]
+print(len(sneaks), "candidate sneaks")
+g, pl = sneaks.iloc[0][["gameId", "playId"]]
+
+trk = bdb.load_tracking("data/bdb/tracking_week_*.csv")
+one = bdb.prepare(trk, plays, game_id=g, play_id=pl)
+show_animation(one, times=[-0.5, 0.0, 0.5, 1.0, 1.5])   # same call as the simulated plays
+```
+:::
+
+[^twohigh]: This book's calculation from nflverse `load_participation()` joined to play-by-play: regular-season dropbacks, 2023–2025 (all charted by FTN, one source), with a charted `defense_coverage_type`, excluding BLOWN, COMBO and PREVENT, and excluding COVER_9, which staffs use both for a rotated Cover 3 and for split-field calls, so it belongs to neither group. Two-deep = COVER_2, 2_MAN, COVER_4 and COVER_6. "Outside the red zone" = more than 20 yards from the goal line. Coverage labels are a charter's judgment, and the 2018–2022 (NGS) labels are coded differently, so the comparison is kept within one source.
+
+[^rz]: This book's calculation from nflverse play-by-play (`fixed_drive_result`), 2022–2025 regular seasons: every drive with at least one scrimmage run or pass (not a kneel-down, extra point or two-point try) snapped at the opponent's 20 or closer, counted once. Tries are left out because the extra point is snapped from the 15 and the two-point try from the 2, so counting them would turn every touchdown into a "red-zone trip". The rest: turnovers `{python} pct(RZ_SHARE.get("Turnover", 0), 1)`, turnovers on downs `{python} pct(RZ_SHARE.get("Turnover on downs", 0), 1)`, missed field goals `{python} pct(RZ_SHARE.get("Missed field goal", 0), 1)`, the end of a half `{python} pct(RZ_SHARE.get("End of half", 0), 1)`, and a handful of turnovers returned for touchdowns and punts.
+
+[^passrate]: This book's calculation from nflverse play-by-play, 2022–2025 regular seasons: dropbacks (passes, sacks and scrambles) as a share of runs and dropbacks on first to third down, with the offense's win probability between 10% and 90% and more than two minutes left in the half.
+
+[^fromone]: This book's calculation from nflverse play-by-play joined to FTN charting, 2022–2025 regular seasons, every run or dropback snapped from the opponent's 1 (kneel-downs excluded). Sneaks are plays FTN flags `is_qb_sneak`; dropbacks include sacks and scrambles. Sample sizes: `{python} int(TD1.loc["sneak", "size"])` sneaks, `{python} int(TD1.loc["run", "size"])` other runs and `{python} int(TD1.loc["dropback", "size"])` dropbacks.
+
+[^ezthrows]: This book's calculation from nflverse play-by-play, 2022–2025 regular seasons, passes thrown from the opponent's 10 or closer (sacks excluded). "Into the end zone" = air yards at least the distance to the goal line; "toward the outside" = the scorer's `pass_location` left or right. Touchdowns per throw from `pass_touchdown`; interceptions per throw were `{python} pct(EZ_INT, 1)` for the end-zone throws and `{python} pct(SHORT_INT, 1)` for the short ones. Two-point tries are excluded. The data cannot identify the route, so this group includes corner routes and other throws as well as fades and back-shoulder throws.
+
+[^scoring]: *Official Playing Rules of the National Football League* (2026), Rule 11, Section 2 (a touchdown is scored when the ball is on, above or behind the opponent's goal line while legally in possession of a runner) and Rule 8, Section 1, Article 3 (a completed catch: control, both feet or another body part down in bounds, then an act common to the game): <https://operations.nfl.com/the-rules/nfl-rulebook/> . Both are taught in [The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd) and [Officiating, Replay, and the Rules of the Ball](../09-special-teams-and-the-rules-that-shape-strategy/09-04-officiating-replay-and-rules-of-the-ball.qmd).
+
+[^heavy]: This book's calculation from nflverse `load_participation()` (charted personnel) joined to play-by-play and FTN charting (`is_play_action`), 2023–2025 regular seasons: runs and dropbacks snapped from the opponent's 3 or closer, kneel-downs and two-point tries excluded. "Heavy" = at most one wide receiver on the field (`offense_personnel`); dropbacks include sacks and scrambles.
+
+[^jurgens]: NFL.com, "Eagles' Nick Sirianni: Cam Jurgens did 'really nice job' replacing legend Jason Kelce" (2024 season): <https://www.nfl.com/news/eagles-nick-sirianni-cam-jurgens-really-nice-job-replacing-legend-jason-kelce> .
+
+[^poe]: Jonathan Jones, "NFL instructs refs to keep eagle eye on Tush Push, QB sneaks after controversial Week 2," CBS Sports (September 18, 2025): officials instructed "to ensure the offensive linemen are not lining up in the neutral zone," and the training video covered false starts and offensive offside on the play: <https://www.cbssports.com/nfl/news/nfl-instructs-refs-to-keep-eagle-eye-on-tush-push-qb-sneaks-after-controversial-week-2> ; Rob Maaddi, "NFL: Eagles should've been penalized for a false start on a tush-push conversion vs. the Chiefs," Associated Press (September 19, 2025), quoting Ramon George, the NFL's vice president of officiating training and development: "Prior to the snap, looks like we have movement by the right guard": <https://www.wsls.com/sports/2025/09/19/nfl-eagles-shouldve-been-penalized-for-a-false-start-on-a-tush-push-conversion-vs-the-chiefs/> .
+
+[^bs]: Packers.com, Hall of Fame profile of Jordy Nelson ("The origin of the back-shoulder pass was as a red-zone play"; the Packers later used it "anywhere on the field"; Nelson 6-foot-3): <https://www.packers.com/history/hof/jordy-nelson> ; Rob Demovsky, "The secrets of the back-shoulder fade," ESPN Packers blog (October 23, 2014), with Nelson: "For us, it's a complete reaction" and "it's not a play": <https://www.espn.com/blog/green-bay-packers/post/_/id/14582/the-secrets-of-the-back-shoulder-fade> .
+
+[^xlix]: Super Bowl XLIX, February 1, 2015, University of Phoenix Stadium, Glendale, Arizona: New England 28, Seattle 24. Second-and-goal from the 1, Kearse's pick route and Lockette's slant, Browner's jam at the line and Butler's interception: <https://en.wikipedia.org/wiki/Super_Bowl_XLIX> . Down, distance, clock (0:26 at the snap) and Seattle's one remaining timeout: nflverse play-by-play (game 2014_21). Three wide receivers, New England's goal-line personnel and Carroll's reasoning ("When [the Patriots] sent their goal-line guys in, I know we have the advantage on the matchups in the passing game"; the throw depended on "how we had to save the clock to get in all of our plays"): Terry Blount, ESPN, February 3, 2015, via ABC7: <https://abc7.com/post/carroll-throwing-was-part-of-the-plan/501284/> . Butler's quote on the stacked receivers: *Boston Globe*, February 2, 2015: <https://www.bostonglobe.com/sports/football/2015/02/02/name-decides-super-bowl-malcolm-butler-does-job/LiVP49K7LDfMK9PwuyKylJ/story.html> .
+
+[^shovel]: Kansas City 27, Philadelphia 20, September 17, 2017 (Week 2), Arrowhead Stadium; Kelce's 15-yard shovel-pass touchdown on second down from the Philadelphia 15 with 6:32 left broke a 13–13 tie: Pro Football Reference box score, <https://www.pro-football-reference.com/boxscores/201709170kan.htm> , and nflverse play-by-play; Fox 29, "Kansas City Chiefs, Andy Reid beat Eagles 27-20": <https://www.fox29.com/news/kansas-city-chiefs-andy-reid-beat-eagles-27-20> .
+
+[^twopt]: Pro Football Hall of Fame, "2-point conversion turns 30 years old" (the AFL used it 1960–1969; the NFL adopted it in 1994; Tom Tupa scored the first one): <https://www.profootballhof.com/news/2024/09/2-point-conversion-turns-30-years-old> ; CBS Sports, "NFL rule change: Extra point moved back, defenses can score" (2015: extra-point snap moved to the 15, defense may return a failed try for two points): <https://www.cbssports.com/nfl/news/nfl-rule-change-extra-point-moved-back-defenses-can-score> . The try is snapped from the 2 in the NFL and the 3 in college: Wikipedia, "Two-point conversion": <https://en.wikipedia.org/wiki/Two-point_conversion> . No change to the two-point spot was proposed for 2026.
+
+[^tpdef]: This book's calculation from nflverse `load_participation()` joined to play-by-play, 2023–2025 regular seasons: two-point tries recorded as a run or a pass (`{python} TP_N3` plays). "Defensive backs" = cornerbacks plus safeties in the charted `defense_personnel`. Man coverage = COVER_0, COVER_1 or 2_MAN, among dropbacks with a charted coverage (BLOWN, COMBO and PREVENT excluded).
+
+[^twodata]: This book's calculation from nflverse play-by-play, 2015–2025 regular seasons: two-point tries (`two_point_attempt`) whose play was recorded as a run or a pass, success from `two_point_conv_result`. Scrambles and sacks count as passes. Tries erased by penalties are left out. The extra-point rate is every regular-season kick from 2015 to 2025 (`extra_point_result` "good").
+
+[^li]: Super Bowl LI, February 5, 2017, NRG Stadium, Houston: New England 34, Atlanta 28 (OT). Fourth-quarter conversions: James White on a direct snap after Amendola's 6-yard touchdown catch (28–20, 5:56 left); Brady to Amendola after White's 1-yard touchdown run (28–28, 0:57 left): <https://en.wikipedia.org/wiki/Super_Bowl_LI> ; times from nflverse play-by-play (game 2016_21). The direct snap (Brady in the shotgun, White motioning beside him; the Patriots' "Ride 34 Direct", the call Kevin Faulk had scored a two-point try on in Super Bowl XXXVIII): ESPN's breakdown of both tries: <https://africa.espn.com/nfl/story/_/id/18628898/how-new-england-patriots-converted-two-point-tries-super-bowl-li> ; *Concord Monitor*: <https://www.concordmonitor.com/?p=201569> .
+
+[^ineligible]: *Official Playing Rules of the National Football League* (2026), Rule 8, Section 3, Article 1: "On a scrimmage play during which a legal forward pass is thrown, it is a foul if the entire body of an ineligible offensive player ... is more than one yard beyond the line of scrimmage before the pass has been thrown," unless he got there while blocking an opponent he engaged within a yard of the line; 5 yards: <https://operations.nfl.com/the-rules/nfl-rulebook/> . The NCAA allows linemen up to 3 yards downfield and exempts passes caught behind the line: Wikipedia, "Ineligible receiver downfield": <https://en.wikipedia.org/wiki/Ineligible_receiver_downfield> .
+
+[^leap]: *Official Playing Rules of the National Football League* (2026), Rule 12, Section 3, Article 1(r): the leaping foul is "running forward and leaping across the line of scrimmage in an obvious attempt to block a field goal or Try Kick, or apparent kick"; no rule restricts leaping on a running play: <https://operations.nfl.com/the-rules/nfl-rulebook/> .
+
+[^fridge]: Super Bowl XX, January 26, 1986, Louisiana Superdome, New Orleans: Chicago 46, New England 10; Perry's 1-yard touchdown run came late in the third quarter and made it 44–3: <https://en.wikipedia.org/wiki/Super_Bowl_XX> ; NFL.com, "100 Greatest Plays": <https://nfl.com/100/originals/100-greatest/plays-79> .
+
+[^qbone]: This book's calculation from nflverse play-by-play, 2000–2022, regular season and playoffs: runs with Tom Brady as the ball carrier on 1 yard (or less) to go, kneel-downs excluded; "converted" = first down or touchdown. Most (about 83%) were logged as runs up the middle, the sneak's signature; the rest went just left or right of center.
+
+[^push2005]: Pereira (speaking in 2022) quoted in Ben Volin, "NFL saves the Tush Push — for now — but could revert to old rule to ban all pushing plays instead," *Boston Globe* (April 2, 2025): <https://www.bostonglobe.com/2025/04/02/sports/nfl-tush-push-rule/> . The 2006 date: Joel Bussert, NFL historian, quoted in Cliff Christl, "Would the 1906 rule changes banning the 'Turtle-Back Wedge' apply to the 'Tush Push'?", Packers.com (May 1, 2025): <https://www.packers.com/news/would-the-1906-rule-changes-banning-the-turtle-back-wedge-apply-to-the-tush-push> , and Dean Blandino on Fox (via Fox News, 2025): <https://www.foxnews.com/sports/dean-blandino-its-50-50-tush-push-survives-eagles-chiefs-controversies.amp> . The 2005 date and the old 10-yard foul: Doug Robinson, *Deseret News* (January 20, 2023), as cited in Wikipedia, "Tush Push": <https://en.wikipedia.org/wiki/Tush_Push> ; Kevin Seifert, "Vote on tush push ban tabled by NFL owners for more discussion," ESPN (April 1, 2025), which gives both 2004 and 2005: <https://africa.espn.com/nfl/story/_/id/44490292/sources-tush-push-ban-vote-tabled-nfl-owners> . Current rule: *Official Playing Rules of the National Football League* (2026), Rule 12, Section 1, Article 4, "Assisting the runner": no offensive player may "pull a runner in any direction at any time"; loss of 10 yards: <https://operations.nfl.com/the-rules/nfl-rulebook/> .
+
+[^ncaa]: Kyle Bonagura, "The legacy and legality of the Bush Push 20 years later," ESPN (October 15, 2025): the NCAA rule on helping the ball carrier kept its ban on pushing until 2013, when "push" was removed: <https://africa.espn.com/college-football/story/_/id/46592420/reggie-bush-push-usc-notre-dame-rivalry-legacy-20-years-later-2025> .
+
+[^bushpush]: USC won 34–31 at Notre Dame on October 15, 2005; USC trailed 31–28 with seven seconds left before Leinart's sneak. Bonagura (ESPN, 2025, cited above) on the play being illegal under the college rule of the time, and unflagged.
+
+[^phi]: This book's calculation from nflverse play-by-play joined to FTN charting, 2022–2025 regular seasons: share of each team's runs and dropbacks on 1 yard to go flagged `is_qb_sneak` (kneel-downs excluded). Hurts: nflverse play-by-play, 2020–2025, regular season and playoffs, runs with Jalen Hurts as the ball carrier for Philadelphia on 1 yard or less to go, kneel-downs excluded.
+
+[^lix]: Super Bowl LIX, February 9, 2025, Caesars Superdome, New Orleans: Philadelphia 40, Kansas City 22; Hurts's first-quarter touchdown on the tush push: <https://www.cbsnews.com/amp/news/nfl-mvp-super-bowl-jalen-hurts-eagles> .
+
+[^ban]: The first version's wording ("would prohibit an offensive player from immediately pushing a teammate who is lined up directly behind the snapper and receives the snap") and the April 1, 2025 tabling: Kevin Seifert, ESPN (cited above). The revised version ("pushing, pulling, lifting, or assisting the runner except by individually blocking opponents for him") and its 22–10 failure on May 21, 2025: *SI*, "Packers' proposal to ban Eagles' tush push fails again": <https://www.si.com/nfl/packers/packers-proposal-to-ban-eagles-tush-push-fails-again> , and *Philadelphia Inquirer*: <https://www.inquirer.com/eagles/eagles-tush-push-packers-ban-vote-20250519.html> ; no proposal for 2026 and McKay's comments: NFL.com, <https://www.nfl.com/news/competition-committee-co-chairman-rich-mckay-doesn-t-expect-tush-push-ban-proposal-in-2026> ; Troy Vincent on revisiting officiating "lightly": *The Washington Times* (Feb. 24, 2026), <https://www.washingtontimes.com/news/2026/feb/24/nfl-receives-no-tush-push-ban-proposal-year-effort-last-year-ban/> .
+
+[^ftnflag]: FTN charting via nflverse `load_ftn_charting()` (2022 onward). FTN's data dictionary has no separate tush-push flag; `is_qb_sneak` covers both: <https://nflreadr.nflverse.com/articles/dictionary_ftn_charting.html> . The sneak rates here count plays FTN flagged and nflverse recorded as runs, on 1 (or 2) yards to go, 2022–2025 regular seasons; "converted" = first down or touchdown on the play. Other runs exclude scrambles and kneel-downs; passes include sacks and scrambles. By season, sneaks on 1 yard to go converted `{python} ", ".join(f"{pct(v)} ({int(s)})" for s, v in SN_SEASON.items())`.
+
+[^qballen]: This book's calculation from nflverse play-by-play, 2018–2025, regular season and playoffs: runs with Josh Allen as the ball carrier for Buffalo on 1 yard or less to go, kneel-downs excluded; "converted" = first down or touchdown. Team sneak counts: FTN `is_qb_sneak`, as in the chart.
