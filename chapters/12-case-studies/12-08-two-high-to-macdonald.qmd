@@ -1,0 +1,394 @@
+---
+title: "Case Study: Fangio's Two-High Revolution and Macdonald's Answer"
+subtitle: "How a sixty-year-old journeyman coordinator taught the NFL to keep two safeties back and dare offenses to be patient, and how a thirty-six-year-old built a Super Bowl defense by making every snap look the same and play differently."
+description: "The 2018-2025 defensive arms race as a case study: the problem one-high defenses faced against McVay-era offenses and Mahomes; Vic Fangio's answer (two-high shell, light box, tite front, four-man rush, match quarters and Cover 6, late rotation) and its spread through Brandon Staley, Ejiro Evero, Jesse Minter and others; Fangio's 2024 Eagles and Super Bowl LIX; Mike Macdonald's multiplicity (one picture, many fronts, personnel and rushers, with the coverage decided at the snap) at Baltimore (2022-2023) and Seattle (2024-2025); Seattle's Super Bowl LX defense against Drake Maye, play by play; the two philosophies compared with data (two-high rate, blitz and pressure rates, light boxes, EPA allowed) and what the data cannot see (the disguise itself); how offenses answered, the 2026 staff map, and what offenses are likely to try next."
+glossary:
+  "Multiplicity (defensive)": "Building a defense so that one pre-snap picture can become many different plays: several fronts, rushers and coverages that start from the same look and personnel that can play several roles, so the offense learns little before the snap. The opposite of a defense that wins by doing a few things the same way every snap."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import logging
+import os
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, FancyBboxPatch, Patch, Rectangle, RegularPolygon
+from matplotlib.lines import Line2D
+from IPython.display import HTML, Markdown, display
+
+from gridiron import Play, Player, style
+from gridiron.animate import animate
+from gridiron.formations import technique as T
+from gridiron.play import MARKER_R
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+FIELD_W = 160 / 3
+
+
+# ---------------------------------------------------------------- building plays by hand
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=label)
+
+
+def D(key, pos, d, w, label=None):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line5(d=-0.7):
+    """The five offensive linemen (only the center labelled)."""
+    return [O(k, k, d, w, label="C" if k == "C" else "") for k, w in
+            (("LT", -3.2), ("LG", -1.6), ("C", 0.0), ("RG", 1.6), ("RT", 3.2))]
+
+
+def eleven_attached(rb_w=1.6):
+    """11 personnel from the shotgun, the tight end (Y) attached on the right: Z wide right off the
+    ball, X wide left on the ball, H in the left slot off the ball. Seven on the line: five
+    linemen, Y and X, so Y and X are the ends and everyone else is a back."""
+    return line5() + [O("Y", "TE", -0.7, 4.8), O("Z", "WR", -1.5, 14.0), O("X", "WR", -0.7, -14.0),
+                      O("H", "WR", -1.5, -8.5), O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, rb_w, "R")]
+
+
+def eleven_2x2():
+    """11 personnel 2x2 from the shotgun: X and H left, the tight end flexed as the right slot (Y)
+    and Z on the ball outside him. Seven on the line: five linemen, X and Z."""
+    return line5() + [O("X", "WR", -0.7, -15.0), O("H", "WR", -1.5, -9.0), O("Y", "TE", -1.5, 8.5),
+                      O("Z", "WR", -0.7, 15.0), O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, 1.5, "R")]
+
+
+def twelve_under_center():
+    """12 personnel under center: two tight ends attached (U left, Y right), X and Z off the ball."""
+    return line5() + [O("Y", "TE", -0.7, 4.8), O("U", "TE", -0.7, -4.8, "U"), O("X", "WR", -1.5, -14.0),
+                      O("Z", "WR", -1.5, 14.0), O("QB", "QB", -1.9, 0.0, "Q"), O("RB", "RB", -7.0, 0.0, "R")]
+
+
+def tite_quarters():
+    """Fangio-style nickel tite against 11 personnel with the tight end on the right: a nose (0) and
+    two 4i-techniques, a stand-up edge (E) outside each tackle (the right one outside the tight end),
+    one linebacker (M), the nickel ($) inside the left slot, corners 7 off, safeties 12.5 deep."""
+    return [D("LE", "OLB", 1.0, -5.3, "E"), D("L4", "DL", 1.0, T("4i", -1), "4i"), D("NT", "DL", 1.0, 0.0, "0"),
+            D("R4", "DL", 1.0, T("4i", 1), "4i"), D("RE", "OLB", 1.0, T("9"), "E"),
+            D("MIKE", "LB", 4.7, 0.8, "M"), D("NB", "NB", 5.0, -8.0, "$"),
+            D("LCB", "CB", 7.0, -14.6, "CB"), D("RCB", "CB", 7.0, 14.6, "CB"),
+            D("FS", "FS", 12.5, -7.0, "FS"), D("SS", "SS", 12.5, 7.0, "SS")]
+
+
+def go_to(p, key, to, kind="path", **kw):
+    """Post-snap movement to an absolute (d, w) spot."""
+    d0, w0 = p._cur(key)
+    rel = [(to[0] - d0, to[1] - w0)]
+    if kind == "block":
+        return p.block(key, pts=rel, **kw)
+    if kind == "rush":
+        return p.rush(key, pts=rel, **kw)
+    return {"path": p.path, "run": p.run}[kind](key, rel, **kw)
+
+
+# ---------------------------------------------------------------- drawing helpers
+def no_numbers(ax):
+    """Remove the painted yard numbers (in zoomed windows they sit where players stand)."""
+    for t in list(ax.texts):
+        if t.get_alpha() == 0.55:
+            t.remove()
+
+
+def P_of(fld, p):
+    """(d, w) in the play's frame -> plot coordinates on this field."""
+    return lambda d, w: tuple(float(v) for v in fld.xy(*p.to_abs(d, w)))
+
+
+def say(ax, P, d, w, text, color=style.INK, fs=6.8, ha="center", ec=None, weight="normal"):
+    x, y = P(d, w)
+    ax.text(x, y, text, fontsize=fs, color=color, ha=ha, va="center", zorder=12, linespacing=1.12,
+            fontweight=weight,
+            bbox=dict(boxstyle="round,pad=0.22", fc=style.SURFACE, ec=ec or "none", lw=0.6, alpha=0.94))
+
+
+def point_to(ax, P, at, to, text, fs=6.8, ha="center"):
+    """A label at `at` with a thin leader arrow to `to` (both (d, w) yards)."""
+    ax.annotate(text, xy=P(*to), xytext=P(*at), fontsize=fs, color=style.INK, ha=ha, va="center", zorder=12,
+                linespacing=1.12, bbox=dict(boxstyle="round,pad=0.25", fc=style.SURFACE, ec=style.BASELINE,
+                                            lw=0.6, alpha=0.96),
+                arrowprops=dict(arrowstyle="-|>", color=style.INK_2, lw=0.8, shrinkA=2, shrinkB=6))
+
+
+def ruler(fld, play, fs=6.0, top=30):
+    """Depth labels (yards past the line of scrimmage) down the left edge of the window."""
+    ax = fld.ax
+    x_left = FIELD_W - fld.y1 + 0.35
+    for d in range(5, top + 1, 5):
+        y = play.los + d
+        if fld.x0 + 0.8 <= y <= fld.x1 - 0.8:
+            ax.text(x_left, y, f"{d}" + (" yd" if d == 5 else ""), fontsize=fs, color=style.INK_2,
+                    ha="left", va="center", zorder=12,
+                    bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.85))
+
+
+def box_outline(ax, P, d0, d1, w0, w1, text, text_at, color=style.INK_2):
+    """A dashed rectangle around the box, with a caption."""
+    (xa, ya), (xb, yb) = P(d0, w0), P(d1, w1)
+    ax.add_patch(Rectangle((min(xa, xb), min(ya, yb)), abs(xb - xa), abs(yb - ya), fill=False,
+                           ec=color, lw=1.0, ls=(0, (4, 3)), zorder=2))
+    say(ax, P, text_at[0], text_at[1], text, fs=6.8, weight="bold")
+
+
+def ghost_marker(ax, x, y, label, ppy, side="def"):
+    """A hollow, dashed marker: where a player stood before he moved."""
+    col = style.DEFENSE if side == "def" else style.OFFENSE
+    if side == "def":
+        pat = RegularPolygon((x, y), 4, radius=MARKER_R * 1.25, orientation=np.pi / 4, facecolor="none",
+                             edgecolor=col, lw=1.0, ls=(0, (2, 1.2)), zorder=6)
+    else:
+        pat = Circle((x, y), MARKER_R, facecolor="none", edgecolor=col, lw=1.0, ls=(0, (2, 1.2)), zorder=6)
+    ax.add_patch(pat)
+    if label:
+        ax.text(x, y, label, ha="center", va="center", color=col, fontweight="bold", zorder=6,
+                fontsize=max(4.0, min(8.0, ppy * 0.72)))
+
+
+# ---------------------------------------------------------------- animations and their print strips
+def snapshot(play, t, ax=None, lateral=(-24, 24), window=(-8, 20), ghosts=(), ghost_t=None, trail_from=None):
+    """Everyone where he is at time t, a faint trail behind each mover, and a hollow 'ghost'
+    where each listed player stood at `ghost_t`."""
+    pos = {k: play.position(k, t) for k in play.players}
+    moved = [pl.moved(d=float(pos[k][0]), w=float(pos[k][1])) for k, pl in play.players.items()]
+    q = Play([m for m in moved if m.side == "off"], [m for m in moved if m.side == "def"],
+             los=play.los, ball_y=play.ball_y, to_go=play.to_go)
+    q.highlights = dict(play.highlights)
+    fld = q.draw(ax=ax, lateral=lateral, window=window, title=False)
+    ax, ppy = fld.ax, fld.pts_per_yard()
+    no_numbers(ax)
+    P = P_of(fld, play)
+    start = play._compile()[1] if trail_from is None else trail_from
+    for k, pl in play.players.items():
+        if pl.pos in ("LT", "LG", "C", "RG", "RT"):
+            continue
+        pts = np.array([play.position(k, tt) for tt in np.linspace(start, t, 50)])
+        if np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) < 0.4:
+            continue
+        xs, ys = fld.xy(*play.to_abs(pts[:, 0], pts[:, 1]))
+        col = style.OFFENSE if pl.side == "off" else style.DEFENSE
+        ax.plot(xs, ys, color=col, lw=1.1, alpha=0.55, ls="-" if pl.side == "off" else (0, (3, 2)), zorder=3)
+    if ghost_t is not None and t > ghost_t + 0.05:
+        for k in ghosts:
+            d0, w0 = play.position(k, ghost_t)
+            d1, w1 = play.position(k, t)
+            if abs(d1 - d0) + abs(w1 - w0) > 1.0:
+                ghost_marker(ax, *P(d0, w0), play.players[k].label, ppy, play.players[k].side)
+    bd, bw = play.ball_position(t)
+    bx, by = P(bd, bw)
+    for kind, _, t_rel in play.ball_events:
+        if kind == "pass" and t > t_rel:
+            sx, sy = P(*play.ball_position(t_rel))
+            ax.add_patch(FancyArrowPatch((sx, sy), (bx, by), arrowstyle="-|>", mutation_scale=8, color=style.BALL,
+                                         lw=1.3, ls=(0, (2, 1.5)), zorder=9))
+    ax.add_patch(Ellipse((bx, by), 0.75, 1.1, facecolor=style.BALL, edgecolor="white", lw=0.6, zorder=9.5))
+    for art in list(ax.texts) + list(ax.patches) + list(ax.lines):
+        art.set_clip_on(True)
+    return fld
+
+
+def strip(play, times, labels, ncols=2, width_in=6.5, legend=True, annot=None, **kw):
+    """The print version of an animation: one panel per chosen moment, each with a caption.
+    `annot` maps a panel index to a function f(ax, P) that adds print-only labels to that panel."""
+    lateral, window = kw.get("lateral", (-24, 24)), kw.get("window", (-8, 20))
+    n = len(times)
+    nrows = int(np.ceil(n / ncols))
+    pw = width_in / ncols
+    h = nrows * (pw * (window[1] - window[0]) / abs(lateral[1] - lateral[0]) + 0.42) + (0.35 if legend else 0.1)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(width_in, h), squeeze=False)
+    for ax in axes.flat[n:]:
+        ax.axis("off")
+    for i, (ax, t, lab) in enumerate(zip(axes.flat, times, labels)):
+        fld = snapshot(play, t, ax=ax, **kw)
+        if annot and i in annot:
+            annot[i](ax, P_of(fld, play))
+        ax.set_title(lab, fontsize=7.6, color=style.INK, loc="left", pad=3, linespacing=1.15)
+    fig.tight_layout(h_pad=0.6, w_pad=0.5, rect=(0, 0.05 if legend else 0, 1, 1))
+    if legend:
+        hs = [Line2D([], [], color=style.OFFENSE, lw=1.2, alpha=0.7, label="Offense: path so far"),
+              Line2D([], [], color=style.DEFENSE, lw=1.2, ls=(0, (3, 2)), label="Defense: path so far"),
+              Patch(facecolor="none", edgecolor=style.DEFENSE, lw=1.0, ls=(0, (2, 1.2)),
+                    label="Dashed outline: where he started")]
+        fig.legend(handles=hs, loc="lower center", ncol=3, fontsize=7.0, frameon=False, bbox_to_anchor=(0.5, 0.0))
+    return fig
+
+
+def show_play(play, times, labels, web_caption, annot=None, **kw):
+    """Web: an animation with a caption that changes with the phase of the play.
+    Print: a labelled frame strip (panel titles = `labels`)."""
+    if PDF:
+        strip(play, times, labels, annot=annot, **kw)
+        plt.show()
+        return
+    df = play.to_tracking()
+    tmap = df.groupby("frameId")["time"].first()
+    anim = animate(df, to_go=play.to_go)
+    ax = anim._fig.axes[0]
+    cap = ax.text(0.01, 0.02, "", transform=ax.transAxes, ha="left", va="bottom", fontsize=9, color=style.INK,
+                  zorder=21, bbox=dict(boxstyle="round,pad=0.3", fc=style.SURFACE, ec=style.THIRD, lw=1.0))
+    base = anim._func
+
+    def upd(fid, *a):
+        out = base(fid, *a)
+        cap.set_text(web_caption(float(tmap.get(fid, 0.0))))
+        return out
+    anim._func = upd
+    if shutil.which("ffmpeg"):
+        html = anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+    else:
+        html = anim.to_jshtml(default_mode="once")
+    plt.close(anim._fig)
+    display(HTML(html))
+
+
+def phases(cuts):
+    """[(t_upper, caption), ...] -> function of t (seconds from the snap) for show_play."""
+    def f(t):
+        for up, txt in cuts:
+            if t < up:
+                return txt
+        return cuts[-1][1]
+    return f
+```
+
+```{python}
+#| code-summary: "Show the Python (load nflverse play-by-play, participation and FTN charting, 2018-2025, and compute every number quoted in the text)"
+#| output: false
+import re
+from gridiron.data import nfl, pbp
+
+SEASONS = list(range(2018, 2026))
+COLS = ["season", "season_type", "week", "game_id", "play_id", "posteam", "defteam", "play_type", "down",
+        "ydstogo", "qtr", "time", "qb_dropback", "qb_scramble", "sack", "interception", "touchdown", "epa",
+        "yards_gained", "desc", "total_home_score", "total_away_score", "home_team", "away_team", "no_huddle"]
+RAW = pbp(SEASONS, columns=COLS)
+PLAYS = RAW[RAW.play_type.isin(["pass", "run"]) & RAW.down.notna()].copy()
+REG = PLAYS[PLAYS.season_type == "REG"].copy()
+PART = pd.concat([nfl().load_participation([y]).to_pandas()[
+    ["nflverse_game_id", "play_id", "defense_coverage_type", "number_of_pass_rushers", "was_pressure",
+     "defenders_in_box", "defense_personnel"]] for y in SEASONS], ignore_index=True)
+M = REG.merge(PART, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"], how="left")
+
+TWO = ["COVER_2", "2_MAN", "COVER_4", "COVER_6"]
+LABELS = ["COVER_0", "COVER_1", "COVER_2", "2_MAN", "COVER_3", "COVER_4", "COVER_6", "COVER_9"]
+DBK = M[M.qb_dropback == 1].copy()
+DBK["cov"] = DBK.defense_coverage_type.astype(str).str.upper()
+DBK["two"] = DBK.cov.isin(TWO)
+DBK["press"] = (DBK.was_pressure.astype(float).fillna(0) > 0) | (DBK.sack == 1)
+LAB = DBK[DBK.cov.isin(LABELS)]
+RUNS = M[(M.play_type == "run") & (M.qb_scramble == 0)]
+
+TEAM = pd.DataFrame({
+    "two": LAB.groupby(["season", "defteam"]).two.mean(),
+    "press": DBK[DBK.was_pressure.notna()].groupby(["season", "defteam"]).press.mean(),
+    "blitz": DBK[DBK.number_of_pass_rushers.notna()].groupby(["season", "defteam"]).number_of_pass_rushers
+    .apply(lambda s: (s >= 5).mean()),
+    "four": DBK[DBK.number_of_pass_rushers.notna()].groupby(["season", "defteam"]).number_of_pass_rushers
+    .apply(lambda s: (s == 4).mean()),
+    "epa": DBK.groupby(["season", "defteam"]).epa.mean(),
+    "run_epa": RUNS.groupby(["season", "defteam"]).epa.mean(),
+    "light": RUNS[RUNS.defenders_in_box.notna()].groupby(["season", "defteam"]).defenders_in_box
+    .apply(lambda s: (s <= 6).mean()),
+})
+# points allowed, from the schedules
+SCH = nfl().load_schedules(SEASONS).to_pandas()
+RS = SCH[SCH.game_type == "REG"]
+PA = pd.concat([RS.assign(t=RS.home_team, a=RS.away_score)[["season", "t", "a"]],
+                RS.assign(t=RS.away_team, a=RS.home_score)[["season", "t", "a"]]]).groupby(["season", "t"]).a.sum()
+PA.index.names = ["season", "defteam"]
+TEAM["pa"] = PA
+LOW_GOOD = {"epa", "run_epa", "pa"}
+for c in ["two", "press", "blitz", "epa", "run_epa", "light", "pa", "four"]:
+    TEAM[c + "_rk"] = TEAM.groupby("season")[c].rank(ascending=c in LOW_GOOD, method="min").astype(int)
+MED = TEAM.groupby("season").median(numeric_only=True)
+
+
+def pct(x, nd=0):
+    return f"{100 * x:.{nd}f}%"
+
+
+def ordinal(n):
+    n = int(n)
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def tv(season, team, col):
+    return TEAM.loc[(season, team), col]
+
+
+# FTN charting (2022 on): rushers and "blitzers" (rushers who are not down linemen or regular edges)
+FTN = pd.concat([nfl().load_ftn_charting([y]).to_pandas()[["nflverse_game_id", "nflverse_play_id", "n_blitzers",
+                                                           "n_pass_rushers"]] for y in [2023, 2024, 2025]])
+FD = DBK[DBK.season >= 2023].merge(FTN, left_on=["game_id", "play_id"],
+                                   right_on=["nflverse_game_id", "nflverse_play_id"], how="inner")
+FD = FD.dropna(subset=["n_pass_rushers", "n_blitzers"])
+FD["sim"] = (FD.n_pass_rushers == 4) & (FD.n_blitzers >= 1)
+SIM = FD.groupby(["season", "defteam"]).sim.mean()
+SIM_RK = SIM.groupby("season").rank(ascending=False, method="min").astype(int)
+
+
+# defensive personnel: defensive backs and safeties on the field (participation, 2023 on lists every position)
+def dbs(s):
+    if not isinstance(s, str):
+        return None
+    d = {pos: int(n) for n, pos in re.findall(r"(\d+)\s+([A-Z]+)", s)}
+    saf = d.get("FS", 0) + d.get("SS", 0) + d.get("S", 0)
+    return d.get("CB", 0) + d.get("DB", 0) + saf, saf
+
+
+PG = M[M.season >= 2023][["season", "defteam", "defense_personnel"]].copy()
+PG["n"] = PG.defense_personnel.map(dbs)
+PG = PG.dropna(subset=["n"])
+PG["dbs"] = PG.n.str[0]
+PG["saf"] = PG.n.str[1]
+PG["three_s"] = PG.saf >= 3
+PG["kind"] = np.select([PG.dbs <= 4, (PG.dbs == 5) & (PG.saf >= 3), PG.dbs == 5, PG.dbs >= 6],
+                       ["base (4 DBs)", "big nickel (5 DBs, 3+ safeties)", "nickel (5 DBs)", "dime (6+ DBs)"],
+                       "other")
+PERS = PG.groupby(["season", "defteam"]).kind.value_counts(normalize=True).unstack(fill_value=0)
+PERS_LG = PG.groupby("season").kind.value_counts(normalize=True).unstack(fill_value=0)
+
+# ---- Super Bowl LX (Feb 8, 2026): every New England dropback against Seattle
+POST = PLAYS[PLAYS.season_type == "POST"]
+LX = POST[POST.game_id == "2025_22_SEA_NE"]
+P25 = nfl().load_participation([2025]).to_pandas()
+LXD = LX.merge(P25, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"], how="left")
+LXD = LXD[(LXD.posteam == "NE") & (LXD.qb_dropback == 1)].sort_values(["qtr", "play_id"]).reset_index(drop=True)
+LXD["cov"] = LXD.defense_coverage_type.astype(str).str.upper()
+LXD["fam"] = np.where(LXD.cov.isin(TWO), "two", np.where(LXD.cov.isin(["COVER_0", "COVER_1", "COVER_3", "COVER_9"]),
+                                                         "one", "other"))
+LXD["press"] = (LXD.was_pressure.astype(float).fillna(0) > 0) | (LXD.sack == 1)
+LX_RUN = LX[(LX.posteam == "NE") & (LX.play_type == "run") & (LX.qb_scramble == 0)]
+LX_LAB = LXD[LXD.fam != "other"]
+S = {
+    "lx_db": len(LXD), "lx_sacks": int(LXD.sack.sum()), "lx_int": int(LXD.interception.sum()),
+    "lx_four": int((LXD.number_of_pass_rushers == 4).sum()), "lx_five": int((LXD.number_of_pass_rushers >= 5).sum()),
+    "lx_press": int(LXD.press.sum()), "lx_two": int((LX_LAB.fam == "two").sum()), "lx_lab": len(LX_LAB),
+    "lx_c2": int((LXD.cov == "COVER_2").sum()), "lx_c6": int((LXD.cov == "COVER_6").sum()),
+    "lx_c1": int((LXD.cov == "COVER_1").sum()),
+    "lx_epa": LXD.epa.mean(), "lx_box6": int((LX_RUN.merge(P25, left_on=["game_id", "play_id"],
+                                                           right_on=["nflverse_game_id", "play_id"])
+                                              .defenders_in_box <= 6).sum()), "lx_runs": len(LX_RUN),
+    "lx_q4_db": int((LXD.qtr == 4).sum()),
+    "lx_pre4_epa": LXD[LXD.qtr < 4].epa.mean(), "lx_q4_epa": LXD[LXD.qtr == 4].epa.mean(),
+}
+# first New England points
+_ne = LX[LX.total_home_score > 0].iloc[0]
+S["ne_first_q"], S["ne_first_t"] = int(_ne.qtr), _ne.time
+
+# ---- Super Bowl LIX (Feb 9, 2025): every Kansas City dropback against Philadelphia
+P24 = nfl().load_participation([2024]).to_pandas()
+LIX = POST[POST.game_id == "2024_22_KC_PHI"].merge(P24, left_on=["game_id", "play_id"],
+                                                    right_on=["nflverse_game_id", "play_id"], how="left")
+LIXD = LIX[(LIX.posteam == "KC") & (LIX.qb_dropback == 1)]
+S["lix_db"] = len(LIXD)
+S["lix_le4"] = int((LIXD.number_of_pass_rushers <= 4).sum())
+S["lix_c4"] = int((LIXD.defense_coverage_type.astype(str).str.upper() == "COVER_4").sum())
+S["lix_sacks"] = int(LIXD.sack.sum())
+```
