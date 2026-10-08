@@ -1,7 +1,8 @@
 # RESUME — Reading the Game
 
 ## Layout (2026-10-08)
-- Everything lives in `~/dev/nfl-learn` (formerly `~/dev/course` + `~/dev/course-site`).
+- Everything lives in `~/dev/nfl/reading-the-game` (formerly `~/dev/course` + `~/dev/course-site`);
+  sibling NFL project: `~/dev/nfl/fantasy-2026`.
   `site/` is the `gh-pages` worktree (gitignored). Dev container `rtg` mounts this folder at
   `/workspaces/course`.
 

@@ -5,7 +5,7 @@
 - Toolchain is in the dev container. For a headless session: `docker start rtg` (or
   rebuild: `docker build -t rtg-dev -f .devcontainer/Dockerfile . && docker run -d --name rtg -v $PWD:/workspaces/course rtg-dev sleep infinity && docker exec rtg uv sync`).
   Run Python and Quarto via `docker exec -w /workspaces/course rtg ...`.
-- Repo lives at `~/dev/nfl-learn`; `site/` (gitignored) is a git worktree of the `gh-pages`
+- Repo lives at `~/dev/nfl/reading-the-game`; `site/` (gitignored) is a git worktree of the `gh-pages`
   branch that `scripts/publish_live.sh` deploys to.
 - Render one chapter: `python scripts/build_pdfs.py <slug> --html` (isolated, so it's safe in
   parallel). Full site: `quarto render` (CI does this; see `.github/workflows/publish.yml`).
