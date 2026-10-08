@@ -84,7 +84,7 @@ COLS = ["season", "season_type", "week", "game_id", "play_id", "drive", "qtr",
         "posteam_timeouts_remaining", "defteam_timeouts_remaining", "timeout", "timeout_team",
         "fourth_down_converted", "field_goal_result", "kick_distance", "qb_kneel", "qb_spike",
         "two_point_attempt", "two_point_conv_result", "extra_point_attempt",
-        "extra_point_result", "fixed_drive_result", "desc"]
+        "extra_point_result", "fixed_drive_result", "posteam_score", "defteam_score", "desc"]
 raw = pbp(SEASONS, columns=COLS)
 reg = raw[(raw.season_type == "REG") & (raw.qtr <= 4)].copy()   # regulation, regular season
 
@@ -99,6 +99,20 @@ snaps = reg[reg.down.notna() & reg.ep.notna()
             & reg.play_type.isin(["pass", "run", "punt", "field_goal"])].copy()
 
 
+def pct(v, d=0):
+    return f"{100 * v:.{d}f}%"
+```
+
+Drawing code (axes, colours, label positions) is matplotlib, not football, so this chapter keeps it in
+helper functions that are folded away on the website ("Show the plotting code") and left out of the
+printed book. Every line that loads, filters, fits or counts data is shown, and each chart cell ends by
+handing its numbers to a `plot_…` function.
+
+::: {.content-visible when-format="html"}
+```{python}
+#| label: table-helper
+#| code-fold: true
+#| code-summary: "Show the table helper"
 def md_table(df, digits=1, widths=None):
     """Show a small DataFrame as a Markdown table (presentation plumbing, not football).
     `widths` sets relative column widths (pandoc reads them from the dashes)."""
@@ -111,11 +125,8 @@ def md_table(df, digits=1, widths=None):
              for c, w in zip(df, widths)]
     rows = [list(out.columns), align] + out.astype(str).values.tolist()
     return Markdown("\n".join("| " + " | ".join(map(str, r)) + " |" for r in rows))
-
-
-def pct(v, d=0):
-    return f"{100 * v:.{d}f}%"
 ```
+:::
 
 Two choices matter. **Regulation only**: overtime has its own rules (both teams get a possession
 since 2025 in the regular season, and a tie is possible), so its plays are left out of the model.
@@ -626,14 +637,22 @@ plays = reg[reg.play_type.isin(["pass", "run"]) & (reg.qb_kneel != 1) & (reg.qb_
 att4 = plays[plays.down == 4].assign(conv=lambda t: (t.yards_gained >= t.ydstogo).astype(float))
 att3 = plays[plays.down == 3].assign(conv=lambda t: (t.yards_gained >= t.ydstogo).astype(float))
 
-# Conversion: logistic in log(yards to go) and yards to go, fitted on fourth-down attempts.
-ytg = att4.ydstogo.clip(1, 20).to_numpy()
-W_CONV = fit_logit(np.column_stack([np.ones(len(ytg)), np.log(ytg), ytg]), att4.conv.to_numpy())
-
-
-def p_conv(togo):
+# Conversion: logistic in log(yards to go) and yards to go, plus a red-zone term (inside the
+# opponent's 10 the field is compressed), fitted on fourth-down attempts.
+def conv_features(togo, yl):
     k = np.clip(np.asarray(togo, float), 1, 20)
-    return 1 / (1 + np.exp(-(W_CONV[0] + W_CONV[1] * np.log(k) + W_CONV[2] * k)))
+    return np.column_stack([np.ones(k.size), np.log(k), k,
+                            (np.asarray(yl, float) <= 10).astype(float).ravel()])
+
+
+X4, y4 = conv_features(att4.ydstogo, att4.yardline_100), att4.conv.to_numpy()
+W_CONV = fit_logit(X4, y4)
+
+
+def p_conv(togo, yl=50):
+    """Chance a league-average offense converts: yards to go, and yardline_100 (default midfield)."""
+    togo, yl = np.broadcast_arrays(np.asarray(togo, float), np.asarray(yl, float))
+    return (1 / (1 + np.exp(-conv_features(togo.ravel(), yl.ravel()) @ W_CONV))).reshape(togo.shape)
 
 
 # Field goals: logistic in kick distance, 2021-2025 (today's kickers are better than 2016's).
@@ -648,6 +667,8 @@ def p_fg(distance):
 
 print(f"{len(att4):,} fourth-down attempts; conversion model at 1, 2, 4, 7, 10 to go: "
       + ", ".join(pct(p_conv(k)) for k in (1, 2, 4, 7, 10)))
+print("  ... the same distances inside the opponent's 10: "
+      + ", ".join(pct(p_conv(k, 8)) for k in (1, 2, 4, 7, 10)))
 print(f"{len(fgs):,} field-goal tries 2021-2025; make rate at 30, 40, 50, 55, 60 yards: "
       + ", ".join(pct(p_fg(k)) for k in (30, 40, 50, 55, 60)))
 ```
@@ -771,12 +792,12 @@ def decide(lead, yl, togo, minutes):
     succ = (np.where(td, wp_td, wp_1st) * EXTRA[None, :]).sum(axis=1)
     # GO, failure: the opponent takes over where the ball is
     fail = 1 - wp_model(-lead, ep1(100 - yl), t)
-    p = p_conv(togo)
+    p = p_conv(togo, yl)
     go = p * succ + (1 - p) * fail
     # FIELD GOAL: make -> +3 and kick off; miss -> opponent at the spot of the kick (or its 20)
     dist = yl + 18
     q = np.where(dist <= 70, p_fg(dist), 0.0)
-    miss_spot = np.where(yl + 7 >= 20, 100 - (yl + 7), 80)
+    miss_spot = np.where(yl + 8 >= 20, 100 - (yl + 8), 80)   # spot of the kick, or the 20
     fg = (q * (1 - wp_model(-(lead + 3), ep1(KO_SPOT), t))
           + (1 - q) * (1 - wp_model(-lead, ep1(miss_spot), t)))
     # PUNT: only from your own side of the opponent's 35
@@ -1058,7 +1079,6 @@ and recompute the decision each time.
 ```{python}
 #| label: bootstrap
 rng = np.random.default_rng(1303)
-X4 = np.column_stack([np.ones(len(ytg)), np.log(ytg), ytg]); y4 = att4.conv.to_numpy()
 XF = np.column_stack([np.ones(len(fgs)), fgs.kick_distance]); yF = (fgs.field_goal_result == "made").to_numpy(float)
 keep = (W_CONV.copy(), W_FG.copy())
 gains = []
