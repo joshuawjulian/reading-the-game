@@ -8,10 +8,9 @@
 - DONE: pilot chapters 01-04, 03-02, 06-06, 13-02 (19/29/25/42 pp), published. Review logs in planning/reviews/.
   Known: the chapters run long (7.8k-13.8k words vs the 3-7k target); links to unwritten chapters warn until they exist.
 - The user approved the pilots ("THIS IS EXCELLENT"): keep the depth, push straight live.
-- CONTINUED 2026-10-07: ONE workflow (user's choice, to limit token burn) for the remaining 37 chapters in book order,
-  2 at a time: run wf_175ff1ff-e9c, script scripts/workflows/write-book-batched.js, args = single-rest.json minus done.
-  To resume: same scriptPath + resumeFromRunId wf_175ff1ff-e9c + the same args (rebuild: single-rest.json chapters
-  without a .done marker as of 2026-10-07, i.e. 06-05 onward, all "drafted": false).
+- 2026-10-08 ~04:00: Parts 1-9 done (48/73). User allowed up to 4 agents => TWO workflows, alternating pairs in book order:
+  wf_22bf2a81-593 (args scripts/workflows/dual-A.json) and wf_5744d20b-a2b (args scripts/workflows/dual-B.json),
+  script scripts/workflows/write-book-batched.js. Resume = same scriptPath + resumeFromRunId + the same args file.
 - WAS IN PROGRESS: remaining 69 chapters via scripts/workflows/write-book-batched.js: 4 workflows, each taking its
   chapters TWO AT A TIME all the way to published (book order; chapters with "drafted": true skip the writer).
   Runs: wf_c480f37f-1d6 wf_ac33f498-efd wf_696ecbf2-3a5 wf_a370e8fb-ddc, args in scripts/workflows/batched{0..3}.json. Live publishing: scripts/publish_live.sh (batches of 3 chapters, progress page every 5 min). The revise stage writes planning/reviews/<id>.done; an auto-publish loop commits and
