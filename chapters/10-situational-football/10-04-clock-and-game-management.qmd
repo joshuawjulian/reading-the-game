@@ -1,0 +1,1994 @@
+---
+title: "The Clock, the Two-Minute Drill, and Fourth Down"
+subtitle: "How teams buy and sell seconds, why the last two minutes of a half look like a different sport, and how fourth down went from a punting down to a decision"
+description: "Game management end to end: what each kind of play costs a hurrying offense in game-clock seconds (from nflverse data); the out-of-bounds clock rule; the two-minute drill (sideline throws, the spike and why it isn't grounding, timeouts, the 10-second runoff); the four-minute offense, kneel-down arithmetic and the victory formation; end-of-half choices (field-goal range, the Hail Mary, the prevent defense, the intentional safety and the fair-catch kick); fourth-down and two-point heuristics and the 2018-2025 aggression shift, with go-rate charts; and the 2022 playoff and 2025 regular-season overtime rules and their strategy. Film rooms: Super Bowl LVIII, the Chiefs' 2015 and Eagles' 2004 slow drives, the Lions' 2023 NFC Championship, Falcons-Lions 2017, Patriots-Broncos 2003 and the Chargers' 2024 fair-catch kick."
+glossary:
+  "Two-minute drill": "The hurry-up offense a team runs when it needs to score with little time left in a half, usually the last two minutes: no huddle, plays called in pairs, throws to the sideline so receivers can step out of bounds, and timeouts and spikes used to stop the clock."
+  "Spike": "A quarterback taking the snap under center and immediately throwing the ball straight into the ground. It is a legal incomplete pass, not intentional grounding, and it stops the clock at the price of a down."
+  "10-second runoff": "Ten seconds taken off the game clock as a penalty when, after the two-minute warning of either half, the offense stops the clock illegally (a foul, intentional grounding, an illegal pass) or a replay reversal turns a stopped clock into a running one. The offense can avoid a foul-caused runoff by using a timeout, and either half can end on one."
+  "Out-of-bounds clock rule": "When a runner goes out of bounds, the game clock normally restarts as soon as the ball is re-spotted and the referee signals ready for play; after the two-minute warning of the first half and in the last five minutes of the game it stays stopped until the next snap."
+  "Four-minute offense": "The mirror image of the two-minute drill: a team protecting a lead late in the game runs the ball, keeps receivers in bounds and lets the play clock run down before every snap, so that each first down takes a minute or more off the clock."
+  "Victory formation": {def: "The formation a leading team uses to end a half or game by kneeling: the quarterback under center, the line in tight, two backs just behind him to protect the ball and one deep player as a last line of defense against a fumble. The quarterback takes the snap and drops to one knee, and the clock keeps running.", aliases: ["Kneel-down"]}
+  "Hail Mary": "A long, high pass thrown into a crowd of receivers and defenders near or in the end zone on the last play of a half, hoping someone on the offense catches it or a tipped ball falls to a teammate. Named after Roger Staubach's 1975 playoff touchdown."
+  "Prevent defense": "A defense, used when protecting a lead in the last seconds of a half, that rushes three or four and drops seven or eight defenders deep, conceding short completions in front of it in order to take away anything long and to tackle the catch in bounds."
+  "Intentional safety": "Deliberately giving the opponent two points by having the ball carrier (usually the punter) run out of the back of his own end zone, to burn clock and to replace a dangerous punt from deep in your own territory with a free kick from your own 20."
+  "Fair-catch kick": "A free field-goal try, place-kicked from the spot of a fair catch with the defense ten yards away and no snap. The receiving team may choose it after any fair catch, even with time expired; a successful kick is worth three points."
+  "Go-for-it decision": "The choice on fourth down between going for the first down (or touchdown), kicking a field goal and punting, increasingly made with expected-points or win-probability models rather than habit."
+  "Two-point chart": "A lookup table, keyed by the score margin right after a touchdown, telling a coach whether to kick the extra point or go for two; the classic version assumes few scores remain, so it matters most late in a game."
+  "Overtime rules": "The NFL's rules for a game tied after four quarters. Since 2022 in the playoffs and 2025 in the regular season, both teams get a chance to possess the ball (unless the kicking team scores a safety on the first possession) and the next score wins after that. Regular-season overtime is one 10-minute period and can end in a tie; playoff overtime continues in 15-minute periods until there is a winner."
+---
+
+```{python}
+#| code-summary: "Show the Python (helpers for this chapter's drawings)"
+#| output: false
+import logging
+import os
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Rectangle, Patch, Ellipse
+from matplotlib.lines import Line2D
+from IPython.display import HTML, Markdown, display
+
+from gridiron import Play, Player, Field, style, offense, defense, routes as r, draw_marker, animate, frame_strip
+from gridiron.field import FIELD_WIDTH, MIDDLE
+from gridiron.data import pbp
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+OC, DC = style.OFFENSE_DARK, style.DEFENSE_DARK
+GREEN = "#0f7a55"                 # darker step of the aqua highlight, for text on light fills
+RUN_C, STOP_C, MAYBE_C = "#dff3ea", "#fbe3d9", "#fdf0cc"
+
+
+def pct(v, d=0):
+    return f"{100 * v:.{d}f}%"
+
+
+def mmss(sec):
+    sec = int(round(sec))
+    return f"{sec // 60}:{sec % 60:02d}"
+
+
+# --- boxes and arrows for flowcharts and timelines ------------------------------------------------
+def blank(ax):
+    ax.set_axis_off()
+    ax.set_aspect("auto")
+
+
+def box(ax, x, y, w, h, text, fc=style.SURFACE, ec=style.BASELINE, lw=1.0, fs=8.0, bold=False,
+        color=style.INK, sub=None, sub_fs=6.6):
+    """A rounded box centred on (x, y) in data units, with an optional smaller subtitle."""
+    ax.add_patch(FancyBboxPatch((x - w / 2, y - h / 2), w, h, boxstyle="round,pad=0.02,rounding_size=1.0",
+                                fc=fc, ec=ec, lw=lw, zorder=3))
+    if sub:
+        ax.text(x, y + h * 0.2, text, ha="center", va="center", fontsize=fs, color=color,
+                fontweight="bold" if bold else "normal", zorder=4, linespacing=1.1)
+        ax.text(x, y - h * 0.17, sub, ha="center", va="center", fontsize=sub_fs, color=style.INK_2,
+                zorder=4, linespacing=1.15)
+    else:
+        ax.text(x, y, text, ha="center", va="center", fontsize=fs, color=color,
+                fontweight="bold" if bold else "normal", zorder=4, linespacing=1.15)
+
+
+def arrow(ax, p0, p1, color=style.INK_2, lw=1.1, ls="-", rad=0.0, head=9, z=2):
+    ax.add_patch(FancyArrowPatch(p0, p1, arrowstyle="-|>", mutation_scale=head, color=color, lw=lw,
+                                 ls=ls, shrinkA=1, shrinkB=1, connectionstyle=f"arc3,rad={rad}", zorder=z))
+
+
+# --- labels on a drawn field ---------------------------------------------------------------------
+def P_(fld, p, d, w):
+    """(d, w) in the offense's frame -> plot coordinates on this drawn field."""
+    x, y = fld.xy(*p.to_abs(d, w))
+    return float(x), float(y)
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fs=6.6, ha="center", weight="normal", box_ec="none"):
+    """A short on-field label at (d, w)."""
+    x, y = P_(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fs, color=color, ha=ha, va="center", zorder=9, fontweight=weight,
+                linespacing=1.1, bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec=box_ec, lw=0.6,
+                                           alpha=0.92))
+
+
+def lead(fld, p, frm, to, color=style.MUTED):
+    (x0, y0), (x1, y1) = P_(fld, p, *frm), P_(fld, p, *to)
+    fld.ax.plot([x0, x1], [y0, y1], color=color, lw=0.7, zorder=7.5)
+
+
+def no_numbers(fld):
+    """Remove the painted yard numbers (they compete with labels on zoomed diagrams)."""
+    for t in list(fld.ax.texts):
+        if t.get_text().isdigit():
+            t.remove()
+
+
+def band(fld, x0, x1, y0, y1, color, alpha=0.12, z=0.6):
+    """A shaded rectangle in BDB coordinates (x along the field, y across it)."""
+    (ax_, ay_), (bx_, by_) = fld.xy(x0, y0), fld.xy(x1, y1)
+    lo_x, hi_x = sorted([float(ax_), float(bx_)])
+    lo_y, hi_y = sorted([float(ay_), float(by_)])
+    fld.ax.add_patch(Rectangle((lo_x, lo_y), hi_x - lo_x, hi_y - lo_y, fc=color, ec="none", alpha=alpha,
+                               zorder=z))
+
+
+def scorebug(ax, x, y, lines, fs=7.2, ha="left"):
+    """A small dark 'score bug' box with the situation, in axes-fraction coordinates."""
+    ax.text(x, y, "\n".join(lines), transform=ax.transAxes, ha=ha, va="top", fontsize=fs, color="white",
+            linespacing=1.35, zorder=20, family="DejaVu Sans Mono",
+            bbox=dict(boxstyle="round,pad=0.45", fc="#22313f", ec="none"))
+
+
+def show_play(play, times, title=None, ncols=4):
+    """HTML: a scrubbable video of the simulated tracking. PDF: a one-row frame strip at `times`."""
+    df = play.to_tracking(t_after=0.8)
+    if PDF:
+        fig = frame_strip(df, times=times, ncols=ncols, title=title, to_go=None, lateral_pad=3.0)
+        for ax in fig.axes:
+            for t in list(ax.texts):
+                if t.get_text().isdigit():
+                    t.remove()
+        plt.show()
+        return
+    anim = animate(df, title=title)
+    if shutil.which("ffmpeg"):
+        html = anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+    else:
+        html = anim.to_jshtml(default_mode="once")
+    plt.close(anim._fig)
+    display(HTML(html))
+```
+
+```{python}
+#| code-summary: "Show the Python (load play-by-play, 2010-2025, and compute the numbers quoted in the text)"
+#| output: false
+COLS = ["season", "season_type", "week", "game_id", "play_id", "drive", "qtr", "time",
+        "half_seconds_remaining", "game_seconds_remaining", "posteam", "defteam", "down", "ydstogo",
+        "yardline_100", "play_type", "desc", "wp", "score_differential", "complete_pass",
+        "incomplete_pass", "out_of_bounds", "timeout", "timeout_team", "qb_spike", "qb_kneel", "penalty",
+        "pass_attempt", "air_yards", "touchdown", "interception", "fourth_down_converted",
+        "two_point_attempt", "two_point_conv_result", "extra_point_result", "field_goal_result",
+        "kick_distance", "posteam_timeouts_remaining", "defteam_timeouts_remaining",
+        "total_home_score", "total_away_score", "safety", "ep", "goal_to_go"]
+raw = pbp(range(2010, 2026), columns=COLS).sort_values(["game_id", "play_id"]).reset_index(drop=True)
+reg = raw[raw.season_type == "REG"].copy()
+S = {}                                   # numbers quoted in the text
+
+# --- what each ending costs a hurrying offense (2016-2025) ----------------------------------------
+h = reg[reg.season >= 2016].copy()
+g = h.groupby("game_id")
+for c in ["play_type", "qb_spike", "half_seconds_remaining", "drive", "timeout", "timeout_team"]:
+    h["n1_" + c] = g[c].shift(-1)
+    h["n2_" + c] = g[c].shift(-2)
+h["gap"] = h.half_seconds_remaining - h.n1_half_seconds_remaining
+late = h[h.qtr.isin([2, 4]) & h.half_seconds_remaining.between(20, 110) & (h.score_differential <= 0)
+         & (h.penalty == 0) & h.play_type.isin(["pass", "run"])]
+same = (late.n1_drive == late.drive) & (late.n1_timeout == 0)
+inb = late[(late.complete_pass == 1) & (late.out_of_bounds == 0)]
+prices = {
+    "Incomplete pass": late[(late.incomplete_pass == 1) & same & (late.n1_qb_spike == 0)
+                            & late.n1_play_type.isin(["pass", "run"])].gap,
+    "Completion, out of bounds": late[(late.complete_pass == 1) & (late.out_of_bounds == 1) & same
+                                      & late.n1_play_type.isin(["pass", "run"])].gap,
+    "Completion in bounds,\nthen a timeout": inb[(inb.n1_timeout == 1) & (inb.n1_timeout_team == inb.posteam)].gap,
+    "Completion in bounds,\nthen a spike": inb[same.loc[inb.index] & (inb.n1_qb_spike == 1)].gap,
+    "Completion in bounds,\nthen the next real play": inb[same.loc[inb.index] & (inb.n1_qb_spike == 0)
+                                                     & inb.n1_play_type.isin(["pass", "run"])].gap,
+}
+PRICE = {k: float(v.median()) for k, v in prices.items()}
+PRICE_N = {k: int(v.size) for k, v in prices.items()}
+S["p_inc"] = f"{PRICE['Incomplete pass']:.0f}"
+S["p_oob"] = f"{PRICE['Completion, out of bounds']:.0f}"
+S["p_to"] = f"{PRICE['Completion in bounds,' + chr(10) + 'then a timeout']:.0f}"
+S["p_spike"] = f"{PRICE['Completion in bounds,' + chr(10) + 'then a spike']:.0f}"
+S["p_hurry"] = f"{PRICE['Completion in bounds,' + chr(10) + 'then the next real play']:.0f}"
+spk = h[(h.qb_spike == 1) & (h.n1_drive == h.drive)]
+S["spike_cost"] = f"{spk.gap.median():.0f}"
+S["spikes_yr"] = f"{h[h.qb_spike == 1].groupby('season').size().mean():.0f}"
+kn = h[(h.qb_kneel == 1) & (h.n1_drive == h.drive) & (h.n1_timeout == 0)]
+S["kneel_gap"] = f"{kn.gap.median():.0f}"
+S["kneels_yr"] = f"{h[h.qb_kneel == 1].groupby('season').size().mean():.0f}"
+
+# --- Hail Marys: deep throws from 40+ yards out with 8 or fewer seconds left in a half ------------
+hm = h[(h.pass_attempt == 1) & h.qtr.isin([2, 4]) & (h.half_seconds_remaining <= 8) & (h.yardline_100 >= 40)
+       & ((h.air_yards >= 35) | h.air_yards.isna())]
+S["hm_n"], S["hm_td"], S["hm_int"] = f"{len(hm)}", pct(hm.touchdown.mean()), pct(hm.interception.mean())
+
+# --- fourth downs --------------------------------------------------------------------------------
+f4 = reg[(reg.down == 4) & reg.play_type.isin(["run", "pass", "punt", "field_goal"])].copy()
+f4["go"] = f4.play_type.isin(["run", "pass"])
+f4["neutral"] = (f4.qtr <= 3) & f4.wp.between(0.2, 0.8)
+GO = pd.DataFrame({"All fourth downs": f4.groupby("season").go.mean(),
+                   "Neutral: first three quarters, win probability 20-80%":
+                       f4[f4.neutral].groupby("season").go.mean()})
+S["go10"], S["go25"] = pct(GO.iloc[0, 0]), pct(GO.iloc[-1, 0])
+S["gon10"], S["gon17"], S["gon25"] = pct(GO.iloc[0, 1]), pct(GO.loc[2017].iloc[1]), pct(GO.iloc[-1, 1])
+went = f4[f4.go & (f4.season >= 2021)].copy()
+went["conv"] = went.fourth_down_converted == 1
+CONV = went.groupby(went.ydstogo.clip(upper=10)).conv.mean()
+S["c1"], S["c2"], S["c3"], S["c45"] = pct(CONV[1]), pct(CONV[2]), pct(CONV[3]), pct(went[went.ydstogo.between(4, 5)].conv.mean())
+S["c610"] = pct(went[went.ydstogo.between(6, 10)].conv.mean())
+early3 = f4[(f4.qtr <= 3) & (f4.season >= 2022)]
+TEAM = early3.groupby("posteam").go.mean().sort_values(ascending=False)
+S["det_go"], S["lg_go"] = pct(TEAM["DET"]), pct(early3.go.mean())
+S["det_rank2"] = f"{TEAM.index.get_loc(TEAM.index[1]) + 1}"
+NICK = {"ARI": "Cardinals", "ATL": "Falcons", "BAL": "Ravens", "BUF": "Bills", "CAR": "Panthers", "CHI": "Bears",
+        "CIN": "Bengals", "CLE": "Browns", "DAL": "Cowboys", "DEN": "Broncos", "DET": "Lions", "GB": "Packers",
+        "HOU": "Texans", "IND": "Colts", "JAX": "Jaguars", "KC": "Chiefs", "LA": "Rams", "LAC": "Chargers",
+        "LV": "Raiders", "MIA": "Dolphins", "MIN": "Vikings", "NE": "Patriots", "NO": "Saints", "NYG": "Giants",
+        "NYJ": "Jets", "PHI": "Eagles", "PIT": "Steelers", "SEA": "Seahawks", "SF": "49ers", "TB": "Buccaneers",
+        "TEN": "Titans", "WAS": "Commanders"}
+S["team2"], S["team2_go"] = NICK[TEAM.index[1]], pct(TEAM.iloc[1])
+yr_lead = f4[(f4.qtr <= 3) & (f4.season.between(2021, 2025))].groupby(["season", "posteam"]).go.mean()
+S["det_firsts"] = ["none", "one", "two", "three", "four", "five"][int(sum(yr_lead.loc[s].idxmax() == "DET" for s in range(2021, 2026)))]
+
+# --- field goals: make rate by distance, 2023-2025 (for the fourth-down drill) -----------------
+fg = reg[(reg.play_type == "field_goal") & (reg.season >= 2023)]
+S["fg5054"] = pct((fg[fg.kick_distance.between(50, 54)].field_goal_result == "made").mean())
+d2 = f4[(f4.season >= 2023) & (f4.qtr <= 3) & (f4.ydstogo == 2) & f4.yardline_100.between(31, 40)]
+S["go_4th2_opp"] = pct(d2.go.mean())
+d2o = f4[(f4.season.between(2013, 2015)) & (f4.qtr <= 3) & (f4.ydstogo == 2) & f4.yardline_100.between(31, 40)]
+S["go_4th2_old"] = pct(d2o.go.mean())
+FGR = {f"{lo}": (fg[fg.kick_distance.between(lo, lo + 4)].field_goal_result == "made").mean() for lo in (30, 40, 45, 50)}
+S["fg3034"], S["fg4044"] = pct(FGR["30"]), pct(FGR["40"])
+# 50-plus-yard field-goal attempts per regular season (for the 2022-2023 dip in the go rate)
+LONG = reg[(reg.play_type == "field_goal") & (reg.kick_distance >= 50)].groupby("season").size()
+S["long21"], S["long22"], S["long24"] = f"{LONG[2021]}", f"{LONG[2022]}", f"{LONG[2024]}"
+
+# --- a worked expected-points example: fourth-and-2 at the opponent's 36 ---------------------------
+f10 = reg[reg.play_type.isin(["pass", "run", "punt", "field_goal"]) & (reg.down == 1)
+          & ((reg.ydstogo == 10) | (reg.goal_to_go == 1)) & reg.season.between(2021, 2025)]
+EP10 = f10.groupby("yardline_100").ep.mean()          # nflverse EP of first-and-10, by yards from the end zone
+p_go, p_fg = float(CONV[2]), float(FGR["50"])
+ep_conv, ep_fail = EP10[34], EP10[64]                  # 1st & 10 at the opp 34; opponent's ball at its own 36
+ep_punt = EP10[90]                                     # opponent's ball at its own 10
+ep_ko, ep_miss = EP10[70], EP10[56]                    # opponent after a kickoff (about its own 30); after a miss (its 44)
+EV = {"go": p_go * ep_conv - (1 - p_go) * ep_fail, "fg": p_fg * (3 - ep_ko) - (1 - p_fg) * ep_miss, "punt": -ep_punt}
+S.update({f"ep_{k}": f"{v:+.1f}" for k, v in EV.items()})
+S["d_fg"], S["d_punt"] = f"{EV['go'] - EV['fg']:.1f}", f"{EV['go'] - EV['punt']:.1f}"
+S["d_field"] = f"{ep_fail - ep_punt:.1f}"
+S.update({"e_conv": f"{ep_conv:.1f}", "e_fail": f"{ep_fail:.1f}", "e_punt": f"{ep_punt:.1f}",
+          "e_ko": f"{ep_ko:.1f}", "e_miss": f"{ep_miss:.1f}"})
+
+# --- tries since the 2015 extra-point change ------------------------------------------------------
+tries = reg[reg.season >= 2015]
+two = tries[tries.two_point_attempt == 1]
+xp = tries[tries.play_type == "extra_point"]
+S["two_rate"] = pct((two.two_point_conv_result == "success").mean())
+S["xp_rate"] = pct((xp.extra_point_result == "good").mean(), 1)
+S["two_ev"] = f"{2 * (two.two_point_conv_result == 'success').mean():.2f}"
+S["xp_ev"] = f"{(xp.extra_point_result == 'good').mean():.2f}"
+S["two_n15"], S["two_n25"] = f"{(two.season == 2015).sum()}", f"{(two.season == 2025).sum()}"
+S["two_n14"] = f"{((reg.season == 2014) & (reg.two_point_attempt == 1)).sum()}"
+
+# --- where the opponent starts after an end-zone punt vs after a safety kick (2015-2025) ----------
+k = reg[reg.season >= 2015]
+gk = k.groupby("game_id")
+nxt = pd.DataFrame({"yl": gk.yardline_100.shift(-1), "pt": gk.play_type.shift(-1),
+                    "yl2": gk.yardline_100.shift(-2), "pt2": gk.play_type.shift(-2)})
+start = np.where(nxt.pt.isin(["run", "pass", "no_play", "qb_kneel"]), nxt.yl, nxt.yl2)
+k = k.assign(next_start=start)
+ez_punt = k[(k.play_type == "punt") & (k.yardline_100 >= 96)]
+sk = k[(k.play_type == "kickoff") & k.desc.str.contains(r"from \w+ 20 ", regex=True, na=False)
+       & ~k.desc.str.contains("onside", case=False, na=False)]
+S["ezp_n"], S["sk_n"] = f"{len(ez_punt)}", f"{len(sk)}"
+S["ezp_start"] = f"{ez_punt.next_start.median():.0f}"            # the punting team's yard line
+S["sk_start"] = f"{100 - sk.next_start.median():.0f}"            # the receiving team's own yard line
+S["safety_gain"] = f"{sk.next_start.median() - ez_punt.next_start.median():.0f}"
+
+# --- the two Reid drives: how much clock did the slow snaps cost? ----------------------------------
+def slow_snaps(df, team, t_from, t_to, hurry):
+    """Snaps on a drive that ended in bounds with the clock running (no stoppage before the next snap):
+    how many, the median gap, and the seconds lost against a hurry-up snap `hurry` seconds later."""
+    d = df[(df.posteam == team) & df.play_type.isin(["pass", "run", "no_play"]) & df.down.notna()
+           & df.half_seconds_remaining.between(t_to, t_from)].sort_values("play_id")
+    d = d.assign(gap=d.half_seconds_remaining - d.half_seconds_remaining.shift(-1)).iloc[:-1]
+    # the clock ran: a catch or run that stayed in bounds (out of bounds counts too before the last five minutes),
+    # and the next snap was not after the two-minute warning stopped the clock
+    ran = (d.play_type.isin(["pass", "run"]) & (d.incomplete_pass == 0) & ((d.out_of_bounds == 0) | (d.half_seconds_remaining > 300))
+           & ~((d.half_seconds_remaining > 120) & (d.half_seconds_remaining - d.gap <= 120)))
+    g = d[ran].gap
+    return len(g), float(g.median()), float((g - hurry).clip(lower=0).sum())
+hurry = PRICE["Completion in bounds,\nthen the next real play"]
+xxxix = pbp([2004], columns=COLS)
+xxxix = xxxix[(xxxix.game_id == "2004_21_NE_PHI") & (xxxix.qtr == 4)]
+kc16 = raw[(raw.game_id == "2015_19_KC_NE") & (raw.qtr == 4)]
+to_save = hurry - PRICE["Completion in bounds,\nthen a timeout"]   # what a timeout saves over a hurried snap
+for tag, (n, med, lost), n_to in [("x", slow_snaps(xxxix, "PHI", 340, 115, hurry), 2),
+                                  ("k", slow_snaps(kc16, "KC", 389, 78, hurry), 3)]:
+    S[f"r{tag}_n"], S[f"r{tag}_med"], S[f"r{tag}_lost"] = f"{n}", f"{med:.0f}", f"{lost:.0f}"
+    S[f"r{tag}_tot"] = mmss(lost + n_to * to_save)
+S["to_save"] = f"{to_save:.0f}"
+```
+
+Super Bowl LVIII, fourth quarter. San Francisco has just kicked a field goal to lead 19–16, and Kansas
+City takes over at its own 25 with **1:53** on the clock and two timeouts. It sounds like plenty of
+time. Is it? Seventy-five yards from a touchdown and about 40 from a long field goal, 113 seconds is less
+than it looks: a completion over the middle costs about 20 of them, a sack more, an incompletion only five. Over
+the next 107 seconds Kansas City will run eleven snaps, call one timeout, get two plays out of bounds
+and kick a field goal with three seconds left. Then the game goes to an overtime whose
+rules were rewritten after a Chiefs game two years earlier. This chapter explains every one of those
+choices, and the fourth-down revolution that changed how coaches spend the other 58 minutes.
+
+**You'll be able to:**
+
+- Price any play in game-clock seconds, and say whether the clock will run after it, using the
+  out-of-bounds clock rule and the late-game exceptions.
+- Run a two-minute drill in your head: which throws save time, when to spike and when to use a
+  timeout, and why a 10-second runoff can end a half.
+- Do the kneel-down arithmetic for a team protecting a lead, and recognise the four-minute offense and
+  the victory formation.
+- Make end-of-half calls: take the points or take a shot, Hail Mary or field goal, and spot the rare
+  plays that decide close games, the intentional safety and the fair-catch kick.
+- Use simple fourth-down and two-point heuristics, and explain how and why the league's go-for-it rate
+  rose after 2017.
+- Apply the current overtime rules (playoffs since 2022, regular season since 2025) and predict how
+  each team will play them.
+
+::: {.callout-note title="You'll need"}
+- **[Red Zone, Goal Line, Two-Point Plays, and Short Yardage](10-03-red-zone-goal-line-and-short-yardage.qmd)**:
+  the plays teams run on fourth-and-short and from the 2-yard line. This chapter decides *whether* to
+  run them; that one designs them.
+- **[Field Goals, Extra Points, and the Punting Game](../09-special-teams-and-the-rules-that-shape-strategy/09-01-kicking-and-punting.qmd)**:
+  [**field goal range**](../../appendices/glossary.qmd#gl-field-goal-range) (line of scrimmage plus 18 is
+  the kick's length), the [**fair catch**](../../appendices/glossary.qmd#gl-fair-catch) and the
+  [**touchback**](../../appendices/glossary.qmd#gl-touchback).
+- **[Kickoffs, Returns, and the Dynamic Kickoff](../09-special-teams-and-the-rules-that-shape-strategy/09-02-kickoffs-and-returns.qmd)**:
+  the 2026 kickoff, in which the coverage team lines up on the receiving team's 40 and the ball must reach
+  a landing zone between the 20 and the goal line. A free kick after a safety uses the same alignment.
+- **[In-Game Adjustments and Tempo](../08-the-chess-match/08-04-in-game-adjustments-and-tempo.qmd)**:
+  [**tempo**](../../appendices/glossary.qmd#gl-tempo) and the
+  [**hurry-up offense**](../../appendices/glossary.qmd#gl-hurry-up-offense), and the substitution rule
+  that lets an offense that keeps the same players snap the ball quickly.
+- **[Officiating, Replay, and the Rules of the Ball](../09-special-teams-and-the-rules-that-shape-strategy/09-04-officiating-replay-and-rules-of-the-ball.qmd)**:
+  [**intentional grounding**](../../appendices/glossary.qmd#gl-intentional-grounding), forward progress
+  and [**booth review**](../../appendices/glossary.qmd#gl-booth-review), which takes over from coaches'
+  challenges after the two-minute warning.
+- From the very first chapter, [The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd):
+  when the [**game clock**](../../appendices/glossary.qmd#gl-game-clock) runs and stops, the 40-second
+  [**play clock**](../../appendices/glossary.qmd#gl-play-clock), three
+  [**timeouts**](../../appendices/glossary.qmd#gl-timeout) per half and the
+  [**two-minute warning**](../../appendices/glossary.qmd#gl-two-minute-warning).
+:::
+
+## The clock is a currency, and the two teams want opposite things
+
+For 56 minutes of a typical game the clock is background noise. Then, at some point in the fourth
+quarter (and again at the end of the first half), it becomes the most important player on the field. The
+reason is simple: possessions are scarce, and time is what possessions are made of. A team that is behind
+needs **plays per second**: as many snaps as it can squeeze into the time left. A team that is ahead
+wants **seconds per play**: the fewest snaps, each taking as long as possible, so the opponent gets the
+ball back late or never.
+
+Everything in this chapter follows from those two goals, and from one fact you met in the first chapter:
+the clock keeps running after a ball carrier is tackled in bounds and stops after almost everything else.
+So the first skill is pricing. How many seconds does each kind of play cost a team in a hurry? You can
+measure it. The play-by-play data records the game clock at every snap, so the gap between two snaps is
+what the first play, and whatever happened after it, cost.
+
+```{python}
+#| label: fig-clock-prices
+#| fig-cap: "What a play costs a hurrying offense. Median game-clock seconds from one snap to the next, for offenses trailing or tied in the last two minutes of the first half and the last two minutes of the game (2016-2025 regular seasons, no penalties; numbers in brackets are plays). An incompletion or a catch that goes out of bounds costs only the five or six seconds the play itself takes. A catch in bounds keeps the clock running while everyone sprints back to the line: about 16 seconds if the offense then spikes the ball (which also uses up a down), about 21 if it lines up and runs a real play. A timeout stops the bleeding for the price of the timeout. Source: nflverse play-by-play."
+lab = list(PRICE)
+vals = [PRICE[k] for k in lab]
+cols = [style.SERIES[0], style.SERIES[0], style.SERIES[2], style.SERIES[1], style.SERIES[1]]
+note = ["the clock stops at once", "the clock stops at once (late in a half)", "...and costs a timeout",
+        "...and costs a down", "the dearest: no stoppage at all"]
+fig, ax = plt.subplots(figsize=(6.5, 3.3))
+y = np.arange(len(lab))[::-1]
+ax.barh(y, vals, color=cols, height=0.6, zorder=2)
+for yi, v, k, n in zip(y, vals, lab, note):
+    ax.text(v + 0.5, yi, f"{v:.0f} s", va="center", fontsize=8, color=style.INK, fontweight="bold")
+    ax.text(v + 3.6, yi, f"[{PRICE_N[k]:,}]  {n}", va="center", fontsize=7, color=style.INK_2)
+ax.set_yticks(y, lab, fontsize=8)
+ax.set_xlim(0, 52)
+ax.set_xticks([0, 10, 20, 30])
+ax.set_xlabel("Game-clock seconds from this snap to the next (median)")
+ax.set_title("Late in a half, every way a play can end has a price")
+ax.grid(axis="y", visible=False)
+plt.show()
+```
+
+Read it as a price list. The cheapest plays are the ones that stop the clock by themselves: an incomplete
+pass, or a completion where the receiver gets out of bounds. Each costs only the five or six seconds the
+play takes. The expensive one is the catch in bounds, because the clock keeps running while eleven
+players run back to the line, the officials spot the ball and the quarterback relays the next call. That
+costs about `{python} S["p_hurry"]` seconds if the offense simply runs its next play. Offenses have two
+ways to cut the bill. A **timeout** brings the cost back down to the play itself
+(`{python} S["p_to"]` seconds) but spends one of only three. A spike, which you'll meet properly
+below, stops the clock about `{python} S["p_spike"]` seconds after the previous snap, and spends a down
+instead.
+
+That is why two-minute offenses throw toward the sideline, why defenses protecting a lead try to tackle
+receivers *inside* the field, and why coaches hoard timeouts like cash. A team with 1:53 and two timeouts
+can afford roughly five or six in-bounds completions and a few incompletions. That is enough for 50 or 60
+yards. It is not as much as it sounds.
+
+### The out-of-bounds clock rule
+
+One line in the price list has a condition attached. "Out of bounds stops the clock" is true only late in
+a half. The full rule, which this course calls the
+[**out-of-bounds clock rule**](../../appendices/glossary.qmd#gl-out-of-bounds-clock-rule), is this:
+when a runner goes out of bounds, the officials stop the clock, put the ball back on the hash, and
+**restart the clock when the referee signals the ball ready for play**, well before the next snap. The
+exceptions are the moments when time matters most. After the **two-minute warning of the first half**,
+and inside the **last five minutes of the game**, the clock stays stopped **until the snap**. One more
+case follows the same "until the snap" rule at any time of the game: if a runner goes out of bounds on a
+play where the ball changed hands (an interception or punt return that ends out of bounds, say), the clock
+waits for the new offense's first snap.[^oobrule]
+
+```{python}
+#| label: fig-oob-window
+#| fig-cap: "When does getting out of bounds actually save time? The game's 60 minutes, quarter by quarter. In the white stretches (most of the game), a runner who goes out of bounds stops the clock only for the few seconds it takes to re-spot the ball; it restarts on the referee's ready signal. In the shaded windows (after the two-minute warning of the first half, and the last five minutes of the fourth quarter) it stays stopped until the next snap. The rule's asymmetry is deliberate: the fourth-quarter window is wider because the end of a game decides the result."
+fig, ax = plt.subplots(figsize=(6.5, 2.1))
+blank(ax)
+ax.set_xlim(-1, 61)
+ax.set_ylim(-3.2, 5.2)
+for q in range(4):
+    x0 = q * 15
+    ax.add_patch(Rectangle((x0, 0), 15, 2, fc=style.SURFACE, ec=style.BASELINE, lw=1, zorder=1))
+    ax.text(x0 + 7.5, 1.0, f"Q{q + 1}", ha="center", va="center", fontsize=8.5, color=style.INK_2, zorder=4)
+for x0, w, txt in [(28, 2, "last 2:00\nof the half"), (55, 5, "last 5:00\nof the game")]:
+    ax.add_patch(Rectangle((x0, 0), w, 2, fc=STOP_C, ec=style.DEFENSE_DARK, lw=1.2, zorder=2))
+    ax.text(x0 + w / 2, 2.4, txt, ha="center", va="bottom", fontsize=7, color=DC, fontweight="bold",
+            linespacing=1.1)
+ax.plot([30, 30], [-0.4, 2.6], color=style.INK_2, lw=1.4, zorder=3)
+ax.text(30, 4.9, "halftime", ha="center", va="top", fontsize=7, color=style.INK_2)
+ax.text(14, -0.9, "out of bounds: clock restarts on the ready signal (seconds later)", ha="center",
+        va="top", fontsize=7, color=style.INK_2)
+ax.text(45, -0.9, "inside the shaded windows: clock\nstopped until the snap", ha="center", va="top",
+        fontsize=7, color=DC, linespacing=1.1)
+plt.show()
+```
+
+Why the general rule? Because the league *wants* the clock to keep moving for most of the game
+(television windows are three hours), and because without it any team could stop the clock for free all
+game long with five-yard sideline throws. So for 55 minutes out of bounds saves only a few seconds. Why the
+exception? Because late in a half the league wants a comeback to be *possible*: the rule hands the trailing
+team a lifeline, letting it save time without spending timeouts as long as it can get the ball to the
+sideline. One detail closes a loophole: a **fumble** that goes out of bounds restarts the clock on the
+ready signal at any time of the game, so nobody can fumble out of bounds on purpose to stop it.
+
+Two more clock facts that surprise new viewers. **A first down does not stop the NFL clock**, ever. If you
+also watch college football, you'll have seen the clock pause after a first down; since 2023 college does
+that only in the last two minutes of each half, but the NFL never does.[^ncaa] And **the two-minute warning
+is a free timeout** for both teams. It comes after the last play snapped before 2:00, so a play snapped at
+2:05 that ends at 1:58 is followed by a full stoppage.[^twomin] Trailing offenses plan around it (they
+would rather snap at 2:05 than at 1:55); leading offenses try to burn the clock right down to it, so that the
+warning stops a clock that has already done its work.
+
+::: {.callout-caution title="Common misconception"}
+"He stepped out of bounds, smart: that stopped the clock." In the third quarter, or with 7:00 left in the
+fourth, it barely did: the clock started again as soon as the ball was spotted, usually 25 or more seconds
+before the next snap. A runner who fights for two extra yards in bounds early in the fourth quarter is
+not costing his team time. The same play at 4:30 is a different story.
+:::
+
+## The two-minute drill
+
+The [**two-minute drill**](../../appendices/glossary.qmd#gl-two-minute-drill) is the
+[hurry-up offense](../../appendices/glossary.qmd#gl-hurry-up-offense) with a deadline: a team that needs
+points before a half ends, usually with the clock already inside the two-minute warning. Teams practise it
+every week as its own script, because almost every rule of normal play-calling
+changes:
+
+- **No huddle, two plays at a time.** The quarterback gets two calls through his
+  [helmet radio](../../appendices/glossary.qmd#gl-helmet-radio), so after the first one the offense can line
+  up and snap the second without waiting. The radio cuts out when the play clock reaches 15 seconds,[^radio]
+  and in a hurry-up there often isn't time for a call at all, so the quarterback carries a menu on his
+  wristband and calls one-word "clock" plays that the whole offense knows.
+- **Throw outside.** Routes break toward the sideline (outs, comebacks, corner routes) so that the catch
+  ends out of bounds. Receivers are coached to secure the ball, take one more step, and get out: never
+  turn upfield for two extra yards and get tackled in bounds.
+- **Middle of the field only with a plan.** A catch over the middle is worth taking if it gains a lot or
+  if the offense has a timeout to spend. Otherwise it is the dearest line on the price list.
+- **No sacks.** A sack loses yards *and* keeps the clock running. Quarterbacks throw the ball away
+  instead (out of bounds, past the line of scrimmage, or near a receiver) and accept the lost down.
+  (Hold on to that rule: the four-minute offense below turns it exactly upside down.)
+- **Know the finish line.** The real target is usually not the end zone but **field-goal range**: the yard
+  line from which the kicker has a good chance, with enough time left to get the field-goal unit on. That
+  normally means a stopped clock. Teams also practise a **running-clock field goal** for emergencies, under
+  names like "fire" or "Mayday": the unit sprints on and kicks off a live clock. Kansas City's special-teams
+  coordinator Dave Toub has said about 17 seconds is as fast as it can realistically be done in a game.[^mayday]
+  It works, but nobody plans on it.
+
+```{python}
+#| label: fig-two-minute-menu
+#| fig-cap: "The two-minute menu. The offense (blue) has the ball near midfield and needs about 25 yards to reach field-goal range; the defense (orange) sits back in a soft two-deep zone, corners eight yards off, and invites throws underneath. To the left the call is a real concept, a three-level 'flood' of one sideline: H's corner route goes over the cornerback, X's 12-yard out sits under the deep safety, and the back (R) runs to the flat underneath, so whichever defender the quarterback reads, one of the three is open near the sideline. To the right, Z runs a comeback at 15 (straight up the field, then back toward the sideline) against the off corner, and Y a seam up the middle. The shaded lanes between the numbers and the sideline are where a catch can end out of bounds and stop the clock."
+off = offense("gun_2x2")
+dfn = [Player(k, pos, "def", d, w) for k, pos, d, w in [
+    ("DLE", "DE", 1.0, -4.5), ("DLT", "DT", 1.0, -1.2), ("DRT", "DT", 1.0, 1.8), ("DRE", "DE", 1.0, 4.8),
+    ("MIKE", "MIKE", 7.0, 0.5), ("LCB", "CB", 8.0, -17.2), ("RCB", "CB", 8.0, 17.2),
+    ("NB", "NB", 8.0, -8.0), ("DB", "DB", 8.0, 8.5), ("FS", "FS", 17.0, -10.0), ("SS", "SS", 17.0, 10.0)]]
+p2m = Play(off, dfn, los=50, to_go=10)
+p2m.dropback(2.0)
+p2m.route("X", r.out(12, 6))
+p2m.route("Z", r.comeback(15))
+p2m.route("H", r.corner(11))
+p2m.route("Y", r.seam(19))
+p2m.route("RB", [(0, 0), (2.5, 4.5), (6.3, 11.0)], side=-1)   # to the flat, past the line, outside the numbers
+p2m.highlight("X", "Z")
+fld = p2m.draw(window=(-8, 25), lateral="full", title=False)
+no_numbers(fld)
+nl, nr = p2m.ball_y + 14.6, p2m.ball_y - 14.6           # the tops of the numbers, roughly
+band(fld, p2m.los - 8, p2m.los + 25, nl, FIELD_WIDTH, style.SERIES[0], alpha=0.10)
+band(fld, p2m.los - 8, p2m.los + 25, 0, nr, style.SERIES[0], alpha=0.10)
+say(fld, p2m, 17.5, -21.8, "catch, step\nout: clock\nstops", color=OC, fs=6.4)
+say(fld, p2m, 17.5, 21.8, "catch, step\nout: clock\nstops", color=OC, fs=6.4)
+say(fld, p2m, 22.0, 3.0, "catch in here and get tackled:\nthe clock runs (about 20 s)\nunless you call a timeout",
+    color=style.INK, fs=6.6)
+say(fld, p2m, 13.5, -1.5, "soft zones: the defense\ngives the short stuff", color=DC, fs=6.3)
+plt.show()
+```
+
+What does the defense do about it? It plays the same game backwards: it sits deep enough that nothing
+gets behind it, keeps its cornerbacks outside the receivers so the sideline routes are contested, and
+tackles in bounds. That tug-of-war, offense pulling the ball outside and defense pushing it inside, is the
+whole two-minute drill in one sentence.
+
+::: {.callout-important title="Why it exists"}
+The two-minute drill exists because the clock rules are asymmetric. The offense can stop the clock
+(incompletions, out of bounds, timeouts, spikes); the defense can only stop it with timeouts and by
+forcing incompletions. So the trailing offense, uniquely, gets to *control the pace* of the end of a half.
+The drill is the set of habits that turns that control into points, and it has to be rehearsed because
+the habits contradict normal football: throw away from the open middle, give up yards for seconds, and
+never take a sack.
+:::
+
+The drill has a long history in big games. In the 1958 NFL Championship Game, Johnny Unitas drove the
+Baltimore Colts into position for Steve Myhra's tying field goal with seven seconds left, and the Colts
+won in the first sudden-death overtime in NFL history (sudden death: the first team to score in the extra
+period wins).[^unitas] In January 1987 John Elway's Broncos went 98 yards in Cleveland, starting with 5:32
+left ("The Drive"), to force overtime in the AFC Championship Game. The most famous two-minute drive of the
+modern era, Tom Brady's in Super Bowl XXXVI, gets its own look later in the chapter, because it began with
+a famous broadcaster telling him not to try it.
+
+### The spike
+
+A [**spike**](../../appendices/glossary.qmd#gl-spike) is the quarterback taking the snap and immediately
+throwing the ball into the ground. It is an incomplete pass, so the clock stops. Why isn't it
+[intentional grounding](../../appendices/glossary.qmd#gl-intentional-grounding), which is exactly
+"throwing the ball away to avoid a loss with no receiver nearby"? Because the rulebook carves out an
+exception for it: a quarterback **under center** (the rulebook says within one yard of the snapper) may
+stop the clock legally if, *immediately* upon receiving the snap, he begins a continuous throwing motion and
+throws the ball directly into the ground. If he waits, he may not: a delayed spike is grounding. Nor may a
+quarterback in the shotgun: a spike from five yards deep is intentional grounding.[^spikerule] That rule
+gives you one of the best tells in football. When a team that has been in the shotgun all day sprints to
+the line and the quarterback steps up under center, the spike is coming.
+
+The spike play itself takes about `{python} S["spike_cost"]` second of clock. (The price list's
+`{python} S["p_spike"]` seconds for "catch in bounds, then a spike" is snap to snap, and almost all of it
+is the sprint back to the line before the spike.) What a spike really costs is **a down**. Spiking on
+first down is cheap (second-and-10 is fine in a two-minute drill); spiking on second down leaves only one
+real play before fourth down; spiking on third down is almost always a mistake.
+Teams spike about `{python} S["spikes_yr"]` times a season in all. You will see it most often in the
+sequence the price list describes: an in-bounds completion, a frantic sprint to the line, the quarterback
+under center, and the ball slammed into the turf with 15 to 20 seconds gone.
+
+When should a team with a timeout spike instead of using the timeout? When there is time for more plays
+after it. A timeout is the more valuable token, because it keeps the down. Coaches spend timeouts late,
+for the field goal (the kicking unit needs a stopped clock to run onto the field) or for a catch in the
+middle near the end, and use the spike to keep them.
+
+::: {.callout-note title="Go deeper: the fake spike"}
+Once everyone expects a spike, the threat of one is a weapon. On November 27, 1994, against the Jets,
+Dan Marino ran to the line at the Jets' 8 with under 40 seconds left, shouted "Clock! Clock!", made the spike motion, and
+instead threw a touchdown to Mark Ingram while the defense straightened up; the Dolphins won 28–24.[^marino]
+The fake spike still shows up occasionally, and it is why a defense facing a hurried line-up can never
+completely relax. It works only because the real spike is so common.
+:::
+
+### Timeouts and the 10-second runoff
+
+Timeouts are the scarcest resource in the two minutes: three per half, and none carry over. Their value
+depends on when they are used. A timeout early in a half saves the 20-odd seconds between plays, but those
+seconds rarely matter. The same timeout in the last minute can be the difference between a field goal
+and no field goal. That's why you'll hear announcers criticise a coach for "wasting" a timeout on a
+substitution mix-up in the third quarter: it is the end-of-half timeout he's spending. The flip side is
+the end of the *first* half. Timeouts left over at halftime simply vanish, so coaches spend them much more
+freely in the second quarter's last two minutes than they would in the fourth.
+
+The rules guard the clock against cheap tricks. After the two-minute warning of either half, if the
+offense stops the clock by breaking a rule (a false start or other foul while the clock is running,
+intentional grounding, an illegal forward pass, a backward pass thrown out of bounds, spiking the ball
+*after* a play has ended), the officials take **ten seconds off the game clock**, the
+[**10-second runoff**](../../appendices/glossary.qmd#gl-10-second-runoff), and restart it on the ready
+signal. The offense may spend a timeout instead, if it has one, and the defense may decline the runoff
+along with the yardage penalty.
+
+The defense has its own version, with a different penalty. It is never charged a runoff; if it fouls to
+stop the clock, the clock simply restarts on the ready signal. But a trailing defense out of timeouts might
+be tempted to jump offside on purpose with, say, 0:20 left, just to freeze the clock. So in the last 40
+seconds of a half, if the defense has no timeouts left, a defensive foul that stops the clock gives the
+*offense* a choice: take the yardage
+and play on, or have the half end right there. A leading offense will usually end it.[^runoff]
+
+Injuries are on the same list. After the two-minute warning an injury stoppage costs the injured player's
+team one of its timeouts (unless an opponent's foul caused the injury, or the play was a score, a free kick or
+a turnover). A team with none left is treated
+as having taken an illegal extra timeout: if it has the ball, the defense may run ten seconds off the
+clock, and if it is the defense, in the last 40 seconds the offense may end the half.[^injury] The rule
+exists to stop players from faking injuries to stop the clock.
+
+The runoff also applies when a **replay** changes a stopped clock into a running one after the two-minute
+warning. If a receiver ruled out of bounds is shown to have been tackled in bounds, the clock should never
+have stopped, so ten seconds come off, and neither team can decline them (either can use a timeout to
+prevent them). **Either half can end on a runoff**, and one famous game did.
+
+::: {.callout-note title="Film room: Falcons at Lions, 2017 — ended by a runoff"}
+Week 3 of the 2017 season, Atlanta led Detroit 30–26 in the last seconds. Detroit had no timeouts. On
+third-and-goal from the 1 with 12 seconds left, Matthew Stafford hit Golden Tate on a short pass, and the
+officials signalled touchdown. The booth reviewed it (all scoring plays are reviewed), and the replay
+showed Tate down short of the goal line, at the 1. A touchdown stops the clock; a runner tackled in bounds
+does not. The clock had stopped with eight seconds left; under the replay rule it goes back to the moment
+the play should have ended and then runs ten seconds, and with fewer than ten seconds left the game is
+simply over.[^falcons] What to notice: the Lions lost not because the play
+failed by a foot, but because they had no timeout to absorb the runoff. A single timeout saved for the
+end would have bought one more snap from the 1.
+:::
+
+### An annotated two-minute drive
+
+Back to the opening scene. Here is every snap of Kansas City's drive at the end of regulation in Super
+Bowl LVIII, plotted the way a clock manager thinks about it: time on one axis, field position on the
+other.
+
+```{python}
+#| label: fig-lviii-drive
+#| fig-cap: "Super Bowl LVIII (February 11, 2024), Kansas City's drive at the end of regulation, trailing 19-16. Each dot is a snap, placed at its game clock and the ball's spot; the line to the next dot is green when the clock kept running between the snaps and orange when it was stopped. Kansas City used the cheap stoppages (three incompletions, a scramble and a catch that went out of bounds), spent only one of its two timeouts, after a first down near midfield, and kicked the tying field goal with three seconds left, still holding a timeout in case it needed one for the kick. Source: nflverse play-by-play, game 2023_22_SF_KC."
+lv = raw[(raw.game_id == "2023_22_SF_KC") & (raw.qtr == 4) & (raw.half_seconds_remaining <= 113)].copy()
+snaps = lv[(lv.posteam == "KC") & lv.play_type.isin(["pass", "run", "field_goal"])].copy()
+snaps["t"] = snaps.half_seconds_remaining
+snaps["own"] = 100 - snaps.yardline_100                      # yards from KC's own goal line
+KEY = {3769: "1st & 10 KC 25: Kelce 9, in bounds",
+       3794: "2nd & 1: Mahomes scramble 3, out of bounds",
+       3816: "1st & 10: Gray 12, in bounds",
+       3841: "1st & 10: Watson 8, in bounds",
+       3866: "2nd & 2: incomplete",
+       3889: "3rd & 2: McKinnon 7, first down;\n    KC timeout at 0:40",
+       3914: "1st & 10 SF 36: Mahomes scramble 3,\n    in bounds (timeout kept)",
+       3943: "2nd & 7: incomplete",
+       3966: "3rd & 7: Kelce 22, pushed out at the\n    SF 11; SF timeout at 0:10 (two\n    49ers DBs hurt on the play)",
+       3994: "1st & 10: incomplete",
+       4027: "2nd & 10: Butker 29-yd field goal,\n    19-19 with 0:03 left"}
+running = {3769: True, 3794: False, 3816: True, 3841: True, 3866: False, 3889: True, 3914: True,
+           3943: False, 3966: False, 3994: False}
+# snaps on the same yard line a few seconds apart: spread them along the time axis (never off their yard line)
+NUDGE = {3866: 1.8, 3889: -1.8, 3943: 1.8, 3966: -1.8, 3994: 2.6, 4027: -2.6}
+fig = plt.figure(figsize=(6.6, 3.9))
+ax = fig.add_axes([0.09, 0.13, 0.52, 0.78])
+kx = fig.add_axes([0.63, 0.05, 0.37, 0.88])
+blank(kx)
+pts = snaps[["play_id", "t", "own"]].values.copy()
+pts[:, 1] += [NUDGE.get(int(pid), 0.0) for pid in pts[:, 0]]
+for (pid, t0, y0), (_, t1, y1) in zip(pts[:-1], pts[1:]):
+    c = GREEN if running[int(pid)] else style.DEFENSE
+    ax.plot([t0, t1], [y0, y1], color=c, lw=2.2, zorder=2, solid_capstyle="round")
+for i, (pid, t, y) in enumerate(pts, start=1):
+    ax.scatter([t], [y], s=100, color=style.OFFENSE_DARK, zorder=4, edgecolor="white", linewidth=0.8)
+    ax.text(t, y, str(i), ha="center", va="center", fontsize=6.3, color="white", fontweight="bold", zorder=5)
+for t, txt in [(40, "KC timeout"), (10, "SF timeout")]:
+    ax.axvline(t, color=style.INK_2, lw=0.9, ls=(0, (3, 2)), zorder=1)
+    ax.text(t - 1.2, 18, txt, fontsize=6.2, color=style.INK_2, ha="left", va="bottom", rotation=90)
+ax.axhline(65, color=style.LINE_TO_GAIN, lw=1.2, zorder=1)
+ax.text(114, 66.5, "long field-goal range begins\n(about the SF 35)", fontsize=6.2, color="#9a6a00", ha="left",
+        va="bottom", linespacing=1.05)
+ax.set_xlim(116, -2)
+ax.set_ylim(15, 98)
+ax.set_xticks([113, 90, 60, 30, 0], ["1:53", "1:30", "1:00", "0:30", "0:00"], fontsize=7.5)
+ax.set_yticks([25, 40, 50, 60, 75, 89], ["KC 25", "KC 40", "50", "SF 40", "SF 25", "SF 11"], fontsize=7.5)
+ax.set_xlabel("Game clock", fontsize=8)
+ax.set_ylabel("Ball on", fontsize=8)
+ax.set_title("Kansas City's last drive of regulation", fontsize=9.5)
+ax.legend(handles=[Line2D([], [], color=GREEN, lw=2.2, label="clock ran to next snap"),
+                   Line2D([], [], color=style.DEFENSE, lw=2.2, label="clock stopped")],
+          loc="upper left", fontsize=6.5)
+for i, pid in enumerate(KEY, start=1):
+    yy = 0.97 - (i - 1) * 0.088
+    kx.scatter([0.03], [yy], s=80, color=style.OFFENSE_DARK, transform=kx.transAxes, clip_on=False)
+    kx.text(0.03, yy, str(i), transform=kx.transAxes, ha="center", va="center", fontsize=6, color="white",
+            fontweight="bold")
+    kx.text(0.09, yy, KEY[pid], transform=kx.transAxes, ha="left", va="center", fontsize=6.4, color=style.INK,
+            linespacing=1.05)
+plt.show()
+```
+
+Four things are worth noticing, because they are what good clock management looks like.
+
+1. **The cheap plays came early.** The first snap was a 9-yard catch in bounds, and then Mahomes, facing
+   second-and-1, scrambled and **got out of bounds**. Inside the last five minutes, that stopped the clock
+   until the next snap. The drive used about 40 seconds to reach midfield, and Kansas City still had both
+   timeouts.
+2. **One timeout, when the price was high.** After a third-down conversion at the 49ers' 36 with the
+   clock running, the Chiefs called their timeout at 0:40, saving about 20 seconds at the moment the
+   seconds started to matter.
+3. **A timeout in the pocket.** After Mahomes's scramble to the 33 stayed in bounds, Kansas City
+   *didn't* use its last timeout; it hurried to the line and threw incomplete at 0:21. The timeout was
+   insurance: as long as the Chiefs held it, any catch, anywhere, could be followed by a field goal.
+4. **The decisive catch went out of bounds.** On third-and-7 with 16 seconds left, Travis Kelce caught a pass and was
+   pushed out at the 11, stopping the clock at 0:10. Two 49ers defensive backs were hurt on the play, and
+   San Francisco's timeout at 0:10 came with the clock already stopped; after the two-minute warning an
+   injury stoppage costs the injured player's team a timeout, as you saw above. One more shot at the end
+   zone, an incompletion, and Harrison Butker tied the game with three seconds left.[^lviii]
+
+Notice also what San Francisco did *before* the drive, because it is the clock decision people still
+argue about. Tied 16–16, the 49ers faced third-and-5 at the Chiefs' 35 right after the two-minute warning,
+and threw incomplete. A run that stayed in bounds would probably not have gained the first down either, but
+it would have kept the clock running: Kansas City would have had to spend one of its timeouts or watch
+about 40 seconds disappear before the field goal. Instead the clock stopped, the 49ers kicked a 53-yarder
+on fourth-and-5 at 1:57 to lead by three, and the Chiefs got the ball back with 1:53 and both of their remaining timeouts,
+which, as the chart shows, was enough. Kicking on fourth-and-5 was defensible (it is at the edge of the
+"go zone" you'll meet below, and a field goal at least forced Kansas City to score); the costly call was
+the third-down incompletion that came before it.
+
+## The four-minute offense: when the clock is on your side
+
+Flip the situation. You lead by six with four minutes left and you have the ball. Now every second the
+clock runs is a second the other team can't use. The
+[**four-minute offense**](../../appendices/glossary.qmd#gl-four-minute-offense) is the two-minute drill
+in reverse:
+
+- **Run the ball, and run it inside**, where the ball carrier will be tackled in bounds. A 3-yard run that
+  keeps the clock moving beats a 12-yard pass that might fall incomplete.
+- **Use the whole play clock.** Snap with one or two seconds left on the 40-second clock. A first down
+  then costs the opponent about 40 seconds per play, or about two minutes per set of downs, if it has no
+  timeouts.
+- **Ball security over yards, and stay in bounds.** A fumble or an interception hands the opponent both
+  the ball and the clock. Backs are coached to go down in bounds rather than fight toward the sideline,
+  and the quarterback to slide, or even to *take* a sack, rather than throw an incompletion that stops
+  the clock. It is the two-minute drill's "no sacks" rule turned upside down.
+- **First downs end games.** The point of the drive is not points; it is a fresh set of downs, each worth
+  roughly two more minutes. Teams sometimes stay in bounds or even go down short of the goal line, rather
+  than score and give the ball back.
+
+The defense's counter is timeouts, used immediately after each running play stays in bounds, and
+everything it can do to force an incompletion or a punt. A defense with three timeouts and the two-minute
+warning to come can stop the clock four times; with none, it can only hope for a stop.
+
+### The kneel-down arithmetic
+
+At some point the leading team doesn't need any more yards. It only needs the clock to run out, and the
+safest play in football is the quarterback kneeling down. Each kneel uses a down and takes about two
+seconds, and the clock keeps running afterwards, because the quarterback is "tackled" in bounds. Between
+kneels the offense lets the 40-second play clock run almost to zero. In the play-by-play, consecutive
+kneels with no timeout between them come about `{python} S["kneel_gap"]` seconds apart.
+
+So the question every leading team asks when it gets a first down late in the game is: **can we kneel it
+out from here?** It has three kneels to use, and then one more thing working for it: after the third
+kneel the offense doesn't have to snap again until the 40-second play clock runs out. If the game clock
+hits zero first, the game ends without a fourth-down play. It's arithmetic.
+
+```{python}
+#| label: fig-kneel-math
+#| fig-cap: "The kneel-down arithmetic. The leading team has first-and-10, the clock is running and the play clock is fresh. Each kneel lets the play clock run down (green, about 39 seconds) and then takes about two seconds (dark blue). After the third kneel the play clock runs one last time before a fourth-down snap would be due (hatched, about 40 seconds): if the game clock reaches zero during it, the game is over. Every timeout the defense has left stops the clock after a kneel (orange tick), and the next snap starts it again at once, so that play clock costs the defense nothing. The total at the end of each bar is the most time a first down can have on the clock and still end the game: about 2:43 with no defensive timeouts, 2:04 with one, 1:25 with two. With three, the last timeout stops the clock after the third kneel, so there is no final play-clock run; the kneels alone cover only about 0:45, and above that the offense must snap on fourth down."
+PLAYCLK, KNEEL, LAST = 39, 2, 40
+fig, ax = plt.subplots(figsize=(6.5, 2.9))
+rows = []
+for n_to in range(4):
+    segs, t, used = [], 0, 0
+    clock_running = True
+    for kneel in range(3):
+        if clock_running:
+            segs.append((t, PLAYCLK, "pc"))
+            t += PLAYCLK
+        segs.append((t, KNEEL, "kn"))
+        t += KNEEL
+        if used < n_to:
+            used += 1
+            segs.append((t, 0, "to"))
+            clock_running = False
+        else:
+            clock_running = True
+    if clock_running:                                   # the fourth-down play clock runs out the game
+        segs.append((t, LAST, "last"))
+        t += LAST
+    rows.append((n_to, segs, t))
+for n_to, segs, total in rows:
+    yy = 3 - n_to
+    for x0, w, kind in segs:
+        if kind == "pc":
+            ax.add_patch(Rectangle((x0, yy - 0.28), w, 0.56, fc=RUN_C, ec=GREEN, lw=0.8))
+        elif kind == "kn":
+            ax.add_patch(Rectangle((x0, yy - 0.28), w, 0.56, fc=style.OFFENSE_DARK, ec="none"))
+        elif kind == "last":
+            ax.add_patch(Rectangle((x0, yy - 0.28), w, 0.56, fc=style.SURFACE, ec=GREEN, lw=0.8, hatch="////"))
+        else:
+            ax.plot([x0 + 0.6, x0 + 0.6], [yy - 0.42, yy + 0.42], color=style.DEFENSE_DARK, lw=2.2)
+    txt = f"game over from ≤ {mmss(total)}" if n_to < 3 else f"≤ {mmss(total)}; else a 4th-down snap"
+    ax.text(total + 2.5, yy, txt, va="center", fontsize=7.6, color=style.INK, fontweight="bold")
+ax.set_yticks([3, 2, 1, 0], ["0 timeouts", "1 timeout", "2 timeouts", "3 timeouts"], fontsize=8)
+ax.set_ylabel("Defense has")
+ax.set_xlim(0, 228)
+ax.set_ylim(-1.75, 3.6)
+ax.set_xticks([0, 30, 60, 90, 120, 150], ["0:00", "0:30", "1:00", "1:30", "2:00", "2:30"])
+ax.set_xlabel("Game clock used by three kneels and the last play clock (first down, clock running)")
+ax.set_title("How much clock three kneel-downs can kill")
+ax.grid(axis="y", visible=False)
+ax.legend(handles=[Patch(fc=RUN_C, ec=GREEN, label="play clock runs (≈39 s)"),
+                   Patch(fc=style.OFFENSE_DARK, label="kneel (≈2 s)"),
+                   Patch(fc=style.SURFACE, ec=GREEN, hatch="////", label="4th-down play clock (≈40 s)"),
+                   Line2D([], [], color=style.DEFENSE_DARK, lw=2.2, label="defense timeout")],
+          loc="lower center", fontsize=6.8, ncol=4, bbox_to_anchor=(0.5, -0.02), frameon=False)
+plt.show()
+```
+
+The rule of thumb that falls out, in the form a coach would use on the sideline: **after the two-minute
+warning, a first down ends the game if the defense has zero or one timeout left. With two, it ends the
+game from about 1:25; with three, from about 0:45.** Each of the first two timeouts is worth about 40
+seconds; the third is worth more, because it also takes away that last free run of the play clock. That is
+why a defense down by four with 2:30 left will start calling timeouts after the *first* running play, not
+wait. And it is why a timeout is worth more to the team *without* the ball late in the game: it is the
+only thing that converts the offense's play clock back into usable time.
+
+Two wrinkles. If the first down comes shortly *before* the two-minute warning, the clock will stop at 2:00
+anyway, so start the count at 2:00 and treat the warning as one more defensive timeout (it stops the
+clock for free, just as a timeout would). And if the arithmetic comes up
+a few seconds short, so that fourth down arrives with time still on the clock, the offense doesn't kneel a
+fourth time (that would hand over the ball at the spot). It snaps and **burns the clock**: the quarterback
+takes the snap and runs backward or sideways until the seconds are gone, or the punter does the same, or
+the team simply punts deep.
+
+One famous finish shows the leading team taking this arithmetic to its logical end. In December 2007, the
+Eagles led Dallas 10–6 when Brian Westbrook broke a run into the clear with Dallas out of timeouts; he
+deliberately went down at the 1 instead of scoring, and Donovan McNabb knelt three times to end the
+game.[^westbrook] Run the numbers the way the chart does. The clock ran from 2:19 to the two-minute
+warning. From 2:00, the warning counts as one stoppage and Dallas had no timeouts, so read the chart's
+one-timeout row: a first down at about 2:04 or less ends the game, and 2:00 is less. McNabb knelt at 2:00,
+1:15 and 0:30, and the game clock ran out during the last play clock. A touchdown would have given Dallas the ball back with about two minutes left; the
+kneels gave it nothing.
+
+The same arithmetic explains one of the strangest sights in football, a defense that *lets* the offense
+score. In Super Bowl XLVI the Patriots led the Giants 17–15, and the Giants had the ball at the New England
+6 with about a minute left. New England had one timeout. Played normally, the Giants would run the clock
+down to the last seconds and kick a chip-shot field goal (a very short, near-certain kick) to win, and
+Tom Brady would never touch the ball again. So Bill Belichick told his defense to let Ahmad Bradshaw score,
+and Bradshaw, who tried to stop at the 1, fell into the end zone with 57 seconds left.[^xlvi] Down 21–17
+with 57 seconds and a timeout beat down 18–17 with no time at all. (It didn't work: Brady's last drive fell
+short.) Westbrook and Bradshaw are the same idea from opposite sides: the team with the ball valued the
+clock more than six points, and the defense paid six points to get the clock back.
+
+### The victory formation
+
+The kneel is so routine that it has its own formation, the
+[**victory formation**](../../appendices/glossary.qmd#gl-victory-formation), and announcers call the
+play a [**kneel-down**](../../appendices/glossary.qmd#gl-kneel-down).
+
+```{python}
+#| label: fig-victory
+#| fig-cap: "The victory formation. Seven blockers on the line in tight splits (no gaps for a defender to shoot), both tight ends attached. The quarterback (Q) is under center; two backs stand just behind him on either side, close enough to block a defender who slips through and to fall on the ball if the snap is fumbled. One deep player (D, often a safety or a receiver) stands 12 or more yards back as a last line of defense: if the ball somehow comes loose and a defender scoops it up, he is the only one who can stop a touchdown return. The quarterback takes the snap and kneels; the defense usually doesn't rush hard, by an unwritten rule, and a defense that has given up often stays in its base alignment, as here."
+vf = [Player(k, pos, "off", d, w, label=lab) for k, pos, d, w, lab in [
+    ("LT", "LT", -0.7, -3.2, ""), ("LG", "LG", -0.7, -1.6, ""), ("C", "C", -0.7, 0.0, "C"),
+    ("RG", "RG", -0.7, 1.6, ""), ("RT", "RT", -0.7, 3.2, ""), ("U", "TE", -0.7, -4.8, "U"),
+    ("Y", "TE", -0.7, 4.8, "Y"), ("QB", "QB", -1.9, 0.0, "Q"), ("LB_", "RB", -3.3, -1.5, "R"),
+    ("RB_", "FB", -3.3, 1.5, "F"), ("DEEP", "S", -13.0, 0.0, "D")]]
+vd = [Player(k, pos, "def", d, w) for k, pos, d, w in [
+    ("E1", "DE", 1.0, -5.2), ("T1", "DT", 1.0, -1.6), ("T2", "DT", 1.0, 1.6), ("E2", "DE", 1.0, 5.2),
+    ("M", "MIKE", 4.5, 0.0), ("S_", "SAM", 4.5, 4.5), ("W", "WILL", 4.5, -4.5),
+    ("C1", "CB", 6.0, -10.0), ("C2", "CB", 6.0, 10.0), ("FS", "FS", 10.0, -5.0), ("SS", "SS", 10.0, 5.0)]]
+pv = Play(vf, vd, los=70, to_go=None)
+pv.highlight("QB")
+fld = pv.draw(window=(-16.5, 12.5), lateral=(-15.5, 15.5), title=False)
+no_numbers(fld)
+say(fld, pv, -3.0, -9.6, "quarterback: snap,\ndrop to one knee", color=OC, fs=6.6)
+lead(fld, pv, (-2.6, -6.6), (-2.0, -0.9))
+say(fld, pv, -6.6, 6.9, "two backs: protect\nthe ball, block leaks", color=OC, fs=6.6)
+lead(fld, pv, (-5.8, 4.0), (-3.9, 2.2))
+say(fld, pv, -13.0, 7.6, "deep back: stops a\nfumble return", color=OC, fs=6.6)
+lead(fld, pv, (-13.0, 4.4), (-13.0, 0.9))
+say(fld, pv, -2.4, 10.0, "tight splits, both\nends attached", color=OC, fs=6.6)
+lead(fld, pv, (-1.6, 7.6), (-0.9, 5.6))
+plt.show()
+```
+
+The formation's history is a cautionary tale. On November 19, 1978, the Giants led the Eagles 17–12 with
+about 30 seconds left and the ball. Instead of kneeling, they handed off; quarterback Joe Pisarcik and
+fullback Larry Csonka botched the exchange, Eagles cornerback Herman Edwards picked up the loose ball
+and ran it in, and Philadelphia won 19–17. The "Miracle at the Meadowlands" cost the Giants' offensive
+coordinator his job the next day, and teams across the league began kneeling, in a formation built to
+make that fumble impossible.[^meadowlands]
+
+By convention the defense doesn't fight a kneel-down. When the Buccaneers' Greg Schiano had his defense
+charge into the Giants' victory formation in September 2012, knocking Eli Manning to the ground, Tom
+Coughlin confronted him at midfield and the incident became a league-wide argument about sportsmanship.
+Schiano's defence was that the game wasn't over until the clock hit zero, which is true; the convention
+survives because a fumble on a kneel is so unlikely that rushing it mostly risks injuries.[^schiano]
+
+::: {.callout-note title="Madden vs. real life"}
+In Madden, "kneel" is a button you press once the clock math works. In a real game somebody has to *do*
+the math, under noise, with the play clock running: down, distance, the opponent's timeouts, whether the
+two-minute warning is still to come. NFL staffs keep a clock-management card for exactly this (often a
+dedicated assistant or the "game management" coach in the booth), and head coaches have been fired over
+getting it wrong. When a broadcast shows a coach on the headset at 2:15 with the offense jogging to the
+line, he is usually being read that card.
+:::
+
+## End of the half: points versus risk
+
+The last minute of the first half has its own logic. There is no next possession to protect against
+(the second half starts with a kickoff and fresh timeouts), so a team with the ball and time faces a
+narrower question: **is a shot at points worth the risk of giving the opponent the ball with time to
+use it?**
+
+Three questions settle most of these calls:
+
+1. **How far to field-goal range, and how many plays do I have?** From the price list: with one timeout,
+   45 seconds is about four or five plays if half of them go out of bounds or fall incomplete. If those
+   plays can plausibly gain 30 yards, go.
+2. **What happens if it goes wrong?** An interception or a three-and-out deep in your own territory gives
+   the opponent a short field. Backed up at your own 10 with 40 seconds, most coaches kneel.
+3. **Who gets the ball to start the second half?** If you will receive the second-half kickoff, scoring
+   at the end of the half is a *double score* opportunity: points just before the break, then the ball
+   again immediately. That's a big reason most coaches defer when they win the coin toss.
+
+Put numbers on one. You have the ball at your own 30 with 0:45 left in the first half and one timeout,
+and your kicker is good from the opponent's 35 (a 53-yarder). That is 35 yards in about five plays, realistic if
+the offense throws outside and uses its timeout well, and the downside (an interception at your
+own 35 with 30 seconds left) gives the opponent a long field-goal try at worst. Most modern coaches would go. Move the
+same situation back to your own 10 with no timeouts, and it is 55 yards in three or four plays with a
+turnover now handing the opponent a short field: kneel.
+
+The most famous "points or risk?" argument came at the end of a *game*. In Super Bowl XXXVI, with the
+score tied and the Patriots starting at their own 17 with 1:21 and no timeouts, the broadcast's John Madden
+said they should run out the clock: "You have to play for overtime now." Bill Belichick and Tom Brady went
+for it anyway.[^xxxvi-madden] Madden was not wrong about the risk; he was underrating the price list. Two
+short throws to the running back in bounds, then a spike on first down at 0:41, the textbook spike: an
+in-bounds catch, a sprint to the line, the clock stopped for the price of a cheap down. Then a third throw
+to the back that was pushed out of bounds, an incompletion, and Troy Brown's 23-yard catch that went out of
+bounds had the ball at the Rams' 36 with 21 seconds left. One more catch in bounds, six yards to the 30, a second spike at
+0:07, and Adam Vinatieri kicked the 48-yard winner as time ran out.
+
+### The Hail Mary
+
+When there is time for only one snap and the end zone is out of field-goal range, there is one play left:
+the [**Hail Mary**](../../appendices/glossary.qmd#gl-hail-mary). Four or five receivers sprint to one spot
+in or near the end zone, the quarterback buys time and throws as high and as far as he can, and everyone
+converges on the ball. The name comes from the Cowboys' 1975 playoff game at Minnesota, when Roger Staubach
+threw a 50-yard winner to Drew Pearson and told reporters afterward that he had closed his eyes and said
+a Hail Mary.[^staubach]
+
+```{python}
+#| label: fig-hail-mary
+#| fig-cap: "A Hail Mary from the opponent's 48 with four seconds left (simulated tracking, BDB format). The five receivers (blue) race to one spot about two yards deep in the end zone and set up in a diamond with named jobs: Y is the jumper at the spot, H the front tipper about three yards short of him, Z the back tipper about three yards deeper, and X and the back (R) the two sides. The defense (orange) rushes three and drops eight: its safeties and corners get to the spot first and go up at or above the jump point to bat the ball down, one more defender ($) waits deeper as the 'goalie', and the three underneath droppers (W, M, D) collapse to the front of the pile to swat tips. The quarterback buys time with a deep drop and throws at a little over four seconds, as receivers need about five to six seconds to cover 50 yards; the ball is in the air for about three more. In print, the left panel shows everyone's path from the snap and the right panels close in on the landing spot as the ball comes down and arrives (faint tails show the last second of movement)."
+off = offense("gun_2x2")
+off = [pl.moved(w=-17.0) if pl.key == "X" else pl.moved(w=17.0) if pl.key == "Z" else pl for pl in off]
+off = [pl.moved(d=-5.0, w=1.5) if pl.key == "RB" else pl for pl in off]
+hmd = [Player(k, pos, "def", d, w, label=lab) for k, pos, d, w, lab in [
+    ("E1", "DE", 1.0, -3.5, None), ("N", "NT", 1.0, 0.5, None), ("E2", "DE", 1.0, 4.0, None),
+    ("W", "WILL", 12.0, -8.0, None), ("M", "MIKE", 12.0, 0.0, None), ("D", "DB", 12.0, 8.0, None),
+    ("C1", "CB", 18.0, -15.0, None), ("C2", "CB", 18.0, 15.0, None),
+    ("S1", "FS", 36.0, -5.0, None), ("S2", "SS", 36.0, 5.0, None), ("G", "NB", 40.0, 0.0, "$")]]
+hmp = Play(off, hmd, los=62, to_go=None)
+hmp.dropback(3.0)
+SPOT = 50.0                      # two yards deep in the end zone (the goal line is 48 yards away)
+T_THROW = 4.3
+# receivers: the diamond around the jumper (absolute (d, w) from the line of scrimmage)
+for key, end, spd in [("Y", (SPOT, 0.5), 8.8),          # jumper
+                      ("H", (SPOT - 3.0, 0.0), 8.6),    # front tipper
+                      ("Z", (SPOT + 3.0, 0.5), 9.2),    # back tipper / trailer
+                      ("X", (SPOT - 1.5, -3.0), 9.0),   # side
+                      ("RB", (SPOT - 1.5, 3.5), 8.8)]:  # side
+    hmp.route(key, [(end[0] - 2.0, end[1] * 1.3), end], absolute=True, speed=spd)
+# defense: DBs at or above the jump point, a deeper goalie, underneath players to the front of the pile
+for key, to, delay, spd in [("S1", (SPOT + 1.0, -1.6), 0.4, 4.5), ("S2", (SPOT + 1.0, 2.4), 0.4, 4.5),
+                            ("C1", (SPOT + 2.0, -4.6), 0.0, 7.0), ("C2", (SPOT + 1.5, 5.2), 0.0, 7.0),
+                            ("G", (SPOT + 5.5, 0.0), 0.6, 4.5), ("W", (SPOT - 4.0, -3.5), 0.2, 6.6),
+                            ("M", (SPOT - 5.5, 0.5), 0.2, 6.6), ("D", (SPOT - 4.6, 4.4), 0.2, 6.6)]:
+    hmp.drop(key, to, delay=delay, speed=spd)
+for key in ("E1", "N", "E2"):
+    hmp.rush(key, speed=3.6)
+hmp.pass_to("Y", t=T_THROW)
+# when does the ball arrive? (first moment it reaches the jumper)
+_ts = np.arange(T_THROW, T_THROW + 6.0, 0.05)
+T_ARR = float(next(t for t in _ts if np.linalg.norm(hmp.ball_position(t) - hmp.position("Y", t)) < 0.6))
+if PDF:
+    # print: the whole play at the snap (left), then two close-ups of the landing spot (right)
+    from gridiron import draw_frame
+    trk = hmp.to_tracking(t_after=0.8)
+    trk["_id"] = trk.displayName
+    tmap = trk.groupby("frameId")["time"].first()
+    fig = plt.figure(figsize=(6.6, 5.3))
+    axL = fig.add_axes([0.0, 0.0, 0.45, 0.93])
+    no_numbers(hmp.draw(ax=axL, window=(-10, 60), lateral=(-19.5, 19.5), title=False))
+    axL.set_title("The plan, at the snap", fontsize=8.5, color=style.INK, loc="left")
+    for t, (x0, y0), ttl in [(T_ARR - 0.6, (0.47, 0.5), f"+{T_ARR - 0.6:.1f} s: the crowd sets up, ball coming down"),
+                             (T_ARR, (0.47, 0.0), f"+{T_ARR:.1f} s: the ball arrives at the jumper")]:
+        axr = fig.add_axes([x0, y0, 0.53, 0.43])
+        fr = Field(ax=axr, orient="vertical", los=hmp.los, window=(38, 60), lateral=(hmp.ball_y - 12.5, hmp.ball_y + 12.5))
+        no_numbers(fr)
+        fid = int((tmap - t).abs().idxmin())
+        near = trk[trk.x >= hmp.los + 39.0]                       # only what is inside the close-up
+        draw_frame(fr, near[near.frameId == fid], near[(near.frameId <= fid) & (near.frameId >= fid - 10)],
+                   fr.pts_per_yard())
+        # the ball: where it is now, with a dotted trace of the last half-second of its flight
+        trace = [tuple(map(float, fr.xy(*hmp.to_abs(*hmp.ball_position(tt))))) for tt in np.linspace(t - 0.5, t, 6)
+                 if hmp.ball_position(tt)[0] >= 38.5]
+        if len(trace) > 1:
+            axr.plot(*zip(*trace), color=style.BALL, lw=1.2, ls=(0, (1.5, 1.5)), zorder=11)
+        bd, bw = hmp.ball_position(t)
+        if t == T_ARR:
+            bd, bw = bd + 1.1, bw + 0.9      # at the jumper's raised hands, so his letter stays readable
+        bx, by = map(float, fr.xy(*hmp.to_abs(bd, bw)))
+        axr.add_patch(Ellipse((bx, by), 0.75, 1.15, fc=style.BALL, ec="white", lw=0.8, zorder=12))
+        if t == T_ARR:
+            for (d_, w_), (pd0, pw0), txt in [((SPOT, -8.6), (SPOT, -0.5), "jumper (Y)"),
+                                             ((SPOT + 5.5, -8.6), (SPOT + 5.5, -0.9), "goalie ($)"),
+                                             ((SPOT + 3.0, 8.6), (SPOT + 3.0, 1.4), "back tipper (Z)"),
+                                             ((SPOT - 3.0, 8.6), (SPOT - 3.0, 1.0), "front tipper (H)")]:
+                xx, yy = map(float, fr.xy(*hmp.to_abs(d_, w_)))
+                lx, ly = map(float, fr.xy(*hmp.to_abs(pd0, pw0)))
+                axr.plot([xx, lx], [yy, ly], color=style.MUTED, lw=0.6, zorder=8)
+                axr.text(xx, yy, txt, fontsize=6.2, color=style.INK_2, ha="center", va="center", zorder=9,
+                         bbox=dict(boxstyle="round,pad=0.15", fc=style.SURFACE, ec="none", alpha=0.95))
+        axr.set_title(ttl, fontsize=8, color=style.INK, loc="left")
+    plt.show()
+else:
+    show_play(hmp, times=[0.0, 2.5, T_THROW, T_ARR])
+```
+
+How often does it work? Over the last ten regular seasons, throws of 35-plus air yards from 40 or more yards
+out in the last eight seconds of a half, the play-by-play's best proxy for a Hail Mary, numbered
+`{python} S["hm_n"]`. They produced a touchdown `{python} S["hm_td"]` of the time and an interception
+`{python} S["hm_int"]` of the time.[^hailmary] One in seventeen sounds hopeless, but the alternative at
+0:04 is zero, and an interception on the last play costs almost nothing. From deep in its own half (its own 30,
+say), even a strong arm can't reach the end zone, so teams switch to a hook-and-lateral or a multi-lateral
+"river" play and hope someone breaks free.
+
+Two rules make the last play stranger than it looks. First, **a half never ends while the ball is in play**:
+if the clock hits 0:00 while the ball is in the air, the play finishes. That is why a team with four seconds
+left can run a play that lasts eight. Second, **a half cannot end on an accepted defensive foul**. If the
+defense commits pass interference or holds on the last play, the offense gets the yardage and one more
+untimed down. (An offensive foul gives no such extension.)[^extend] That is why you'll see the pile in the
+end zone watched by every official on the field, why defenders are coached to go up for the ball and never
+through the receiver, and why a flag on a Hail Mary is the most dramatic flag in football.
+
+### The prevent defense
+
+The defense's mirror image is the [**prevent defense**](../../appendices/glossary.qmd#gl-prevent-defense):
+rush three (sometimes four), drop eight, and play everyone deep, conceding the short completion in order
+to take away the long one and tackle in bounds.
+
+```{python}
+#| label: fig-prevent
+#| fig-cap: "A prevent defense against four vertical routes, with 25 seconds left and the offense out of timeouts. Three rushers; four deep defenders (shaded zones) 20 to 25 yards off the ball, so that nothing can be thrown over them; four more underneath at 10 or 11 yards. The two outside underneath players ($ and D) are the key: they line up outside the wide receivers and sink toward the sideline, so that any catch that could get out of bounds is contested, and the two linebackers (W and M) take the middle. The open space is in front of them: the back's checkdown at about 4 yards (R, ringed) and anything short of the underneath layer is free, but a catch in the middle that stays in bounds keeps the clock running, which is a win for the defense."
+off = offense("gun_2x2")
+pd_ = [Player(k, pos, "def", d, w) for k, pos, d, w in [
+    ("E1", "DE", 1.0, -3.8), ("N", "NT", 1.0, 0.0), ("E2", "DE", 1.0, 3.8),
+    ("U1", "NB", 11.0, -18.5), ("U2", "WILL", 9.5, -4.5), ("U3", "MIKE", 9.5, 4.5), ("U4", "DB", 11.0, 18.5),
+    ("D1", "CB", 21.0, -18.0), ("D2", "FS", 24.0, -6.0), ("D3", "SS", 24.0, 6.0), ("D4", "CB", 21.0, 18.0)]]
+pp = Play(off, pd_, los=50, to_go=None)
+pp.dropback(2.0)
+for key in ("X", "H", "Y", "Z"):
+    pp.route(key, r.go(29))
+pp.route("RB", [(1.0, 7.0), (8.5, 8.5)], frame="field")
+for key in ("D1", "D2", "D3", "D4"):
+    pp.zone(center=(pp.players[key].d + 3.0, pp.players[key].w), size=(10.0, 11.0))
+for key, dw in (("E1", -1.0), ("N", 0.0), ("E2", 1.0)):
+    pp.rush(key, pts=[(-3.8, dw)])
+pp.highlight("RB")
+fld = pp.draw(window=(-8, 35), lateral="full", title=False)
+no_numbers(fld)
+say(fld, pp, 32.0, 0.0, "nothing gets over the top", color=DC, fs=6.8)
+say(fld, pp, 5.5, -20.6, "sideline sink:\nno catch gets\nout of bounds", color=DC, fs=6.2)
+say(fld, pp, 5.5, 20.6, "sideline sink:\nno catch gets\nout of bounds", color=DC, fs=6.2)
+say(fld, pp, 13.0, 0.0, "underneath layer: rally and\ntackle the catch in bounds", color=DC, fs=6.6)
+say(fld, pp, 5.5, -4.6, "free: short throws\nin front of them", color=OC, fs=6.6)
+say(fld, pp, -5.0, 14.0, "three rushers:\nall the time he wants", color=DC, fs=6.4)
+plt.show()
+```
+
+The prevent has a bad reputation. "The only thing the prevent defense prevents is winning" is one of
+football's oldest lines, and every fan has watched a team give up 60 yards in 90 seconds while playing it.
+The criticism is fair when the defense goes soft *too early*. With two minutes left and timeouts in hand,
+an offense can take the free 12-yard completions all the way down the field, because the prevent concedes
+yards to save time and the offense has time to spare. With 15 seconds left and no timeouts, the same
+coverage is exactly right: there is time for one or two plays, so the only thing that can beat you is a
+long one. The prevent is a clock-dependent call, like everything else in this chapter. What it trades away
+is yards; what it buys is the end of the game. The trade is good only when the clock makes yards cheap.
+
+You'll rarely hear a coach say "prevent." On the field it usually shows up as a
+[dime](../../appendices/glossary.qmd#gl-dime) (six defensive backs) or
+[quarter](../../appendices/glossary.qmd#gl-quarter-package) (seven) package, with three rushers and deep
+zones. The vocabulary of
+the whole last two minutes varies like that from staff to staff: the spike call is often just "clock"
+(Marino shouted "Clock! Clock!" before his fake), the running-clock field goal is "fire" on one team and
+"Mayday" on another, and the four-minute offense is also called the four-minute drill. Listen for the idea,
+not the word.
+
+### Two rare plays that decide games
+
+#### Sidebar plate: the intentional safety
+
+An [**intentional safety**](../../appendices/glossary.qmd#gl-intentional-safety) gives the opponent two
+points on purpose. It sounds absurd until you see the situation it's for: you lead late, you're about to
+punt from your own end zone, and the punt is the most dangerous play you could run. The punter is standing
+almost on the end line, rushers have the shortest possible path to him, and a block or a long return can
+lose the game. So instead the punter takes the snap, runs around his own end zone burning seconds, and
+steps out of the back of it. The opponent gets two points; you then kick off from your own 20. (In Super
+Bowl XLVII the Ravens' blockers held the rushers on purpose to buy their punter more seconds, since a hold
+in your own end zone costs only the safety you are already taking. The rulebook now closes that door:
+multiple fouls on one down to manipulate the clock cost 15 yards, and the clock is reset to where it was at
+the snap.[^clockfoul])
+
+```{python}
+#| label: fig-safety-plate
+#| fig-cap: "The intentional safety, as a trade (offense moving left to right; small numbers are yard lines). A: punting from your own end zone, ball at the 2. The punter can stand only about ten yards deep, at the end line, instead of his usual 14 or 15, so the rush is three or four yards closer than on a normal punt, and a bad snap or a muffed catch is a safety or a touchdown. Even when it goes right, the punt (dotted) and the return (solid) leave the opponent's drive starting near midfield in the punting team's territory: the median of 2015-2025 punts from inside the 5 is marked (course calculation). B: taking the safety instead. The punter runs out of the back of the end zone (two points to the opponent, and several seconds off the clock); then the safety kick, from your own 20 with the 2026 kickoff alignment (the kicking team's coverage players line up on the receiving team's 40, as on every kickoff), has to reach the landing zone between the receiving team's 20 and its goal line, and is returned to about the receiving team's own 34 (median, marked). The safety buys about 20 yards of field position and removes the block-and-return risk, for two points."
+fig, axes = plt.subplots(2, 1, figsize=(6.6, 5.1))
+LAT = (6.0, 45.3)
+yb = MIDDLE
+
+
+def yard_numbers(f):
+    """Small yard-line numbers along the bottom edge (the painted ones are removed)."""
+    for x in range(20, 101, 10):
+        n = x - 10 if x <= 60 else 110 - x
+        f.ax.text(*f.xy(x, LAT[0] + 1.7), str(n), fontsize=6.0, color=style.INK_2, ha="center", va="center", zorder=8)
+
+
+def lab(f, x, y, text, color=style.INK, ha="center", fs=6.6):
+    f.ax.text(*f.xy(x, y), text, fontsize=fs, ha=ha, va="center", color=color, zorder=9, linespacing=1.1,
+              bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none", alpha=0.92))
+
+
+# A: the punt from the end zone, with its protection
+fa = Field(ax=axes[0], orient="horizontal", los=12, window=(-12, 108), to_go=None, lateral=LAT)
+no_numbers(fa)
+yard_numbers(fa)
+axa = fa.ax
+ppa = fa.pts_per_yard()
+ezs = int(S["ezp_start"]) + 10                                 # BDB x of the median start
+for dy in (-4.4, -2.2, 0, 2.2, 4.4):                           # interior line, snapper in the middle
+    draw_marker(axa, *map(float, fa.xy(11.3, yb + dy)), "off", "C" if dy == 0 else "", ppa)
+for dy in (-6.4, 6.4):                                         # the wings, a yard off the line
+    draw_marker(axa, *map(float, fa.xy(10.3, yb + dy)), "off", "", ppa)
+draw_marker(axa, *map(float, fa.xy(6.2, yb)), "off", "PP", ppa)  # personal protector
+draw_marker(axa, *map(float, fa.xy(1.8, yb)), "off", "P", ppa)
+for dy in (-7.5, -3.3, 3.3, 7.5):
+    draw_marker(axa, *map(float, fa.xy(13.2, yb + dy)), "def", "", ppa)
+land = ezs + 9
+axa.add_patch(FancyArrowPatch(fa.xy(1.8, yb), fa.xy(land, yb - 2), arrowstyle="-|>", mutation_scale=10,
+                              color=style.BALL, lw=1.3, ls=(0, (2, 2)), connectionstyle="arc3,rad=-0.15", zorder=6))
+axa.add_patch(FancyArrowPatch(fa.xy(land, yb - 2), fa.xy(ezs, yb - 8), arrowstyle="-|>",
+                              mutation_scale=10, color=DC, lw=2.2, zorder=6))
+lab(fa, 3, yb + 13.5, "punter at the end line, about 10 yards\ndeep: the rush is 3-4 yards closer than usual", ha="left")
+lab(fa, 24, yb + 6.0, "punt", color=style.INK_2)
+lab(fa, ezs + 4, yb - 12.0, "return", color=DC)
+lab(fa, ezs - 14, yb + 7.5, f"opponent's drive starts\naround your {S['ezp_start']} (median)", color=DC)
+axa.plot(*zip(*[tuple(map(float, fa.xy(x, y))) for x, y in [(ezs, yb + 4.6), (ezs, yb - 8)]]), color=DC, lw=1.0,
+         ls=(0, (2, 2)), zorder=5)
+axa.set_title("A. Punt from your own end zone", loc="left", fontsize=9, fontweight="bold", color=style.INK)
+# B: the safety and the safety kick
+fb = Field(ax=axes[1], orient="horizontal", los=30, window=(-30, 90), to_go=None, lateral=LAT)
+no_numbers(fb)
+yard_numbers(fb)
+axb = fb.ax
+ppb = fb.pts_per_yard()
+draw_marker(axb, *map(float, fb.xy(8.0, yb)), "off", "P", ppb)
+axb.plot(*zip(*[tuple(map(float, fb.xy(x, y))) for x, y in [(8.0, yb), (6.0, yb - 4), (4.0, yb - 2), (3.0, yb - 6)]]),
+         color=OC, lw=1.3, zorder=6)
+axb.add_patch(FancyArrowPatch(fb.xy(3.0, yb - 6), fb.xy(0.2, yb - 7.5), arrowstyle="-|>", mutation_scale=9,
+                              color=OC, lw=1.3, zorder=6))
+draw_marker(axb, *map(float, fb.xy(30, yb)), "off", "K", ppb)
+for dy in (-12, -6, 0, 6, 12):
+    draw_marker(axb, *map(float, fb.xy(70, yb + dy)), "off", "", ppb)
+band(fb, 90, 110, 0, FIELD_WIDTH, style.SERIES[2], alpha=0.12)
+axb.text(*fb.xy(100, yb + 15.0), "landing\nzone", fontsize=6.4, ha="center", va="center", color=GREEN)
+axb.add_patch(FancyArrowPatch(fb.xy(30, yb), fb.xy(100, yb - 4), arrowstyle="-|>", mutation_scale=10,
+                              color=style.BALL, lw=1.3, ls=(0, (2, 2)), connectionstyle="arc3,rad=-0.12", zorder=6))
+ret = 110 - int(S["sk_start"])
+axb.add_patch(FancyArrowPatch(fb.xy(100, yb - 4), fb.xy(ret, yb - 9), arrowstyle="-|>",
+                              mutation_scale=10, color=DC, lw=2.2, zorder=6))
+lab(fb, 1.0, yb - 13.0, "punter runs out of the\nend zone: 2 points,\nseconds off the clock", ha="left")
+lab(fb, 30, yb + 12.5, "safety kick\nfrom your 20", color=OC)
+lab(fb, 70, yb + 16.2, "coverage lines up on the opponent's 40", color=OC, fs=6.4)
+lab(fb, ret + 12, yb - 13.0, f"returned to the opponent's\nown {S['sk_start']} (median)", color=DC)
+axb.set_title("B. Take the safety, then kick from the 20", loc="left", fontsize=9, fontweight="bold", color=style.INK)
+fig.tight_layout(h_pad=1.2)
+plt.show()
+```
+
+In field position alone, the swap is worth about `{python} S["safety_gain"]` yards, and it also
+removes the chance of a blocked punt. The usual version, **the clock-killer**, needs two things. The
+lead must be **three or more**, so that the two points don't tie the game. And the clock must be nearly
+gone, so that the opponent's drive after the kick has time for one or two plays at most. That second
+condition matters most with a lead of exactly three: the safety cuts it to one, so any field goal would now
+*lose* the game, and the swap is safe only if there is no time left to get into range. The best-known
+example is the Ravens' in Super Bowl XLVII, covered in
+[Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd).
+
+The boldest safety used a different logic entirely, and the team taking it was *behind*. On *Monday Night Football* in November 2003, Bill Belichick's Patriots trailed
+Denver 24–23 with 2:51 left and fourth down at their own 1. Long snapper Lonie Paxton snapped the ball
+through the end zone on purpose: 26–23 Broncos. The free kick from the 20 pushed Denver back to its own
+15; New England used two timeouts to force a three-and-out, got the ball back at its own 42 after the
+punt, and Brady threw the winning touchdown to David Givens with 36 seconds left.[^pats2003] This was
+**the field-position safety**: not a way to end the game, but a bet that two points were a fair price for
+moving the next exchange of possessions 20-odd yards up the field. It only works with timeouts in hand and
+a defense that can get a stop, which is why you almost never see it. Modern teams use the simpler version in the final seconds: the Chiefs took one with 15
+seconds left in a January 2025 divisional-round win over Houston, and the Eagles with six seconds left
+against Tampa Bay in 2025.[^modernsafety]
+
+#### Sidebar plate: the fair-catch kick
+
+After any fair catch, the receiving team may choose a
+[**fair-catch kick**](../../appendices/glossary.qmd#gl-fair-catch-kick) instead of a snap: a place kick
+(held, with no tee) or a drop kick (dropped and kicked on the bounce) for three points, taken *from the
+spot of the catch*, with the defense lined up ten yards away. There is no snap: the holder kneels at the
+spot itself, not seven yards behind a line. And there is no realistic rush, because, as on a kickoff, the
+defenders may not cross their line until the ball is kicked. Two details make it
+interesting. The kick is eight yards shorter than a field goal from the same line of scrimmage (spot plus
+10 for the end zone, instead of plus 18), and the period can be **extended** for it: if time runs out
+during the punt on which the fair catch is made, the receiving team may still take the kick.[^fckick]
+
+```{python}
+#| label: fig-fck-plate
+#| fig-cap: "The fair-catch kick, as Cameron Dicker made it for the Chargers on December 19, 2024. Denver punted from deep in its own end with eight seconds left in the first half; the Chargers fair-caught the ball, and a 15-yard foul on the punting team for interfering with the fair catch moved the spot to the Denver 47 as time expired. The Chargers chose the fair-catch kick: the holder put the ball down at the 47 itself, the defense lined up 10 yards away, and Dicker's kick needed to travel 47 + 10 = 57 yards. A field goal from a snap at the same line would have been a 65-yarder."
+fc = Field(orient="horizontal", los=63, window=(-25, 57), to_go=None, lateral=(10.0, 43.3), width_in=6.5)
+ax = fc.ax
+no_numbers(fc)
+ppy = fc.pts_per_yard()
+draw_marker(ax, *map(float, fc.xy(63, MIDDLE)), "off", "H", ppy)
+draw_marker(ax, *map(float, fc.xy(60.6, MIDDLE + 1.4)), "off", "K", ppy)
+for dy in (-7, -4.5, -2, 0.5, 3, 5.5, 8):
+    draw_marker(ax, *map(float, fc.xy(73.6, MIDDLE + dy)), "def", "", ppy)
+for x, c, lab in [(73, style.DEFENSE_DARK, "defense's line:\n10 yards away"), (55, style.MUTED, "where a holder would kneel\nfor a field goal from scrimmage")]:
+    fc._line([x, x], [12.5, 41.0], color=c, lw=1.2, ls=(0, (4, 2)), zorder=2)
+ax.text(*fc.xy(74.5, 15.0), "defense lines up 10 yards\naway, can't cross until\nthe ball is kicked", fontsize=6.6, color=DC, ha="left", va="center",
+        bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none"), zorder=9)
+ax.text(*fc.xy(54.0, 15.5), "a field goal from\na snap here:\n47 + 18 = 65 yards", fontsize=6.6, color=style.INK_2,
+        ha="right", va="center", bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec="none"), zorder=9)
+ax.add_patch(FancyArrowPatch(fc.xy(63, MIDDLE), fc.xy(118.5, MIDDLE), arrowstyle="-|>", mutation_scale=10,
+                             color=style.BALL, lw=1.4, ls=(0, (2, 2)), connectionstyle="arc3,rad=-0.12", zorder=6))
+for dy in (-3.08, 3.08):                                      # goalposts on the end line
+    fc._line([119.6, 119.6], [MIDDLE + dy - 0.1, MIDDLE + dy + 0.1], color=style.INK, lw=3)
+fc._line([119.6, 119.6], [MIDDLE - 3.08, MIDDLE + 3.08], color=style.INK, lw=1.6)
+ax.text(*fc.xy(96, 37.4), "fair catch, spotted at the DEN 47\nkick from the spot: 47 + 10 = 57 yards",
+        fontsize=7, color=OC, ha="center", va="center", fontweight="bold",
+        bbox=dict(boxstyle="round,pad=0.25", fc=style.SURFACE, ec=style.BASELINE, lw=0.6), zorder=9)
+ax.text(*fc.xy(114.0, 16.0), "end line\nand posts", fontsize=6.4, color=style.INK_2, ha="center", va="center")
+plt.show()
+```
+
+Dicker's 57-yarder was the first successful fair-catch kick in the NFL since 1976. Attempts are rare
+because the circumstances are: the fair catch has to come near the end of a half (otherwise the team would
+rather keep the drive alive) and close enough for a 55- to 65-yard kick. But with modern kickers making
+long field goals routinely, coaches now keep it on the end-of-half card, and you should too. Watch for a
+punt from deep in a team's own territory in the last ten seconds of a half: if the returner signals for
+a fair catch near midfield, the kicking unit may run on with no snapper.
+
+## Fourth down: the go-for-it decision
+
+For most of NFL history, fourth down was a kicking down. Inside field-goal range you kicked; outside it
+you punted; you went for it on fourth-and-inches near midfield, or when you were losing late. The
+[**go-for-it decision**](../../appendices/glossary.qmd#gl-go-for-it-decision), the choice among going for
+it, kicking and punting, has since become the most visible place where analytics changed football.
+
+The argument is an expected-points argument, and you have the tools for it from
+[Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd).
+Take fourth-and-2 at the opponent's 36:
+
+- **Punt**: the opponent takes over somewhere around its own 10, a situation worth a little to it.
+  You've traded a scoring chance for field position.
+- **Field goal**: a 54-yarder. Modern kickers make those about `{python} S["fg5054"]` of the time
+  (2023–2025); a miss gives the opponent the ball at the spot of the kick, its own 44.
+- **Go for it**: teams converted fourth-and-2 `{python} S["c2"]` of the time in 2021–2025. Success keeps
+  a drive alive inside field-goal range; failure gives the opponent the ball at its own 36.
+
+Now put the expected-points values from that chapter on each outcome (nflverse's model, first-and-10
+values averaged over 2021–2025; a value for the opponent counts as negative for you):
+
+| Choice | What can happen | Expected points |
+|------------|----------------------------------------------------------------------|----------:|
+| **Go** | `{python} S["c2"]`: first-and-10 at the opponent's 34, worth `{python} S["e_conv"]`; otherwise the opponent's ball at its own 36, worth `{python} S["e_fail"]` to it | **`{python} S["ep_go"]`** |
+| **Field goal** | `{python} S["fg5054"]`: 3 points, then the opponent's ball after the kickoff (about its own 30, worth `{python} S["e_ko"]` to it); otherwise its ball at its own 44, worth `{python} S["e_miss"]` | **`{python} S["ep_fg"]`** |
+| **Punt** | the opponent's ball at about its own 10, worth `{python} S["e_punt"]` to it | **`{python} S["ep_punt"]`** |
+
+Going for it is worth about `{python} S["d_fg"]` points more than kicking and `{python} S["d_punt"]` more
+than punting. The reason is visible in the table: success is worth a lot (a first down inside field-goal
+range is a drive that usually scores), and failure costs less than it feels like. The opponent gets the
+ball at its own 36 instead of its own 10, a difference of only about `{python} S["d_field"]` points. Real
+models refine every number (this kicker, these offenses, the score, the clock), and the gap shrinks or
+grows, but it rarely flips here. The economist David Romer made exactly this case in a 2006 paper with a
+mischievous title, "Do Firms Maximize? Evidence from Professional Football," and concluded that NFL teams
+punted and kicked far more often than the numbers justified.[^romer] For a decade coaches mostly ignored
+him. Then the data went public, a generation of analysts built fourth-down models (Ben Baldwin's open
+model and its bot, which grades every fourth down live, is the best known), and teams hired their own
+analysts.[^nfl4th] The modern decision tools use [**win probability**](../../appendices/glossary.qmd#gl-win-probability) (the chance of winning the game from
+this score, clock and field position), not just expected points, so they know when the score makes a
+field goal worth more than its three points. That model is built in
+[Win Probability and Decision Analysis](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd);
+this chapter sticks to what the decisions look like and why they changed.
+
+```{python}
+#| label: fig-go-rate
+#| fig-cap: "How often NFL teams went for it on fourth down, 2010-2025 regular seasons: all fourth downs (punts, field-goal tries and plays that went for it, including fakes), and the neutral ones, in the first three quarters with each team's win probability between 20% and 80%, where the decision is a choice rather than desperation. The neutral rate hovered around 5-8% through 2017, climbed to about 15% by 2021, dipped in 2022-2023, and reached about 17% in 2025. Fourth downs wiped out by a pre-snap penalty are not counted. Source: nflverse play-by-play."
+fig, ax = plt.subplots(figsize=(6.5, 3.4))
+for i, ccol in enumerate(GO.columns):
+    ax.plot(GO.index, GO[ccol], color=style.SERIES[i], lw=2, marker="o", ms=3.5, label=ccol)
+ax.axvspan(2017.5, 2025.5, color=style.GRID, alpha=0.35, zorder=0)
+ax.text(2018.0, 0.012, "the aggression era", fontsize=7.5, color=style.INK_2, ha="left", va="center")
+for ccol, yy, off_ in [(GO.columns[0], GO.iloc[-1, 0], 0.012), (GO.columns[1], GO.iloc[-1, 1], -0.014)]:
+    ax.text(2025.3, yy + off_, pct(yy), fontsize=7.5, color=style.INK, ha="right", va="center", fontweight="bold")
+ax.set_xlim(2009.6, 2025.6)
+ax.set_ylim(0, 0.26)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+ax.set_xticks(range(2010, 2026, 2))
+ax.set_ylabel("Share of fourth downs: went for it")
+ax.set_title("Fourth down stopped being a kicking down")
+ax.legend(loc="upper left", fontsize=7.5)
+plt.show()
+```
+
+The neutral go rate more than doubled, from `{python} S["gon10"]` in 2010 and `{python} S["gon17"]` in 2017
+to `{python} S["gon25"]` in 2025; across all fourth downs it went from `{python} S["go10"]` to
+`{python} S["go25"]`. The turn came in 2018, the season after Doug Pederson's Eagles won a Super Bowl with
+fourth-down conversions in the biggest moments, including the "Philly Special" in Super Bowl LII, a
+trick play on fourth-and-goal from the 1 in which the tight end threw a touchdown pass to quarterback Nick
+Foles.[^philly] It is tempting to tell the story as one coach and one trick play. The truer story is the
+slow arrival of evidence: public models, analysts on every staff, owners asking questions, and a
+generation of head coaches who had grown up with the arguments.
+
+Why did the rate dip in 2022 and 2023 before rising again? Nobody has a proven answer. One change is easy
+to see in the data: teams began trying long field goals far more often, `{python} S["long21"]` attempts
+of 50 yards or more in 2021, `{python} S["long22"]` in 2022 and `{python} S["long24"]` in 2024, as
+kickers' range grew. A fourth down at the opponent's 35 that would have been a go a few years earlier
+could now be a reasonable kick, so some of the dip is probably the kicking option getting better rather
+than coaches losing their nerve.
+
+Where did the extra attempts come from? Not from fourth-and-long in your own territory, which still
+almost nobody tries. They came from short yardage around midfield, where teams used to punt, and from
+short yardage inside field-goal range, where they used to kick. The fringe just outside kicking range,
+which [Early Downs and Field Zones](10-01-early-downs-and-field-zones.qmd) calls
+[**four-down territory**](../../appendices/glossary.qmd#gl-four-down-territory), already saw teams go on
+fourth-and-1 and 2 a decade ago; the change there is on fourth-and-3, where the go rate roughly doubled.
+
+```{python}
+#| label: fig-go-heatmap
+#| fig-cap: "Go-for-it rate by yards to go and field position, first three quarters only (so that late-game desperation doesn't count), 2010-2012 versus 2023-2025 regular seasons. Each cell shows the share of fourth downs on which the offense went for it; cells with fewer than 15 fourth downs are left blank. The biggest changes are on short yardage (fourth-and-1 to 4) between your own 40 and the opponent's 40, and inside field-goal range, where fourth-and-1 and 2 used to mean a kick. The opponent's 30-39, too far for an easy kick and too close for a good punt, was already a go zone on fourth-and-1 a decade earlier. Fourth-and-long in your own half barely moved. Source: nflverse play-by-play."
+from matplotlib.colors import LinearSegmentedColormap
+HM = f4[f4.qtr <= 3].copy()
+HM["ytg"] = HM.ydstogo.clip(upper=10).astype(int)
+ZEDGES = [0, 9, 19, 29, 39, 49, 59, 69, 79, 100]
+ZLABS = ["opp\n1-9", "opp\n10-19", "opp\n20-29", "opp\n30-39", "opp\n40-49", "own\n41-50", "own\n31-40",
+         "own\n21-30", "own\n1-20"]
+HM["zone"] = pd.cut(HM.yardline_100, ZEDGES, labels=ZLABS)
+cmap = LinearSegmentedColormap.from_list("blues", ["#f4f8fd"] + style.SEQUENTIAL_BLUE)
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.9), sharey=True)
+for ax, (lo, hi) in zip(axes, [(2010, 2012), (2023, 2025)]):
+    sub = HM[HM.season.between(lo, hi)]
+    tab = sub.pivot_table(index="ytg", columns="zone", values="go", aggfunc="mean", observed=False)
+    n = sub.pivot_table(index="ytg", columns="zone", values="go", aggfunc="size", observed=False)
+    tab = tab.where(n >= 15)[ZLABS[::-1]]
+    n = n[ZLABS[::-1]]
+    ax.imshow(tab.values, cmap=cmap, vmin=0, vmax=0.9, aspect="auto")
+    for i in range(tab.shape[0]):
+        for j in range(tab.shape[1]):
+            v = tab.values[i, j]
+            if np.isfinite(v):
+                ax.text(j, i, f"{100 * v:.0f}", ha="center", va="center", fontsize=6.3,
+                        color="white" if v > 0.5 else style.INK)
+    ax.set_xticks(range(len(ZLABS)), ZLABS[::-1], fontsize=5.8)
+    ax.set_yticks(range(10), [str(k) if k < 10 else "10+" for k in range(1, 11)], fontsize=7)
+    ax.set_title(f"{lo}-{hi}", fontsize=9, loc="center")
+    ax.grid(False)
+    ax.tick_params(length=0)
+axes[0].set_ylabel("Yards to go on fourth down")
+fig.supxlabel("Ball on (offense moving left to right)", fontsize=8, color=style.INK_2)
+fig.suptitle("Go-for-it rate (%), first three quarters", x=0.01, ha="left", fontsize=10, fontweight="bold")
+fig.tight_layout()
+plt.show()
+```
+
+### Fourth-down rules of thumb
+
+You don't need a model to make a decent call from the couch. These heuristics agree with the public models
+in most situations, for an average offense and kicker, with the score close and plenty of time left. Keep
+one thing straight: they are what the *models recommend*, not what teams *do*. Teams are still more
+conservative than the models, so on Sunday you'll often see a punt or a kick where the rule below says
+go.
+
+- **Fourth-and-1: go almost anywhere past your own 30**, and in many models even deeper. Teams converted
+  `{python} S["c1"]` of fourth-and-1s in 2021–2025 (this includes the
+  [QB sneak and tush push](10-03-red-zone-goal-line-and-short-yardage.qmd), which convert more often
+  still).
+- **Fourth-and-2 or 3: go from about midfield in.** Conversion rates were `{python} S["c2"]` and
+  `{python} S["c3"]`.
+- **The opponent's 30 to 40 is the "go zone."** It is too far for a sure field goal and too close for a
+  good punt (a punt from the 35 nets only about 25 yards, and 15 if it bounces into the end zone), so the
+  models usually say go there even on fourth-and-4 or 5 (converted `{python} S["c45"]`). Teams still go
+  on those only about 30% of the time (the heatmap's 2023–2025 panel); that gap between the models and
+  the sideline is where the next round of the aggression shift will come from, if it comes.
+- **Inside the opponent's 5: go on fourth-and-goal from the 1 or 2** unless the score says three points
+  matter more than seven. A failed try still leaves the opponent pinned at its own goal line.
+- **Long yardage in your own half: punt.** Fourth-and-6 to 10 converts only about `{python} S["c610"]` of
+  the time, and failure gives the opponent a short field.
+- **Then let the score and clock override everything.** Trailing late, go more; leading late, the value
+  of the clock (and of making the opponent need two scores) can flip a go into a kick.
+
+Two things these rules leave out are what make real decisions hard: **your** offense and kicker are not
+average, and the opponent's offense matters (if they score at will, possessions are worth more, so go).
+That's why two smart coaches can disagree about the same fourth down.
+
+::: {.callout-caution title="Common misconception"}
+"Going for it and failing proves it was the wrong call." A fourth-and-2 that converts 58% of the time
+fails 42% of the time. Judge the decision by the odds when it was made, not by the result; the film room
+below shows why that is harder than it sounds.
+:::
+
+::: {.callout-note title="Film room: Lions 2021-2025, Dan Campbell's fourth downs"}
+No coach has been more associated with fourth-down aggression than Dan Campbell, hired by Detroit in 2021.
+In the first three quarters of games from 2022 to 2025, the Lions went for it on `{python} S["det_go"]`
+of their fourth downs, the highest rate in the league (the league average was `{python} S["lg_go"]`; next
+were the `{python} S["team2"]` at `{python} S["team2_go"]`), and they led the league in that rate in
+`{python} S["det_firsts"]` of the five seasons from 2021 to 2025.[^lions] Campbell made aggression part of
+the team's identity from his first season, and for most of
+those seasons the conversions and points it produced were part of why Detroit's offense was one of the
+best in football.
+
+The game everyone remembers went the other way. In the NFC Championship Game on January 28, 2024, at
+San Francisco, Detroit led 24–7 at halftime. Midway through the third quarter, leading 24–10, the Lions went
+for it on fourth-and-2 from the 49ers' 28 instead of trying a 46-yard field goal, and threw incomplete.
+Late in the game, trailing 27–24, they went for it on fourth-and-3 from the 30 instead of a tying 48-yarder,
+and threw incomplete again. San Francisco scored after both, and won 34–31.
+
+What to notice: those were exactly the kind of calls the heuristics call close, a short fourth down at the
+edge of field-goal range, with a strong kicker available. Reasonable people (and models) disagreed about
+them before the snap; after the snap, the results made them look like blunders. The fair evaluation is the
+whole record, and on the whole record Detroit's aggression was a net positive for years. The lesson for a
+viewer is to separate the decision from the dice, and to notice that the most aggressive coach in the
+league still faced exactly the trade-off this chapter describes, possessions against points, every week.
+:::
+
+## Two-point decisions and the two-point chart
+
+After a touchdown the scoring team chooses between the
+[extra point](../../appendices/glossary.qmd#gl-extra-point) (a 33-yard kick since the league moved it back
+in 2015) and a [two-point conversion](../../appendices/glossary.qmd#gl-two-point-conversion) (one play
+from the 2). Since 2015 the kick has been good `{python} S["xp_rate"]` of the time and the two-point try
+has succeeded `{python} S["two_rate"]` of the time, so the expected points are almost the same:
+`{python} S["xp_ev"]` for the kick, `{python} S["two_ev"]` for the try.[^twopoint] When two choices are
+worth the same on average, **the score decides**. That's the job of the
+[**two-point chart**](../../appendices/glossary.qmd#gl-two-point-chart): a table, keyed by the margin
+right after the touchdown, of when two points are worth more than one. Coaches have carried versions of
+it for half a century; the NFL added the two-point try in 1994.[^vermeil]
+
+```{python}
+#| label: fig-two-point-chart
+#| fig-cap: "A simple two-point chart for late in a game, when only one or two more scores are likely. Find the margin right after the touchdown, before the try; the small note under a tile says what the try changes. 'Go' (blue) means two points turn the margin into a better number: tying (down 2), making a field goal enough to tie (down 5), keeping it a one-score game (down 10), or making the opponent need more than it otherwise would (up 1, 5, 12 and 15). 'Kick' (grey) means the extra point is as good or better. 'Close' (yellow) means the two options are worth about the same, so the time left and the two teams decide; the text explains each. Down 8, the most debated case, is explained in the text too. Earlier in a game, kick unless you think your two-point play beats 50%."
+CH = {-11: "K", -10: "G", -9: "C", -8: "G", -7: "K", -6: "K", -5: "G", -4: "C", -3: "K", -2: "G", -1: "C",
+      1: "G", 2: "C", 3: "K", 4: "K", 5: "G", 6: "K", 7: "K", 8: "K", 9: "C", 10: "C", 11: "K", 12: "G",
+      13: "K", 14: "K", 15: "G"}
+FC = {"G": style.SERIES[0], "K": style.GRID, "C": "#f5cf6b"}
+TC = {"G": "white", "K": style.INK, "C": style.INK}
+WORD = {"G": "GO", "K": "kick", "C": "close"}
+WHY = {-10: "→ down 8:\none score", -9: "→ 7 or 8:\nboth one\nscore", -8: "see\ntext",
+       -5: "→ down 3:\nFG ties", -4: "FG wins\nor FG\nties?", -2: "→ tie", -1: "win now\nor play\nfor OT?",
+       1: "→ up 3:\nFG only\nties", 2: "→ up 4:\nFG can't\ntie", 5: "→ up 7:\nTD only\nties",
+       9: "→ up 11,\nor up 9\nif it fails", 10: "→ up 12:\nTD+2+FG\nno longer\nties",
+       12: "→ up 14:\ntwo TDs\nonly tie", 15: "→ up 17:\nthree\nscores"}
+WHY_LOW = {}
+fig, axes = plt.subplots(2, 1, figsize=(6.6, 4.1))
+for ax, rng, title in [(axes[0], range(-11, 0), "Trailing after the touchdown by"),
+                       (axes[1], range(1, 16), "Leading after the touchdown by")]:
+    blank(ax)
+    keys = list(rng)
+    ax.set_xlim(-0.6, 15.6)
+    ax.set_ylim(-2.15, 1.05)
+    for i, m in enumerate(keys):
+        c = CH[m]
+        ax.add_patch(FancyBboxPatch((i - 0.44, -0.4), 0.88, 0.95, boxstyle="round,pad=0.02,rounding_size=0.12",
+                                    fc=FC[c], ec="white", lw=1))
+        ax.text(i, 0.25, f"{abs(m)}", ha="center", va="center", fontsize=9, fontweight="bold", color=TC[c])
+        ax.text(i, -0.17, WORD[c], ha="center", va="center", fontsize=6.4, color=TC[c])
+        if m in WHY:
+            # stagger the notes of neighbouring tiles so they never touch
+            low = (m - 1) in WHY and (m - 1) in keys and not WHY_LOW.get(m - 1, False)
+            WHY_LOW[m] = low
+            y0 = -1.32 if low else -0.5
+            if low:
+                ax.plot([i, i], [-0.44, y0 + 0.04], color=style.MUTED, lw=0.6)
+            ax.text(i, y0, WHY[m], ha="center", va="top", fontsize=5.6, color=style.INK_2, linespacing=1.05)
+    ax.text(-0.5, 0.95, title, ha="left", va="center", fontsize=8.5, fontweight="bold", color=style.INK)
+fig.tight_layout(h_pad=0.4)
+plt.show()
+```
+
+The logic in each "go" box is the same: does two points move the margin across a line that matters? The
+lines are the numbers the other team can reach in one possession, 3 (a field goal) and 7 or 8 (a
+touchdown with a kick or a two-pointer).
+
+The yellow boxes are the honest ones: the arithmetic comes out about even, so the situation decides.
+The one you'll see most often on television is **down 1 after a late touchdown**. Kick, and you are tied
+and probably headed to overtime, roughly a coin flip. Go for two, and about half the time you win right
+now; the other half you lose. Those are almost the same number, so coaches lean on everything else: a
+tired defense or a hot offense says go; a road team that fears overtime says go; a great kicker and a
+strong overtime offense say kick; and if the opponent will get the ball back with time to score again, a
+lead of one point is worth less than it looks. **Down 4** is similar: kicking leaves you down 3, where a
+field goal ties; a successful try leaves you down 2, where a field goal wins, and a miss leaves you
+needing a touchdown. **Up 2, 9 and 10** are the leading team's versions: each try either removes one of
+the opponent's tying or winning combinations or, if it fails, hands it one.
+
+The famous modern case is **trailing by 8 after a touchdown**, which happens when you were down 14 and
+score. The traditional answer was "kick, cut it to 7, and hope for another touchdown and overtime." The
+analytics answer is "go for two *now*." Make it (about half the time) and you trail by 6, so your next
+touchdown and extra point win the game in regulation. Miss it and you trail by 8, so you need a touchdown
+and a two-pointer to tie, but you *know* that now and can plan the rest of the game around it. Over the
+two touchdowns, going early wins outright about half the time you get both scores and goes to overtime
+some of the rest; kicking twice almost always goes to overtime, a coin flip. With a two-point success rate near 48%, going
+early wins about 60% of the games in which you score both touchdowns, against about 50% for kicking, and it
+also tells you before the last drive what you need.
+
+Like the fourth-down rules, the chart assumes few scores remain. Early in a game, with many possessions
+to come, the margin will change again before it matters, so teams simply take the better expected value,
+which since 2015 has been close to a tie. A team with a great short-yardage offense (the Eagles of the
+tush-push era, for example) should go for two more often than the chart says.
+
+## Overtime
+
+The [**overtime rules**](../../appendices/glossary.qmd#gl-overtime-rules) have changed more in the last
+fifteen years than almost any other part of the game, and the reason is visible in one game. Under the old
+sudden-death rule (in the regular season from 1974), the first team to score in overtime won. That gave a
+big edge to the team that won the coin toss, and the edge grew as offenses improved. The league chipped
+away at it: in 2010 (playoffs) and 2012 (regular season) a field goal on the first possession no longer
+ended the game, but a touchdown still did; in 2017 regular-season overtime was cut from 15 minutes to
+10.[^ot] Then came the January 2022 divisional-round game in Kansas City, the "thirteen seconds" game
+covered in [The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd): the
+Chiefs won the toss, drove for a touchdown, and Josh Allen never touched the ball. That spring the league
+changed playoff overtime so that **both teams get a possession**. In 2025 it extended the rule to the
+regular season.
+
+```{python}
+#| label: fig-ot-flow
+#| fig-cap: "NFL overtime as of the 2026 season. A new coin toss; the winner usually chooses to receive or kick. Both teams are guaranteed the chance of one possession, except that if the kicking team's defense scores on the first possession (a safety, or an interception or fumble returned for a touchdown) it wins at once. The opening kickoff itself counts as the receiving team's chance: if the receiving team fumbles it and the kicking team recovers, the receiving team has had its possession. After both have had the ball, the team ahead wins; if it is still tied, the next score of any kind wins. The regular season and the playoffs differ in what happens when time runs out: the regular season has one 10-minute period and can end in a tie (two timeouts each), while the playoffs play as many 15-minute periods as needed (three timeouts per 'half' of two periods)."
+fig, ax = plt.subplots(figsize=(6.6, 4.6))
+blank(ax)
+ax.set_xlim(0, 100)
+ax.set_ylim(0, 78)
+box(ax, 50, 73, 58, 7, "Tied after four quarters: new coin toss", ec=style.INK_2, bold=True, fs=8.5)
+box(ax, 50, 59.5, 62, 10, "Team A's first possession", sub="(the team that receives the kickoff)",
+    fs=8.3, sub_fs=6.8)
+arrow(ax, (50, 69.4), (50, 64.6))
+box(ax, 10, 44.5, 19, 16, "B's defense\nscores", sub="(a safety or\na return TD):\nTeam B wins", fs=7.2, sub_fs=6.4,
+    fc=STOP_C, ec=style.DEFENSE_DARK)
+arrow(ax, (30, 54.4), (14, 52.7))
+box(ax, 60.5, 44.5, 76, 10.5, "Team B gets its possession, whatever Team A did",
+    sub="A scored a TD: B needs a TD to tie (or a TD plus a two-pointer to win at once).\nA kicked a FG: B needs a FG to tie, a TD wins.   A didn't score: any score by B wins.",
+    fs=7.6, sub_fs=6.2)
+arrow(ax, (57, 54.4), (57, 49.8))
+box(ax, 57, 29, 70, 9, "Both have had the ball: ahead wins; tied, the next score wins",
+    fs=7.6, ec=style.INK_2)
+arrow(ax, (57, 39.2), (57, 33.6))
+box(ax, 30, 11.5, 40, 13, "Regular season", sub="one 10-minute period\n2 timeouts each\nstill tied at 0:00: a tie",
+    fs=8, sub_fs=6.6, fc=MAYBE_C, ec="#c99a00", bold=True)
+box(ax, 74, 11.5, 40, 13, "Playoffs", sub="15-minute periods until\nsomeone wins; 3 timeouts\nper two periods",
+    fs=8, sub_fs=6.6, fc=RUN_C, ec=GREEN, bold=True)
+arrow(ax, (45, 24.4), (33, 18.2))
+arrow(ax, (69, 24.4), (72, 18.2))
+ax.text(51, 21.5, "if the clock\nruns out", fontsize=6.6, color=style.INK_2, ha="center", va="center", linespacing=1.05)
+plt.show()
+```
+
+The details are in the rulebook's Rule 16; the strategy follows from three facts.[^otrule]
+
+**Second possession is information.** The team that gets the ball second knows exactly what it needs. If the
+first team kicked a field goal, the second can use all four downs in its own territory, because a punt is
+no longer an option worth taking. If the first team scored a touchdown, the second must too, and then
+decide whether to kick and play on or go for two and win on the spot.
+
+**First possession is a potential third possession.** If the game is still tied after both teams have had
+the ball, the next score wins, and the team that received first is the one most likely to get the ball
+next. In the playoffs, with unlimited time, that potential third possession has real value; in the
+regular season's 10-minute period, it often never comes.
+
+**The clock is a weapon in the regular season.** Ten minutes is short. A first team that drives slowly for
+a field goal can leave the second team with four or five minutes and the need for points; a long drive
+by the second team can run the clock out, and the game ends in a tie (which counts as half a win and half
+a loss in the standings).[^tie]
+
+Two edge cases complete the picture. If Team B's defense scores on Team A's first possession, with a
+safety or an interception or fumble returned for a touchdown, B wins on the spot: it has now had the ball
+too, and it's ahead. And because the kickoff itself counts as A's chance, a kicking team that recovers the
+opening kickoff has used up A's possession. Since 2026 an onside kick may be declared at any time, so a
+team could try one to open overtime; onside kicks are recovered rarely enough that this is a curiosity,
+not a strategy.
+
+That is why there's no consensus on whether to receive. Analytics researchers still tend to find a
+small edge in **receiving**, mostly because of that possible third possession; many coaches and former
+players on television prefer **kicking off**, for the information and the free use of fourth down. The
+edge either way is small, it depends on the two offenses, and the regular season's 10-minute clock makes
+the third possession less likely.[^otchoice]
+
+::: {.callout-note title="Film room: Chiefs 2023 season — Super Bowl LVIII overtime"}
+Super Bowl LVIII was the first Super Bowl played under the 2022 playoff overtime rule (and only the second
+to reach overtime at all, after LI). After Butker's tying kick (see the timeline earlier in the chapter),
+San Francisco won the coin toss and chose to **receive**. It drove from its own 25 to the Kansas City 9
+over more than seven minutes and kicked a 27-yard field goal: 22–19.
+
+Now Kansas City knew everything. A field goal would tie and send the game to sudden death; a touchdown
+would win. On fourth-and-1 at its own 34, with the season on the line, the Chiefs called a timeout and
+then went for it (a punt would have meant that any San Francisco score won the game),
+and Mahomes ran for eight yards. On
+third-and-1 at the 49ers' 32 he scrambled for 19 more. The drive ended with a three-yard touchdown pass to
+Mecole Hardman with three seconds left in the first overtime period: 25–22, Kansas City.
+
+What to notice: the 49ers' choice to receive, debated for weeks afterwards, followed the old sudden-death
+instinct. Under the new rule a first-possession touchdown no longer ends the game, so receiving first mainly
+bought San Francisco a *possible* third possession; it also meant the 49ers drove without knowing what
+they needed, and settled for three points. Deferring would have handed that information to them. Notice too how the
+second team plays four-down football from its own 34: the rule changed what fourth down means. And
+notice that the team with the information still spent a timeout to use it well: knowing what you need
+doesn't make the clock free.
+:::
+
+## Film room: the clock manager's reputation
+
+::: {.callout-note title="Film room: Eagles 2004 and Chiefs 2015 — Andy Reid's slow drives"}
+Andy Reid is now remembered for one of the best two-minute offenses in football, but for most of his
+career "clock management" was the phrase his critics reached for. The two examples you'll hear most:
+
+- **Super Bowl XXXIX (2004 season).** Reid's Eagles trailed New England 24–14 with 5:40 left and the
+  ball. They drove for a touchdown, but the drive took 3:52 of clock, with the clock running between many
+  of the snaps, and the Eagles held two timeouts the entire way. They scored with 1:48 left, failed on the
+  onside kick, and got the ball back only at their own 4 with 46 seconds left.
+- **AFC Divisional Round, January 16, 2016 (2015 season).** Reid's Chiefs trailed the Patriots 27–13 and
+  took over at their own 20 with 6:29 left. The touchdown came with 1:13 left: a 16-play drive that used
+  **5:16**, with the clock running between many of the snaps and all three timeouts unused. The
+  onside kick failed, and New England knelt out the game.[^reid]
+
+What to notice: both drives *scored*. The problem was the price. Trailing by two scores, a team needs
+two possessions, and the second one has to come from the time the first one leaves. Price the drives with
+the chapter's list. Many of their snaps were incompletions or plays out of bounds, which cost the same
+whatever the tempo, so the slow snaps were the ones after a play ended in bounds: `{python} S["rx_n"]` of
+them for the Eagles, with a median of `{python} S["rx_med"]` seconds to the next snap, and
+`{python} S["rk_n"]` for the Chiefs, median `{python} S["rk_med"]` seconds, against about
+`{python} S["p_hurry"]` for a hurry-up snap. That is about `{python} S["rx_lost"]` seconds of
+clock given away by the Eagles and `{python} S["rk_lost"]` by the Chiefs. Add the timeouts never used (each worth about
+`{python} S["to_save"]` seconds more than even a hurried snap), and the Eagles left roughly
+`{python} S["rx_tot"]` on the table and the Chiefs roughly `{python} S["rk_tot"]`: in each case about the
+time a second possession, after an onside kick or a defensive stop, would have needed.
+
+The postscript is the more interesting part. The Chiefs of the Mahomes era made the clock their weapon:
+the thirteen-seconds game, the Super Bowl LVIII regulation drive charted above, and a long run of
+end-of-half scores. The coach was the same; the quarterback, the play design, and the team's investment in
+game management were not. Reputations in this area lag reality by years in both directions.
+:::
+
+## Coach the clock: one flowchart
+
+Everything above compresses into a handful of questions a team asks after every play in the last two
+minutes. The chart below is the version to keep in your head on Sunday.
+
+```{python}
+#| label: fig-clock-flow
+#| fig-cap: "A clock decision flowchart for the last two minutes of a half. Left: the team with the ball needs points and time. After each play, first ask whether the clock is running; if it is, decide how much the next snap is worth and choose the cheapest stoppage that gets it (a hurry-up snap, a spike that spends a down, or a timeout that spends a timeout). Right: the team with the lead and the ball spends time instead. Bottom right, the defense: a trailing defense's main tool is its timeouts; a defense that is ahead (or tied) and facing a near-certain go-ahead field goal at the final gun can let the offense score, to get the ball back with time left (Super Bowl XLVI). The bottom row is the end of the line: kneel when the arithmetic works, take the field goal with the clock stopped, or throw the Hail Mary when there is only one snap left."
+fig, ax = plt.subplots(figsize=(6.6, 6.0))
+blank(ax)
+ax.set_xlim(0, 100)
+ax.set_ylim(0, 100)
+# left lane: trailing, with the ball
+ax.text(25, 97.5, "TRAILING, WITH THE BALL", ha="center", fontsize=8, fontweight="bold", color=OC)
+ax.text(75, 97.5, "LEADING, WITH THE BALL", ha="center", fontsize=8, fontweight="bold", color=DC)
+box(ax, 25, 88, 44, 7, "After the play: is the clock running?", bold=True, fs=7.6, ec=style.INK_2)
+box(ax, 10, 75, 18, 9, "No", sub="incomplete or out\nof bounds (late)", fs=7.6, sub_fs=6.2, fc=STOP_C,
+    ec=style.DEFENSE_DARK, bold=True)
+box(ax, 36, 75, 26, 9, "Yes", sub="tackled in bounds", fs=7.6, sub_fs=6.2, fc=RUN_C, ec=GREEN, bold=True)
+arrow(ax, (18, 84.4), (12, 79.7))
+arrow(ax, (32, 84.4), (35, 79.7))
+box(ax, 10, 59, 18, 13, "Take your time:\ncall two plays", sub="the clock starts\non the snap", fs=7.0,
+    sub_fs=6.2)
+arrow(ax, (10, 70.4), (10, 65.6))
+box(ax, 35, 61.5, 29, 8, "Seconds left vs.\nplays needed?", fs=6.8, ec=style.INK_2)
+arrow(ax, (36, 70.4), (36, 65.6))
+box(ax, 24.5, 46, 17, 13, "Plenty", sub="hurry up, run a\nreal play\n(≈21 s)", fs=7.0, sub_fs=6.0)
+box(ax, 42.5, 46, 16, 15, "Tight", sub="spike (≈16 s,\nspends a down),\ntimeout, or call\na sideline throw", fs=7.0, sub_fs=6.0)
+arrow(ax, (32, 57.4), (26, 52.6))
+arrow(ax, (40, 57.4), (42, 52.6))
+box(ax, 25, 25, 46, 15, "In range with seconds left?",
+    sub="get the clock stopped (spike or timeout),\nthen the field goal unit runs on.\nOne snap left, out of range: Hail Mary.",
+    fs=7.4, sub_fs=6.2, ec=style.INK_2, bold=True)
+arrow(ax, (25, 39.4), (25, 32.6), ls=(0, (3, 2)))
+# right lane: leading, with the ball
+box(ax, 75, 88, 44, 7, "Make every snap cost the most clock", bold=True, fs=7.6, ec=style.INK_2)
+box(ax, 75, 73, 44, 13, "Run inside, stay in bounds,\nsnap with the play clock at 1",
+    sub="a first down is worth about two minutes", fs=7.2, sub_fs=6.2)
+arrow(ax, (75, 84.4), (75, 79.6))
+box(ax, 75, 54.5, 44, 13, "Can three kneels end it?",
+    sub="after the 2:00 warning: yes if the defense has\n0 or 1 timeout; with 2, from ≈1:25; with 3, ≈0:45\n(warning still to come? count it as a timeout)",
+    fs=7.2, sub_fs=6.0, ec=style.INK_2, bold=True)
+arrow(ax, (75, 66.4), (75, 61.1))
+box(ax, 64, 37, 20, 10, "Yes:\nvictory formation", fs=7.0, fc=RUN_C, ec=GREEN, bold=True)
+box(ax, 87, 37, 22, 10, "No: keep running,\nfirst downs end it", fs=7.0, fc=STOP_C, ec=style.DEFENSE_DARK)
+arrow(ax, (70, 47.9), (65, 42.1))
+arrow(ax, (80, 47.9), (85, 42.1))
+ax.text(75, 25.0, "MEANWHILE, THE DEFENSE", ha="center", fontsize=7, fontweight="bold", color=style.INK_2)
+box(ax, 75, 14, 44, 16, "Trailing: use the timeouts early",
+    sub="timeout right after each in-bounds run.\nAhead or tied, with the offense set to run\nthe clock down for a sure field goal at\nthe gun? Let them score; get the ball back",
+    fs=7.4, sub_fs=6.0, fc=MAYBE_C, ec="#c99a00", bold=True)
+ax.plot([50, 50], [3, 95], color=style.GRID, lw=1.2, zorder=0)
+plt.show()
+```
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it on Sunday: coach the clock"}
+**In the last two minutes of each half, call the clock decision before the team makes it.** Keep three
+numbers in your head from the score bug: time left, each team's timeouts, and the yard line versus
+field-goal range (add 18).
+
+- **After every play, say "running" or "stopped"** before the broadcast tells you, and remember the
+  out-of-bounds rule only bites after the first-half two-minute warning and in the last five minutes.
+- **Trailing offense, clock running:** predict hurry-up, spike or timeout. Spike on first or second down
+  with time for more plays; timeout when there's time for only one or two, or when the kicking unit has to
+  come on. The tell for a spike: a shotgun quarterback stepping up under center.
+- **Watch the receivers' feet.** On a sideline catch, does he get out, or turn upfield for two more yards?
+  Did the defender push him out (a gift) or tackle him in bounds (a win for the defense)?
+- **Leading team with a first down:** do the kneel math. After the two-minute warning it's over if the
+  defense has 0 or 1 timeout; with 2 it needs about 1:25 or less, with 3 about 0:45. If it works, call the
+  victory formation before it lines up.
+- **Trailing defense:** predict when it calls timeouts. A good one calls them right after the leading
+  team's first-down and second-down runs, not at the end.
+- **Fourth down before the snap:** go, kick or punt? Use the heuristics: fourth-and-1 almost always go;
+  opponent's 30 to 40 is the go zone; long yardage in your own half, punt.
+- **After a touchdown late:** find the margin and check the two-point chart (down 2, 5, 8 or 10; up 1, 5,
+  12 or 15: expect them to go). Down 1 is the coin flip: watch which way the coach leans.
+- **At the end of the first half:** who receives the second-half kickoff? That team will push harder for a
+  late score.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: spike or snap?"}
+```{python}
+#| label: fig-predict-spike
+#| fig-cap: "Fourth quarter, 0:31 and running. The offense trails 20-18 and has no timeouts. It just completed a 12-yard pass to the opponent's 26 (first-and-10), snapped at about 0:36, and the receiver was tackled in bounds. The offense, a shotgun team all day, is sprinting back to the line: the receivers are still a couple of yards short of their spots, and the quarterback has stepped up under center. Its kicker is good from about 50 yards. A field goal from here would be a 44-yarder."
+off = offense("gun_2x2")
+MOVE = {"QB": dict(d=-1.9), "X": dict(d=-3.2, w=-13.5), "Z": dict(d=-2.6, w=13.8), "H": dict(d=-3.4, w=-8.0),
+        "Y": dict(d=-2.8, w=7.6)}
+off = [pl.moved(**MOVE[pl.key]) if pl.key in MOVE else pl for pl in off]
+p1 = Play(off, defense("nickel", "two_high", offense("gun_2x2")), los=84, to_go=10)
+p1.highlight("QB")
+fld = p1.draw(window=(-10, 21.5), lateral="full", title=False)
+no_numbers(fld)
+scorebug(fld.ax, 0.985, 0.985, ["Q4  0:31 (running)", "AWAY 18   HOME 20", "1st & 10   ball on HOME 26",
+                                "AWAY timeouts: 0"], fs=6.4, ha="right")
+say(fld, p1, -7.0, -14.5, "receivers still\nhurrying to the line", color=OC, fs=6.6)
+say(fld, p1, -6.9, 7.0, "gun team, QB now under\ncenter: the spike tell", color=OC, fs=6.6)
+lead(fld, p1, (-5.9, 4.2), (-2.4, 0.8))
+say(fld, p1, 17.5, -8.0, "a field goal from here: 26 + 18 = 44 yards", color=style.INK, fs=6.8, box_ec=style.BASELINE)
+plt.show()
+```
+
+**Spike now, or snap a real play? And what has to be true before the field goal?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Spike now. The field goal has to come with the clock stopped.** With no timeouts, the only ways to stop
+the clock are an incompletion, getting out of bounds, or a spike, and a field-goal unit running on with the
+clock moving needs about 17 seconds at the very best, which this offense won't have.
+
+Price the options from the snap of the completion, at about 0:36. **Spike:** about `{python} S["p_spike"]`
+seconds snap to snap, so the clock stops at about 0:20 and it's second-and-10. **A real play instead:** a
+hurried snap comes about `{python} S["p_hurry"]` seconds later, at about 0:15. If that play is a catch in
+bounds, say at the 18, it ends around 0:10 with the clock running, and the spike that would have to follow
+needs about 16 seconds from that snap: the clock hits zero first. Game over. A sack or a run stuffed in
+bounds ends it the same way. The spike is the cheap, certain stoppage; that's why the quarterback is
+already under center.
+
+After the spike there is a real choice, and coaches split on it. **Kick now**: a 44-yarder, made about
+`{python} S["fg4044"]` of the time in 2023–2025. **Or take one quick shot first**: a ball-out-fast throw to
+the sideline, or a throwaway, costs about six seconds and stops the clock; ten yards turns it into a
+34-yarder, made about `{python} S["fg3034"]` of the time. The shot is worth it only if it can't end in
+bounds or in a sack: with no timeouts and about 0:14 left, a sack ends the game. (If the offense *had* a
+timeout, it would save it for the kick and still spike now.)
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: can they kneel it out?"}
+```{python}
+#| label: fig-predict-kneel
+#| fig-cap: "Fourth quarter, 1:40 and running, after a first-down run. The offense leads 24-20 with first-and-10 at its own 35, and is back in its heavy two-back, two-tight-end look with a fresh 40-second play clock. The defense has one timeout left, and has everyone crowded within about five yards of the ball. The two-minute warning has already passed."
+pk_off = offense("i_form_22")
+pk_def = [Player(k, pos, "def", d, w) for k, pos, d, w in [
+    ("E1", "DE", 1.0, -6.0), ("T1", "DT", 1.0, -1.6), ("T2", "DT", 1.0, 1.6), ("E2", "DE", 1.0, 6.0),
+    ("W", "WILL", 3.0, -3.2), ("M", "MIKE", 3.0, 0.6), ("S_", "SAM", 2.0, 7.6),
+    ("C1", "CB", 2.5, -9.0), ("C2", "CB", 2.0, 15.0), ("FS", "FS", 5.5, -4.5), ("SS", "SS", 5.0, 4.5)]]
+pk = Play(pk_off, pk_def, los=45, to_go=10)
+fld = pk.draw(window=(-11, 12.5), lateral=(-19, 19), title=False)
+no_numbers(fld)
+scorebug(fld.ax, 0.015, 0.33, ["Q4  1:40 (running)", "HOME 24   AWAY 20", "1st & 10   ball on HOME 35",
+                               "AWAY timeouts: 1"], fs=6.4, ha="left")
+say(fld, pk, 9.0, -12.5, "everyone within five\nyards of the ball", color=DC, fs=6.6)
+plt.show()
+```
+
+**Can the offense kneel three times and end the game? What should the defense do with its timeout?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Yes: three kneels end it, and the timeout can't stop that.** Use the kneel chart's one-timeout row: after
+the two-minute warning, a first down at about 2:04 or less ends the game, and 1:40 is less. Expect the
+offense to switch to the victory formation now.
+
+The arithmetic, step by step. Kneel 1: the offense lets the play clock run, snaps at about 1:01 and the
+kneel ends at about 0:59. The defense calls its timeout. Kneel 2 starts the clock on the snap and ends at
+about 0:57. With no timeouts left, the play clock runs again: kneel 3 at about 0:18, ending around 0:16.
+Now it's fourth down with 16 seconds left and a 40-second play clock, so the game clock reaches zero
+before the offense has to snap again. Game over, without a fourth-down play.
+
+The defense needed **two** timeouts here to force a fourth-down snap, and even then it would get the ball
+back with only seconds left. It doesn't matter when it calls the one it has; any order gives the same
+arithmetic. Its only real hope is the one its alignment shows: everyone crowding the ball in case the snap
+is fumbled, which is exactly what the victory formation is built to prevent.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: fourth-and-2 at the 36"}
+```{python}
+#| label: fig-predict-fourth
+#| fig-cap: "Second quarter, 6:00 left, tied 10-10. The offense faces fourth-and-2 at the opponent's 36 (yellow line: the line to gain). It has kept its regular 11-personnel offense on the field. The defense is in its nickel package but has changed its look: both corners pressed on the receivers, one deep safety, and the other safety walked down near the line with the nickel back, so seven defenders stand within about six yards of the ball. A field goal from here would be a 54-yarder; the kicker's career long is 55."
+off = offense("gun_2x2")
+d3 = defense("nickel", "single_high", off, press=True)
+d3 = [pl.moved(d=5.5, w=3.0) if pl.key == "SS" else pl.moved(d=1.5) if pl.pos == "CB" else pl for pl in d3]
+p3 = Play(off, d3, los=74, to_go=2)
+fld = p3.draw(window=(-10, 17), lateral="full", title=False)
+no_numbers(fld)
+scorebug(fld.ax, 0.985, 0.265, ["Q2  6:00", "HOME 10   AWAY 10", "4th & 2   ball on AWAY 36",
+                               "FG: 36 + 18 = 54 yards"], fs=6.4, ha="right")
+say(fld, p3, 3.6, 21.0, "line to gain", color="#9a6a00", fs=6.6)
+say(fld, p3, 10.5, -14.0, "corners pressed,\none deep safety", color=DC, fs=6.6)
+plt.show()
+```
+
+**Punt, kick or go? What do the two teams' personnel and alignment tell you about the decision?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Go for it, and both teams have told you so.** By every rule of thumb in the chapter, this is a go:
+fourth-and-2 converts about `{python} S["c2"]` of the time; the 36 is in the opponent's 30-to-40 "go zone",
+where a punt nets only about 25 yards and a 54-yard kick near this kicker's limit misses often (the league
+made 50- to 54-yarders `{python} S["fg5054"]` of the time in 2023–2025, and a kicker near his career long
+will do worse) and hands the opponent the ball at its own 44. It is the exact situation of the chapter's
+expected-points table, where going was worth about `{python} S["d_fg"]` points more than kicking. In
+2023–2025, teams in the first three quarters went for it on `{python} S["go_4th2_opp"]` of fourth-and-2s
+between the opponent's 31 and 40, against `{python} S["go_4th2_old"]` in 2013–2015.
+
+The offense's clue is its personnel: no punter or kicker jogging on, the regular offense lined up with the
+quarterback in the shotgun. Some teams line up to go and then take a delay-of-game penalty or call a
+timeout if they can't draw the defense offside, so wait for the snap; but a team that keeps 11 personnel on
+the field on fourth-and-2 has usually made its decision on the sideline. The defense's clue is its shell:
+it has read the same situation, given up on deep help, and put seven men near the line with the corners
+pressed, to take away the run and the quick throws that need only 2 yards. Expect a quick pass against
+that press (a slant, or two receivers crossing to shake their corners) or a run designed for exactly 2 yards, from
+the short-yardage menu in
+[Red Zone, Goal Line, Two-Point Plays, and Short Yardage](10-03-red-zone-goal-line-and-short-yardage.qmd).
+:::
+:::
+
+## Takeaways
+
+- **The clock is a currency.** Late in a half the trailing team wants plays per second and the leading team
+  wants seconds per play. Price every play: an incompletion or a catch out of bounds costs about
+  `{python} S["p_inc"]`–`{python} S["p_oob"]` seconds, a catch in bounds about `{python} S["p_hurry"]`,
+  unless a spike (a down) or a timeout pays for it.
+- **Out of bounds stops the clock until the snap only late**: after the two-minute warning of the first
+  half and in the last five minutes of the game. The **10-second runoff** punishes an offense that stops
+  the clock illegally, and can end a half.
+- **The two-minute drill** throws outside, avoids sacks, spikes on early downs and saves timeouts for the
+  end. **The four-minute offense** does the opposite: runs inside, snaps at the end of the play clock, and
+  treats first downs, not points, as the goal. After the two-minute warning a first down ends the game
+  against a defense with 0 or 1 timeout left; with 2 it needs about 1:25 or less, with 3 about 0:45.
+- **End-of-half calls** weigh points against the risk of a short field for the opponent. The **prevent
+  defense** is right only when the clock makes yards cheap; the **Hail Mary** scores about one time in
+  seventeen. The **intentional safety** and **fair-catch kick** are rare but decide games.
+- **Fourth down became a decision**: the neutral go rate more than doubled from 2017 to 2025, because the
+  expected-points arithmetic favours going far more often than coaches used to. Fourth-and-1 is almost
+  always a go, the opponent's 30–40 is the go zone (in the models, if not yet on every sideline), and good
+  decisions still fail often.
+- **Two points and overtime follow the score.** The two-point chart asks whether two points cross a line
+  that matters (down 2, 5, 8, 10; up 1, 5, 12, 15). Overtime gives both teams a possession; the second team
+  plays with information, the first with a possible third possession.
+
+## Connections
+
+**Builds on:** [The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd)
+(when the clock runs and stops, timeouts, the two-minute warning, the "thirteen seconds" game);
+[Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd)
+(expected points and the Super Bowl XLVII safety);
+[In-Game Adjustments and Tempo](../08-the-chess-match/08-04-in-game-adjustments-and-tempo.qmd) (tempo and
+the hurry-up);
+[Field Goals, Extra Points, and the Punting Game](../09-special-teams-and-the-rules-that-shape-strategy/09-01-kicking-and-punting.qmd)
+(field-goal range, the extra point and the fair catch);
+[Kickoffs, Returns, and the Dynamic Kickoff](../09-special-teams-and-the-rules-that-shape-strategy/09-02-kickoffs-and-returns.qmd)
+(the safety kick's alignment, squib and onside kicks late in games);
+[Officiating, Replay, and the Rules of the Ball](../09-special-teams-and-the-rules-that-shape-strategy/09-04-officiating-replay-and-rules-of-the-ball.qmd)
+(grounding and late-game replay); and
+[Red Zone, Goal Line, Two-Point Plays, and Short Yardage](10-03-red-zone-goal-line-and-short-yardage.qmd)
+(the plays behind fourth-and-short and two-point decisions).
+
+**Sets up:** [Win Probability and Decision Analysis](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd),
+which builds the model behind every fourth-down, two-point and timeout decision here;
+[The Lions: Ben Johnson's Offense and Dan Campbell's Aggression](../12-case-studies/12-07-lions-ben-johnson-and-campbell.qmd),
+the full case study of the most aggressive fourth-down team of the era;
+[Reid's Chiefs](../12-case-studies/12-04-reid-chiefs.qmd), where the two-minute offense is part of the
+system; and [Watching Live](../15-capstone/15-01-watching-live.qmd), where the clock checklist joins the
+pre-snap one.
+
+::: {.callout-note title="Go deeper"}
+- The **NFL Rulebook** (NFL Football Operations, free online): Rule 4 (game timing, including Sections 3,
+  4 and 7 on starting and stopping the clock and the runoff), Rule 8, Section 2 (grounding and the spike),
+  Rule 10, Section 2 and Rule 11, Section 4 (the fair-catch kick) and Rule 16 (overtime).
+- David Romer, "Do Firms Maximize? Evidence from Professional Football," *Journal of Political Economy*
+  (2006): the paper that started the fourth-down argument, readable without the equations.
+- Ben Baldwin's open-source **fourth-down model** (the `nfl4th` package and its public site) for
+  go/kick/punt and two-point recommendations on any fourth down or try.
+- **nflverse play-by-play** (via `nflreadpy`): every snap since 1999 with the game clock, timeouts,
+  spikes and kneels, so you can rebuild every chart here and audit your own team's clock management.
+:::
+
+[^oobrule]: NFL Rulebook (2026), Rule 4, Section 3, Article 2(a): "Whenever a runner goes out of bounds on a play from scrimmage, the game clock starts on the Referee's signal that a ball has been returned to play, except that the clock will start on the snap: (1) after a change of possession; (2) after the two-minute warning of the first half; or (3) inside the last five minutes of the second half"; Article 2(f): a fumble or backward pass out of bounds restarts on the ready signal. https://operations.nfl.com/the-rules/nfl-rulebook/
+
+[^unitas]: Pro Football Hall of Fame, "The Greatest Game Ever Played" (1958 NFL Championship, Colts 23, Giants 17 in overtime, December 28, 1958; Myhra's tying 20-yard field goal with seven seconds left): https://profootballhof.com/news/greatest-game-ever-played ; on The Drive (AFC Championship, January 11, 1987; 98 yards in 15 plays from the Denver 2, starting with 5:32 left, the tying touchdown with 39 seconds left): "The Drive (American football)," Wikipedia: https://en.wikipedia.org/wiki/The_Drive_(American_football)
+
+[^spikerule]: NFL Rulebook (2026), Rule 8, Section 2, Article 1, Item 3 ("Stopping Clock. A T-Formation Quarterback is permitted to stop the game clock legally to conserve time if, immediately upon receiving the snap, he begins a continuous throwing motion and throws the ball directly into the ground") and Item 4 ("Delayed Spike. A passer, after delaying his passing action for strategic purposes, is prohibited from throwing the ball to the ground in front of him"). Rule 3, Section 42: "A T-formation quarterback is defined as a player aligned one yard or less behind the snapper," so a quarterback in the shotgun cannot spike legally. The spike counts and timing are a course calculation from nflverse play-by-play, 2016–2025 regular seasons (`qb_spike`).
+
+[^marino]: Miami Dolphins, "Fake Spike 25th anniversary flashback" (Dolphins 28, Jets 24, November 27, 1994, at Giants Stadium; the touchdown to Mark Ingram came with 22 seconds left): https://miamidolphins.com/news/fake-spike-25th-anniversary-flashback-dan-marino-new-york-jets ; accounts of the play (ball at the Jets' 8 with 38 seconds left, Marino yelling "Clock! Clock! Clock!") collected at https://barrypopik.com/blog/fake_spike
+
+[^runoff]: NFL Rulebook (2026), Rule 4, Section 7: Article 1 (acts that may not be used to conserve time after the two-minute warning; Item 1, a 10-second runoff for the offense, avoidable with a timeout; the defense may decline it along with the yardage; Item 2, for the defense the clock simply restarts on the ready signal), Article 3 ("In the last 40 seconds of either half, if there is a defensive foul that conserves time ... while time is in, the half will end, unless the defense has timeouts remaining, or the offense chooses to have the game clock start on the snap or continue play"), Article 4 (runoff after a replay reversal or a nullified foul: "Neither team can decline the runoff, but either team can use a remaining timeout to prevent it"); Rule 4, Section 5, Article 4, Note 4 ("Either half can end as the result of the 10-second runoff") and Note 9 ("There can never be a 10-second runoff against the defensive team").
+
+[^falcons]: nflverse play-by-play, game `2017_03_ATL_DET` (September 24, 2017): third-and-goal at the Atlanta 1 at 0:12, Stafford to Tate ruled a touchdown, reversed on review to "ATL 1 for no gain", followed by END GAME; Detroit had no timeouts. Atlanta Falcons, "Here's why the Lions score was overruled and the Falcons won on a 10-second runoff" (the clock had stopped with eight seconds left): https://atlantafalcons.com/news/here-s-why-the-lions-score-was-overruled-and-the-falcons-won-on-a-10-se-19441280 ; ProFootballTalk, "Lions lose on overturned touchdown, 10-second runoff" (Sept. 24, 2017): https://www.nbcsports.com/nfl/profootballtalk/rumor-mill/news/lions-lose-on-overturned-touchdown-10-second-runoff . The replay clock rule is NFL Rulebook (2026), Rule 15, Section 5, Article 2 (the clock is reset to when the play should have ended and runs 10 seconds; "If less than 10 seconds remain in the half or the game, the half or the game is over").
+
+[^lviii]: nflverse play-by-play, game `2023_22_SF_KC` (Super Bowl LVIII, February 11, 2024): every snap, clock, timeout and score in this chapter's figure and both film rooms, including San Francisco's 53-yard field goal at 1:57, Kansas City's timeout at 0:40 and San Francisco's at 0:10, the 49ers' third-and-5 incompletion at 2:00 before the field goal, "SF-27-J.Brown was injured during the play. SF-2-D.Lenoir was injured during the play" on Kelce's 22-yard catch at 0:16, Butker's 29-yard field goal at 0:06 (19–19 with 0:03 left), Kansas City's overtime timeout at 6:05 before the fourth-and-1, the 49ers' overtime field goal (27 yards, 22–19), Mahomes's fourth-and-1 run for 8 yards at his own 34, and the 3-yard touchdown pass to Mecole Hardman. Overtime context from this course's fact sheet (FACTS-current §1 and §4).
+
+[^westbrook]: nflverse play-by-play, game `2007_15_PHI_DAL` (December 16, 2007): Westbrook's 24-yard run to the Dallas 1 at 2:19 with Dallas out of timeouts, followed by three McNabb kneels at 2:00, 1:15 and 0:30; Eagles 10, Cowboys 6. Associated Press, "Westbrook heeded Runyan's advice on stopping at 1" (Dec. 2007), NFL.com: https://www.nfl.com/news/westbrook-heeded-runyan-s-advice-on-stopping-at-1-09000d5d805331ad
+
+[^xlvi]: nflverse play-by-play, game `2011_21_NYG_NE` (Super Bowl XLVI, February 5, 2012): New England leading 17–15, Bradshaw's 6-yard touchdown run on second-and-goal at 1:04 (the try followed at 0:57), with New England holding one timeout; Giants 21, Patriots 17; "Super Bowl XLVI," https://en.wikipedia.org/wiki/Super_Bowl_XLVI (Belichick told his defense to let Bradshaw score; Bradshaw tried to stop short and fell into the end zone).
+
+[^meadowlands]: "The Miracle at the Meadowlands," Wikipedia (November 19, 1978; Eagles 19, Giants 17; Pisarcik, Csonka and Edwards; offensive coordinator Bob Gibson fired the next day): https://en.wikipedia.org/wiki/Miracle_at_the_Meadowlands
+
+[^schiano]: Giants 41, Buccaneers 34, September 16, 2012. ProFootballTalk, "Greg Schiano stands by his approach to kneel-downs" (September 17, 2012): https://www.nbcsports.com/nfl/profootballtalk/rumor-mill/news/greg-schiano-stands-by-his-approach-to-kneel-downs ; ProFootballTalk, "NFL sides with Buccaneers on kneel-down controversy": https://nbcsports.com/nfl/profootballtalk/rumor-mill/news/nfl-sides-with-buccaneers-on-kneel-down-controversy
+
+[^xxxvi-madden]: Madden on the Fox broadcast: "With no timeouts, I think that the Patriots, with this field position, you have to just run the clock out. You have to play for overtime now." Nick Goss, "Madden's call of Super Bowl XXXVI between Patriots, Rams was legendary," NBC Sports Boston (December 29, 2021): https://www.nbcsportsboston.com/nfl/new-england-patriots/maddens-call-of-super-bowl-xxxvi-between-patriots-rams-was-legendary/198445/ . Drive details from nflverse play-by-play, game `2001_21_STL_NE`: Redmond for 5 and 8, an incompletion (the spike) at 0:41, Redmond for 11 pushed out of bounds, an incompletion at 0:33, Troy Brown for 23 out of bounds at the Rams' 36 (snapped at 0:29; the next snap came at 0:21), Jermaine Wiggins for 6 to the Rams' 30, a second spike at 0:07, and Adam Vinatieri's 48-yard field goal as time expired. The drive began at the New England 17 with 1:21 left and no timeouts: "Super Bowl XXXVI," https://en.wikipedia.org/wiki/Super_Bowl_XXXVI
+
+[^staubach]: NFC Divisional playoff, Dallas 17, Minnesota 14, December 28, 1975 (50-yard touchdown to Drew Pearson; Staubach, later: "I just closed my eyes and said, 'Hail Mary'"): HISTORY.com, "This Day in History: December 28": https://www.history.com/this-day-in-history/december-28/hail-mary-dallas-cowboys-roger-staubach ; "Hail Mary pass," Wikipedia: https://en.wikipedia.org/wiki/Hail_Mary_pass
+
+[^hailmary]: Course calculation from nflverse play-by-play, 2016–2025 regular seasons: pass attempts in the second or fourth quarter with 8 seconds or fewer left in the half, from 40 or more yards from the end zone, with 35 or more air yards (or air yards not recorded). The proxy catches some ordinary deep shots and misses some Hail Marys thrown short of 35 air yards.
+
+[^pats2003]: nflverse play-by-play, game `2003_09_NE_DEN` (November 3, 2003): fourth-and-10 at the New England 1 at 2:51, "(Punt formation) ... 66-L.Paxton FUMBLES at NE 0, ball out of bounds in End Zone, SAFETY" (Denver 26–23); the free kick from the 20; New England timeouts at 2:41 and 2:31; Denver's punt; Brady's 18-yard touchdown pass to David Givens at 0:36; Patriots 30, Broncos 26.
+
+[^modernsafety]: nflverse play-by-play: game `2024_20_HOU_KC` (January 18, 2025), "(Punt formation) 14-M.Araiza right end ran ob in End Zone for -18 yards, SAFETY" at 0:15 with Kansas City leading by 11; game `2025_04_PHI_TB`, "(Punt formation) 10-B.Mann right end tackled in End Zone for -34 yards, SAFETY" at 0:06 with Philadelphia leading by 8. The field-position comparison in the plate is a course calculation from 2015–2025 regular seasons: punts from the punting team's 1- to 4-yard line (n = `{python} S["ezp_n"]`) and free kicks from the 20 after a safety (n = `{python} S["sk_n"]`), taking the yard line of the receiving team's first snap; the safety-kick rules are NFL Rulebook (2026), Rule 6, Section 1, Articles 1(b) and 2 (a safety kick may be a punt, drop kick or place kick, from the kicking team's 20, with the kicking team's other players on the receiving team's 40), and Rule 6, Section 2, Article 4 (a safety kick out of bounds or short of the landing zone gives the receiving team the ball 30 yards from the spot of the kick).
+
+[^fckick]: NFL Rulebook (2026), Rule 10, Section 2, Article 4 (after a fair catch the receiving team may put the ball in play "by a snap or fair catch kick (drop kick or place kick without a tee) from the spot of the catch"); Rule 11, Section 4, Article 3 (the receiving team's line is 10 yards in advance of the kick; onside-kick formation rules apply); Rule 4, Section 8, Article 2(e)–(f) (the period may be extended for a fair-catch kick). The Dicker kick: nflverse play-by-play, game `2024_16_DEN_LAC` (Dec. 19, 2024): the Denver punt fair-caught at the Chargers' 38 with 0:08 left, fair-catch interference enforced 15 yards, and "11-C.Dicker 57 yard field goal is GOOD ... Fair-Catch Kick" at 0:00; Kris Rhim, "'Ain't ever seen that': Rare fair catch kick propels Chargers," ESPN (Dec. 20, 2024; the last successful one was Ray Wersching's for San Diego in 1976): https://africa.espn.com/nfl/story/_/id/43068684/obscure-rule-leads-chargers-making-nfl-first-fair-catch-kick-1976 . Unsuccessful attempts in the play-by-play include Phil Dawson's 71-yarder for San Francisco (2013) and Joey Slye's 60-yarder for Carolina (2019).
+
+[^philly]: "Super Bowl LII," Wikipedia (Eagles 41, Patriots 33, February 4, 2018; the "Philly Special" touchdown pass from Trey Burton to Nick Foles on fourth-and-goal from the 1 before halftime, and Foles's fourth-and-1 completion to Zach Ertz on the go-ahead drive): https://en.wikipedia.org/wiki/Super_Bowl_LII
+
+[^romer]: David Romer, "Do Firms Maximize? Evidence from Professional Football," *Journal of Political Economy* 114, no. 2 (2006): 340–365. https://doi.org/10.1086/501171
+
+[^nfl4th]: Ben Baldwin, `nfl4th` (open-source fourth-down decision model, R package and public app, 2020–): https://github.com/nflverse/nfl4th ; the package site, with Baldwin's methodology and research notes ("4th down research"): https://www.nfl4th.com/articles/4th-down-research.html . Go rates and conversion rates in this section are a course calculation from nflverse play-by-play, regular seasons: fourth downs with `play_type` of run, pass, punt or field goal (so a fake punt counts as going for it and pre-snap penalties are excluded); conversions use `fourth_down_converted`.
+
+[^lions]: Course calculation from nflverse play-by-play, regular seasons, first three quarters. NFC Championship sequence from nflverse play-by-play, game `2023_21_DET_SF` (January 28, 2024): fourth-and-2 at the San Francisco 28 at 7:03 of the third quarter (Detroit leading 24–10), fourth-and-3 at the 30 at 7:38 of the fourth (trailing 27–24), both incomplete; 49ers 34, Lions 31.
+
+[^twopoint]: Course calculation from nflverse play-by-play, 2015–2025 regular seasons (`extra_point_result`, `two_point_conv_result`). The extra point was moved back to the 15-yard line (a 33-yard kick) in 2015; teams went for two `{python} S["two_n14"]` times in 2014, `{python} S["two_n15"]` in 2015 and `{python} S["two_n25"]` in 2025. See [Field Goals, Extra Points, and the Punting Game](../09-special-teams-and-the-rules-that-shape-strategy/09-01-kicking-and-punting.qmd) for the 2015 rule.
+
+[^vermeil]: The two-point conversion entered college football in 1958 and the NFL in 1994 (the AFL used it from 1960 to 1969): "Two-point conversion," Wikipedia: https://en.wikipedia.org/wiki/Two-point_conversion . The best-known coaches' chart is credited to Dick Vermeil, who drew it up in the early 1970s as an assistant at UCLA for head coach Tommy Prothro: Michael Lombardi, "Conversion confusion: When going for two, wait 'til the fourth," NFL.com: https://www.nfl.com/news/conversion-confusion-when-going-for-two-wait-til-the-fourth-09000d5d8230f221 ; see also FiveThirtyEight, "Dick Vermeil Retired A Decade Ago. Will You Please Stop Using His Damn 2-Point Conversion Chart?": https://fivethirtyeight.com/features/dick-vermeil-retired-a-decade-ago-will-you-please-stop-using-his-damn-2-point-conversion-chart/
+
+[^ot]: NFL Football Operations, "Overtime rules" and "Featured rules" (2025 regular-season change; 2022 playoff change after the January 2022 Bills–Chiefs game; 10-minute regular-season period since 2017): https://operations.nfl.com/rules-officiating/featured-rules ; the history (sudden death in the regular season from 1974; the modified rule in the 2010 playoffs and 2012 regular season): "Overtime (sports): American football," Wikipedia: https://en.wikipedia.org/wiki/Overtime_(sports)#American_football ; the 2017 cut to 10 minutes was approved by the owners on May 23, 2017: NFL.com, "NFL owners approve shortening overtime to 10 minutes": https://www.nfl.com/news/nfl-owners-approve-shortening-overtime-to-10-minutes-0ap3000000810488
+
+[^otrule]: NFL Rulebook (2026), Rule 16, Section 1: Article 3 (regular season: one 10-minute period, both teams must have the opportunity to possess unless the kicking team scores a safety on the receiving team's first possession, two timeouts each, a tie if still level), Article 4 (postseason: 15-minute periods until there is a winner, three timeouts per half), Article 5(c) (the kickoff is the receiving team's opportunity to possess) and 5(d) (no coaches' challenges; the replay official starts all reviews).
+
+[^otchoice]: David K. Li, "The NFL's overtime can still come down to a coin toss. Is it better to kick or receive?" NBC News (September 20, 2025): Ron Yurko of Carnegie Mellon's Sports Analytics Center, "I would take the ball, at least that's what the current evidence suggests," an edge "smaller than it was" under sudden death; NBC's Chris Simms and Fox's Greg Olsen favouring kicking off: https://www.nbcnews.com/sports/nfl/nfls-overtime-can-still-come-coin-toss-better-kick-receive-rcna231812
+
+[^reid]: nflverse play-by-play: game `2004_21_NE_PHI` (Super Bowl XXXIX, February 6, 2005), Philadelphia's possession from its own 21 at 5:40 to Greg Lewis's 30-yard touchdown at 1:55 (extra point at 1:48), with the Eagles holding two timeouts throughout; game `2015_19_KC_NE` (January 16, 2016), Kansas City's possession from 6:29 (trailing 27–13) to Charcandrick West's 1-yard touchdown at 1:18 (extra point at 1:13), with all three timeouts unused, followed by a recovered onside kick by New England and three kneels. The slow-snap cost is a course calculation on those two drives: snaps after a play that ended in bounds with the clock running (or out of bounds before the last five minutes, when the clock restarts on the ready signal), excluding gaps cut short by the two-minute warning, each compared with the price list's median for a hurried snap after a catch in bounds; an unused timeout is valued at the price list's difference between a hurried snap and a timeout.
+
+[^ncaa]: NCAA.com, "Fewer clock stoppages on first downs and more: 2023 college football rule changes" (August 25, 2023): from 2023 the college clock no longer stops after a first down except in the last two minutes of each half: https://www.ncaa.com/news/football/article/2023-08-25/fewer-clock-stoppages-first-downs-and-more-2023-college-football-rule-changes
+
+[^twomin]: NFL Rulebook (2026), Rule 3, Section 41: "The two-minute warning is an automatic timeout that occurs at the conclusion of the last down for which the ball is legally snapped or kicked prior to two minutes remaining on the game clock in the second and fourth periods."
+
+[^radio]: NFL Rulebook (2026), Rule 5, Section 3, Article 3 (Speakers in Helmets): the coach-to-player communication "begins once a game official has signaled a down to be over and is cut off when the play clock reaches 15 seconds or the ball is snapped, whichever occurs first." See [What a Play Really Is](../01-foundations/01-04-what-a-play-really-is.qmd) for the helmet radio.
+
+[^mayday]: Zak Gilbert, Chiefs On SI (September 11, 2025), on the 59-yard "Mayday" field goal that ended the first half of the Chiefs' 2025 opener against the Chargers in São Paulo; Toub: "So 17, we knew that's like about as low as you can go in a regular season ... we start at 17. We go 16, 15, and we've done it in 15 seconds. But that's a perfect world": https://www.si.com/nfl/chiefs/kansas-city-dave-toub-mayday-kicking-ball-harrison-butker . nflverse play-by-play, game `2025_01_KC_LAC`: a 3-yard completion to Noah Gray in bounds, snapped at 0:17, then Harrison Butker's 59-yard field goal snapped at 0:03.
+
+[^injury]: NFL Rulebook (2026), Rule 4, Section 5, Article 4 (injury timeouts after the two-minute warning: the injured player's team is charged a team timeout unless the injury results from an opponent's foul or occurs on a down with a change of possession, a touchdown, a safety, a successful field goal, a free kick or a try; with no timeouts left, an excess timeout is called, and Note 3 gives the defense the option of a 10-second runoff against the team in possession) and Rule 4, Section 7, Article 3 (an excess timeout for injury to a defensive player in the last 40 seconds ends the half unless the offense chooses to play on).
+
+[^extend]: NFL Rulebook (2026), Rule 4, Section 8, Article 1 ("If time expires at the end of any period while the ball is in play, the period continues until the down ends") and Article 2(a)–(b) (after an accepted live-ball foul by the defense the offense may extend the period by an untimed down; "If there is a foul by the offense, there shall be no extension of the period," with listed exceptions).
+
+[^clockfoul]: NFL Rulebook (2026), Rule 12, Section 3, Article 3 ("A team may not commit multiple fouls during the same scrimmage or kick down in an attempt to manipulate the game clock"; penalty: 15 yards, "and the game clock will be reset to where it was at the snap"). The Ravens' deliberate holding on Sam Koch's safety in Super Bowl XLVII: Baltimore Ravens, "Intentional Safety Was Even Better Than Super Bowl Trick in Execution": https://www.baltimoreravens.com/news/intentional-safety-was-even-better-than-super-bowl-trick-in-execution-18160834
+
+[^tie]: NFL.com, "NFL tiebreaking procedures" (tie games count as one-half win and one-half loss for both clubs): https://www.nfl.com/standings/tie-breaking-procedures
