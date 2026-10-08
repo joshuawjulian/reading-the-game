@@ -1,0 +1,2008 @@
+---
+title: "Case Study: Belichick and Game-Plan Football"
+subtitle: "A defense rebuilt every week to take away one thing, an offense that changed shape to match, and a coach who treated every situation as a rehearsed one"
+description: "Bill Belichick's approach to football as a case study: the game-plan defense (a defense built anew for each opponent to take away what it most needs, at a price chosen in advance) and where it came from; his three signature Super Bowl plans, drawn and taken apart (Super Bowl XXV against Buffalo's K-Gun as the Giants' defensive coordinator, Super Bowl XXXVI against Marshall Faulk and the 2001 Rams, Super Bowl LIII against Sean McVay's 2018 Rams), with 2018 charting data on how far the Super Bowl LIII plan departed from New England's season; the final play of Super Bowl XLIX, as a frame strip, with the clock, the personnel and the practice that decided it; the chameleon offense (the 2007 spread, the 2010-2012 two-tight-end sets and Gronkowski's personnel dilemma, the run-heavy 2018 playoffs) measured game by game; situational mastery; a data fingerprint of the Belichick era from 2001-2019 play-by-play; how opponents answered; and what survives in today's NFL."
+glossary:
+  "Game-plan defense": "A defense rebuilt for each opponent rather than run the same way every week: the staff decides what that offense most needs (a player, a concept, a part of the field), designs alignments and coverages to take it away, and chooses in advance what it will concede instead. Most associated with Bill Belichick's Giants and Patriots defenses."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import os
+import logging
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, Rectangle, RegularPolygon
+from matplotlib.lines import Line2D
+from gridiron import Play, Player, Field, style, draw_marker, routes as r
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+RED = style.SERIES[7]       # ring: the opponent's "best thing", the target of the plan
+PURPLE = style.SERIES[6]    # ring: a defender the game plan moved or gave a special job
+GREEN = style.THIRD         # ring: the player to watch
+GREEN_TXT = "#0f7a55"       # darker aqua, for text on the light page
+OD, DD = style.OFFENSE_DARK, style.DEFENSE_DARK
+LINE_D, OFF_BALL, GUN, UC = -0.7, -1.5, -5.0, -2.2   # UC: a QB under center, far enough back that his disc
+                                                     # (radius 0.75 yd) doesn't cover the center's letter
+
+
+def opp(n):
+    """Line of scrimmage (BDB x) for a ball on the opponent's n-yard line. The goal line is x = 110."""
+    return 110 - n
+
+
+def own(n):
+    """Line of scrimmage (BDB x) for a ball on the offense's own n-yard line."""
+    return 10 + n
+
+
+# ---------------------------------------------------------------- players
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=key if label is None else label)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line5(split=1.6, names=False, d=LINE_D):
+    """Five offensive linemen; only the center is lettered unless names=True."""
+    return [O(k, k, d, m * split, k if names else ("C" if k == "C" else ""))
+            for k, m in (("LT", -2), ("LG", -1), ("C", 0), ("RG", 1), ("RT", 2))]
+
+
+def go_to(p, key, *pts, kind="path", delay=0.0, speed=None, target=None):
+    """Move `key` through absolute (d, w) points, as a route, run, path, block or rush."""
+    start = np.array(p._cur(key))
+    rel = [tuple(np.array(q) - start) for q in pts]
+    if kind == "route":
+        return p.route(key, rel, frame="field", delay=delay, speed=speed)
+    if kind == "block":
+        return p.block(key, pts=rel, delay=delay, speed=speed)
+    if kind == "rush":
+        return p.rush(key, pts=rel, delay=delay, speed=speed)
+    return {"path": p.path, "run": p.run}[kind](key, rel, delay=delay, speed=speed)
+
+
+# ---------------------------------------------------------------- drawing helpers
+def P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def clean(ax, numbers=False):
+    """Drop hash ticks and painted yard numbers (they sit where receivers stand); clip all text to the window."""
+    for ln in list(ax.lines):
+        xs, ys = ln.get_data()
+        if len(xs) == 2 and ln.get_linewidth() == 0.5 and np.hypot(xs[1] - xs[0], ys[1] - ys[0]) < 1.0:
+            ln.remove()
+    for t in list(ax.texts):
+        if not numbers and t.get_text().isdigit() and t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, ax=None, width_in=5.8, **kw):
+    fld = p.draw(ax=ax, width_in=width_in, title=False, **kw)
+    clean(fld.ax)
+    return fld
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=6.8, ha="center", weight="normal", box=True):
+    """A short on-field label at (d, w)."""
+    x, y = P(fld, p, d, w)
+    fld.ax.text(float(x), float(y), text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=13,
+                fontweight=weight, linespacing=1.12,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.92) if box else None)
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=6.6, ha="center"):
+    """A label with a thin leader line to the player or spot it names."""
+    (xt, yt), (xp, yp) = P(fld, p, *text_at), P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha=ha, va="center", zorder=13, linespacing=1.12,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=7),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.92))
+
+
+def ghost(fld, p, pts, color=style.DEFENSE, lw=1.4, alpha=0.75, end="arrow", z=5):
+    """A dashed path through absolute (d, w) points: a defender's reaction, or what a player would do."""
+    xs, ys = P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    fld.ax.plot(xs, ys, color=color, lw=lw, ls=(0, (3, 2)), alpha=alpha, zorder=z, solid_capstyle="round")
+    if end == "arrow":
+        fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=10,
+                                         color=color, lw=lw, alpha=alpha, zorder=z))
+
+
+def throw(fld, p, a, b, rad=-0.12):
+    """The ball's flight from spot a to spot b (brown dashes)."""
+    (x0, y0), (x1, y1) = P(fld, p, *a), P(fld, p, *b)
+    fld.ax.add_patch(FancyArrowPatch((float(x0), float(y0)), (float(x1), float(y1)), arrowstyle="-|>",
+                                     mutation_scale=10, color=style.BALL, lw=1.4, ls=(0, (2, 2)), zorder=6,
+                                     connectionstyle=f"arc3,rad={rad}"))
+
+
+def oval(fld, p, center, size, color=style.DEFENSE, label=None, alpha=0.12, fs=6.4):
+    """A shaded area (depth, width), optionally with an italic label at its centre."""
+    x, y = P(fld, p, *center)
+    fld.ax.add_patch(Ellipse((float(x), float(y)), size[1], size[0], fc=color, alpha=alpha, ec=color, lw=0.9,
+                             ls=(0, (3, 2)), zorder=1.6))
+    if label:
+        fld.ax.text(float(x), float(y), label, ha="center", va="center", fontsize=fs, color=style.INK_2,
+                    style="italic", zorder=3, clip_on=True)
+
+
+def band(fld, p, d0, d1, w0, w1, color=style.DEFENSE, alpha=0.10, hatch=None):
+    """A shaded rectangle between depths d0..d1 and widths w0..w1."""
+    (xa, ya), (xb, yb) = P(fld, p, d0, w0), P(fld, p, d1, w1)
+    fld.ax.add_patch(Rectangle((float(min(xa, xb)), float(min(ya, yb))), float(abs(xb - xa)), float(abs(yb - ya)),
+                               fc=color, alpha=alpha, ec="none", zorder=1.5, hatch=hatch))
+
+
+def ring(fld, p, d, w, color, ls="-", r_=1.15):
+    x, y = P(fld, p, d, w)
+    fld.ax.add_patch(Circle((float(x), float(y)), r_, fc="none", ec=color, lw=1.7, ls=ls, zorder=7))
+
+
+def badge(fld, p, d, w, text, color=RED, fontsize=6.8):
+    """A small white-on-colour disc that ties a spot to a note in the caption."""
+    x, y = P(fld, p, d, w)
+    fld.ax.text(float(x), float(y), text, fontsize=fontsize, color="white", ha="center", va="center", zorder=14,
+                fontweight="bold", bbox=dict(boxstyle="circle,pad=0.2", fc=color, ec="white", lw=0.6))
+
+
+def panel_title(ax, text, fs=8.6):
+    ax.set_title(text, fontsize=fs, loc="left", color=style.INK, fontweight="bold", pad=3)
+
+
+def under_note(ax, text, fs=6.9):
+    ax.text(0.5, -0.02, text, transform=ax.transAxes, ha="center", va="top", fontsize=fs, color=style.INK,
+            linespacing=1.2)
+
+
+# ---------------------------------------------------------------- motion: keyframes, frame strips, video
+def set_tracks(p, tracks, t_end=None):
+    """Hand-made keyframes {key: [(t, d, w), ...]} for some players, after all routes are added.
+    gridiron's man() ends on top of the receiver and cannot be slowed by a jam, so the jammed
+    receiver, the jamming corner and the defender who jumps the route are keyframed by hand."""
+    kf, t0, t1 = p._compile()
+    kf = dict(kf)
+    for key, rows in tracks.items():
+        q = p.players[key]
+        rows = [(min(t0, -1.0), q.d, q.w), (0.0, q.d, q.w)] + [tuple(r_) for r_ in rows]
+        kf[key] = np.array(rows, dtype=float)
+    p._compiled = (kf, t0, max(t1, t_end or 0.0, *[rows[-1][0] for rows in tracks.values()]))
+
+
+def ease(points, step=0.05):
+    """Smooth keyframes through (t, d, w) waypoints (ease in and out on each leg)."""
+    rows = []
+    for (ta, da, wa), (tb, db, wb) in zip(points[:-1], points[1:]):
+        for tt in np.arange(ta, tb, step):
+            f = (tt - ta) / (tb - ta)
+            f = f * f * (3 - 2 * f)
+            rows.append((round(float(tt), 3), da + (db - da) * f, wa + (wb - wa) * f))
+    rows.append(tuple(points[-1]))
+    return rows
+
+
+def catch_time(p, which=0):
+    """When the ball arrives, the way gridiron times a pass (ball speed and the receiver's path)."""
+    from gridiron.play import BALL_SPEED, _interp
+    kf, _, _ = p._compile()
+    kind, to, te = [e for e in p.ball_events if e[0] == "pass"][which]
+    start, t_arr = p.ball_position(te), te + 0.5
+    for _ in range(4):
+        t_arr = te + float(np.linalg.norm(_interp(kf[to], t_arr) - start)) / BALL_SPEED
+    return round(t_arr, 2)
+
+
+def frame(ax, p, t, lateral, window, rings=(), ltg=False, mr=0.7):
+    """Everyone at time t, with faint trails of where they have been and the ball's flight so far."""
+    ylo, yhi = sorted((p.ball_y - lateral[0], p.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=p.los, window=window, numbers=False, hashes=False,
+                lateral=(ylo, yhi), to_go=p.to_go if ltg else None)
+    ppy = fld.pts_per_yard()
+    wl, wr = sorted(lateral)
+    ring_of = dict(rings)
+    for k, q in p.players.items():
+        d, w = p.position(k, t)
+        if not (window[0] + 0.4 < d < window[1] - 0.4 and wl + 0.4 < w < wr - 0.4):
+            continue
+        if t > 0:
+            pts = np.array([p.position(k, tt) for tt in np.linspace(0.0, t, 40)])
+            if np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) > 0.3:
+                xs, ys = P(fld, p, pts[:, 0], pts[:, 1])
+                ax.plot(xs, ys, color=style.OFFENSE if q.side == "off" else style.DEFENSE, lw=1.0,
+                        alpha=0.5, zorder=3)
+        x, y = P(fld, p, d, w)
+        draw_marker(ax, float(x), float(y), q.side, q.label, ppy, ring=ring_of.get(k), r=mr)
+    for kind, to, te in p.ball_events:
+        if kind == "pass" and t > te:
+            ts = np.linspace(te, t, 20)
+            b = np.array([p.ball_position(tt) for tt in ts])
+            xs, ys = P(fld, p, b[:, 0], b[:, 1])
+            ax.plot(xs, ys, color=style.BALL, lw=1.4, ls=(0, (2, 1.5)), zorder=9)
+            ax.add_patch(Ellipse((float(xs[-1]) - 0.9, float(ys[-1])), 1.0, 0.62, fc=style.BALL, ec="white",
+                                 lw=0.5, zorder=11))
+    clean(ax)
+    return fld
+
+
+def strip_grid(p, times, notes, lateral, window, rings=(), ncols=2, width_in=6.5, deco=None, fs=6.9, mr=0.7):
+    """Print stand-in for an animation: numbered panels, each with a sentence underneath."""
+    nrows = int(np.ceil(len(times) / ncols))
+    pw = width_in / ncols
+    ph = pw * (window[1] - window[0]) / abs(lateral[1] - lateral[0])
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False, figsize=(width_in, nrows * (ph + 0.85)))
+    for ax in axes.flat[len(times):]:
+        ax.axis("off")
+    for i, (ax, t) in enumerate(zip(axes.flat, times)):
+        fld = frame(ax, p, t, lateral, window, rings, mr=mr)
+        if deco:
+            deco(t, fld, p)
+        lab = "before the snap" if t < -1e-6 else ("snap" if abs(t) < 1e-6 else f"+{t:.1f} s")
+        panel_title(ax, f"{i + 1}.  {lab}")
+        under_note(ax, notes[i])
+    fig.tight_layout(h_pad=3.0, w_pad=0.8)
+    return fig
+
+
+def video(p, lateral, window, t_end, rings=(), width_in=5.6, t_start=-0.3, notes=None, times=None, deco=None,
+          mr=0.7):
+    """Web version of a strip: the same frame drawn every tenth of a second, the strip's notes as captions."""
+    from IPython.display import HTML, display
+    span_w, span_d = abs(lateral[1] - lateral[0]), window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w + 0.5))
+    ts = np.round(np.arange(t_start, t_end + 1e-9, 0.1), 2)
+
+    def update(i):
+        ax.clear()
+        t = float(ts[i])
+        fld = frame(ax, p, max(0.0, t), lateral, window, rings, mr=mr)
+        if deco:
+            deco(max(0.0, t), fld, p)
+        txt = "before the snap" if t < -1e-6 else ("snap" if abs(t) < 1e-6 else f"+{t:.1f} s")
+        if notes and times:
+            cur = [n for tt, n in zip(times, notes) if tt <= t + 1e-6]
+            if cur:
+                txt += "   " + cur[-1].replace("\n", " ")
+        ax.set_title(txt, fontsize=8, loc="left", color=style.INK)
+        return []
+
+    fig.tight_layout()
+    anim = animation.FuncAnimation(fig, update, frames=len(ts), interval=100, blit=False)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def pct(x, nd=0):
+    return f"{100 * x:.{nd}f}%"
+```
+
+```{python}
+#| code-summary: "Show the Python (load the data: 2001-2019 play-by-play and 2018 charting)"
+#| output: false
+import re
+from gridiron.data import pbp, nfl
+
+SEASONS = list(range(2001, 2020))          # the Brady-Belichick years, 2001-2019
+COLS = ["season", "season_type", "week", "game_id", "play_id", "posteam", "defteam", "home_team", "away_team",
+        "play_type", "down", "yardline_100", "qtr", "half_seconds_remaining", "wp", "pass", "rush", "qb_dropback",
+        "epa", "receiver_player_id", "receiving_yards", "rusher_player_name", "rushing_yards", "touchdown", "interception",
+        "fumble_lost", "posteam_score", "defteam_score", "posteam_score_post", "defteam_score_post",
+        "total_home_score", "total_away_score", "desc"]
+PBP = pbp(SEASONS, columns=COLS)
+PL = PBP[PBP["play_type"].isin(["pass", "run"]) & PBP["down"].notna()].copy()
+REG = PL[PL["season_type"] == "REG"]
+
+# ---- 1. The chameleon: each game's neutral early-down pass rate (1st/2nd down, win prob 20-80%,
+#         more than two minutes left in the half), for New England and for every team-game in the league
+NEU = PL[PL["down"].isin([1, 2]) & PL["wp"].between(0.2, 0.8) & (PL["half_seconds_remaining"] > 120)]
+GAME_PR = (NEU.groupby(["season", "season_type", "game_id", "posteam"])["pass"].agg(["mean", "size"])
+           .reset_index().query("size >= 15"))
+LG_BAND = GAME_PR[GAME_PR["season_type"] == "REG"].groupby("season")["mean"].quantile([0.1, 0.5, 0.9]).unstack()
+NE_GAMES = GAME_PR[GAME_PR["posteam"] == "NE"].copy()
+SD = GAME_PR[GAME_PR["season_type"] == "REG"].groupby(["season", "posteam"])["mean"].std().unstack()
+SD_RANK = SD.rank(axis=1, ascending=False).mean().rank()          # 1 = most game-to-game variation, 2001-2019
+SD_MEAN = SD.mean().sort_values(ascending=False)                  # each team's average season spread, for the strip
+NE_ALL = PL[PL["posteam"] == "NE"].groupby(["season", "season_type", "game_id"]).agg(
+    passes=("pass", "sum"), runs=("rush", "sum"))
+
+
+def ne_game(gid):
+    g = NE_ALL.xs(gid, level="game_id").iloc[0]
+    return int(g["passes"]), int(g["runs"])
+
+
+BAL14, IND14 = ne_game("2014_19_BAL_NE"), ne_game("2014_20_IND_NE")
+BLOUNT = PL[(PL["game_id"] == "2014_20_IND_NE") & (PL["rusher_player_name"] == "L.Blount")]
+BLOUNT_N, BLOUNT_Y = len(BLOUNT), int(BLOUNT["rushing_yards"].sum())
+BLOUNT_TD = int(BLOUNT["touchdown"].sum())
+BUF08 = ne_game("2008_17_NE_BUF")
+POST18 = PL[(PL["season"] == 2018) & (PL["season_type"] == "POST") & (PL["posteam"] == "NE")].groupby("game_id").agg(
+    runs=("rush", "sum"), ryds=("rushing_yards", "sum"))
+
+# ---- 2. The fingerprint, 2001-2019 regular seasons, one number per defense (or team)
+# (a) points scored by each opponent against this defense, minus that opponent's average in its other games
+ALLREG = PBP[PBP["season_type"] == "REG"]          # every play, so final scores and field goals count
+fin = ALLREG.groupby("game_id").agg(season=("season", "first"), home=("home_team", "first"),
+                                 away=("away_team", "first"), hs=("total_home_score", "max"),
+                                 as_=("total_away_score", "max")).reset_index()
+GP = pd.concat([pd.DataFrame({"season": fin["season"], "off": fin["home"], "def": fin["away"], "pts": fin["hs"]}),
+                pd.DataFrame({"season": fin["season"], "off": fin["away"], "def": fin["home"], "pts": fin["as_"]})])
+tot = GP.groupby(["season", "off"])["pts"].agg(["sum", "size"])
+GP = GP.join(tot, on=["season", "off"])
+GP["rel"] = GP["pts"] - (GP["sum"] - GP["pts"]) / (GP["size"] - 1)
+FP_PTS = GP.groupby("def")["rel"].mean().sort_values()
+
+# (b) the opponent's top receiver (most receiving yards in its OTHER games that season): his share of the
+#     team's targets in this game, minus his share in the other games
+REC = REG[(REG["play_type"] == "pass") & REG["receiver_player_id"].notna()]
+PG = (REC.groupby(["season", "game_id", "posteam", "defteam", "receiver_player_id"])
+      .agg(tg=("play_id", "size"), yds=("receiving_yards", lambda v: v.fillna(0).sum())).reset_index())
+rows = []
+for (s, team), grp in PG.groupby(["season", "posteam"]):
+    team_tg = grp.groupby("game_id")["tg"].sum()
+    for gid, this in grp.groupby("game_id"):
+        others = grp[grp["game_id"] != gid]
+        if others["game_id"].nunique() < 6:
+            continue
+        top = others.groupby("receiver_player_id")["yds"].sum().idxmax()
+        if top not in set(this["receiver_player_id"]):
+            continue                                   # the top receiver didn't play (or wasn't targeted)
+        share_o = others.loc[others["receiver_player_id"] == top, "tg"].sum() / others["tg"].sum()
+        share = this.loc[this["receiver_player_id"] == top, "tg"].sum() / team_tg[gid]
+        rows.append((this["defteam"].iloc[0], share - share_o, share_o))
+TOPWR = pd.DataFrame(rows, columns=["def", "dshare", "share_o"])
+FP_TOP = TOPWR.groupby("def")["dshare"].mean().sort_values()
+TOP_SHARE = TOPWR["share_o"].mean()
+# The typical defense sits ABOVE zero: games in which the top receiver drew no target at all drop out (we can't tell
+# a healthy scratch from a shutout in play-by-play), which tilts every defense's number up. So measure each defense
+# against the median defense instead of against zero.
+TOP_MED = FP_TOP.median()
+FP_TOP_C = (FP_TOP - TOP_MED).sort_values()
+TOP_RATIO = FP_TOP_C["NE"] / FP_TOP_C.drop("NE").min()
+TOP_TGTS = REC.groupby(["game_id", "posteam"]).size().mean()       # a team's targets per game, for scale
+
+# (c) end of the first half: points for minus points against in the last two minutes of the second quarter, per game
+H2 = ALLREG[(ALLREG["qtr"] == 2) & (ALLREG["half_seconds_remaining"] <= 120)].copy()
+H2["pp"] = (H2["posteam_score_post"] - H2["posteam_score"]).fillna(0)
+H2["pd"] = (H2["defteam_score_post"] - H2["defteam_score"]).fillna(0)
+f_ = H2.groupby("posteam")["pp"].sum().add(H2.groupby("defteam")["pd"].sum(), fill_value=0)
+a_ = H2.groupby("defteam")["pp"].sum().add(H2.groupby("posteam")["pd"].sum(), fill_value=0)
+NG = pd.concat([fin["home"], fin["away"]]).value_counts()
+FP_HALF = ((f_ - a_) / NG).sort_values(ascending=False)
+fin["m"] = fin["hs"] - fin["as_"]
+CG = pd.concat([pd.DataFrame({"t": fin["home"], "m": fin["m"]}), pd.DataFrame({"t": fin["away"], "m": -fin["m"]})])
+CG = CG[CG["m"].abs() <= 8]
+CLOSE_PCT = CG.groupby("t")["m"].apply(lambda v: ((v > 0).sum() + 0.5 * (v == 0).sum()) / len(v)).sort_values(
+    ascending=False)
+NE_CLOSE_W, NE_CLOSE_N = int((CG.loc[CG["t"] == "NE", "m"] > 0).sum()), int((CG["t"] == "NE").sum())
+
+# ---- 3. Super Bowl LIII against New England's own 2018 season (charting from load_participation)
+PART18 = nfl().load_participation([2018]).to_pandas()
+
+
+def n_db(s):
+    m = re.search(r"(\d+) DB", s) if isinstance(s, str) else None
+    return int(m.group(1)) if m else np.nan
+
+
+def pers(s):
+    if not isinstance(s, str):
+        return None
+    n = {k: int(v) for v, k in re.findall(r"(\d+) ([A-Z]+)", s)}
+    return f"{n.get('RB', 0) + n.get('FB', 0)}{n.get('TE', 0)}"
+
+
+PART18["ndb"] = PART18["defense_personnel"].map(n_db)
+PART18["pers"] = PART18["offense_personnel"].map(pers)
+X18 = PL[PL["season"] == 2018].merge(PART18, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"])
+SB53 = "2018_21_NE_LA"
+NEd = X18[X18["defteam"] == "NE"].assign(sb=lambda x: x["game_id"] == SB53)
+NEd = NEd[(NEd["season_type"] == "REG") | NEd["sb"]]
+cov = NEd[(NEd["qb_dropback"] == 1) & NEd["defense_coverage_type"].notna()
+          & ~NEd["defense_coverage_type"].isin(["BLOWN", "COMBO", "PREVENT"])]
+rsh = NEd[(NEd["qb_dropback"] == 1) & NEd["number_of_pass_rushers"].notna()]
+LIII = pd.DataFrame({
+    "Man coverage": cov.groupby("sb")["defense_man_zone_type"].apply(lambda v: (v == "MAN_COVERAGE").mean()),
+    "Two-deep shell": cov.groupby("sb")["defense_coverage_type"].apply(
+        lambda v: v.isin(["COVER_2", "2_MAN", "COVER_4", "COVER_6"]).mean()),
+    "Five or more rushers": rsh.groupby("sb")["number_of_pass_rushers"].apply(lambda v: (v >= 5).mean()),
+    "Six or more DBs": NEd.groupby("sb")["ndb"].apply(lambda v: (v >= 6).mean()),
+}).T.rename(columns={False: "season", True: "sb"})
+LIII_N = {"cov": int(cov["sb"].sum()), "rush": int(rsh["sb"].sum()), "snaps": int(NEd["sb"].sum())}
+SB_COV = cov[cov["sb"]]["defense_coverage_type"].value_counts()
+MAN_BY_DEF = (X18[(X18["season_type"] == "REG") & X18["defense_man_zone_type"].notna() & (X18["qb_dropback"] == 1)]
+              .groupby("defteam")["defense_man_zone_type"].apply(lambda v: (v == "MAN_COVERAGE").mean()))
+MAN_RANK, MAN_MED = int(MAN_BY_DEF.rank(ascending=False)["NE"]), MAN_BY_DEF.median()
+P11 = X18[X18["season_type"] == "REG"].groupby("posteam")["pers"].apply(lambda v: (v == "11").mean())
+P21 = X18[X18["season_type"] == "REG"].groupby("posteam")["pers"].apply(lambda v: (v == "21").mean())
+R21 = X18[(X18["season_type"] == "REG") & (X18["pers"] == "21")]
+P21_PASS = R21.groupby("posteam")["pass"].mean()          # how often each team threw from 21 personnel
+LA_PPG = GP[(GP["season"] == 2018) & (GP["off"] == "LA")]["pts"].mean()
+# the Super Bowl's rush counts and personnel, by down: how the "six on the line" and the six-DB snaps fit together
+SB_RUSH = rsh[rsh["sb"]]["number_of_pass_rushers"].astype(int).value_counts()
+SB_D = NEd[NEd["sb"]].assign(early=lambda x: x["down"] <= 2)
+SB_6DB = {k: (int((g["ndb"] >= 6).sum()), len(g)) for k, g in SB_D.groupby("early")}   # {True: early downs, False: 3rd/4th}
+
+# ---- 3b. The 2007 spread: shotgun share of plays and Brady's touchdown passes (regular season)
+P07 = pbp([2007], columns=["season_type", "posteam", "play_type", "down", "shotgun", "pass_touchdown",
+                           "passer_player_name"])
+P07 = P07[P07["season_type"] == "REG"]
+SG07 = P07[P07["play_type"].isin(["pass", "run"]) & P07["down"].notna()].groupby("posteam")["shotgun"].mean()
+BRADY07 = int(P07.loc[P07["passer_player_name"] == "T.Brady", "pass_touchdown"].sum())
+
+# ---- 3c. After Brady: the same opponent-adjusted points measure for New England's defense, 2020-2023
+LATE = pbp(list(range(2020, 2024)), columns=["season", "season_type", "game_id", "home_team", "away_team",
+                                             "total_home_score", "total_away_score"])
+lf = LATE[LATE["season_type"] == "REG"].groupby("game_id").agg(
+    season=("season", "first"), home=("home_team", "first"), away=("away_team", "first"),
+    hs=("total_home_score", "max"), as_=("total_away_score", "max"))
+LG = pd.concat([pd.DataFrame({"season": lf["season"], "off": lf["home"], "def": lf["away"], "pts": lf["hs"]}),
+                pd.DataFrame({"season": lf["season"], "off": lf["away"], "def": lf["home"], "pts": lf["as_"]})])
+LG = LG.join(LG.groupby(["season", "off"])["pts"].agg(["sum", "size"]), on=["season", "off"])
+LG["rel"] = LG["pts"] - (LG["sum"] - LG["pts"]) / (LG["size"] - 1)
+LATE_RANK = LG.groupby(["season", "def"])["rel"].mean().unstack().rank(axis=1).loc[:, "NE"].astype(int)
+LATE_POST = LATE[(LATE["season_type"] == "POST") & ((LATE["home_team"] == "NE") | (LATE["away_team"] == "NE"))][
+    "game_id"].nunique()
+
+# ---- 4. The last yard: what happened on snaps from the opponent's 1, 2001-2014 (before Super Bowl XLIX)
+ONE = PL[(PL["yardline_100"] == 1) & (PL["season"] <= 2014)]
+ONE_P, ONE_R = ONE[ONE["play_type"] == "pass"], ONE[ONE["play_type"] == "run"]
+GL = {"pass_n": len(ONE_P), "pass_td": ONE_P["touchdown"].mean(), "pass_int": ONE_P["interception"].mean(),
+      "run_n": len(ONE_R), "run_td": ONE_R["touchdown"].mean(), "run_fum": ONE_R["fumble_lost"].mean()}
+# Carroll's two menus, treating every try as an average snap from the 1 (a rough model: it ignores that the
+# goal-line defense was set for the run, and that a stopped run can lose a yard)
+GL["two_runs"] = 1 - (1 - GL["run_td"]) ** 2
+GL["pass_then_two"] = GL["pass_td"] + (1 - GL["pass_td"] - GL["pass_int"]) * GL["two_runs"]
+XLIX = PBP[PBP["game_id"] == "2014_21_NE_SEA"]
+XLIX_INT = XLIX[XLIX["desc"].str.contains("INTERCEPTED by 21-M.Butler", na=False)].iloc[0]
+```
+
+```{python}
+#| echo: false
+#| output: false
+# guard the numbers quoted in the text against a data refresh
+assert FP_PTS.index[0] == "NE" and -3.4 < FP_PTS["NE"] < -2.8
+assert FP_TOP.index[0] == "NE" and -0.016 < FP_TOP["NE"] < -0.010 and 0.22 < TOP_SHARE < 0.25
+assert FP_HALF.index[1] == "NE" and FP_HALF.index[0] == "PIT" and 0.7 < FP_HALF["NE"] < 0.95
+assert CLOSE_PCT.index[0] == "NE" and NE_CLOSE_W == 86 and NE_CLOSE_N == 129
+assert BAL14 == (54, 8) and IND14 == (37, 39) and BLOUNT_N == 30 and BLOUNT_Y == 148 and BUF08 == (11, 45)
+assert BLOUNT_TD == 3 and list(POST18["ryds"].astype(int)) == [156, 177, 156]
+assert SD_RANK["NE"] <= 2 and SD_MEAN.index[0] == "NE" and SD_MEAN.index[1] == "JAX" and SD_RANK["JAX"] == 1
+assert abs(TOP_MED - 0.0044) < 0.001 and FP_TOP_C.index[0] == "NE" and 1.7 < TOP_RATIO < 2.2
+assert SB_RUSH.to_dict() == {5: 19, 4: 14, 3: 5, 6: 3} and SB_6DB == {False: (11, 13), True: (15, 46)}
+assert SG07.idxmax() == "NE" and BRADY07 == 50
+assert LATE_RANK.to_dict() == {2020: 5, 2021: 2, 2022: 6, 2023: 11} and LATE_POST == 1
+assert abs(P21_PASS["NE"] - R21["pass"].mean()) < 0.03
+assert FP_PTS.index[1] == "BAL" and FP_PTS.index[2] == "PIT"
+assert abs(LIII.loc["Man coverage", "season"] - 0.61) < 0.02 and abs(LIII.loc["Man coverage", "sb"] - 0.46) < 0.02
+assert MAN_RANK == 1 and LIII_N["cov"] == 37 and abs(LA_PPG - 32.9) < 0.1
+assert P11.idxmax() == "LA" and P11["LA"] > 0.9 and P21.rank(ascending=False)["NE"] == 2
+assert 0.025 < GL["pass_int"] < 0.033 and GL["run_fum"] < 0.02 and GL["pass_n"] > 1200
+assert XLIX_INT["half_seconds_remaining"] == 26 and XLIX_INT["down"] == 2
+```
+
+Atlanta, February 3, 2019, the fourth quarter of Super Bowl LIII. The Los Angeles Rams scored
+`{python} f"{LA_PPG:.1f}"` points a game that season, second-most in the league, with a 33-year-old head coach,
+Sean McVay, who was being called the brightest offensive mind in football. They have three points. Their punter
+will kick nine times tonight, once for a Super Bowl-record 65 yards. On the sideline, their quarterback, Jared Goff, will later
+describe his evening in four words: "We were completely guessing." McVay's verdict is shorter: "I got
+out-coached."[^liii-quotes] The New England defense on the field has no Hall of Fame pass rusher and no shutdown
+superstar. What it has is a plan that existed for exactly one week, built to take one offense apart, and a head
+coach, Bill Belichick, who had been building plans like it for more than thirty years. How do you make a great
+offense guess? And what did it cost New England to do it?
+
+**You'll be able to:**
+
+- Explain what a **game-plan defense** is, how it differs from a defense that runs one system every week, and
+  why it always comes with a bill that the defense chooses in advance.
+- Break down Belichick's three signature Super Bowl defensive plans (Super Bowl XXV against Buffalo's K-Gun,
+  Super Bowl XXXVI against Marshall Faulk's Rams, and Super Bowl LIII against McVay's Rams) and say, for each one,
+  what was taken away and what was conceded.
+- Describe how the Patriots' offense changed shape to fit its players and each week's opponent (the 2007 spread,
+  the 2010–2012 two-tight-end sets, the run-first 2018 playoffs), and read that shape-shifting in data.
+- Break down the final play of Super Bowl XLIX: the clock, the personnel, the formation, and the practice-field
+  rep that decided it.
+- Recognize the situational habits (end of the half, the clock, fourth down, the rulebook) that made the
+  Patriots unusually good in close games, and test a team for them on Sunday.
+
+::: {.callout-note title="You'll need"}
+- **[Dynasties and Counterpunches](../11-history/11-04-dynasties-and-counterpunches.qmd)**: the Patriots'
+  place in the 2000–2016 arms race (the 2007 spread, the
+  [move tight end](../../appendices/glossary.qmd#gl-move-tight-end) and the two-tight-end dilemma, the Giants'
+  four-man rush that beat them twice) and the 2009 fourth-and-2. This chapter zooms in on the coach.
+- **[The Game Plan: A Week Inside an NFL Building](../08-the-chess-match/08-03-game-planning-week.qmd)**: what a
+  [game plan](../../appendices/glossary.qmd#gl-game-plan) and a
+  [tendency report](../../appendices/glossary.qmd#gl-tendency-report) are, how the week is built, and the
+  principle "take away their best thing" with its bill. Here you'll see that principle used at the highest stakes.
+- Helpful too: [personnel groupings](../../appendices/glossary.qmd#gl-personnel-grouping) and
+  [substitution matching](../../appendices/glossary.qmd#gl-substitution-matching) from
+  [Personnel Groupings](../02-personnel-and-formations/02-01-personnel-groupings.qmd);
+  [man](../../appendices/glossary.qmd#gl-man-coverage) and
+  [zone coverage](../../appendices/glossary.qmd#gl-zone-coverage), [nickel](../../appendices/glossary.qmd#gl-nickel) and
+  [dime](../../appendices/glossary.qmd#gl-dime) from
+  [A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd); and the
+  [bracket](../../appendices/glossary.qmd#gl-bracket) from
+  [Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd).
+:::
+
+**How to read the diagrams.** Offense is blue circles, defense orange squares, and *left* and *right* are always
+the offense's. Q is the quarterback, R the running back, Y and U tight ends, X and Z the outside receivers and H a
+slot receiver; C is the center. On defense, E and T (and N, a nose tackle) are linemen; S, M and W are the Sam,
+Mike and Will linebackers (B is a second inside linebacker); $ is the nickel back, D a sixth defensive back, CB
+the cornerbacks, FS and SS the safeties. Solid arrows are where players go after the snap (a short bar at the end
+of a blue line is a block); dotted lines join a man-coverage defender to his receiver; dashed orange arrows are a
+defender's reaction; and brown dashes are the throw. Shaded ovals and bands are areas of the field (a zone, a deep
+half, a running lane), each named on the picture or in the caption, and the orange line across the field is the
+line to gain. Three ring colours carry the story: a **red ring** marks the opponent's "best thing", the target of
+the plan; a **purple ring** marks a defender the plan moved or gave a special job; a **green ring** marks the
+player to watch. A small red disc ("hit") marks where the plan's contact happens. Every diagram is
+illustrative: built from the published accounts of each plan and typical alignments of the era, not traced from
+the coaches' film.
+
+## The problem: eleven defenders can't stop everything
+
+Start with arithmetic. A defense has eleven players. An offense can put five receivers into a pattern, run in
+six or seven different gaps, throw short or deep, to either side. No arrangement of eleven people covers all of
+that. Every coverage you met in [Part 6](../06-pass-coverage/06-01-coverage-fundamentals.qmd) has holes, and
+[What Beats What](../08-the-chess-match/08-01-concepts-versus-coverages.qmd) is a catalogue of where they are. So
+every defense, every snap, is choosing what to be weak against.
+
+Most defenses make that choice once, in the off-season. They pick a system, say Pete Carroll's single-high
+[Cover 3](../../appendices/glossary.qmd#gl-cover-3) or Tony Dungy's [Tampa 2](../../appendices/glossary.qmd#gl-tampa-2),
+and they get very good at it. The holes are known, but the players have repeated the system thousands of times, so
+they play it fast and without mistakes, and the coaching is about doing the same thing better. "We're going to
+do what we do" is a real philosophy, and it has won Super Bowls: [11-04](../11-history/11-04-dynasties-and-counterpunches.qmd)
+tells how Seattle's 2013 defense won one with a system so simple that its players could play it at full speed.
+
+Bill Belichick made the choice every week instead. That is the idea at the heart of this chapter, the
+[**game-plan defense**](../../appendices/glossary.qmd#gl-game-plan-defense): a defense rebuilt for each
+opponent, rather than run the same way every week. The staff decides what this particular offense most needs (a
+player, a concept, a part of the field), designs alignments and coverages to take it away, and chooses in advance
+what it will concede instead. The front, the coverages, even the personnel groups can change from Sunday to Sunday.
+The player who learned Belichick's defense in training camp did not know, in September, what he'd be doing in
+December. "Our philosophy is always, we're going to give them something a little bit different," is how Josh
+Boyer, then the Patriots' cornerbacks coach, put it after Super Bowl LIII.[^liii-wapo]
+
+Belichick didn't invent the idea. Coaches have always prepared for opponents, and the phrase "make them beat you
+left-handed" is older than he is. What he did was make it the *whole* method, for longer and at a higher level than
+anyone else: the defense had no fixed identity to protect, only a process. You met Michael Lombardi's summary of
+it in [08-03](../08-the-chess-match/08-03-game-planning-week.qmd): Belichick aims at what the opponent's
+*individual players* do best, not at the offense in the abstract.[^lombardi] That refinement runs through every plan
+in this chapter. The target is usually a *person*.
+
+::: {.callout-important title="Why it exists: the game-plan defense"}
+**What it solves.** A defense with one system has one set of holes, and by mid-season every opponent has a
+[tendency report](../../appendices/glossary.qmd#gl-tendency-report) that lists them. A defense that changes each
+week has no stable holes to scout: the opponent prepares for the defense it saw on film and meets a different one.
+And because the plan is aimed at *this* offense's best thing, it attacks the part of the opponent that matters
+most rather than playing the averages.
+
+**What it costs.** Three. First, learning: a new plan every week means meetings, installs and practice time spent
+on things that will never be used again, and players who must be smart enough to absorb them. Belichick's teams
+famously valued versatile, coachable players over pure athletes for exactly this reason. (What a week of that
+looks like in one concrete case, the practice rep behind the Super Bowl XLIX interception, is below.) Second, execution: a
+defense running something new is more likely to blow a coverage than one running its thousandth rep of the same
+call. Third, the bill itself: every defender aimed at the best thing is taken away from somewhere else, and the
+plan only works if the thing it concedes really is less dangerous.
+:::
+
+### Where the habit came from
+
+Some of this is family history. Belichick's father, Steve Belichick, was an assistant coach and scout at the
+Naval Academy for more than thirty years and wrote a textbook on the subject, *Football Scouting Methods* (1962).
+As a boy in Annapolis, Bill sat with him while he broke down film of Navy's opponents, learning to see a game as a
+set of habits that could be listed and attacked.[^halberstam] He started in the NFL in 1975 as a $25-a-week
+assistant in Baltimore, coached special teams and linebackers for the Giants under Ray Perkins and then Bill
+Parcells, and was the Giants' defensive coordinator from 1985 to 1990, winning two Super Bowls. He was head coach
+of the Cleveland Browns from 1991 to 1995 and of the New England Patriots from 2000 to 2023, where he won six more.[^bb]
+
+That last line hides the important point. The plans in this chapter come from three different eras of football:
+1990, when the threat was a no-huddle passing attack; 2001, when it was a "Greatest Show on Turf"; 2018, when it was
+a young coach's play-action machine. The defenses look nothing alike. The *method* is identical, and it fits in
+three questions:
+
+1. **What does this offense most need?** Not what it does most often: what it can't live without.
+2. **What can we give it instead, that it would rather not take?** The concession has to be real, and cheap.
+3. **What is the bill, and who pays it?** Which defender is alone, which part of the field is soft, which play
+   are we willing to watch work?
+
+Keep those three questions in mind; we'll answer them for each Super Bowl in turn.
+
+## Super Bowl XXV: let Thurman Thomas run
+
+**The problem.** The 1990 Buffalo Bills were the most explosive offense in football. They went 13–3, led the
+league with 428 points, and beat the Raiders 51–3 in the AFC Championship Game.[^sb25] Their weapon was the
+*K-Gun*, a no-huddle attack (the full story is in [The 1978 Liberation](../11-history/11-02-the-1978-liberation.qmd)
+and [In-Game Adjustments](../08-the-chess-match/08-04-in-game-adjustments-and-tempo.qmd)): Jim Kelly in the
+shotgun, three wide receivers (Andre Reed, James Lofton and a third), a tight end who could block and catch, and
+Thurman Thomas, a running back who was as dangerous catching passes as running. Because the Bills didn't huddle,
+the defense couldn't substitute between plays. Whatever eleven players a defense had on the field when a drive
+began, it was stuck with them, and Kelly picked the play after seeing them.
+
+You met this plan briefly in [08-03](../08-the-chess-match/08-03-game-planning-week.qmd)'s film room. Here is
+how it worked on the field.
+
+**The answer.** Belichick's plan started from the no-huddle. If you can't substitute, you have to pick one
+personnel group that can survive every down, and he picked a light one: for most of the game the Giants had only
+two down linemen, Erik Howard and Leonard Marshall. Bill Parcells described it afterward as "a 2-4-5, or a
+2-3-6" (linemen, then linebackers, then defensive backs, the same way you read a 4-3); at times there were six
+defensive backs. The outside linebackers, Lawrence Taylor and Carl Banks among them, stood up at the edges, where
+they could rush or drop.[^xxv-plan] Then came the line that made his players think he had
+lost his mind. A week before the game he told them that if Thurman Thomas ran for 100 yards, the Giants would win.
+Banks called the idea "a collective brain fart."
+
+Here is the logic, in the three questions:
+
+1. **What does Buffalo most need?** Kelly's throws, especially to Reed and Lofton, and Thomas catching the ball in
+   space. A no-huddle offense lives on completions: they move the chains, keep the tempo fast and keep a tired
+   defense stuck on the field. Big completions are how it scores quickly.
+2. **What can the Giants give instead?** The run. A run is one fewer pass. And a run that ends in bounds keeps the
+   clock moving (only an incompletion or a run out of bounds stops it). That suited a Giants team that planned to win the game with its own offense, a ball-control attack that would keep
+   Kelly on the bench.
+3. **What's the bill?** Thomas, running against a front with two linemen, would gain yards. Belichick bet that he
+   couldn't gain them fast enough, and he paid the bill on purpose.
+
+And the passes the Giants *did* allow would be punished. Every linebacker and defensive back was responsible for
+hitting any Bill who caught the ball. "As soon as [Andre] Reed got the ball, he needed a helmet in his ribs," Banks
+remembered.[^xxv-espn]
+
+```{python}
+#| label: fig-xxv-plan
+#| fig-cap: "The Giants' Super Bowl XXV plan against Buffalo's K-Gun (illustrative). Top: on passing downs only four rush (two linemen and two outside linebackers standing up at the edges); the other seven drop, five underneath and two deep (Cover 2, with the corners pressing the outside receivers and then sitting in the flats), so every short throw lands in front of a defender, and the plan's rule is to hit the receiver as the ball arrives (red badge on Reed's crossing route, H, red ring). Bottom: the price, chosen in advance. With only two down linemen the inside run is open (shaded); Thomas (R) can have four or five yards (the budget, not a promise), as long as the linebackers and safeties rally and tackle before he gets more. Each of those runs is a play on which Kelly doesn't throw, and the clock keeps moving."
+def kgun():
+    """1990 Bills K-Gun: shotgun, three receivers and a tight end, Thomas beside Kelly.
+    Seven on the line: the five linemen, X (left end) and Y (right end); H and Z a step off the ball."""
+    return line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.7, "R"),
+                      O("X", "WR", LINE_D, -15.0), O("Y", "TE", LINE_D, 4.8),
+                      O("H", "WR", OFF_BALL, 9.5), O("Z", "WR", OFF_BALL, 15.5)]
+
+
+def giants_245():
+    """Two down linemen, four linebackers (two of them standing up on the edges), five defensive backs."""
+    return [D("NT", "DT", 1.0, 0.6, "N"), D("DE", "DE", 1.0, -2.4, "E"),
+            D("WOLB", "OLB", 1.0, -5.6, "W"), D("SOLB", "OLB", 1.0, 6.6, "S"),
+            D("MIKE", "MIKE", 4.6, -2.0, "M"), D("BUCK", "LB", 4.6, 2.6, "B"),
+            D("NB", "NB", 5.0, 9.5, "$"), D("LCB", "CB", 1.2, -14.2, "CB"), D("RCB", "CB", 1.2, 14.7, "CB"),
+            D("FS", "FS", 13.0, -7.5, "FS"), D("SS", "SS", 13.0, 7.5, "SS")]
+
+
+fig, axes = plt.subplots(2, 1, figsize=(5.6, 7.4))
+LAT, WIN = (-18.5, 18.5), (-7.5, 17.5)
+
+# --- top: the pass. Rush four, drop seven (five under, two deep), hit every catch.
+p = Play(kgun(), giants_245(), los=own(30), to_go=None)
+for k in ("LT", "LG", "C", "RG", "RT"):
+    p.block(k, pts=[(-1.2, 0.0)], speed=1.6)
+for k, end in (("WOLB", (-4.6, -3.0)), ("DE", (-3.0, -1.2)), ("NT", (-3.0, 1.0)), ("SOLB", (-4.6, 3.0))):
+    go_to(p, k, end, kind="rush")
+p.dropback(2.0)
+go_to(p, "X", (16.5, -15.5), kind="route")
+go_to(p, "Y", (15.5, 5.6), kind="route")
+go_to(p, "H", (3.0, 9.0), (8.0, 4.5), (8.5, -3.0), kind="route")
+go_to(p, "Z", (11.0, 15.8), (9.5, 14.8), kind="route")
+go_to(p, "RB", (-3.0, -6.5), (0.5, -9.0), kind="route")
+for k, to in (("MIKE", (8.0, -5.0)), ("BUCK", (8.5, 3.5)), ("NB", (8.0, 10.5)), ("LCB", (5.0, -13.0)),
+              ("RCB", (5.0, 14.0)), ("FS", (15.0, -9.0)), ("SS", (15.0, 9.0))):
+    p.drop(k, to)
+p.highlight("H", color=RED)
+f = draw(p, ax=axes[0], lateral=LAT, window=WIN)
+panel_title(axes[0], "Passing down: rush four, drop seven, hit every catch")
+oval(f, p, (14.2, -8.6), (4.2, 15.0))
+oval(f, p, (14.2, 8.6), (4.2, 15.0))
+say(f, p, 15.0, -13.2, "deep half", fontsize=6.2, box=False)
+say(f, p, 15.0, 13.2, "deep half", fontsize=6.2, box=False)
+badge(f, p, 8.5, -1.0, "hit")
+say(f, p, 11.6, -1.0, "five underneath:\nevery catch is tackled\nwhere it lands", fontsize=6.3)
+say(f, p, 3.0, -10.0, "corners jam,\nthen sit", fontsize=6.3, color=DD)
+
+# --- bottom: the run they invited. Two linemen; the back can have four or five yards.
+p = Play(kgun(), giants_245(), los=own(30), to_go=None)
+for k, tgt in (("LT", "WOLB"), ("LG", "DE"), ("C", "NT"), ("RG", "BUCK"), ("Y", "SOLB")):
+    p.block(k, target=tgt)
+p.block("RT", pts=[(1.4, 0.4)])
+p.handoff("RB", t=0.7)
+go_to(p, "RB", (-4.6, -0.6), (-1.0, 1.0), (4.0, 1.4), kind="run", delay=0.3)
+for k, to in (("MIKE", (3.7, 0.0)), ("SS", (5.4, 3.0)), ("FS", (5.8, -0.4)), ("NB", (5.4, 6.0))):
+    go_to(p, k, to, kind="path")
+p.highlight("RB", color=GREEN)
+f = draw(p, ax=axes[1], lateral=LAT, window=WIN)
+panel_title(axes[1], "The price: the inside run is open, on purpose (budget: 4–5 yards)")
+band(f, p, 0.0, 4.6, -3.5, 4.4, color=style.LINE_TO_GAIN, alpha=0.16)
+say(f, p, 2.4, -8.6, "Thomas can have\n4–5 yards here", fontsize=6.5, color=style.INK)
+say(f, p, 9.4, 0.8, "linebackers and safeties\nrally: tackle, don't miss", fontsize=6.3, color=DD)
+point_to(f, p, (-3.4, -10.0), (1.0, -2.4), "only two\ndown linemen", color=DD, fontsize=6.3)
+fig.tight_layout(h_pad=1.2)
+plt.show()
+```
+
+Thomas got his yards: 135 of them, on just 15 carries. That is 9 yards a carry, including a 31-yard touchdown run in
+the fourth quarter, far more than the plan's budget of four or five. So why did the plan hold? Because of the
+other half of it. The Giants' offense held the ball for 40 minutes and 33 seconds, still the Super Bowl record, which
+left Buffalo's fast-break offense less than 20 minutes and about 55 plays all night (25 runs and Kelly's 30
+passes). A great runner on 15 carries
+is a smaller problem than a great passer on 50 throws. Buffalo's receivers, Reed,
+Lofton and Thomas, combined for 14 catches and 178 yards, and only one of Kelly's passes, a 61-yard catch by
+Lofton, gained more than 20 yards; the Bills converted one third down in eight tries. The Giants won 20–19, and the
+game ended with Scott Norwood's 47-yard field goal attempt drifting wide right.
+
+::: {.callout-note title="Film room: New York Giants, Super Bowl XXV (1990 season)"}
+January 27, 1991, Tampa Stadium. Watch the Giants' defensive front before each Buffalo snap and count the players
+with a hand on the ground: usually two. Then watch what happens after a short completion: a second and third
+defender arrive within a second of the catch, and the receiver goes down hard. Then watch Thomas's runs: he gets
+through the line easily and is usually met five yards downfield. That's the plan working, not failing.
+
+**What to notice:** the two standing outside linebackers. Find Lawrence Taylor (#56) and watch whether he rushes or
+drops on each pass. A standing edge player can do either, so with only two linemen down, Kelly can't count the
+rushers until the ball is snapped. The handwritten plan, with sections
+such as "no-huddle adjustments," is now in the Pro Football Hall of Fame.[^xxv-hof]
+:::
+
+::: {.callout-caution title="Common misconception"}
+"Take away their best thing" does not mean *stop* their best thing at any cost, or stop everything. It means: choose
+which of the offense's weapons you can live with, and point everything else at the one you can't. A game-plan
+defense that "gives up" 135 rushing yards and wins has not failed; it has paid the bill it chose. When you judge a
+defensive plan, ask what it was *trying* to concede before you count what it gave up.
+:::
+
+## Super Bowl XXXVI: two words, Marshall Faulk
+
+**The problem.** Eleven years later Belichick was a head coach, and the opponent was even better. The 2001 St. Louis
+Rams, "the Greatest Show on Turf," scored 503 points and were 14-point favorites (the betting markets expected them
+to win by two touchdowns). Kurt Warner threw to Isaac Bruce,
+Torry Holt and Az-Zahir Hakim, and the whole machine turned on Marshall Faulk, a running back who was also one of the
+best receivers in football, the league's offensive player of the year three seasons running.[^xxxvi] The Patriots had
+already played them, in November, and lost 24–17. In that game Belichick and his defensive coordinator, Romeo
+Crennel, had put a linebacker on Faulk. "That didn't work out for us," Crennel said later, laughing.[^holley]
+
+**The answer.** Four years after the game, as a guest on ESPN's pregame show for Super Bowl XL, Belichick explained
+the plan in one sentence: "In Super Bowl XXXVI, our game plan was defined by two words: Marshall Faulk."[^bb-espn]
+Every snap began with one question, *where is he?*
+
+- **Faulk directly behind Warner:** expect a run, and play run defense.
+- **Faulk offset to one side, or split out:** expect a pass. "He's not behind the quarterback; we're thinking jam
+  the receivers." Press the wide receivers at the line to throw off the timing of Warner's throws, which in the
+  Rams' system went to spots before the receiver had turned. And that "triggered the defensive ends,
+  [Willie] McGinest, trying to hit Faulk and take him out of the game" as he released.
+- **When we blitz, blitz over Faulk**, from his side, so that he has to stay in and block: "then our blitzers would
+  get to the quarterback and we could force the ball out in a hurry."
+
+And behind the jams? Not the man coverage New England had played in November. "We felt they would be ready for
+man coverage, since we gave them a lot of man the first time," Crennel said, "so as an alternative to the man, we
+wanted to go with the cover two, which allowed us to be physical with the receivers." So the usual call was
+[Cover 2](../../appendices/glossary.qmd#gl-cover-2): the corners jam the outside receivers and then sit in the flats
+underneath them, two safeties split the deep field, and the rest drop into short zones, with one defensive back,
+instead of a linebacker, matched on Faulk wherever he went. It wasn't pure zone; Martz said afterward that
+New England played "a lot of two-deep type coverages, a lot of man-press kind of things." Mixing the two was part of
+the point. "It was in the game plan for us to hit Faulk no matter where he was on the field," McGinest said.[^hobson]
+
+The Patriots played most of the night with five, six or even seven defensive backs: by one count, nickel or dime
+personnel on 54 of the Rams' 69 snaps. That was the concession, a light defense daring the Rams' coach, Mike Martz,
+to run.[^pasq]
+
+```{python}
+#| label: fig-xxxvi-faulk
+#| fig-cap: "The Patriots' Super Bowl XXXVI plan: everything keyed on where Marshall Faulk (R, red ring) lined up (illustrative). Top: Faulk directly behind Warner (Q) is a run alignment, so New England plays run defense: the strong safety rolls down, putting seven defenders in the box against six blockers (five linemen and the tight end). Bottom: Faulk offset to the side is a pass alignment. The corners and the nickel press the receivers at the line to break the timing of the Rams' throws, then drop into Cover 2 (the corners sit in the flats, two safeties split the deep field, M takes the middle). The defensive end on Faulk's side (E, purple ring) attacks him as he releases (red badge), and a sixth defensive back (D, purple ring) is matched on Faulk in man (the one dotted line) instead of a linebacker."
+def rams01(back="behind"):
+    """2001 Rams, 11 personnel, Warner under center. Seven on the line: the five linemen, X and Y."""
+    rb = O("RB", "RB", -7.0, 0.0, "R") if back == "behind" else O("RB", "RB", -5.0, 2.8, "R")
+    return line5() + [O("QB", "QB", UC, 0.0, "Q"), rb, O("X", "WR", LINE_D, -15.0), O("Y", "TE", LINE_D, 4.8),
+                      O("H", "WR", OFF_BALL, -9.0), O("Z", "WR", OFF_BALL, 15.0)]
+
+
+def pats_dl():
+    return [D("LDE", "DE", 1.0, -5.0, "E"), D("LDT", "DT", 1.0, -0.8, "T"), D("RDT", "DT", 1.0, 2.4, "T"),
+            D("RDE", "DE", 1.0, 6.0, "E")]
+
+
+def pats_nickel():
+    return pats_dl() + [D("WILL", "WILL", 4.5, -2.6, "W"), D("MIKE", "MIKE", 4.5, 1.6, "M"),
+                        D("NB", "NB", 5.0, -9.0, "$"), D("LCB", "CB", 6.0, -15.0, "CB"),
+                        D("RCB", "CB", 6.0, 15.0, "CB"), D("SS", "SS", 9.0, 4.8, "SS"), D("FS", "FS", 13.5, -2.0, "FS")]
+
+
+def pats_dime_press():
+    return pats_dl() + [D("MIKE", "MIKE", 4.6, -1.4, "M"), D("DIME", "DB", 5.2, 4.0, "D"),
+                        D("NB", "NB", 1.2, -9.0, "$"), D("LCB", "CB", 1.2, -15.4, "CB"),
+                        D("RCB", "CB", 1.2, 15.4, "CB"), D("SS", "SS", 12.5, 7.0, "SS"), D("FS", "FS", 13.0, -6.0, "FS")]
+
+
+fig, axes = plt.subplots(2, 1, figsize=(5.6, 7.2))
+LAT, WIN = (-18.5, 18.5), (-9.5, 15.5)
+
+p = Play(rams01("behind"), pats_nickel(), los=own(35), to_go=None)
+p.highlight("RB", color=RED)
+go_to(p, "SS", (5.2, 3.6), kind="path")
+f = draw(p, ax=axes[0], lateral=LAT, window=WIN)
+panel_title(axes[0], "Faulk behind the quarterback: think run")
+point_to(f, p, (-7.0, -8.0), (-7.0, 0.0), "R directly\nbehind Q", color=OD)
+say(f, p, 8.4, 9.4, "SS rolls down\ninto the box", fontsize=6.4, color=DD)
+say(f, p, 11.5, -10.0, "nickel personnel:\nfive defensive backs", fontsize=6.4, color=DD)
+
+p = Play(rams01("offset"), pats_dime_press(), los=own(35), to_go=None)
+p.man("DIME", "RB")                       # the one man assignment: a defensive back on Faulk
+for k, to in (("LCB", (5.0, -13.6)), ("RCB", (5.0, 13.6)), ("NB", (8.0, -7.0)), ("MIKE", (8.5, 1.0)),
+              ("FS", (16.0, -8.5)), ("SS", (16.0, 8.5))):
+    p.drop(k, to, delay=0.4 if k in ("LCB", "RCB", "NB") else 0.0)   # the jam first, then the zone
+p.highlight("RB", color=RED)
+p.highlight("RDE", "DIME", color=PURPLE)
+go_to(p, "RB", (-3.6, 6.2), (-1.4, 10.0), kind="route")
+f = draw(p, ax=axes[1], lateral=LAT, window=WIN)
+panel_title(axes[1], "Faulk offset: jam, hit Faulk, Cover 2 behind")
+ghost(f, p, [(1.0, 6.0), (-0.8, 6.2), (-2.3, 6.4)], color=style.DEFENSE)
+badge(f, p, -2.9, 5.4, "hit")
+point_to(f, p, (-7.6, 10.4), (-5.0, 2.8), "R offset:\nthink pass", color=OD)
+say(f, p, 2.6, -16.6, "jam", fontsize=6.4, color=DD)
+say(f, p, 2.6, -9.0, "jam", fontsize=6.4, color=DD)
+say(f, p, 2.6, 16.6, "jam", fontsize=6.4, color=DD)
+say(f, p, 13.6, -12.6, "deep half", fontsize=6.2, color=DD, box=False)
+say(f, p, 13.6, 12.6, "deep half", fontsize=6.2, color=DD, box=False)
+point_to(f, p, (10.0, 5.0), (5.2, 4.0), "a defensive back\nmatched on Faulk", color=DD)
+fig.tight_layout(h_pad=1.2)
+plt.show()
+```
+
+Faulk's line looks ordinary: 17 carries for 76 yards, four catches for 54. But he never scored, never broke the
+long play the Rams' offense was built on, and spent the game being hit. Did the Rams take the concession? Only
+partly. Martz was criticized afterward for not giving Faulk the ball more against all those defensive backs, though Faulk's
+21 touches were only three and a half below his regular-season average.[^pasq-touch] The Rams kept trying to win the
+way they always had, through the air, into the jams. That is the bet a game-plan defense makes about a proud
+offense: it will keep doing what it does best even after the price of doing it has gone up. New England's first points came from the
+defense: in the second quarter linebacker Mike Vrabel, rushing from the edge, got to Warner as he threw toward Isaac
+Bruce, and Ty Law returned the interception 47 yards for a touchdown. The Rams had three points after three
+quarters and trailed 17–3. They rallied to tie it at 17. Then New England got the ball at its own 17 with 1:21 left
+and no timeouts, and the other half of this chapter's story, situational football, took over (more on that drive
+below). Adam Vinatieri's 48-yard field goal won it as time expired, 20–17.
+
+Notice what *didn't* change from Super Bowl XXV. Different decade, different team, different opponent; but the same
+method. Buffalo's best thing was the passing game, so the Giants conceded the run. The Rams' best thing was one
+player, so the Patriots built the entire defense around finding him and hitting him, and conceded the run to
+everyone else against a light, defensive-back-heavy front. In the first meeting they had blitzed and played man;
+Crennel's staff guessed the Rams would be ready for man again, so they played mostly Cover 2 with physical corners
+instead, and kept just one man-to-man job: the defensive back on Faulk.
+
+## Super Bowl LIII: take away the picture
+
+**The problem.** Seventeen years after the first Rams Super Bowl, the second one. The 2018 Rams went 13–3, scored
+`{python} f"{LA_PPG:.1f}"` points a game and were second in the league in
+[EPA](../../appendices/glossary.qmd#gl-epa) per play. Their offense, Sean McVay's version of the Shanahan system
+(the [Shanahan case study](12-03-shanahan-wide-zone-tree.qmd) has the family tree), was a magic trick built on
+sameness. The Rams used [11 personnel](../../appendices/glossary.qmd#gl-11-personnel) (one back, one tight end,
+three receivers) on `{python} pct(P11["LA"])` of their snaps in 2018, by far the most in the league, often from
+tight formations with the receivers close to the line. From that one look they ran
+[outside zone](../../appendices/glossary.qmd#gl-outside-zone) with Todd Gurley, and
+[play-action](../../appendices/glossary.qmd#gl-play-action) passes that began exactly like outside zone. A
+defense couldn't tell run from pass by the personnel, the formation, or the first step. And Goff had McVay's voice
+in his [helmet radio](../../appendices/glossary.qmd#gl-helmet-radio) until 15 seconds were left on the play clock,
+helping him read what the defense showed.
+
+New England's staff found one more thing in the film: the Rams' pass game was full of
+[man-beaters](../../appendices/glossary.qmd#gl-man-beater), crossing routes and rubs designed to beat man-to-man
+coverage. And man-to-man was what New England played. In 2018 the Patriots played man coverage on
+`{python} pct(LIII.loc["Man coverage", "season"])` of charted opponent dropbacks, the highest rate in the league
+(the median defense was at `{python} pct(MAN_MED)`).[^part18]
+
+**The answer.** The plan, put together by Belichick and Brian Flores (who called the defense that season), did two
+things at once.[^liii-plan]
+
+- **Up front, put the run out of business.** The Patriots walked two linebackers up to the line of scrimmage,
+  effectively playing a six-man defensive line on early downs. Outside zone runs on
+  [combo blocks](../../appendices/glossary.qmd#gl-combo-block): two linemen double-team a defender, and one of them
+  climbs off to the linebacker behind. That only works if some lineman is
+  [uncovered](../../appendices/glossary.qmd#gl-covered-uncovered-lineman), with nobody lined up on him. Six on the
+  line against five linemen and a tight end puts a defender on *every* blocker, so there are no double teams and no
+  free lineman to climb to the second level. Each blocker has to reach his man alone, the edges are set hard on both
+  sides, and the only defenders left to fill (the strong safety and the nickel) come downhill late, with nobody
+  blocking them. Stop the run on first and second down, and play-action stops working, because nobody believes the
+  fake on third-and-8. Gurley finished with 35 yards on 10 carries.
+- **Behind it, take away the picture.** After a season of man coverage, New England opened in zone. It mixed one-deep
+  and two-deep shells, man and zone, so that what Goff saw before the snap was a poor guide to what he'd face after
+  it. Midweek the coaches gave cornerback Jonathan Jones, usually the slot defender, a safety's job: he lined up close
+  to the line like a blitzer, Goff kept expecting him to come, and he kept dropping into the middle of the field. Up front, the Patriots varied which of the six
+  rushed and which dropped, and ran stunts (rushers looping around each other) they hadn't shown on film. Stephon
+  Gilmore, the best cornerback, covered the Rams' fastest receiver, Brandin Cooks.
+
+```{python}
+#| label: fig-liii-plan
+#| fig-cap: "The Patriots' Super Bowl LIII plan against the 2018 Rams (illustrative; the Rams' 11-personnel set with tight splits, Goff under center). Top: early downs. Two linebackers (W and S, purple rings) walk up to the line, so six defenders are on the line of scrimmage, one on each of the six blockers (five linemen and the tight end). With no uncovered lineman there are no double teams and nobody free to climb to the second level. Gurley's outside zone to the right (red ring) runs into an edge already set by the Sam and the end, the backside linebacker (W) closes the cutback, and the strong safety fills late and unblocked. Bottom: one of the passing looks, the same six before the snap, but only four rush. Both walked-up linebackers drop into short zones, and the slot corner, Jonathan Jones ($, purple ring), who stands near the line like a blitzer, drops to the middle of the field. Behind them is zone, not the man coverage New England played all season: the play-action crossing route by X (a man-beater) runs into zone defenders sitting in its path, Jones last. On other snaps the same six sent five, with three underneath and three deep behind them (a fire zone), and at the very end all six."
+def rams18():
+    """2018 Rams: 11 personnel, Goff under center, condensed splits. Seven on the line: the linemen, X and Y."""
+    return line5() + [O("QB", "QB", UC, 0.0, "Q"), O("RB", "RB", -7.0, 0.0, "R"), O("X", "WR", LINE_D, -8.5),
+                      O("Y", "TE", LINE_D, 4.8), O("H", "WR", OFF_BALL, 8.6), O("Z", "WR", OFF_BALL, 12.4)]
+
+
+def six_on_the_line(slot_d=4.0, slot_w=9.0):
+    """Four linemen plus two walked-up linebackers, one defender on each of the six blockers:
+    W wide of the LT, a 3-technique on the LG, a shade nose on the C, a 3-technique on the RG,
+    a 5-technique on the RT, and S outside the tight end. Five defensive backs behind."""
+    return [D("WOLB", "OLB", 1.0, -4.4, "W"), D("LDE", "DE", 1.0, -2.2, "E"), D("LDT", "DT", 1.0, -0.3, "T"),
+            D("RDT", "DT", 1.0, 2.0, "T"), D("RDE", "DE", 1.0, 3.8, "E"), D("SOLB", "OLB", 1.0, 6.0, "S"),
+            D("NB", "NB", slot_d, slot_w, "$"), D("LCB", "CB", 6.0, -9.4, "CB"), D("RCB", "CB", 6.0, 13.0, "CB"),
+            D("SS", "SS", 6.5, 0.6, "SS"), D("FS", "FS", 13.0, 0.0, "FS")]
+
+
+fig, axes = plt.subplots(2, 1, figsize=(5.6, 7.6))
+LAT, WIN = (-13.5, 17.5), (-9.5, 16.5)
+
+# --- top: outside zone into six on the line; every blocker has a man, nobody climbs
+p = Play(rams18(), six_on_the_line(), los=own(30), to_go=None)
+for k, tgt in (("LT", "WOLB"), ("LG", "LDE"), ("C", "LDT"), ("RG", "RDT"), ("RT", "RDE"), ("Y", "SOLB")):
+    p.block(k, target=tgt)
+go_to(p, "RB", (-6.0, 2.0), (-4.4, 4.6), (-2.6, 6.0), kind="run")
+p.handoff("RB", t=0.6)
+p.highlight("RB", color=RED)
+p.highlight("WOLB", "SOLB", color=PURPLE)
+f = draw(p, ax=axes[0], lateral=LAT, window=WIN)
+panel_title(axes[0], "Early downs: six on the line against outside zone")
+ghost(f, p, [(1.0, 6.0), (-0.4, 6.6), (-1.6, 6.8)])
+ghost(f, p, [(1.0, -4.4), (-1.0, -3.8), (-3.0, -1.6)])
+ghost(f, p, [(6.5, 0.6), (4.0, 2.6), (1.6, 4.4)])
+say(f, p, 9.8, -6.4, "six on the line:\na defender on\nevery blocker", fontsize=6.3, color=DD)
+point_to(f, p, (-5.8, 10.6), (-1.6, 6.8), "edge already set:\nno room outside", color=DD)
+point_to(f, p, (-6.6, -8.4), (-3.0, -1.6), "W closes\nthe cutback", color=DD)
+say(f, p, 11.0, 7.6, "no uncovered lineman:\nnobody free to climb;\nSS fills late, unblocked", fontsize=6.3, color=DD)
+
+# --- bottom: play-action into zone; the six become four rushers and two droppers
+p = Play(rams18(), six_on_the_line(slot_d=3.2, slot_w=2.9), los=own(30), to_go=None)
+for k in ("LT", "LG", "C", "RG", "RT"):
+    p.block(k, pts=[(-1.0, 0.0)], speed=1.6)
+go_to(p, "RB", (-5.2, 2.4), (-3.2, 3.2), kind="path")
+p.dropback(5.5)
+go_to(p, "X", (5.0, -6.6), (9.0, 1.0), (10.6, 7.0), kind="route")
+go_to(p, "H", (12.0, 7.4), (15.2, 4.4), kind="route")
+go_to(p, "Z", (11.0, 12.6), (10.0, 14.2), kind="route")
+go_to(p, "Y", (1.6, 6.2), (3.0, 9.6), kind="route")
+for k in ("LDE", "LDT", "RDT", "RDE"):
+    p.rush(k)
+for k, to in (("WOLB", (6.5, -6.4)), ("SOLB", (5.5, 9.0)), ("NB", (9.6, 2.6)), ("SS", (7.6, -2.6)),
+              ("LCB", (13.0, -8.6)), ("RCB", (13.5, 11.4)), ("FS", (15.5, 1.0))):
+    p.drop(k, to)
+p.highlight("WOLB", "SOLB", "NB", color=PURPLE)
+f = draw(p, ax=axes[1], lateral=LAT, window=WIN)
+panel_title(axes[1], "One of the passing looks: show six, rush four")
+point_to(f, p, (3.4, -9.6), (6.5, -6.4), "walked-up\nLBs drop", color=DD, fontsize=6.3)
+say(f, p, -6.6, 6.4, "play-action fake", fontsize=6.3, color=OD)
+point_to(f, p, (11.0, -4.8), (9.6, 2.6), "the crosser runs\ninto Jones ($), who\nstood like a blitzer",
+         color=style.INK, fontsize=6.3)
+fig.tight_layout(h_pad=1.2)
+plt.show()
+```
+
+How far did the plan depart from New England's usual defense? The 2018 charting data (from nflverse's
+participation file, which labels each dropback's coverage and counts the pass rushers) lets us measure it.
+@fig-liii-data compares the Patriots' 2018 regular season with Super Bowl LIII.
+
+```{python}
+#| label: fig-liii-data
+#| fig-cap: "Super Bowl LIII against New England's own 2018 regular season. Charted coverage and pass rushers on opponent dropbacks, and defensive personnel on all snaps (nflverse participation data). The Patriots, the league's most man-heavy defense in 2018, played more zone and more two-deep shells in the Super Bowl, sent five or more rushers far more often, and had six or more defensive backs on the field more often. The Super Bowl numbers rest on one game (37 charted coverages, 41 dropbacks with a rusher count, 59 snaps), so treat them as a description of that night rather than precise rates."
+fig, ax = plt.subplots(figsize=(6.0, 2.9))
+labels = list(LIII.index)
+y = np.arange(len(labels))
+ax.barh(y + 0.19, LIII["season"], height=0.36, color=style.BASELINE, label="2018 regular season")
+ax.barh(y - 0.19, LIII["sb"], height=0.36, color=style.SERIES[0], label="Super Bowl LIII")
+for yi, (a, b) in enumerate(zip(LIII["season"], LIII["sb"])):
+    ax.text(a + 0.01, yi + 0.19, pct(a), va="center", fontsize=7.5, color=style.INK_2)
+    ax.text(b + 0.01, yi - 0.19, pct(b), va="center", fontsize=7.5, color=style.INK, fontweight="bold")
+ax.set_yticks(y, labels)
+ax.invert_yaxis()
+ax.set_xlim(0, 0.8)
+ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+ax.grid(axis="y", visible=False)
+ax.tick_params(axis="y", length=0, labelsize=8.5, labelcolor=style.INK)
+ax.legend(loc="lower right", fontsize=7.5)
+ax.set_title("New England's defense: the season vs. the Super Bowl", fontsize=9.5)
+fig.tight_layout()
+plt.show()
+```
+
+Man coverage fell from about three snaps in five to fewer than half. The two-deep shells nearly doubled. And the
+number of rushers went *up*, which can look like a contradiction of the drawing above, where only four rushed. It
+isn't; it's the other half of the same disguise. Of Goff's `{python} LIII_N["rush"]` charted dropbacks, New England
+rushed four on `{python} int(SB_RUSH.get(4, 0))`, five on `{python} int(SB_RUSH.get(5, 0))`, six on `{python} int(SB_RUSH.get(6, 0))`
+and three on `{python} int(SB_RUSH.get(3, 0))`, all from the same crowded pre-snap picture, so Goff couldn't count the
+rush until the ball was snapped. (NFL Next Gen Stats, which counts differently, had the Patriots blitzing on half
+their snaps and pressuring Goff 14 times.)[^liii-ringer] The personnel bar fits the same story once you split it by
+down. On first and second down New England was mostly in base or nickel, and that is where the six-man line came
+from, with linebackers walking up; six or more defensive backs were on the field for only
+`{python} SB_6DB[True][0]` of `{python} SB_6DB[True][1]` early-down snaps. On third and fourth down it was six or seven
+defensive backs on `{python} SB_6DB[False][0]` of `{python} SB_6DB[False][1]`.
+
+Five rushers with zone behind them is a [fire zone](../../appendices/glossary.qmd#gl-fire-zone) (three defenders
+underneath, three deep), a standard and sound call taught in
+[Zone Blitz and Simulated Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd). Its bill is the
+spacing: with three defenders underneath instead of four or five, the windows between them (the hook areas and the
+seams) are wider, and a quarterback who reads the coverage right has someone open, fast. The Patriots' bet was that
+Goff, guessing, would not read it right in time. Once he very nearly did. Late in the third quarter, with New England
+ahead 3–0 and the Rams at the Patriots' 29, Cooks was alone deep in the end zone, and cornerback Jason McCourty
+sprinted across the field to knock the ball away just before it arrived.[^mccourty] That is the bill almost coming
+due. Goff went 19 of 38 for 229 yards with an interception and was sacked four times; the Rams converted 3 of 13 third
+downs, gained 260 yards and scored 3 points, their fewest under McVay (matched only once since, at Green Bay in
+2023).[^liii]
+
+The ending turned the plan's own pattern around. With 4:17 left, the Rams trailing 10–3 and driving, New England,
+having played zone and disguised its rush all night, sent a six-man blitz with no deep safety at all: a
+[Cover 0](../../appendices/glossary.qmd#gl-cover-0) call, all man, that left Gilmore alone on Cooks. After a night of
+learning to look for zone, Goff now faced the one thing he had stopped expecting, the man coverage New England had
+played all season. Under pressure, he threw it up, and Gilmore intercepted it at the Patriots' 3. That is why the snap
+sums up the plan: the plan was never "play zone", it was "don't be where he expects you". A Stephen Gostkowski field
+goal made it 13–3. Sony Michel's 2-yard run had scored the game's only touchdown.
+
+::: {.callout-note title="Film room: New England vs. Los Angeles Rams, Super Bowl LIII (2018 season)"}
+February 3, 2019, Mercedes-Benz Stadium, Atlanta. Watch the Rams' first two series with the sound off and count
+the Patriots defenders standing on the line of scrimmage before each snap: usually five or six. Then, on each of
+Goff's dropbacks, find the two players nearest the line who *don't* rush, and the slot defender before and after
+the snap. **What to notice:** the pre-snap picture keeps lying. A defender aligned to blitz drops, a two-deep shell
+becomes one-deep, man becomes zone. "We were completely guessing," Goff said. That sentence is the plan's goal,
+achieved: McVay's system was built to give his quarterback the answer before the snap, and New England's plan was
+built to make the pre-snap answer wrong. The quarters-and-disguise toolkit behind it is taught in
+[Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd).
+:::
+
+## The pattern, side by side
+
+Put the three plans next to each other and the method shows through the very different football.
+
+| | **Super Bowl XXV** (Giants, 1990 season) | **Super Bowl XXXVI** (Patriots, 2001) | **Super Bowl LIII** (Patriots, 2018) |
+|---|---|---|---|
+| **Their best thing** | Kelly's passing out of the no-huddle | Marshall Faulk, everywhere | One look that hid run and play-action; man-beaters |
+| **Taken away with** | Light personnel that could play every down; five underneath, two deep; hit every catch | A key on Faulk's alignment; jam the receivers; Cover 2 instead of November's man; a DB on Faulk; hit him; blitz over him | Six on the line against the run; zone and disguise instead of the season's man |
+| **Conceded on purpose** | The run: "let Thurman have 100 yards" | The run, against a defense with five to seven defensive backs | Wider windows behind five-man pressure; a corner alone on the final blitz |
+| **Result** | Thomas 135 yards; Giants win 20–19 | Rams 3 points through three quarters; Patriots win 20–17 | Rams 3 points; Patriots win 13–3 |
+
+Three things are worth noticing in that table. The concession is always *named*, usually out loud to the players.
+The plan always attacks something the opponent was proud of, so the opponent's coaches were least ready to lose it.
+And none of the three would have worked against the other two opponents: a two-lineman front against the 2018
+Rams' outside zone would have been run over, and the 2018 plan's walked-up front would have been shredded by the
+K-Gun's spread passing game. That's the point. A game-plan defense isn't a scheme you can copy; it's a way of
+deciding.
+
+It doesn't always work. In Super Bowl LII, after the 2017 season, Nick Foles and the Philadelphia Eagles gained 538
+yards against New England and won 41–33; Belichick's decision to keep his starting cornerback Malcolm Butler off the
+field on defense (the same Butler who is the hero of the next section) was argued about for years and never fully
+explained.[^lii] The method needs a plan that's right
+*and* players able to play it, and an offense with many good answers (Philadelphia's had a quarterback reading the
+defense, tight ends, running backs and trick plays all working) leaves less to take away.
+
+## Super Bowl XLIX: the last play
+
+The most famous snap of the Belichick era happened on the other side of the method: not a plan's grand design, but
+one detail of one week's preparation, met by a decision under a running clock.
+
+**The situation.** February 1, 2015, Glendale, Arizona. New England led Seattle 28–24. After a juggling 33-yard catch
+by Jermaine Kearse, Seattle had first-and-goal at the Patriots' 5. Marshawn Lynch, the most punishing runner in the
+league, ran for four yards to the 1 with 1:06 left. Seattle had one timeout; New England had two. And then, for about
+40 seconds, nobody stopped the clock.
+
+**Two coaches and a clock.** Pete Carroll's reasoning, which he explained afterward, went like this. Seattle had one
+timeout and needed one yard, and it wanted three chances at it. If it ran on second down and was stopped, it would
+have to burn its last timeout and then could run once more, maybe twice, with the clock nearly gone. A *pass* on
+second down, if incomplete, stops the clock for free, keeping the timeout for later. And New England had sent its
+goal-line defense onto the field against Seattle's three wide receivers. A goal-line defense is built to stop one
+yard of running: eight big linemen and linebackers, and only three defensive backs.
+Against Seattle's lighter run-blocking group (three receivers instead of extra tight ends), that is a bad match for a
+run and a good one for a throw: "It's not the right matchup for us to run the football, so on second down, we throw
+the ball," Carroll said, with the plan of running on third and fourth down.[^carroll] Belichick, for his part, let the clock run instead of calling a timeout,
+which would have saved time for Tom Brady if Seattle scored. He said later that he had considered it, but that the
+Patriots' goal-line defense had come on at about the same time as Seattle's three receivers, and "in the flow of the
+game, that we were OK with where we were."[^xlix-to] On NFL Network's later documentary, he recalled looking across
+at the Seattle sideline, sensing hesitation, and telling his staff to stay in goal-line. The ball was
+snapped with 26 seconds left.
+
+**The preparation.** New England's coaches had studied Seattle's goal-line passing game during the week, and one
+look stood out: two receivers stacked, one behind the other, close to the formation, with the front man running
+into the defender of the back man (a [rub route](../../appendices/glossary.qmd#gl-rub-route)) so that the back man
+could slip underneath on a quick [slant](../../appendices/glossary.qmd#gl-slant). The defensive rule for it was
+simple, and more aggressive than the textbook answer. The usual man-coverage answer to a stack is a
+[banjo](../../appendices/glossary.qmd#gl-banjo) ([Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd)): the two
+defenders wait for the release and switch, one taking whoever breaks in, the other whoever breaks out. New England's
+rule didn't wait. The defender on the front man jams him at the line, so the rub never forms. The defender on the back
+man doesn't give ground and jumps the first inward break. The research behind it came from Ernie Adams, Belichick's
+long-time football research director, who had studied Seattle's goal-line formations. In practice that week, the scout team ran the play against a rookie
+cornerback, Malcolm Butler, who hadn't even been sure of a place in the goal-line package, and beat him for a
+touchdown. Belichick told him: if you see that formation, you can't give ground.[^butler]
+
+```{python}
+#| label: fig-xlix
+#| fig-cap: "Super Bowl XLIX, second-and-goal from the Patriots' 1 with 26 seconds left: the final play (simulated, BDB-format tracking generated by gridiron, not recorded; alignment illustrative). Seattle has three receivers on the field; on the right, Kearse (Z) is on the line and Lockette (H) stacked behind him. The grey area is the end zone. New England is in its goal-line package with three defensive backs: Revis on Baldwin (X, out of frame to the left), Browner (CB, purple ring) pressing Kearse, and Butler (CB, green ring) off the ball on Lockette. (1) The snap. New England's linebackers read run and come downhill, as a goal-line defense should. (2) Kearse tries to cross Butler's path and rub him off Lockette, but Browner has jammed him at the line, and the pick never forms. (3) Wilson throws the slant. Butler, who has seen this formation from the scout team, has not given ground and is already breaking. (4) Butler arrives first and intercepts at the goal line."
+def sea_xlix():
+    """11 personnel, shotgun. Seven on the line: the five linemen, X (left end) and Z (right end).
+    The tight end is a wing off the line on the left; H stacks behind Z on the right."""
+    return line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, -1.7, "R"),
+                      O("X", "WR", LINE_D, -12.0), O("Y", "TE", OFF_BALL, -5.6),
+                      O("Z", "WR", LINE_D, 8.2), O("H", "WR", -2.4, 9.2)]
+
+
+def ne_goal_line():
+    """Goal-line package: four linemen, four linebackers, three defensive backs."""
+    return [D("LDE", "DE", 0.8, -4.4, "E"), D("LDT", "DT", 0.8, -1.0, "T"), D("RDT", "DT", 0.8, 1.0, "T"),
+            D("RDE", "DE", 0.8, 4.4, "E"), D("LB1", "LB", 2.6, -6.4, "S"), D("LB2", "MIKE", 2.6, -2.2, "M"),
+            D("LB3", "LB", 2.6, 2.0, "B"), D("LB4", "WILL", 2.6, 4.6, "W"), D("REVIS", "CB", 1.6, -12.4, "CB"),
+            D("BROWNER", "CB", 0.9, 8.9, "CB"), D("BUTLER", "CB", 4.2, 10.0, "CB")]
+
+
+def xlix_play():
+    p = Play(sea_xlix(), ne_goal_line(), los=opp(1), to_go=None)
+    for k in ("LT", "LG", "C", "RG", "RT"):
+        p.block(k, pts=[(-1.0, 0.0)], speed=1.5)
+    for k in ("LDE", "LDT", "RDT", "RDE"):
+        p.rush(k, pts=[(-1.3, 0.0)], speed=1.8)
+    # goal-line linebackers read run: they come downhill to fill gaps ("just play goal-line"), so none of them
+    # is anywhere near the slant's catch point; only Butler can close that window
+    for k, to in (("LB1", (1.6, -6.4)), ("LB2", (1.6, -2.0)), ("LB3", (1.4, 1.0)), ("LB4", (1.1, 2.6))):
+        go_to(p, k, to, kind="path", speed=2.6)
+    p.dropback(0.3)
+    go_to(p, "RB", (-4.2, -3.6), (-2.6, -5.0), kind="route", speed=4.0)
+    go_to(p, "Y", (1.6, -6.0), (3.4, -4.8), kind="route", speed=4.0)
+    go_to(p, "X", (3.0, -12.6), (6.0, -13.4), kind="route")
+    p.man("REVIS", "X")
+    # Lockette stems up outside Kearse, then breaks flat across the goal line, inside the jammed Kearse
+    go_to(p, "H", (-0.4, 10.4), (1.6, 10.4), (1.8, 5.4), kind="route", speed=6.8)
+    p.pass_to("H", t=0.75)
+    tc = catch_time(p)
+    cd, cw = p.position("H", tc)
+    set_tracks(p, {
+        # Kearse releases inside to cross Butler's path; Browner's jam stops him almost where he started
+        "Z": ease([(0.0, LINE_D, 8.2), (0.3, -0.1, 7.7), (0.6, 0.1, 7.3), (1.0, 0.3, 7.0), (tc + 0.3, 0.4, 6.9)]),
+        "BROWNER": ease([(0.0, 0.9, 8.9), (0.3, 0.8, 8.6), (0.6, 1.0, 8.2), (1.0, 1.2, 7.9),
+                         (tc + 0.3, 1.3, 7.8)]),
+        # Butler doesn't give ground: he reads the stack, then drives on the slant and cuts in front of it
+        # ... and arrives in front of Lockette, on the line of the throw, as the ball does
+        "BUTLER": ease([(0.0, 4.2, 10.0), (0.35, 4.0, 9.8), (0.75, 3.4, 7.6), (tc, cd - 0.2, cw - 0.9),
+                        (tc + 0.3, cd - 0.5, cw - 1.7)]),
+    }, t_end=tc + 0.3)
+    return p, tc
+
+
+XL, XL_TC = xlix_play()
+XL_T = [0.0, 0.45, 0.75, XL_TC]
+XL_N = ["Snap. Z (Kearse) on the line,\nH (Lockette) stacked behind.",
+        "Browner jams Kearse at the\nline: no rub. Lockette stems up.",
+        "Lockette breaks in; Wilson throws.\nButler hasn't given ground.",
+        "Butler gets there first:\nintercepted at the goal line."]
+XL_LAT, XL_WIN = (-3.5, 13.5), (-6.3, 6.5)
+XL_RINGS = (("BUTLER", GREEN), ("BROWNER", PURPLE))
+
+
+def xl_deco(t, fld, p):
+    """Name Butler in the decisive frame, so the reader finds him among the bodies."""
+    if t >= XL_TC - 0.05:
+        bd, bw = p.position("BUTLER", t)
+        point_to(fld, p, (bd + 3.0, bw - 2.6), (bd, bw), "Butler", color=GREEN_TXT, fontsize=7.0)
+
+
+if PDF:
+    strip_grid(XL, XL_T, XL_N, XL_LAT, XL_WIN, rings=XL_RINGS, mr=0.62, width_in=6.2, deco=xl_deco)
+    plt.show()
+else:
+    video(XL, XL_LAT, XL_WIN, XL_TC + 0.3, rings=XL_RINGS, notes=XL_N, times=XL_T, mr=0.62, deco=xl_deco)
+```
+
+Seattle came out with exactly that look: Kearse in front, Ricardo Lockette behind him, on the right. Brandon Browner,
+lined up on Kearse, jammed him at the line, so Kearse never got across Butler's path. Butler, lined up on Lockette,
+didn't wait to see the route develop. He drove on the slant, beat Lockette to the spot, and intercepted Russell
+Wilson's pass at the goal line with 20 seconds left.[^xlix] New England won 28–24.
+[Red Zone, Goal Line, and Short Yardage](../10-situational-football/10-03-red-zone-goal-line-and-short-yardage.qmd)
+draws the stack rub itself, why it beats man coverage near the goal line, and Butler's own account of recognizing
+the formation; here the point is the preparation, and the clock that led to the call.
+The play was a good play. It met a defense that had seen it, rehearsed it, and assigned one defender to kill the rub
+and another to jump the throw.
+
+::: {.callout-note title="Go deeper: was the throw a blunder?"}
+"Worst call in Super Bowl history" was the instant verdict, and it's worth testing, because it is the kind of claim
+data can check. In the fourteen seasons before that Super Bowl (2001–2014, nflverse play-by-play, all games), teams
+snapped the ball from their opponent's 1-yard line `{python} f"{GL['run_n'] + GL['pass_n']:,}"` times. Runs scored a
+touchdown `{python} pct(GL['run_td'])` of the time and were fumbled away `{python} pct(GL['run_fum'], 1)` of the time;
+passes scored `{python} pct(GL['pass_td'])` of the time and were intercepted `{python} pct(GL['pass_int'], 1)` of the
+time. So yes, a pass from the 1 was a little worse than a run on both counts. But not by much, and the averages hide
+what Carroll was buying: a pass that falls incomplete stops the clock and keeps his last timeout for later, which
+made three tries at the end zone possible instead of two. Put the league rates into his two menus. Two runs score at
+least once about `{python} pct(GL['two_runs'])` of the time. A pass first, then (if it falls incomplete) two runs,
+scores about `{python} pct(GL['pass_then_two'])` of the time, even after counting the interceptions. That's a rough
+model (every try treated as an average snap from the 1, against defenses that weren't all goal-line packages), but it
+turns "defensible" into arithmetic: the third try is worth more than the pass costs. The decision was defensible; the outcome was the kind
+that happens about once in `{python} f"{1 / GL['pass_int']:.0f}"` throws from there, and it happened because the
+defense had prepared for that exact snap.
+
+Belichick's own decision deserves the same test. Calling a timeout after Lynch's run would have stopped the clock
+at about a minute, so if Seattle scored, Brady would have had time to answer. Letting the clock run kept his
+goal-line personnel matched against Seattle's three receivers and kept Seattle hurrying. Analysts still argue about
+both choices. That's the honest lesson of situational football: good decisions and good outcomes are different
+things, and the rehearsed detail (a jam, a jumped slant) can matter more than either coach's clock math.
+:::
+
+## The chameleon offense
+
+So far this chapter has been about defense, because that's where game-plan football started. But Belichick's
+offenses were built on the same idea, pointed the other way: *be whatever this opponent can least handle this week*.
+[Dynasties and Counterpunches](../11-history/11-04-dynasties-and-counterpunches.qmd) tells the three big shape
+changes as history: the 2007 spread (Randy Moss outside, Wes Welker in the slot, 589 points, then a record), the
+2010–2012 two-tight-end offense with Rob Gronkowski and Aaron Hernandez, and the language underneath that made both
+possible, the [Erhardt-Perkins](../../appendices/glossary.qmd#gl-erhardt-perkins) system, in which one word names a
+concept that can be run from any formation and any personnel, so the offense can change its clothes without
+learning new plays.
+
+The 2007 version is worth a picture in words, because it shows how far one season's shape could move. That year
+the Patriots added Randy Moss, a deep threat no single corner could carry, and Wes Welker, a quick slot receiver, and
+put Tom Brady in the [shotgun](../../appendices/glossary.qmd#gl-shotgun) with three or four receivers spread across
+the field. They snapped from the shotgun on `{python} pct(SG07["NE"])` of their plays, the most in the league (the
+median team was at `{python} pct(SG07.median())`), and Brady threw `{python} BRADY07` touchdown passes, then a record.[^p07]
+Spread the defense out, and the safeties have to choose between Moss deep and Welker underneath. Three years later the
+same coach and quarterback won with two tight ends and a much tighter shape. Here we look at the shape-shifting as a
+*game plan*, week to week.
+
+### Gronkowski and the 12-personnel dilemma
+
+The two-tight-end offense of 2011 needed two rare players. After Hernandez was gone, from 2013, the Patriots
+showed the dilemma survives with one: Rob Gronkowski, 6-foot-6 and about 265 pounds, a tight end who could block a
+defensive end and outrun a linebacker. With him and a second, ordinary blocking tight end on the field (12 personnel:
+one back, two tight ends, two receivers), the defense has to choose its personnel before it sees the formation, and
+every choice leaves a hole.
+
+```{python}
+#| label: fig-gronk
+#| fig-cap: "The Gronkowski 12-personnel dilemma (illustrative; Gronkowski is Y, red ring; U is the blocking tight end). The defense picks its personnel first, then the Patriots pick the formation. A: the defense stays in base, with three linebackers, so Gronkowski splits out wide and a linebacker or safety has to cover him alone: the back-shoulder throw or the seam is there. B: the defense goes to nickel to cover him, so he stays in-line, and the run goes off tackle right at the 190-pound nickel back ($), who is now the overhang player on the edge, with Gronkowski blocking him. C: the answer opponents settled on, a bracket, with the nickel back underneath and outside and the strong safety over the top (purple rings). It takes Gronkowski away, but it spends two defenders on one: the other receiver (Z, often Julian Edelman) gets a linebacker in man with no free defender underneath to help (no robber), and the run box has one fewer defender. D: the menu, including the answer that dissolves the dilemma, big nickel."
+def pats12(y_w=4.8, y_d=LINE_D, u_w=-4.8, x_w=-15.0, x_d=OFF_BALL, z_w=11.0, z_d=OFF_BALL, rb_d=-7.0):
+    """12 personnel, under center. Seven on the line: the five linemen plus two ends (set per panel)."""
+    return line5() + [O("QB", "QB", UC, 0.0, "Q"), O("RB", "RB", rb_d, 0.0, "R"), O("Y", "TE", y_d, y_w),
+                      O("U", "TE", LINE_D, u_w), O("X", "WR", x_d, x_w), O("Z", "WR", z_d, z_w)]
+
+
+def dl4(end_w=6.0):
+    """A four-man line. Wide ends (6.0) against a spread set; against two attached tight ends the ends
+    tighten to 5-techniques on the tackles' outside shoulders (end_w=3.9), so the tight ends block the edge."""
+    rdt = min(2.4, end_w - 1.9)            # keep the 3-technique a full marker's width from a tight end
+    return [D("LDE", "DE", 1.0, -end_w, "E"), D("LDT", "DT", 1.0, -0.8, "T"), D("RDT", "DT", 1.0, rdt, "T"),
+            D("RDE", "DE", 1.0, end_w, "E")]
+
+
+fig, axes = plt.subplots(2, 2, figsize=(6.8, 5.9))
+LAT, WIN = (-17.0, 17.5), (-8.5, 14.5)
+
+# A: base defense; Gronkowski split wide right, the Sam linebacker stuck on him
+offA = pats12(y_w=15.0, y_d=LINE_D, z_w=-9.0, z_d=OFF_BALL, x_w=-15.0)
+baseA = dl4() + [D("SAM", "SAM", 4.5, 9.0, "S"), D("MIKE", "MIKE", 4.6, 0.6, "M"), D("WILL", "WILL", 4.5, -4.0, "W"),
+                 D("LCB", "CB", 6.0, -15.0, "CB"), D("RCB", "CB", 6.5, -9.0, "CB"), D("SS", "SS", 6.5, 13.6, "SS"),
+                 D("FS", "FS", 13.0, 0.0, "FS")]
+a = Play(offA, baseA, los=own(35), to_go=None)
+a.man("SS", "Y")
+go_to(a, "Y", (12.0, 15.2), kind="route")
+a.highlight("Y", color=RED)
+fa = draw(a, ax=axes[0, 0], lateral=LAT, window=WIN)
+panel_title(axes[0, 0], "A. Base: split him out", fs=8.2)
+point_to(fa, a, (11.0, 7.0), (6.5, 13.6), "a safety, alone,\non Gronkowski", color=DD, fontsize=6.0)
+say(fa, a, 8.8, -4.6, "base: three\nlinebackers (S, M, W)", fontsize=6.0, color=DD)
+
+# B: nickel; Gronkowski in-line, run at the nickel back
+offB = pats12(y_w=4.8, z_w=13.0, x_w=-15.0)
+nickB = dl4(3.9) + [D("MIKE", "MIKE", 4.6, 1.2, "M"), D("WILL", "WILL", 4.5, -2.8, "W"), D("NB", "NB", 2.6, 7.2, "$"),
+                 D("LCB", "CB", 6.0, -15.0, "CB"), D("RCB", "CB", 6.0, 13.0, "CB"), D("SS", "SS", 9.0, -6.0, "SS"),
+                 D("FS", "FS", 13.0, 3.0, "FS")]
+b = Play(offB, nickB, los=own(35), to_go=None)
+b.block("Y", target="NB")
+b.block("RT", target="RDE")
+b.block("RG", target="RDT")
+b.block("C", target="MIKE")
+for k in ("LG", "LT", "U"):
+    b.block(k, pts=[(0.6, 1.0)])
+go_to(b, "RB", (-4.0, 1.8), (0.0, 5.4), (5.0, 6.0), kind="run", delay=0.3)
+b.highlight("Y", color=RED)
+fb = draw(b, ax=axes[0, 1], lateral=LAT, window=WIN)
+panel_title(axes[0, 1], "B. Nickel: keep him in, run at the $", fs=8.2)
+say(fb, b, 9.6, 9.4, "Gronkowski\nblocks the $", fontsize=6.0, color=OD)
+
+# C: the bracket, and the bill
+offC = pats12(y_w=11.0, y_d=OFF_BALL, z_w=-9.0, z_d=OFF_BALL, x_w=-15.0, x_d=LINE_D, u_w=4.8)
+nickC = dl4(3.9) + [D("MIKE", "MIKE", 4.6, 0.6, "M"), D("WILL", "WILL", 4.5, -6.6, "W"), D("NB", "NB", 4.5, 12.6, "$"),
+                 D("LCB", "CB", 6.0, -15.0, "CB"), D("RCB", "CB", 6.5, 15.0, "CB"), D("SS", "SS", 9.0, 9.4, "SS"),
+                 D("FS", "FS", 13.5, -3.0, "FS")]
+c = Play(offC, nickC, los=own(35), to_go=None)
+c.man("WILL", "Z")
+c.highlight("Y", color=RED)
+c.highlight("NB", "SS", color=PURPLE)
+go_to(c, "Z", (5.5, -9.4), (6.4, -5.4), kind="route")
+go_to(c, "Y", (8.0, 11.0), kind="route")
+fc = draw(c, ax=axes[1, 0], lateral=LAT, window=WIN)
+panel_title(axes[1, 0], "C. The bracket: two on one", fs=8.2)
+say(fc, c, 11.0, 14.2, "bracket", fontsize=6.0, color=DD)
+point_to(fc, c, (11.2, -11.0), (6.3, -5.6), "the bill: Z on a\nlinebacker, no robber", color=RED, fontsize=6.0)
+
+# D: the menu, as a table
+ax = axes[1, 1]
+ax.set_axis_off()
+ax.grid(False)
+panel_title(ax, "D. The defense's menu", fs=8.2)
+rows = [("Defense sends out…", "…and the Patriots answer", True),
+        ("Base (3 linebackers)", "Split Gronkowski out:\na linebacker or safety\ncovers him alone", False),
+        ("Nickel (5 DBs)", "Keep him in-line: run\nat the nickel back", False),
+        ("Bracket him", "Throw to the others;\nrun at a lighter box", False),
+        ("Big nickel\n(a 3rd safety)", "No easy mismatch: a\nsafety can tackle and\ncover, but less well", False)]
+yy = 0.93
+for left, right, head in rows:
+    ax.text(0.0, yy, left, fontsize=7.0, va="top", color=style.INK, fontweight="bold" if head else "normal",
+            transform=ax.transAxes)
+    ax.text(0.47, yy, right, fontsize=7.0, va="top", color=style.INK, fontweight="bold" if head else "normal",
+            transform=ax.transAxes, linespacing=1.15)
+    yy -= 0.12 if head else 0.205
+ax.plot([0, 1], [0.84, 0.84], color=style.BASELINE, lw=0.8, transform=ax.transAxes)
+for a_ in (axes[0, 0], axes[0, 1], axes[1, 0]):
+    a_.set_anchor("N")                     # pin each field to the top of its cell, so C sits right under A
+fig.tight_layout(w_pad=0.6, h_pad=1.0)
+plt.show()
+```
+
+Panel D's first three rows are the whole dilemma, and it's the same order-of-events trick as in 11-04: the defense
+commits its personnel before it sees the formation, so an offense with a player who is good at two jobs gets to pick
+which job he does *after* the defense has chosen. Panel C is the defense's way out, and it's pure Belichick logic
+turned against him: take away the best thing (Gronkowski) and pay the bill somewhere else. That's why the Patriots
+kept a receiver like Julian Edelman, quick enough to win against a linebacker or a nickel back on an
+[option route](../../appendices/glossary.qmd#gl-option-route), next to Gronkowski for most of the decade. The
+bracket on one created the matchup for the other.
+
+The last row of panel D is the way out that doesn't cost a second defender:
+[big nickel](../../appendices/glossary.qmd#gl-big-nickel), a third safety in place of a linebacker or a slot
+corner, big enough to take on a tight end's block and fast enough to run with him. It dissolves the dilemma rather
+than solving it, because whatever formation the offense picks, the same player is on the field. Its price is that a
+safety is a compromise at both jobs, a little lighter than a linebacker against the run and a little slower than a
+corner in coverage, and it only works if you have three safeties good enough to play. That's the "versatile players"
+lesson again, from the defense's side.
+
+### Game by game
+
+The deeper shape-shifting was weekly. A team with one identity runs and passes in roughly the same proportions
+every Sunday, adjusting for the score. Belichick's Patriots would throw on almost every early down one week and run
+on most of them the next, depending on what the opponent's defense couldn't handle. @fig-chameleon measures it.
+
+```{python}
+#| label: fig-chameleon
+#| fig-cap: "The chameleon, measured. Top: each dot is one Patriots game, 2001-2019 (blue: regular season; orange: playoffs): the share of plays that were passes on first and second down in neutral situations (win probability 20-80%, more than two minutes left in the half; games with at least 15 such plays). The grey band is the middle 80% of all NFL team-games that season and the grey line the league median. Labelled: the January 2015 divisional game against Baltimore and the 2018 AFC Championship Game at Kansas City, in the playoff run when the offense turned to the run. (The AFC Championship Game against Indianapolis a week after the Baltimore game, a run-heavy rout, had too few neutral-situation plays to appear.) Bottom: the same measure for every team. Each dot is one franchise's typical game-to-game spread in that pass rate (the standard deviation across its regular-season games, averaged over the 19 seasons); New England's games varied from week to week as much as any franchise's: Jacksonville is a hair behind by this measure, and a hair ahead when teams are ranked season by season instead."
+fig, (ax, ax2) = plt.subplots(2, 1, figsize=(6.4, 4.7), gridspec_kw={"height_ratios": [3.7, 0.75]})
+ax.fill_between(LG_BAND.index, LG_BAND[0.1], LG_BAND[0.9], color=style.GRID, alpha=0.8, lw=0,
+                label="middle 80% of NFL team-games")
+ax.plot(LG_BAND.index, LG_BAND[0.5], color=style.MUTED, lw=1.2, label="NFL median")
+rng = np.random.default_rng(7)
+for st, col, lab in (("REG", style.SERIES[0], "Patriots, regular season"), ("POST", style.SERIES[1], "Patriots, playoffs")):
+    g = NE_GAMES[NE_GAMES["season_type"] == st]
+    ax.scatter(g["season"] + rng.uniform(-0.22, 0.22, len(g)), g["mean"], s=14 if st == "REG" else 22, color=col,
+               alpha=0.75 if st == "REG" else 0.95, lw=0, zorder=3, label=lab)
+
+
+def mark(gid, text, dx, dy):
+    row = NE_GAMES[NE_GAMES["game_id"] == gid]
+    if len(row):
+        x, y = float(row["season"].iloc[0]), float(row["mean"].iloc[0])
+        ax.annotate(text, (x, y), xytext=(x + dx, y + dy), fontsize=7, color=style.INK, ha="center",
+                    arrowprops=dict(arrowstyle="-", color=style.INK_2, lw=0.6), zorder=5)
+
+
+mark("2014_19_BAL_NE", "Jan 2015 playoffs vs BAL:\n54 passes, 8 runs", -3.6, 0.06)
+mark("2018_20_NE_KC", "2018 AFC title game\nat KC: run first", -0.9, -0.33)
+ax.set_xlim(2000.4, 2019.6)
+ax.set_xticks(range(2001, 2020, 2))
+ax.set_ylim(0.0, 1.0)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+ax.set_ylabel("neutral early-down pass rate", fontsize=8)
+ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.1), fontsize=6.8, ncol=4, handlelength=1.5)
+ax.set_title("New England's offense, game by game", fontsize=9.5)
+
+# bottom strip: every franchise's average game-to-game spread, New England in blue
+others = SD_MEAN.drop("NE")
+ax2.scatter(others.values * 100, np.zeros(len(others)), s=24, color=style.BASELINE, alpha=0.9, lw=0, zorder=2)
+ax2.scatter([SD_MEAN["NE"] * 100], [0], s=55, color=style.SERIES[0], zorder=3)
+ax2.annotate(f"NE {SD_MEAN['NE'] * 100:.1f}", (SD_MEAN["NE"] * 100, 0), xytext=(0, 8), textcoords="offset points",
+             ha="center", fontsize=7.2, color=style.INK, fontweight="bold")
+r2 = SD_MEAN.index[1]
+ax2.annotate(f"{r2} {SD_MEAN[r2] * 100:.1f}", (SD_MEAN[r2] * 100, 0), xytext=(-4, -12), textcoords="offset points",
+             ha="right", fontsize=6.8, color=style.INK_2)
+lo = SD_MEAN.idxmin()
+ax2.annotate(f"steadiest: {lo}", (SD_MEAN[lo] * 100, 0), xytext=(0, 8), textcoords="offset points", ha="center",
+             fontsize=6.8, color=style.INK_2)
+ax2.set_yticks([])
+ax2.set_ylim(-1.4, 1.6)
+ax2.spines["left"].set_visible(False)
+ax2.grid(axis="y", visible=False)
+ax2.tick_params(axis="x", labelsize=7.2)
+ax2.set_title("Every team: average game-to-game spread in that pass rate (percentage points)", fontsize=7.8,
+              loc="left", fontweight="normal", color=style.INK)
+fig.tight_layout(h_pad=2.4)
+plt.show()
+```
+
+Look at January 2015. In the divisional round against Baltimore, whose defense was strong up front and weak in the
+secondary, the Patriots threw `{python} BAL14[0]` passes and ran `{python} BAL14[1]` times, and won 35–31 (the game in
+which they also confused Baltimore with legal formations that made eligible receivers look ineligible, the trick
+[Formation Rules](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd) explains). Eight days
+later, in the AFC Championship Game against an Indianapolis defense that couldn't stop the run, they ran it
+`{python} IND14[1]` times; LeGarrette Blount carried `{python} BLOUNT_N` times for `{python} BLOUNT_Y` yards and
+`{python} BLOUNT_TD` touchdowns, and New England won 45–7.[^pbp-games] Same coach, same quarterback, same playbook
+language, nearly opposite offenses.
+
+Or look at the end of the 2018 season. The Patriots had been a pass-first team, even though in the regular season
+they used [21 personnel](../../appendices/glossary.qmd#gl-21-personnel) (two backs, with fullback James Develin) on
+`{python} pct(P21["NE"])` of their snaps, second-most in the league. That isn't a contradiction. Two backs on the
+field make a defense think run and load up for it, which is exactly when a play-action pass works best, and New England
+threw on `{python} pct(P21_PASS["NE"])` of its 21-personnel snaps, about the league rate for that grouping
+(`{python} pct(R21["pass"].mean())`). The fullback was a tool for both, not a signal. In the playoffs they really did lean on the run: 156, 177 and 156 rushing yards
+in their three games, with the rookie Sony Michel carrying the load. The first opponent was a Chargers defense that
+had just beaten Baltimore with seven defensive backs on 58 of its 59 snaps.[^lac7] Seven defensive backs is a small,
+fast defense built to cover, so New England ran straight at it. Then came Kansas City and the Rams. The 41-year-old
+Tom Brady threw less, and the team won the Super Bowl anyway. Even the weather got a game plan: in a December 2008 game
+in Buffalo, in heavy wind, the Patriots ran `{python} BUF08[1]` times and threw `{python} BUF08[0]` passes, and in a
+December 2021 Monday-night game in Buffalo (told in [08-03](../08-the-chess-match/08-03-game-planning-week.qmd)) they threw
+three.
+
+::: {.callout-note title="Madden vs. real life"}
+In Madden, a team's offense is its playbook: pick "Spread" or "Pro Style" and that's who you are. Real NFL offenses
+carry a far bigger playbook than any one game uses, and each week's [game plan](../../appendices/glossary.qmd#gl-game-plan)
+selects a slice of it for this opponent. The Patriots took that further than anyone: their system was a *language*
+(Erhardt-Perkins concepts that work from any formation) rather than a list of plays, so the slice could be almost
+anything. Fifty-four passes one week, thirty-nine runs the next, from the same quarterback and the same play-caller,
+Josh McDaniels, is not a team with an identity crisis. It's a team whose identity is the game plan.
+:::
+
+## Situational mastery
+
+The third leg of Belichick's football was the one fans noticed least until the last two minutes: treating every
+*situation* (the end of a half, a lead to protect, fourth-and-short, a strange rule) as something to be studied and
+rehearsed in advance, like an opponent. Each of the plays below is told in full in
+[The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd)
+or the chapter linked; here they're one line each, because the point is the pattern, not the stories.
+
+- **Super Bowl XXXVI, 1:21 left, no timeouts, tied, own 17:** John Madden said kneel; Belichick and Brady threw
+  short against the Rams' [prevent](../../appendices/glossary.qmd#gl-prevent-defense)-style shell and won it on a
+  48-yard field goal as time expired.
+- **November 2003 at Denver, down a point at their own 1:** an
+  [intentional safety](../../appendices/glossary.qmd#gl-intentional-safety), two points given away so the next kick
+  would be a [free kick](../../appendices/glossary.qmd#gl-free-kick) from the 20 instead of a punt from the end zone;
+  the field position won the game.
+- **Super Bowl XLVI, leading 17–15 with about a minute left:** let Ahmad Bradshaw score, so Brady gets the ball back
+  with time. (They lost anyway; the logic was right.)
+- **The 2009 fourth-and-2 at Indianapolis** ([11-04](../11-history/11-04-dynasties-and-counterpunches.qmd)): the
+  analytics said go, the outcome didn't cooperate.
+- **The rulebook as a playbook:** the eligibility-reporting formations against Baltimore in January 2015, which the
+  league changed the rule for 2015 ([02-02](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd)).
+- **Super Bowl XLIX,** above: letting the clock run to keep the goal-line personnel he wanted.
+
+Is "situational mastery" real, or is it a story told about a team with a great quarterback? Some of it is measurable.[^fp]
+In 2001–2019 regular seasons the Patriots outscored opponents by `{python} f"{FP_HALF['NE']:.2f}"` points per game
+in the last two minutes of the first half alone, second in the league over those nineteen seasons (behind
+Pittsburgh). That's the "double score" habit: points just before halftime, then, if you deferred the opening coin
+toss, the ball again just after it. And in one-score games (decided by eight points or fewer) they went
+`{python} NE_CLOSE_W`–`{python} NE_CLOSE_N - NE_CLOSE_W`, a `{python} f"{CLOSE_PCT['NE']:.3f}"` winning percentage, the
+best in the league over the same seasons. Close-game records carry a lot of luck, and some of New England's came from
+having Tom Brady. But nineteen years of them is a long streak of luck.
+
+## The data fingerprint
+
+If game-plan defense is real, it should leave marks in the data that a system defense wouldn't. @fig-fingerprint
+tests three of them for every team, over the nineteen regular seasons from 2001 to 2019.
+
+```{python}
+#| label: fig-fingerprint
+#| fig-cap: "A Belichick-era fingerprint: every NFL team, 2001-2019 regular seasons (nflverse play-by-play), New England in blue, the next two teams named. Top: how many points opponents scored against this defense, compared with what the same opponent scored in its other games that season (left is better). Middle: the opponent's top receiver (most receiving yards in his team's other games that season) and the change in his share of his team's targets against this defense, measured against the median defense (left is better: the star got less of the ball). Bottom: point margin per game in the last two minutes of the first half (right is better)."
+fig, axes = plt.subplots(3, 1, figsize=(6.2, 4.6))
+panels = [(FP_PTS, "Opponents' points vs. their own average (per game)", "{:+.1f}", True),
+          (FP_TOP_C * 100, "Opponent's top receiver: change in target share vs. the median defense (pct. points)",
+           "{:+.1f}", True),
+          (FP_HALF, "Point margin per game, last two minutes of the first half", "{:+.2f}", False)]
+for ax, (ser, title, fmt, low_good) in zip(axes, panels):
+    others = ser.drop("NE")
+    ax.scatter(others.values, np.zeros(len(others)), s=26, color=style.BASELINE, alpha=0.9, lw=0, zorder=2)
+    ax.scatter([ser["NE"]], [0], s=60, color=style.SERIES[0], zorder=3)
+    ax.annotate("NE " + fmt.format(ser["NE"]), (ser["NE"], 0), xytext=(0, 9), textcoords="offset points",
+                ha="center", fontsize=7.5, color=style.INK, fontweight="bold")
+    nxt = (others.sort_values() if low_good else others.sort_values(ascending=False)).index[:2]
+    span = ser.max() - ser.min()
+    if abs(ser[nxt[0]] - ser[nxt[1]]) < 0.06 * span:          # two runners-up on top of each other: one label
+        ax.annotate(f"{nxt[0]}, {nxt[1]}", (ser[nxt[0]], 0), xytext=(0, -13), textcoords="offset points",
+                    ha="center", fontsize=6.8, color=style.INK_2)
+    else:
+        for team in nxt:
+            ax.annotate(team, (ser[team], 0), xytext=(0, -13), textcoords="offset points", ha="center",
+                        fontsize=6.8, color=style.INK_2)
+    ax.axvline(0, color=style.MUTED, lw=0.8, ls=(0, (2, 2)), zorder=1)
+    ax.text(0.0 if low_good else 1.0, 0.92, "← better" if low_good else "better →", transform=ax.transAxes,
+            ha="left" if low_good else "right", va="top", fontsize=6.8, color=style.INK_2, style="italic")
+    ax.set_yticks([])
+    ax.set_ylim(-1, 1)
+    ax.spines["left"].set_visible(False)
+    ax.grid(axis="y", visible=False)
+    ax.tick_params(axis="x", labelsize=7.5)
+    ax.set_title(title, fontsize=8.0, loc="left", fontweight="normal", color=style.INK)
+fig.tight_layout(h_pad=1.0)
+plt.show()
+```
+
+Read it as three separate claims, each with its own caveat.
+
+- **Opponents scored less against New England than they did against everyone else**, by
+  `{python} f"{-FP_PTS['NE']:.1f}"` points a game, the biggest gap in the league (Baltimore and Pittsburgh, the era's
+  great system defenses, are right behind). That's the plainest measure of a good defense, adjusted for who it played;
+  it doesn't by itself prove *game-plan* defense. An offense that holds the ball for long drives also lowers the other
+  team's scoring.
+- **The opponent's best receiver got less of the ball.** Over these seasons a team's top receiver drew about
+  `{python} pct(TOP_SHARE)` of its targets. One quirk first: against the typical defense his share *rose* a little in
+  this measure (by `{python} f"{TOP_MED * 100:.1f}"` points), because games in which he wasn't targeted at all drop out
+  of the data, and play-by-play can't tell a shutout from a game he missed. So the fair comparison is with the median
+  defense, not with zero. Against New England his share fell `{python} f"{-FP_TOP_C['NE'] * 100:.1f}"` points below
+  what the typical defense allowed, the largest gap of any defense and nearly twice the next team's
+  (`{python} FP_TOP_C.index[1]`, `{python} f"{-FP_TOP_C.iloc[1] * 100:.1f}"`). On a team throwing about `{python} f"{TOP_TGTS:.0f}"` targeted passes a game that's small, about
+  `{python} f"{-FP_TOP_C['NE'] * TOP_TGTS:.1f}"` targets a game, but it is exactly the fingerprint Lombardi's line
+  predicts: a defense that aims at the opponent's individual players should push the ball away from the best of them,
+  and this one did, for nineteen years.
+- **The end of the half belonged to the Patriots.** The situational habit shows up as almost a point a game in a
+  two-minute window, second only to Pittsburgh.
+
+None of these is enormous, and none should be: they're averages over hundreds of games against every kind of
+opponent. What's striking is that one team sits at or near the end of all three lines.
+
+Was it all Tom Brady? The defensive half of the fingerprint can be tested, because Brady left after 2019 and
+Belichick coached four more seasons. By the same opponent-adjusted points measure, New England's defense ranked
+`{python} ", ".join(f"{LATE_RANK[y]}" for y in range(2020, 2023))` and `{python} int(LATE_RANK[2023])` in the league from
+2020 to 2023 (1 is best), while the team reached the playoffs only `{python} "once" if LATE_POST == 1 else LATE_POST` in those four seasons.[^late]
+The game-plan defense kept working without a great offense; what disappeared was the offense that turned a
+good defense into a dynasty.
+
+## How opponents responded
+
+Every scheme in this course creates its own counter, and Belichick's had several.
+
+**Make the plan irrelevant with four rushers.** The first two teams to beat Brady and Belichick in a Super Bowl,
+the 2007 and 2011 Giants, did it the way [11-04](../11-history/11-04-dynasties-and-counterpunches.qmd)
+describes: a four-man rush good enough to reach Brady without blitzing, with linemen pushing up the middle where a
+pocket passer can't escape. A game plan on offense can hide a weakness from a coordinator, but not from four
+defensive linemen who win their matchups on every play. The 2015 Denver defense did it again in the AFC Championship
+Game, hitting Brady 20 times, the most on any quarterback that season.[^den15]
+
+**Have too many best things.** A plan that takes one thing away works best against an offense with one thing. The
+2017 Eagles in Super Bowl LII spread the ball among receivers, tight ends and backs, and their backup quarterback
+played the game of his life; there was no single target to take away. The great quarterbacks who beat New England could beat a defense "left-handed", throwing to whoever was left:
+Peyton Manning did it in three AFC Championship Games (after the 2006, 2013 and 2015 seasons).[^manning]
+
+**Take away *their* best thing.** Defenses turned the method around: bracket Gronkowski, double Welker, press
+Edelman, and dare the second and third options to win. The Patriots' answer, again and again, was to change which
+player was the best thing that week.
+
+**Hire his assistants.** The most direct response was to hire the people who knew how the plans were built. Romeo
+Crennel, Nick Saban (the Browns' defensive coordinator under Belichick), Eric Mangini, Charlie Weis, Josh McDaniels,
+Bill O'Brien, Matt Patricia, Brian Flores and Joe Judge all became head coaches in the NFL or in college, and so did
+his former linebacker Mike Vrabel. Their records were mixed, which is itself a lesson: the plans came from a
+*process* (the film work, the weekly installs, the players chosen to absorb them), and a coordinator who leaves takes
+the habits but not the building. The sharpest test was Jerod Mayo, a Belichick linebacker and then his linebackers
+coach, who succeeded him in New England in 2024, in the same building, and was let go after one 4–13 season.[^tree]
+
+## What survives
+
+Almost all of it, and much of it has become ordinary.
+
+- **Every defense game-plans now.** Weekly, opponent-specific defense was Belichick's signature in 2001. By 2026 it
+  is simply how the league works: coordinators build a [disguise](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)
+  package and a set of matchup rules for each opponent, and the rise of two-high,
+  rotate-at-the-snap defenses ([The Modern Era](../11-history/11-05-the-modern-era.qmd)) is the LIII plan as a
+  league-wide style: show one picture, play another. The clearest recent example sits on the other sideline from
+  New England. In Super Bowl LX in February 2026, Mike Macdonald's Seattle defense sacked Drake Maye six times and
+  beat the Patriots 29–13. New England's head coach that night was Mike Vrabel, a linebacker on Belichick's first
+  three Super Bowl teams, with Josh McDaniels calling the offense.[^lx] (Macdonald's defense gets its own case study in
+  [From Two-High to Macdonald](12-08-two-high-to-macdonald.qmd).)
+- **Versatile players over specialists.** Defensive backs who can play corner, safety and slot; linebackers who rush
+  and drop; tight ends who block and run routes. A game plan is only as flexible as the players who have to learn it,
+  and Belichick's roster-building made that the priority it is now.
+- **Situational football as a subject.** Teams now carry analysts for fourth-down, two-point and clock decisions (see
+  [Win Probability and Fourth Downs](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd)), and practice
+  end-of-half and end-of-game situations weekly.
+- **Concept language.** The Erhardt-Perkins way of naming plays (concepts, not formations) survives in many offenses,
+  including McDaniels's in New England in 2026.
+
+Belichick left New England after the 2023 season. He became head coach at the University of North Carolina for the
+2025 season, which ended 4–8, and in the January 2026 vote, his first year of eligibility, he was not elected to the
+Pro Football Hall of Fame, a result that drew wide criticism.[^unc] One of his game plans is there already: the
+handwritten Super Bowl XXV sheets.
+
+::: {.callout-tip title="Watch for it on Sunday: the take-away test and the situation test"}
+Pick one game. Before kickoff, write down the answer to Belichick's first question for **each** offense: what does
+it most need? A player (its star receiver, its running back), a concept (play-action off the run, the quick game), or
+a part of the field (the deep middle, the perimeter run)?
+
+**Early in the game,** watch the defense on that team's first few snaps:
+
+- Where is the star? Is a second defender near him (a safety over the top, a corner outside, a linebacker underneath)?
+  That's a bracket, a take-away.
+- How many defenders stand on the line before the snap, and how many actually rush? A defense with six on the line and
+  four rushers is hiding something.
+- Does the coverage look the same before and after the snap? If the picture changes, the defense is disguising: it's
+  aiming at the quarterback's pre-snap read.
+
+**At halftime and at the end,** check your note. Did the star get his usual share of targets or carries? Who got the
+ball instead? Was the thing the defense conceded (the run? the short throw? the other receiver?) the thing that beat
+it, or the thing it could live with? A defense that "gave up" 120 rushing yards and won may have been paying a bill it
+chose on Wednesday.
+
+**The situation test,** for the head coach rather than the defense:
+
+- **The coin toss.** Did the winner defer (take the ball to start the second half)? Write it down; it matters at 0:58.
+- **The last two minutes of the first half.** With the ball, one or two timeouts and a minute or more, does the team
+  attack (short throws, out of bounds, timeouts after completions) or kneel? If it scores and deferred, watch for the
+  double score right after halftime.
+- **The clock against it.** When the opponent is driving late, does the coach use timeouts to save time for his own
+  offense, or let the clock run? Either can be right; ask what he is buying.
+- **Fourth-and-short in plus territory.** Go or kick? Compare with the team's habit (the go-rate charts in
+  [10-04](../10-situational-football/10-04-clock-and-game-management.qmd)).
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: the key, turned around"}
+```{python}
+#| label: fig-predict-key
+#| fig-cap: "Third quarter, second-and-6 near midfield. All game this defense has keyed on the running back's alignment, the way New England did against Faulk: back directly behind the quarterback means run, back offset means pass. Against an offset back it has played the same package all game, pressing the receivers, with the end on the back's side (E, purple ring) crashing on him whenever he releases. The offense lines up with its back offset again (R, red ring), the same look as on the pass plays."
+off = line5() + [O("QB", "QB", UC, 0.0, "Q"), O("RB", "RB", -5.0, 2.8, "R"), O("X", "WR", LINE_D, -15.0),
+                 O("Y", "TE", LINE_D, 4.8), O("H", "WR", OFF_BALL, -9.0), O("Z", "WR", OFF_BALL, 15.0)]
+p = Play(off, pats_dime_press(), los=own(48), to_go=6)
+p.highlight("RB", color=RED)
+p.highlight("RDE", color=PURPLE)
+fig, ax = plt.subplots(figsize=(6.0, 3.95))
+f = draw(p, ax=ax, lateral=(-18.5, 18.5), window=(-8.5, 15.5))
+point_to(f, p, (-7.0, 9.6), (-5.0, 2.8), "R offset again", color=OD)
+say(f, p, 3.0, -15.4, "press", fontsize=6.2, color=DD)
+say(f, p, 3.0, 15.4, "press", fontsize=6.2, color=DD)
+plt.show()
+```
+
+**First count the defenders in the box (inside the tight end, within about five yards of the ball). The defense has
+been right all game about what the offset back means. What should the offense call now, and why?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**A run from the pass look: a draw or an inside run, or a screen to the back that uses the end's crash against
+him.** Every key a defense uses is a [tendency](../../appendices/glossary.qmd#gl-tendency) the offense can scout,
+and once the offense knows the defense trusts it, the key becomes a lever (the
+[tendency breaker](../../appendices/glossary.qmd#gl-tendency-breaker) of
+[Constraint Theory](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd)). Look at what the key has
+bought the defense: six defensive backs and one linebacker (M), corners pressed on the outside, an end flying upfield.
+Count the box and you get five or six (four linemen, M, and D if he stays in): against five linemen and a tight end,
+that's a light box. A draw, with the linemen showing pass and then blocking the rushers where they've chosen to go,
+puts the back against one linebacker and a safety. A screen to his side lets the crashing end run himself out of the
+play.
+
+Two notes. On second-and-6 a 4-yard run is a fine result, so the offense isn't risking much by testing the key. And
+the defense's coaches know this too. A good game-plan defense keeps the key for most of the game and then *shows* the
+key while playing something else, a base front against the offset back, say, on the down it expects the
+tendency breaker. That's why Belichick's 2001 staff changed so much between the regular-season meeting and the
+Super Bowl: they expected the Rams to adjust to what they'd seen in November.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: frozen in nickel"}
+```{python}
+#| label: fig-predict-freeze
+#| fig-cap: "Second-and-4, first quarter. On first down the offense had two tight ends on the field, its star tight end (Y, red ring) split out wide, and the defense substituted to nickel to cover him (the nickel back, $). Now the offense has hurried to the line without a huddle and lined up tight: both tight ends attached to the line and a back seven yards deep."
+off = pats12(y_w=4.8, u_w=-4.8, z_w=13.0, x_w=-15.0)
+dfn = dl4(3.9) + [D("MIKE", "MIKE", 4.6, 1.2, "M"), D("WILL", "WILL", 4.5, -2.8, "W"), D("NB", "NB", 2.6, 7.2, "$"),
+               D("LCB", "CB", 6.0, -15.0, "CB"), D("RCB", "CB", 6.0, 13.0, "CB"), D("SS", "SS", 9.0, -6.0, "SS"),
+               D("FS", "FS", 13.0, 3.0, "FS")]
+p = Play(off, dfn, los=own(40), to_go=4)
+p.highlight("Y", color=RED)
+fig, ax = plt.subplots(figsize=(6.0, 4.1))
+f = draw(p, ax=ax, lateral=(-18.0, 18.0), window=(-9.0, 15.5))
+say(f, p, -4.6, 9.8, "no huddle", fontsize=6.5, color=OD)
+plt.show()
+```
+
+**What's the offense going to do, and why did it skip the huddle?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Run right, at the nickel back, with the star tight end blocking him.** This is the dilemma from @fig-gronk with
+[tempo](../../appendices/glossary.qmd#gl-tempo) added. First down was the question: what do you do when our tight
+end splits out? The defense answered by sending on a nickel back, a defensive back of about 190 pounds, in place of
+a linebacker. Now the offense has kept the same eleven players, lined up as a running formation, and snapped the ball
+before the defense could send its linebacker back on; a no-huddle offense that never substitutes can hold a defense in
+the wrong personnel, the [substitution freeze](../../appendices/glossary.qmd#gl-substitution-freeze) of
+[In-Game Adjustments](../08-the-chess-match/08-04-in-game-adjustments-and-tempo.qmd). The defense has seven players
+near the line against seven blockers plus the back, and its
+[overhang](../../appendices/glossary.qmd#gl-overhang-defender) player on the right, the defender who has to
+[force](../../appendices/glossary.qmd#gl-force-defender) the run back inside, is the nickel back: about 190 pounds,
+the smallest man on the field, facing a 265-pound tight end. That's a run play's dream.
+
+If the defense keeps answering with base personnel instead, the offense splits the tight end out again and throws
+at the linebacker. The table in Panel D of @fig-gronk is the whole game. (The Patriots of 2011–2012 played this way
+for long stretches; 11-04 has their 2012 total of 1,191 offensive plays.)
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: fifty-eight seconds"}
+```{python}
+#| label: fig-predict-half
+#| fig-cap: "Second quarter, 0:58 left, tied 10–10. The offense has the ball first-and-10 at its own 30 with two timeouts, and it will receive the second-half kickoff (it won the coin toss and deferred). The defense has gone to a soft two-deep shell: two safeties deep, the corners off, linebackers and the nickel dropping to the sticks."
+off = line5() + [O("QB", "QB", GUN, 0.0, "Q"), O("RB", "RB", GUN, 1.7, "R"), O("X", "WR", LINE_D, -16.0),
+                 O("H", "WR", OFF_BALL, -9.0), O("Y", "TE", OFF_BALL, 8.0), O("Z", "WR", LINE_D, 16.0)]
+dfn = dl4() + [D("MIKE", "MIKE", 6.5, -1.5, "M"), D("WILL", "WILL", 6.5, 3.5, "W"), D("NB", "NB", 6.0, -9.0, "$"),
+               D("LCB", "CB", 8.0, -16.0, "CB"), D("RCB", "CB", 8.0, 16.0, "CB"), D("SS", "SS", 18.0, 9.0, "SS"),
+               D("FS", "FS", 18.0, -9.0, "FS")]
+p = Play(off, dfn, los=own(30), to_go=10)
+fig, ax = plt.subplots(figsize=(6.0, 4.75))
+f = draw(p, ax=ax, lateral=(-20.0, 20.0), window=(-9.5, 22.0))
+x0, y0 = P(f, p, -6.0, -17.6)
+f.ax.text(float(x0), float(y0), "Q2  0:58   10–10\nown 30, 1st & 10\n2 timeouts left\nreceive 2nd-half kick",
+          fontsize=6.6, color=style.INK, va="center", ha="left", zorder=14, linespacing=1.2,
+          bbox=dict(boxstyle="round,pad=0.35", fc=style.SURFACE, ec=style.BASELINE, lw=0.8))
+plt.show()
+```
+
+**Many coaches would kneel and take the tie into halftime. Where are the soft spots in this shell, how many
+completions would it take to reach field-goal range, and would you attack or kneel?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Attack, carefully: throw into the gap between the two layers of the soft shell, get out of bounds or use a timeout
+after each completion, and aim for field-goal range. That's what Belichick's teams usually did.** The arithmetic is the "double score" from
+[The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd).
+Fifty-eight seconds and two timeouts is enough for four to six plays. Read the shell: the underneath defenders sit
+about six yards deep and the safeties about eighteen, and the corners are eight yards off. That leaves a band from
+roughly 10 to 16 yards deep between the two layers, widest outside the hashes in front of the corners, where an out or
+a comeback can also stop the clock by going out of bounds. Each of those throws is worth 8 to 12 yards, and from your
+own 30 you need about 35 yards to reach the opponent's 35, a long but makeable field goal: three or four completions.
+Then, because this offense deferred the coin toss, it gets the ball again to start the second half. Two possessions
+in a row, separated only by halftime, can turn a tie into a 10-point lead in a few minutes of game time.
+
+The risk is a turnover deep in your own territory, which is why the throws are short, the sideline is used, and
+nothing goes up for grabs; if the first two plays go nowhere, the right call becomes the kneel. The Patriots made this
+sequence a habit. In 2001–2019 they outscored opponents by `{python} f"{FP_HALF['NE']:.2f}"` points a game in the last
+two minutes of the first half, second in the league (@fig-fingerprint). It's the same thinking as Super Bowl XXXVI's
+last drive, from your own 17 with no timeouts: a situation rehearsed in practice is a situation you can attack.
+:::
+:::
+
+## Takeaways
+
+- **A game-plan defense chooses its weakness every week.** Eleven defenders can't stop everything, so Belichick's
+  defenses asked what *this* offense most needed, took that away, and named in advance what they'd concede. The
+  concession is part of the plan, not a failure of it.
+- **The target is usually a person.** Kelly's passing (and Thomas as a receiver) in Super Bowl XXV, Marshall Faulk in
+  XXXVI, Goff's pre-snap read in LIII. In 2001–2019 data, the opponent's top receiver lost more of his share of the
+  targets against New England than against any other defense.
+- **Each plan looked nothing like the last.** Two linemen and six defensive backs; a defense keyed on one running
+  back's alignment; six on the line with zone behind after a season of man. What repeated was the method: three
+  questions, asked fresh each week.
+- **The offense was a chameleon for the same reason.** A concept language that works from any formation let the
+  Patriots throw 54 times one playoff week and run 39 times the next, and turn Gronkowski into a personnel dilemma
+  the defense had to solve before seeing the formation.
+- **Situations were rehearsed like opponents.** End-of-half drives, intentional safeties, letting a team score, the
+  eligibility rules, the clock at the end of Super Bowl XLIX: the Patriots treated each as something to prepare, and the
+  close-game and end-of-half numbers show it.
+- **Super Bowl XLIX was decided by preparation, not by the call.** A defensible pass met a jam and a jumped slant
+  that New England had rehearsed that week against that formation.
+
+## Connections
+
+**Builds on:** [Dynasties and Counterpunches](../11-history/11-04-dynasties-and-counterpunches.qmd) (the Patriots in
+the 2000–2016 arms race, the move tight end and the four-man rush that beat them);
+[The Game Plan: A Week Inside an NFL Building](../08-the-chess-match/08-03-game-planning-week.qmd) (the week, the
+tendency report and "take away their best thing"); [What Beats What](../08-the-chess-match/08-01-concepts-versus-coverages.qmd)
+(why every coverage has holes); [Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd) (brackets and shadows);
+[Personnel Groupings](../02-personnel-and-formations/02-01-personnel-groupings.qmd) (the substitution order behind
+every dilemma in this chapter); [The Clock, the Two-Minute Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd)
+and [Red Zone, Goal Line, and Short Yardage](../10-situational-football/10-03-red-zone-goal-line-and-short-yardage.qmd)
+(the situational plays and the stack rub in full).
+
+**Sets up:** [The Modern Era](../11-history/11-05-the-modern-era.qmd) (disguise and two-high defense as the
+league-wide version of the LIII plan); the other case studies, especially
+[The Shanahan Tree](12-03-shanahan-wide-zone-tree.qmd) (the system McVay ran in Super Bowl LIII, seen from the
+offense's side), [Andy Reid's Chiefs](12-04-reid-chiefs.qmd) (the offense with too many best things) and
+[From Two-High to Macdonald](12-08-two-high-to-macdonald.qmd); [Win Probability and Fourth
+Downs](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd) (the math behind situational decisions); and
+[Tendencies, PROE and Charting](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd) (building fingerprints
+like @fig-fingerprint for any team).
+
+::: {.callout-note title="Go deeper"}
+David Halberstam's *The Education of a Coach* (2005) is the essential biography: Steve Belichick's scouting, the
+Giants years, and how Belichick learned to think about opponents. Michael Holley's *Patriot Reign* (2004) and *War
+Room* (2011) were written from inside the building; Ian O'Connor's *Belichick* (2018) is the fullest life; Michael
+Lombardi's *Gridiron Genius* (2018) explains the process from a former colleague's chair. NFL Films' *Do Your Job*
+(2015) covers the 2014 season, including the week of practice behind the Super Bowl XLIX interception. For data, start
+with this chapter's code: change `"NE"` to any team in the fingerprint cell and see where your team sits on each line,
+or point the `LIII` comparison at any defense and any game in the 2018–2025 participation files.
+:::
+
+[^liii-quotes]: Goff ("We were completely guessing") and McVay ("I got out-coached"): Ben Volin, "Unpredictable Patriots
+    defense was in the zone," *Boston Globe*, Feb. 4, 2019:
+    <https://www.bostonglobe.com/sports/patriots/2019/02/04/unpredictable-patriots-defense-was-zone/9XgMQoHp6f7nrTqbGdPUyI/story.html>.
+    Johnny Hekker's nine punts, including a Super Bowl-record 65-yarder: "Super Bowl LIII," Wikipedia,
+    <https://en.wikipedia.org/wiki/Super_Bowl_LIII>. The Rams' 32.9 points per game and second-best EPA per play in 2018:
+    course calculation from nflverse play-by-play (regular season).
+
+[^liii-wapo]: "How Bill Belichick outcoached Sean McVay in Super Bowl LIII," *The Washington Post*, republished by the
+    *Bangor Daily News*, Feb. 4, 2019: <https://www.bangordailynews.com/2019/02/04/sports/how-bill-belichick-outcoached-sean-mcvay-in-super-bowl-liii/>
+    (Boyer's "Our philosophy is always..."; the staff's conclusion that the Rams "specialized in 'man beaters'"; the
+    switch to zone after a season of man; two linebackers walked up to the line, "effectively employing a six-man
+    defensive line"; Jonathan Jones moved to a safety-type role midweek and dropping to the middle when Goff expected a
+    blitz).
+
+[^lombardi]: Michael Lombardi, "The Belichick Way," The Ringer, Feb. 1, 2017:
+    <https://www.theringer.com/2017/02/01/nfl/bill-belichick-game-plan-new-england-patriots-super-bowl-li-f25cf7de09e0>.
+
+[^halberstam]: David Halberstam, *The Education of a Coach* (Hyperion, 2005), on Steve Belichick's scouting career
+    at the Naval Academy, his book *Football Scouting Methods* (Ronald Press, 1962), Bill Belichick's childhood film
+    sessions with him, and Belichick's first NFL job with the Baltimore Colts in 1975 at $25 a week. Steve Belichick's
+    33 years on Navy's staff (1956–1989): "Navy coaching legend Steve Belichick dies at the age of 86," Patriots.com, Nov. 2005,
+    <https://www.patriots.com/news/navy-coaching-legend-steve-belichick-dies-at-the-age-of-86-151796>. The $25 a week
+    (after a short unpaid start, under Ted Marchibroda): CNBC, Jan. 31, 2019,
+    <https://www.cnbc.com/2019/01/31/bill-belichick-got-his-first-nfl-job-at-23-it-paid-25-dollars-a-week.html>.
+
+[^bb]: Pro Football Reference, Bill Belichick: <https://www.pro-football-reference.com/coaches/BeliBi0.htm>
+    (Giants assistant from 1979, defensive coordinator 1985–1990, with Super Bowl wins after the 1986 and 1990
+    seasons; Browns head coach 1991–1995; Patriots head coach 2000–2023, six Super Bowl wins).
+
+[^sb25]: "Super Bowl XXV," Wikipedia: <https://en.wikipedia.org/wiki/Super_Bowl_XXV> (Giants 20, Bills 19, January 27,
+    1991, Tampa Stadium; Buffalo's 13–3 record, 428 points and 51–3 AFC Championship win; Thomas's 135 rushing yards on
+    15 carries, his 31-yard fourth-quarter touchdown run, and Buffalo's 25 rushes and Kelly's 30 pass attempts; the
+    Giants' Super Bowl record 40:33 time of possession and Buffalo's 19:27; Norwood's 47-yard miss).
+
+[^xxv-plan]: Michael Eisen, "Belichick's gameplan," Giants.com: <https://www.giants.com/news/belichick-s-gameplan>
+    (Erik Howard and Leonard Marshall as the only down linemen for most of the game; Parcells's "a 2-4-5, or a 2-3-6",
+    and his "Besides Lawrence (Taylor) and Carl Banks, we had Johnie Cooks there, so we could use him on the outside, too";
+    Belichick's 100-yard prediction for Thomas and Carl Banks's "collective brain fart"; every defender responsible for
+    hitting the receiver; Buffalo 1 of 8 on third down; Reed, Lofton and Thomas 14 catches for 178 yards, with Lofton's
+    61-yard catch the only completion longer than 20 yards).
+
+[^xxv-espn]: Jordan Raanan, ESPN, "Inside Super Bowl XXV: Whitney Houston's anthem, Bill Belichick's game plan and Scott
+    Norwood's miss," Feb. 4, 2021, republished by ABC7 New York:
+    <https://abc7ny.com/sports/inside-super-bowl-xxv-whitney-houstons-anthem-bill-belichicks-game-plan-and-scott-norwoods-miss/10314585/>.
+
+[^xxv-hof]: Mark Mravic, "NFL History in 95 Objects: Bill Belichick's Super Bowl XXV game plan," *Sports Illustrated*,
+    May 14, 2014: <https://www.si.com/nfl/2014/05/14/nfl-history-in-95-objects-bill-belichick-super-xxv-game-plan>.
+    The "no-huddle adjustments" section: Nora Princiotti, The Ringer, Jan. 13, 2022,
+    <https://www.theringer.com/2022/01/13/nfl/bill-belichick-bespoke-game-plan-bills-patriots-nfl-playoffs>.
+
+[^xxxvi]: "Super Bowl XXXVI," Wikipedia: <https://en.wikipedia.org/wiki/Super_Bowl_XXXVI> (February 3, 2002, Louisiana
+    Superdome; Patriots 20, Rams 17; the Rams' 503 points in 2001 and the November 18 meeting, won by St. Louis 24–17;
+    Faulk 17 carries for 76 yards and 4 catches for 54; Law's 47-yard interception return; the 1:21 final drive and
+    Vinatieri's 48-yard field goal). Faulk's three straight AP Offensive Player of the Year awards (1999–2001): Pro
+    Football Reference, <https://www.pro-football-reference.com/players/F/FaulMa00.htm>. Score sequence: nflverse
+    play-by-play. Vrabel's unblocked pressure on Warner on Law's interception: Robert Mays, The Ringer, Jan. 24, 2019
+    (full citation in the note on the dime count below). The 14-point spread: "Biggest upsets in Super Bowl history," NBC Sports Boston,
+    <https://www.nbcsportsboston.com/super-bowl/biggest-upsets-super-bowl-history/684189/>.
+
+[^holley]: Michael Holley, "Championship changes image of once-reviled Bill Belichick," *Boston Globe*, Feb. 4, 2002:
+    <https://www.bostonglobe.com/sports/2002/02/04/championship-changes-image-once-reviled-bill-belichick/jyD9fpxNJLx7S7LASBcWSO/story.html>
+    (a linebacker on Faulk in the first meeting; Crennel's "That didn't work out for us"; a defensive back shadowing
+    Faulk in the Super Bowl).
+
+[^bb-espn]: Belichick as a guest analyst on ESPN's Super Bowl XL pregame show (February 2006), quoted in Michael Hurley,
+    CBS Boston, Aug. 16, 2017: <https://www.cbsnews.com/boston/news/video-bill-belichick-as-media-member-emerges-online>.
+
+[^pasq]: Len Pasquarelli, ESPN.com, after Super Bowl XXXVI:
+    <https://www.espn.com/nfl/playoffs01/columns/pasquarelli_len/1322340.html> ("nickel" or "dime" personnel on 54
+    of 69 snaps). Counts differ: Robert Mays, "Ten Observations From the Last Rams-Patriots Super Bowl," The Ringer,
+    Jan. 24, 2019, reports a Fox broadcast graphic, shown with 6:09 left in the fourth quarter, of five or six defensive
+    backs on 25 of 40 Rams plays, so it covers only part of the game:
+    <https://www.theringer.com/2019/01/24/nfl/10-observations-rams-patriots-super-bowl-xxxvi-bill-belichick-tom-brady>.
+
+[^pasq-touch]: Len Pasquarelli, ESPN.com, after Super Bowl XXXVI:
+    <https://www.espn.com/nfl/playoffs01/columns/pasquarelli_len/1322340.html> ("Faulk got 21 'touches,' 17 rushes and
+    four receptions"; "just 3½ less than Faulk averaged in his 14 regular-season appearances"). Pasquarelli's column is the
+    same one cited for the 54-of-69 nickel-and-dime count; its argument is that Faulk didn't get the ball nearly enough.
+
+[^hobson]: Geoff Hobson, "Patriotic defense," Feb. 4, 2002, reproduced on Bengals.com:
+    <https://www.bengals.com/news/patriotic-defense-730932> (McGinest: "It was in the game plan for us to hit Faulk no
+    matter where he was on the field"; Crennel: "We felt they would be ready for man coverage, since we gave them a lot
+    of man the first time" and "as an alternative to the man, we wanted to go with the cover two, which allowed us to be
+    physical with the receivers"; Martz: "They played a lot of two-deep type coverages, a lot of man-press kind of
+    things"; the defensive-back counts: four DBs on 15 plays, five on 22, six on 26, seven on 6). A defensive back
+    matched on Faulk: Holley, cited above.
+
+[^liii-plan]: Ben Volin, *Boston Globe* (cited above for the Goff and McVay quotes), on Brian Flores running the
+    defense, the blitzes, stunts and twists, and Rams tackle Andrew Whitworth's "they played a little more zone, which
+    was different from what they've done all season." Gurley's 10 carries for 35 yards: Wikipedia, "Super Bowl LIII".
+    Gilmore on Cooks: Washington Post account cited above. Flores's title in 2018 was linebackers coach; the Globe and
+    the Post both describe him as the defensive play-caller. Boyer was New England's cornerbacks coach from 2012 to 2018:
+    CBS Boston, "Cornerbacks Coach Josh Boyer Leaves Patriots To Join Brian Flores In Miami," Feb. 2019,
+    <https://www.cbsnews.com/boston/news/cornerbacks-coach-josh-boyer-leaves-patriots-to-join-brian-flores-in-miami/>.
+
+[^liii-ringer]: Danny Kelly, "Six Plays That Explain How Bill Belichick Outdueled Sean McVay," The Ringer, Feb. 4, 2019:
+    <https://www.theringer.com/2019/02/04/nfl/how-bill-belichick-outdueled-sean-mcvay-patriots-rams-super-bowl> (blitzes
+    on 50 percent of plays and 14 pressures, per NFL Next Gen Stats; five or more defenders up at the line; the six-man
+    Cover 0 blitz and Gilmore's interception on the last Rams drive). Chart and percentages in this section: course
+    calculation from nflverse participation data for 2018 (`load_participation`, NGS-sourced), New England's regular
+    season and Super Bowl LIII; "two-deep shell" = Cover 2, 2-Man, Cover 4 or Cover 6 on dropbacks with a charted coverage
+    (blown and combination coverages excluded).
+
+[^mccourty]: Late in the third quarter, first-and-10 at the New England 29, "pass incomplete deep middle to 12-B.Cooks
+    (30-J.McCourty)": nflverse play-by-play, game `2018_21_NE_LA`. Cooks open in the end zone and McCourty's run across
+    the field, with the Patriots ahead 3–0: Mike Florio, "Brian Flores explains Jason McCourty's game-changing play,"
+    ProFootballTalk, Feb. 5, 2019,
+    <https://profootballtalk.nbcsports.com/2019/02/05/brian-flores-explains-jason-mccourtys-game-changing-play/>.
+
+[^liii]: "Super Bowl LIII," Wikipedia: <https://en.wikipedia.org/wiki/Super_Bowl_LIII> (February 3, 2019; Goff 19 of
+    38 for 229 yards, one interception, four sacks; 260 Rams yards; Gilmore's interception at the Patriots' 3 with 4:17
+    left; Michel's 2-yard touchdown; Julian Edelman the MVP); the Rams' 3 of 13 on third down and three points as their
+    lowest total under McVay to that point: Kelly, The Ringer, cited above. The one later 3-point game (Green Bay 20,
+    Rams 3, Nov. 5, 2023): nflverse play-by-play, game `2023_09_LA_GB`.
+
+[^lii]: "Super Bowl LII," Wikipedia: <https://en.wikipedia.org/wiki/Super_Bowl_LII> (February 4, 2018; Eagles 41,
+    Patriots 33; 538 Philadelphia yards; Butler's benching).
+
+[^carroll]: "What went wrong on the Seahawks' final play?," NFL.com:
+    <https://www.nfl.com/news/what-went-wrong-on-the-seahawks-final-play-0ap3000000467667> (Seattle's 11 personnel;
+    New England's goal-line group with three defensive backs; Carroll: "It's not the right matchup for us to run the
+    football, so on second down, we throw the ball," and the plan to run on third and fourth down). On saving the clock
+    for all of Seattle's plays: Terry Blount, ESPN, Feb. 3, 2015, via ABC7:
+    <https://abc7.com/post/carroll-throwing-was-part-of-the-plan/501284/>.
+
+[^xlix-to]: Marc Sessler, "Bill Belichick explains no timeout at end of Super Bowl," NFL.com:
+    <https://www.nfl.com/news/bill-belichick-explains-no-timeout-at-end-of-super-bowl-0ap3000000468110> (Belichick
+    on WEEI: "We put our goal-line defense in probably around the same time they were sending in their multiple receiver
+    group ... it just seemed like, in the flow of the game, that we were OK with where we were"). His later account of
+    reading the Seattle sideline is from NFL Films' *Do Your Job* (2015).
+
+[^butler]: Kevin Van Valkenburg, "How Malcolm Butler made the greatest play in Super Bowl history," ESPN, Dec. 8, 2015:
+    <https://www.espn.com/nfl/story/_/id/14286587/how-patriots-malcolm-butler-made-greatest-play-super-bowl-history-beat-seahawks>
+    (Ernie Adams's research on Seattle's goal-line formations; the practice rep in which the scout team, with Jimmy
+    Garoppolo throwing to Josh Boyce, beat Butler; Belichick's instruction; Browner's assignment to jam the first
+    receiver; Belichick's "Just play goal-line").
+
+[^xlix]: Down, distance, clock (Lynch's run at 1:06, the snap at 0:26, the interception leaving 0:20) and timeouts: nflverse
+    play-by-play, game `2014_21_NE_SEA`. Goal-line rates in the callout: nflverse play-by-play 2001–2014, all games,
+    runs and passes snapped from the opponent's 1 (penalty plays and kneels excluded).
+
+[^pbp-games]: nflverse play-by-play: `2014_19_BAL_NE` (Jan. 10, 2015, New England 35–31) and `2014_20_IND_NE`
+    (Jan. 18, 2015, New England 45–7), passes and designed runs counted from plays with a down; the 2018 playoff games
+    `2018_19_LAC_NE`, `2018_20_NE_KC` and `2018_21_NE_LA` (rushing yards); `2008_17_NE_BUF` (Dec. 28, 2008). Personnel
+    shares: nflverse participation data, 2018 regular season.
+
+[^den15]: AFC Championship Game, January 24, 2016: Denver 20, New England 18. "2015–16 NFL playoffs," Wikipedia:
+    <https://en.wikipedia.org/wiki/2015%E2%80%9316_NFL_playoffs>. The 20 hits, per the official box score and the most on
+    any quarterback in a game that season: "Brady absorbs 20 hits in AFC title game loss to Broncos," NBC Sports Boston,
+    <https://www.nbcsportsboston.com/nfl/new-england-patriots/brady-absorbs-20-hits-in-afc-title-game-loss-to-broncos/345224/>.
+
+[^lac7]: Next Gen Stats via NFL.com, "Chargers' speedy secret plan stopped Ravens," Jan. 2019:
+    <https://www.nfl.com/news/chargers-speedy-secret-plan-stopped-ravens-0ap3000001008744> (seven defensive backs on 58
+    of 59 snaps in the 23–17 wild-card win at Baltimore, Jan. 6, 2019).
+
+[^p07]: Course calculation from nflverse play-by-play, 2007 regular season (`shotgun` flag on runs and passes with a
+    down; touchdown passes thrown by T.Brady). The 589 points: [Dynasties and Counterpunches](../11-history/11-04-dynasties-and-counterpunches.qmd).
+
+[^part18]: Course calculation: nflverse participation data for 2018 (`load_participation`, NGS-sourced), joined to
+    play-by-play; regular-season dropbacks with a charted man/zone label, by defense. Personnel shares (the Rams' 11
+    personnel, the Patriots' 21 personnel) from the same file, all regular-season runs and passes.
+
+[^fp]: Course calculations from nflverse play-by-play, 2001–2019 regular seasons. End-of-half margin: points scored
+    minus points allowed on plays in the last 120 seconds of the second quarter (all plays, including kicks and defensive
+    scores), divided by games played. One-score games: final margin of eight points or fewer. Opponents' points: each
+    team's points in a game minus its average in its other games that season. Top receiver: the receiver with the most
+    receiving yards in his team's other games that season (at least six other games), his share of the team's targets
+    in this game minus his share in the other games (games in which he had no target are excluded, which is why the typical
+    defense sits slightly above zero), averaged over each defense's games and shown relative to the median defense.
+
+[^late]: Course calculation from nflverse play-by-play, 2020–2023 regular seasons (same method as the top panel of the
+    fingerprint figure, one season at a time); playoff games from the same data.
+
+[^manning]: AFC Championship Games: Colts 38, Patriots 34 (Jan. 21, 2007); Broncos 26, Patriots 16 (Jan. 19, 2014);
+    Broncos 20, Patriots 18 (Jan. 24, 2016). nflverse play-by-play, games `2006_20_NE_IND`, `2013_20_NE_DEN` and
+    `2015_20_NE_DEN`.
+
+[^tree]: Joe Judge: New England special teams assistant and coordinator 2012–2019, Giants head coach 2020–2021,
+    <https://en.wikipedia.org/wiki/Joe_Judge_(American_football)>. Jerod Mayo: New England linebacker 2008–2015, inside
+    linebackers coach 2019–2023, head coach in 2024 (4–13), let go on Jan. 5, 2025,
+    <https://en.wikipedia.org/wiki/Jerod_Mayo>. Charlie Weis's head-coaching jobs were at Notre Dame and Kansas:
+    <https://en.wikipedia.org/wiki/Charlie_Weis>.
+
+[^lx]: Super Bowl LX, February 8, 2026, Levi's Stadium: Seattle 29, New England 13, with six sacks of Drake Maye;
+    New England's 2025 staff with Mike Vrabel as head coach and Josh McDaniels as offensive coordinator (course fact
+    sheet; <https://en.wikipedia.org/wiki/Super_Bowl_LX>). Vrabel played for New England from 2001 to 2008: Pro
+    Football Reference, <https://www.pro-football-reference.com/players/V/VrabMi00.htm>.
+
+[^unc]: North Carolina's 4–8 2025 season, ending with a 42–19 loss at NC State on Nov. 29, 2025: Associated Press,
+    "Bill Belichick's 1st season at North Carolina ends in a rivalry loss at NC State and just 4 wins,"
+    <https://www.click2houston.com/sports/2025/11/30/bill-belichicks-1st-season-at-north-carolina-ends-in-a-rivalry-loss-at-nc-state-and-just-4-wins/>.
+    The Hall of Fame vote (first reported by ESPN; fewer than the 40 of 50 votes needed; the class of 2026 was
+    announced Feb. 5 without him): Josh Dubow, Associated Press, Jan. 28, 2026, via GBH,
+    <https://www.wgbh.org/news/local/2026-01-28/bill-belichick-snubbed-by-pro-football-hall-of-fame-in-first-year-of-eligibility-report-says>.

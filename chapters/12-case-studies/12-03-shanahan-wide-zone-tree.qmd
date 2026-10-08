@@ -1,0 +1,1901 @@
+---
+title: "Case Study: The Shanahan Tree"
+subtitle: "Wide zone, bootlegs, a fullback and yards after the catch: how one family of coaches built an offense that looks like one play and works with almost any quarterback"
+description: "A Level 4 case study of the Shanahan family of offenses, from Alex Gibbs's and Mike Shanahan's 1990s Broncos to Kyle Shanahan's 49ers (2017–2025), Sean McVay's Rams, Mike McDaniel's Dolphins (2022–2025) and Klint Kubiak's Super Bowl LX Seahawks (2025). The problems it was built to solve; wide zone, the fullback, motion and yards-after-catch passing as one idea; wide zone against the bear front and the bootleg-keeper that punishes it (frame by frame); why the system makes quarterbacks efficient and the 'system quarterback' debate, tested with EPA per dropback; the data fingerprint (under-center rate, play-action rate, 21 personnel, YAC over expected, EPA per play rank 2019–2025); how defenses answered; the tree's play-callers in 2025 and 2026, labelled separately; and what survives."
+glossary:
+  "YAC over expected": {def: "Yards after the catch minus the yards after the catch a model expects, given where and how the ball was caught (air yards, field position, the receiver's spot on the field and, in tracking-based versions, his speed and the defenders around him). Reported per catch; positive means receivers gained more after the catch than the situation predicted.", aliases: ["YACOE"]}
+---
+
+```{python}
+#| code-summary: "Show the Python (shared helpers for this chapter's diagrams)"
+#| output: false
+import logging
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, FancyBboxPatch, RegularPolygon
+from gridiron import Play, Player, Field, offense, technique, style
+
+OL_NAMES = {"LT": "LT", "LG": "LG", "C": "C", "RG": "RG", "RT": "RT"}
+ZONE_GREEN = "#0f7a55"    # darker step of the aqua highlight, for text on the light field
+PURPLE = style.SERIES[6]  # a ring colour that is neither offense blue nor defense orange
+
+
+def named_line(players):
+    """Label the five offensive linemen so the reader can follow each one."""
+    return [p.moved(label=OL_NAMES[p.key]) if p.key in OL_NAMES else p for p in players]
+
+
+def off21(strength="right"):
+    """21 personnel from an offset I: the fullback (F) offset to the tight end's side, tight receiver
+    splits. Seven on the line (five linemen, the Y and the X); Z is off the ball."""
+    s = 1 if strength == "right" else -1
+    out = []
+    for q in named_line(offense("offset_i")):
+        if q.key == "X":
+            q = q.moved(w=-9.5)
+        elif q.key == "Z":
+            q = q.moved(w=9.5)
+        elif q.key == "RB":
+            q = q.moved(label="R")
+        out.append(q if q.key in OL_NAMES else q.moved(w=s * q.w))   # linemen keep their sides
+    return out
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def bear(cb_w=10.2, s=1):
+    """A bear front with a single-high safety behind it, against a tight end on side s.
+    Center and both guards covered (0 and two 3-techniques), a wide 5 on the backside tackle, a 9 on the
+    tight end; two linebackers and the strong safety in the box (eight), one deep safety, two corners."""
+    return [D("BE", "DE", 1.0, -s * 4.9, "E"), D("B3", "DT", 1.0, -s * technique("3"), "3"),
+            D("NT", "NT", 1.0, 0.0, "0"), D("P3", "DT", 1.0, s * technique("3"), "3"),
+            D("EDGE", "OLB", 1.0, s * 5.7, "9"),
+            D("MIKE", "MIKE", 4.5, s * 2.4, "M"), D("WILL", "WILL", 4.5, -s * 2.6, "W"),
+            D("SS", "SS", 5.6, s * 7.6, "SS"), D("FS", "FS", 13.0, 0.0, "FS"),
+            D("LCB", "CB", 7.0, -cb_w, "CB"), D("RCB", "CB", 7.0, cb_w, "CB")]
+
+
+def go_to(p, key, end, kind="block", delay=0.0, speed=None, via=()):
+    """Move `key` through absolute (d, w) points `via` to `end`, as a block, path, run or route."""
+    start = np.array(p._cur(key))
+    pts = [tuple(np.array(q) - start) for q in (*via, end)]
+    if kind == "block":
+        return p.block(key, pts=pts, delay=delay, speed=speed)
+    if kind == "route":
+        return p.route(key, [*via, end], absolute=True, delay=delay, speed=speed)
+    return {"path": p.path, "run": p.run}[kind](key, pts, delay=delay, speed=speed)
+
+
+def _P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def branch(fld, p, pts, color=style.THIRD, lw=2.0, dash=(0, (3, 2.2)), end="arrow", z=6):
+    """A dashed path through absolute (d, w) points, ending in an arrowhead or a block's T-bar."""
+    xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    if end == "arrow":
+        fld.ax.plot(xs[:-1], ys[:-1], color=color, lw=lw, ls=dash, zorder=z, solid_capstyle="round")
+        fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>",
+                                         mutation_scale=11, color=color, lw=lw, zorder=z))
+    else:
+        fld.ax.plot(xs, ys, color=color, lw=lw, ls=dash, zorder=z)
+        v = np.array([xs[-1] - xs[-2], ys[-1] - ys[-2]])
+        perp = np.array([-v[1], v[0]]) / np.linalg.norm(v) * 0.75
+        fld.ax.plot([xs[-1] - perp[0], xs[-1] + perp[0]], [ys[-1] - perp[1], ys[-1] + perp[1]],
+                    color=color, lw=lw + 0.6, zorder=z)
+
+
+def spot(fld, p, d, w, color=style.THIRD, ms=9):
+    """Mark an aiming point with an X."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.plot([x], [y], marker="X", ms=ms, color=color, mec="white", mew=0.8, zorder=9)
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.5, ha="center"):
+    """A short on-field label at (d, w)."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=9,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=7, shrink=7):
+    """A label with a thin leader line to the player or spot it names."""
+    (xt, yt), (xp, yp) = _P(fld, p, *text_at), _P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha="center", va="center", zorder=9,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=shrink),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def clean(ax):
+    """Box-zoomed diagrams: drop hash ticks and yard numbers, clip anything outside the window."""
+    for ln in list(ax.lines):
+        xs, ys = ln.get_data()
+        if len(xs) == 2 and ln.get_linewidth() == 0.5 and np.hypot(xs[1] - xs[0], ys[1] - ys[0]) < 1.0:
+            ln.remove()
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, width_in=6.4, ax=None, **kw):
+    """Play.draw, sized for the page, cleaned for a box-sized window."""
+    fld = p.draw(width_in=width_in, ax=ax, **kw)
+    clean(fld.ax)
+    return fld
+
+
+def panel_title(ax, text, fontsize=9):
+    ax.set_title(text, fontsize=fontsize, loc="left", color=style.INK, fontweight="bold")
+
+
+def pdf_build():
+    return os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+
+MARK_R = 0.6   # frame-strip marker radius in yards, smaller than the static diagrams' so crowds stay legible
+
+
+def tracking(play):
+    df = play.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    return df
+
+
+def panel(ax, play, df, t, lateral, window, rings=()):
+    """One moment of a simulated play on `ax`: markers, trails of on-screen players, rings."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    ylo, yhi = sorted((play.ball_y - lateral[0], play.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=play.los, window=window, numbers=False, hashes=False,
+                lateral=(ylo, yhi), to_go=play.to_go)
+    cur = df[df["frameId"] == fid]
+    shown = cur[cur["x"].between(play.los + window[0] + 0.4, play.los + window[1] - 0.4)
+                & cur["y"].between(ylo + 0.4, yhi - 0.4)]
+    ids = set(shown["_id"])
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(ids) & (df["side"] != "ball")
+                & df["x"].between(play.los + window[0], play.los + window[1])]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=0.9, alpha=0.4, zorder=3)
+    ppy = fld.pts_per_yard()
+    for _, r in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(r["x"], r["y"]))
+        if r["side"] == "ball":
+            ax.add_patch(Ellipse((x, y + 0.45), 0.7, 0.42, fc=style.BALL, ec="white", lw=0.5, zorder=11))
+            continue
+        lab = str(r.get("label", "") or "")
+        if r["side"] == "off":
+            ax.add_patch(Circle((x, y), MARK_R, fc=style.OFFENSE, ec="white", lw=0.6, zorder=8))
+            tc = "white"
+        else:
+            ax.add_patch(RegularPolygon((x, y), 4, radius=MARK_R * 1.3, orientation=np.pi / 4,
+                                        fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0, zorder=8))
+            tc = style.INK
+        fs = max(4.0, min(8.0, ppy * (0.8 if len(lab) <= 1 else 0.6)))
+        ax.text(x, y, lab, ha="center", va="center", fontsize=fs, color=tc, fontweight="bold", zorder=10)
+    for key, col in rings:
+        r = cur[cur["displayName"] == key].iloc[0]
+        x, y = fld.xy(r["x"], r["y"])
+        ax.add_patch(Circle((float(x), float(y)), 1.05, fc="none", ec=col, lw=1.7, zorder=7))
+    return fld
+
+
+def strip(play, times, lateral, window, ncols=3, notes=None, rings=(), width_in=6.5, marks=None):
+    """Numbered frame strip with a fixed window, so markers stay legible in print. `marks` maps a frame
+    index to a function(fld, play, t) that adds that frame's on-field labels."""
+    df = tracking(play)
+    nrows = int(np.ceil(len(times) / ncols))
+    pw = width_in / ncols
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False,
+                             figsize=(width_in, nrows * (pw * span_d / span_w + (0.4 if notes else 0.2))))
+    for ax in axes.flat[len(times):]:
+        ax.axis("off")
+    for i, (ax, t) in enumerate(zip(axes.flat, times)):
+        fld = panel(ax, play, df, t, lateral, window, rings)
+        if marks and i in marks:
+            marks[i](fld, play, t)
+        ax.set_title(f"{i + 1}.  " + ("snap" if abs(t) < 1e-6 else f"{t:+.1f} s"),
+                     fontsize=8.5, color=style.INK_2, loc="left")
+        if notes:
+            ax.text(0.5, -0.03, notes[i], transform=ax.transAxes, ha="center", va="top",
+                    fontsize=7.4, color=style.INK)
+    fig.tight_layout(h_pad=1.4 if notes else 0.6, w_pad=0.6)
+    return fig
+
+
+def video(play, times, lateral, window, notes=None, rings=(), width_in=5.6):
+    """Web version of the strip: the same panel at every frame, with the strip's notes as captions."""
+    import shutil
+    from matplotlib import animation
+    from IPython.display import HTML, display
+    df = tracking(play)
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w + 0.4))
+    tmap = df.groupby("frameId")["time"].first()
+
+    def update(fid):
+        ax.clear()
+        t = float(tmap[fid])
+        panel(ax, play, df, t, lateral, window, rings)
+        txt = "snap" if abs(t) < 0.05 else f"{t:+.1f} s"
+        if notes:
+            cur = [n for tt, n in zip(times, notes) if tt <= t + 1e-6]
+            txt += ("   " + cur[-1]) if cur else ""
+        ax.set_title(txt, fontsize=9, color=style.INK, loc="left")
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=sorted(df["frameId"].unique()), interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def play_animation(play, times, notes=None, **kw):
+    """Video on the website; a numbered, captioned frame strip in the PDF."""
+    if pdf_build():
+        strip(play, times, notes=notes, **kw)
+        plt.show()
+    else:
+        kw.pop("ncols", None)
+        kw.pop("marks", None)
+        video(play, times, notes=notes, **kw)
+
+
+ordinal = lambda n: f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+pct = lambda v: f"{100 * v:.0f}%"
+WORDS = dict(enumerate(["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]))
+```
+
+```{python}
+#| code-summary: "Show the Python (load the nflverse data used in this chapter)"
+#| output: false
+from gridiron.data import pbp, nfl
+
+style.apply()
+SEASONS = list(range(2012, 2026))
+COLS = ["season", "season_type", "game_id", "play_id", "posteam", "play_type", "down", "ydstogo", "epa",
+        "success", "qb_dropback", "passer", "complete_pass", "yards_after_catch", "xyac_mean_yardage",
+        "air_yards", "pass", "run_gap", "qb_scramble"]
+PBP = pbp(SEASONS, columns=COLS)
+PLAYS = PBP[(PBP["season_type"] == "REG") & PBP["play_type"].isin(["pass", "run"])
+            & PBP["epa"].notna() & PBP["down"].notna()].copy()
+DROP = PLAYS[PLAYS["qb_dropback"] == 1]
+
+# offense EPA per play, and its rank among the 32 teams, every season
+TEAM_EPA = PLAYS.groupby(["season", "posteam"])["epa"].mean().rename("epa").reset_index()
+TEAM_EPA["rank"] = TEAM_EPA.groupby("season")["epa"].rank(ascending=False).astype(int)
+RANK = TEAM_EPA.set_index(["season", "posteam"])["rank"]
+
+# YAC over expected: actual yards after catch minus nflverse's expected YAC, on completions
+CATCH = PLAYS[(PLAYS["complete_pass"] == 1) & PLAYS["yards_after_catch"].notna()
+              & PLAYS["xyac_mean_yardage"].notna()].copy()
+CATCH["yacoe"] = CATCH["yards_after_catch"] - CATCH["xyac_mean_yardage"]
+YACOE_SEASON = CATCH.groupby(["season", "posteam"])["yacoe"].mean().rename("yacoe").reset_index()
+YACOE_SEASON["rank"] = YACOE_SEASON.groupby("season")["yacoe"].rank(ascending=False).astype(int)
+YR = YACOE_SEASON.set_index(["season", "posteam"])
+```
+
+Sunday, first-and-10 at midfield. San Francisco lines up with a fullback, a tight end and two receivers
+squeezed in tight to the formation, the quarterback under center. A receiver jogs in motion across the
+formation, the ball is snapped, and all five offensive linemen take the same hard step to their right.
+The running back takes the handoff on a path toward the tight end, the linebackers sprint sideways to
+meet him, and he cuts upfield for six yards. Two plays later: the same personnel, the same formation,
+the same motion, the same step by the line, the same back running the same path. Except this time
+the quarterback still has the ball. He is rolling the other way, alone, and the tight end who started
+on the right side of the formation is running free across the field on the left. He catches it in
+stride and runs for 20 more yards after the catch. The broadcast calls it "a busted coverage." It
+wasn't. Both plays were built to look identical for the first second, and that one second is the
+whole idea. This chapter is about the family of coaches who built an offense around it, and about why
+their offense seems to work no matter who plays quarterback.
+
+**You'll be able to:**
+
+- Trace the outside-zone (wide-zone) system from Alex Gibbs's and Mike Shanahan's 1990s Broncos to
+  Kyle Shanahan's 49ers, and name the problem it was built to solve at each step.
+- Explain how wide zone, the fullback, pre-snap motion and yards-after-catch passing fit together
+  as one idea, and say what each piece takes away from a defense.
+- Diagram wide zone against a bear front and the bootleg-keeper that punishes the defender the
+  offense leaves unblocked, and call which one is coming from how that defender is playing.
+- Explain why the system makes quarterbacks efficient, and weigh both sides of the "system
+  quarterback" debate with EPA per dropback.
+- Read the system's data fingerprint: under-center rate, play-action rate, 21 personnel, YAC over
+  expected and EPA per play.
+- Name the tree's play-callers in the 2025 season and in the 2026 season, and keep the two lists apart.
+
+::: {.callout-note title="You'll need"}
+- **[The Modern Era](../11-history/11-05-the-modern-era.qmd)**: the 2010s and 2020s in one arc; spread
+  passing went league-wide, defenses answered with lighter personnel and then two-high safeties, and
+  offenses answered back with heavier personnel, motion and a return to the quarterback lining up
+  under center.
+- **[Constraint Theory and Sequencing](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd)**:
+  a *base play* the offense wants to run all day, *constraint plays* that punish a defense for cheating
+  against it, the constraint tree around outside zone, and the
+  [illusion of complexity](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd) (a few plays
+  dressed to look like many, many plays dressed to look like one).
+- Also used: [outside zone](../03-the-run-game/03-02-zone-running.qmd) (the line steps sideways together
+  and the back makes one cut), the [bootleg, naked bootleg and keeper](../04-the-passing-game/04-05-play-action-boots-screens.qmd),
+  [YAC](../04-the-passing-game/04-01-passing-fundamentals.qmd) (yards after the catch), and
+  [EPA](../01-foundations/01-02-downs-distance-and-field-position.qmd) (expected points added: how much a
+  play changed the offense's expected score; above zero is good for the offense).
+:::
+
+**How to read the diagrams.** Offense is blue circles, defense orange squares. *Left* and *right*
+always mean the offense's left and right. LT, LG, C, RG and RT are the five offensive linemen, Q the
+quarterback, R the running back and F the [fullback](../01-foundations/01-03-the-twenty-two.qmd) (a
+second back, lined up closer to the line, whose main job is blocking). **Y** is the tight end, X and Z
+the wide receivers, and H a third receiver. On defense, linemen are labelled by technique number (a **0** is
+head-up on the center, a **1** on the center's shoulder, a **3** on a guard's outside shoulder, a **5** on a
+tackle's outside shoulder, a **9** outside the tight end), except the bear front's backside end, a wide 5,
+who is labelled **E** so you can follow him from picture to picture. M and W are the Mike and Will
+linebackers, NB a nickel back, SS and FS the safeties and CB the cornerbacks. Lines ending in a short bar are
+blocks, arrows are paths, and the thick dark arrow is the ball carrier.
+
+## Two problems, thirty years apart
+
+Every successful offense is an answer to a question. The Shanahan family's offense was built twice,
+by a father and then by his son, and each time it answered a different question.
+
+### Denver, 1995: the defense won't stand still
+
+When **Mike Shanahan** became the Denver Broncos' head coach in 1995 he brought two things together.
+The first was the passing game of the San Francisco 49ers: he had just spent three seasons
+(1992–94) as George Seifert's offensive coordinator, running the [West Coast offense](12-01-walsh-49ers-west-coast.qmd)
+with Steve Young and winning Super Bowl XXIX.[^mike] The second was a line coach, **Alex Gibbs**, who had
+a theory about running the ball.
+
+The problem in front of them was the defenses of the mid-1990s. Dom Capers's Pittsburgh *zone
+blitzes* sent linebackers into gaps and dropped linemen into coverage, and fronts slanted and stunted
+on almost every snap. A line that blocked "the man in front of me" kept finding that the man had left
+and somebody else had arrived. Gary Kubiak, Denver's offensive coordinator under Shanahan, later
+remembered that in a man scheme "you're getting picked off and you look bad."[^espn2019] Gibbs had been
+refining his answer since his first stint on Denver's line in the 1980s, against the slanting, stunting fronts
+of that decade; the zone blitz made it more valuable, not new. His answer was
+[outside zone](../03-the-run-game/03-02-zone-running.qmd), also called
+[wide zone](../../appendices/glossary.qmd#gl-wide-zone): every lineman steps the same way at the snap
+and blocks whoever enters his area, so a defense that moves is still blocked, and the running back
+reads the blocks and cuts once. [Zone Running](../03-the-run-game/03-02-zone-running.qmd) builds the
+play from the ground up; here what matters is the *philosophy* Gibbs attached to it. He wanted very few
+runs, repeated until the linemen could block them against any front, lighter and quicker linemen who
+could run sideways, and backs who would press the hole and make one decisive cut. Gibbs was famous
+among coaches for his blunt teaching and his near-religious faith in repetition; his clinic tapes are
+still sold to high school coaches.[^gibbs] His backside linemen were taught to
+[cut](../../appendices/glossary.qmd#gl-cut-block) the defenders chasing the play (block them low, at the
+thighs, and put them on the ground), which is how Denver stopped backside pursuit, why the scheme had a "dirty"
+reputation among defensive linemen, and why the rules on low blocks matter so much to this family
+([03-02](../03-the-run-game/03-02-zone-running.qmd) explains the block;
+[09-03](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd) the rules).
+
+Shanahan supplied the other half: the **bootleg**, the pass that looks exactly like the run until the
+quarterback turns the other way. John Elway, in the last four seasons of his career, faked wide zone and
+rolled away from it again and again. Denver won Super Bowls after the 1997 and 1998 seasons; Terrell
+Davis, a sixth-round pick, ran for 2,008 yards in 1998 and was named MVP, and when Davis got hurt a
+string of backs who were not first-round picks kept producing 1,000-yard seasons in the same scheme.[^davis] The
+lesson the league took was that the system, not the star, was doing a lot of the work. Hold on to that
+idea; it comes back, aimed at quarterbacks, later in this chapter.
+
+The system didn't disappear between Elway and 2017; it travelled with the coaches. Kubiak took it to Houston
+as head coach in 2006, with a young Kyle Shanahan on his staff; Mike Shanahan ran it in Washington from 2010
+with Kyle as his coordinator; Kyle carried it to Cleveland and then Atlanta, where the 2016 Falcons were its
+last stop before San Francisco. The tree section below follows those staffs in detail.
+
+### San Francisco, 2017: no quarterback, and defenses built for the spread
+
+Twenty-two years later Mike's son **Kyle Shanahan** took over a 49ers team that had gone 2–14 in
+2016.[^niners] Kyle had grown up in the Denver building, played receiver at Texas, and coached under Gary
+Kubiak in Houston, under his father in Washington, and in Cleveland and Atlanta, where as offensive
+coordinator in 2016 his offense led the league in scoring and Matt Ryan was named MVP.[^kyle] He
+inherited a roster with no starting quarterback (his first starters were Brian Hoyer and the rookie
+C. J. Beathard) and few skill players a defense feared.
+
+His problem was not the zone blitz. It was the defenses of the 2010s. To stop spread passing, teams
+had made the [nickel](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) (five defensive
+backs) their real base defense and filled the field with fast, light linebackers and safeties who could
+run with receivers. How do you beat a defense like that when you can't count on your quarterback to
+win from the pocket on third-and-8?
+
+Kyle's answer kept his father's run-and-boot core and added two things on top. First, make the
+defense *declare* its personnel and its coverage before the snap, by using personnel it doesn't like
+(a fullback) and motion it has to react to. Second, design the passing game so that the hard part of a
+completion is done by the play, not the passer: throws to receivers already running, in space that the
+run fake has emptied, caught by players chosen because they can run after the catch. A defense that is
+fast and light is exactly the defense that has to run sideways to stop wide zone, and exactly the
+defense that has left grass behind its linebackers when the ball comes out on a bootleg.
+
+::: {.callout-important title="Why it exists"}
+The Shanahan offense exists to make the defense's speed and movement work for the offense. Zone
+blocking means slants and blitzes don't leave anyone unblocked; the run's sideways flow pulls fast
+defenders out of position; the bootleg and play-action passes look identical to the run for the first
+second and throw into the space the flow empties. **The trade:** it needs a particular roster (quick
+linemen, one-cut backs, a fullback, receivers who block and run after the catch), it asks for a lot of
+patience on early downs, and it is at its least natural when there is nothing to fake: third-and-long,
+two-minute drills, playing from far behind. Whether that last weakness is real is one of the things the
+data will test.
+:::
+
+## The answer: four ingredients that are one idea
+
+Most offenses can be described as a list of plays. The Shanahan offense is better described as one
+picture shown over and over, with four ingredients mixed in different amounts. Learn the four and why
+each one is there, and you can recognise the family from the stands.
+
+### 1. Wide zone, the play they will run all day
+
+Wide zone is the *base play*, the play the whole offense is organised to protect. From
+[Constraint Theory](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd), a base play is
+the one you want to be good at no matter what the defense does, and the plays around it exist to stop
+the defense from cheating against it. Shanahan teams treat wide zone exactly that way. They will run it
+into a defense that is stopping it, on purpose, because every run *teaches* the defense something: the
+linebackers learn to flow hard with the line's first step, the backside end learns to chase the back
+from behind, and the safety learns to come down fast. Every lesson the defense learns is a habit that
+a later play will punish.
+
+That patience produces a kind of running back the scheme seems to manufacture. Denver's string of
+late-round 1,000-yard backs had a modern sequel in San Francisco: Raheem Mostert, an undrafted free
+agent who ran for 220 yards in the 2019 NFC Championship Game, and Elijah Mitchell, a sixth-round
+rookie who ran for 963 yards in 11 games in 2021.[^backs] (The reverse is also true: when the 49ers had
+an elite back, Christian McCaffrey, he was the league's Offensive Player of the Year in 2023.) The
+scheme doesn't make every back great, but it makes the job simple enough that an ordinary one can
+succeed: press the aiming point, see one crease, cut once.
+
+### 2. The fullback, a personnel problem for the defense
+
+In the 2010s, the fullback nearly vanished from the NFL; many teams carried none. Shanahan's 49ers made
+him a centrepiece, signing Kyle Juszczyk in 2017 to what was then the richest contract ever given to a
+fullback.[^juice] Why spend money on a position the rest of the league had abandoned?
+
+Because a fullback puts the defense in a bind before the snap. Two backs and one tight end
+([21 personnel](../02-personnel-and-formations/02-01-personnel-groupings.qmd)) is a running look,
+and the defense has two bad choices:
+
+- **Stay in nickel** (five defensive backs, two linebackers) and the offense has an extra blocker at the
+  point of attack: the fullback leads into the hole on wide zone, and a light box gets run over.
+- **Go to base defense** (a third linebacker for the fifth defensive back) and the defense has put a
+  slower player on the field against an offense whose fullback, tight end and back can all catch the
+  ball. Now the play-action pass is a linebacker trying to cover George Kittle.
+
+The fullback is also the offense's most flexible piece once the ball is snapped. He can lead on
+wide zone, kick out the backside end on [split zone](../../appendices/glossary.qmd#gl-split-zone)
+(an inside-zone run on which he crosses behind the line to block that end), block the same end on a protected
+bootleg, or run the bootleg's flat route, all from the same spot behind the quarterback. Coaches call that
+crossing path a **slice**: the same run across the formation is a block on split zone and a pass route on
+the boot, and the defense can't tell which until the last step. Teams that copy the system without a fullback use a tight end or H-back for the same jobs.
+
+```{python}
+#| code-summary: "Show the Python (21 personnel share by team, from nflverse participation data)"
+#| output: false
+import re
+P21_SEASONS = list(range(2019, 2026))
+part = nfl().load_participation(P21_SEASONS).to_pandas()[["nflverse_game_id", "play_id", "offense_personnel"]]
+pp = PLAYS[PLAYS["season"].isin(P21_SEASONS)][["game_id", "play_id", "season", "posteam"]].merge(
+    part, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"])
+
+
+def pers_code(s):
+    """'1 RB, 1 TE, 3 WR' (to 2022) or '1 C, 2 G, 1 QB, 1 RB, 2 T, 1 TE, 3 WR' (2023 on) -> '11'."""
+    if not isinstance(s, str):
+        return None
+    cnt = {k: int(v) for v, k in re.findall(r"(\d+)\s+([A-Z]+)", s)}
+    return f"{cnt.get('RB', 0) + cnt.get('FB', 0)}{cnt.get('TE', 0)}"
+
+
+pp["pers"] = pp["offense_personnel"].map(pers_code)
+pp = pp[pp["pers"].notna()]
+P21 = pp.groupby(["season", "posteam"])["pers"].apply(lambda s: (s == "21").mean()).rename("p21").reset_index()
+P21["rank"] = P21.groupby("season")["p21"].rank(ascending=False, method="min").astype(int)
+P21_SF = P21[P21["posteam"] == "SF"].set_index("season")
+P21_MED = P21.groupby("season")["p21"].median()
+P21_POOL = pp.groupby("posteam")["pers"].apply(lambda s: (s == "21").mean()).sort_values(ascending=False)
+P21_LA = P21_POOL["LA"]
+```
+
+The numbers show how unusual that is. From 2019 to 2025 the 49ers lined up in 21 personnel on
+`{python} pct(P21_POOL['SF'])` of their plays, the most in the league over the period, and they ranked
+first or second in every one of those seasons; the median team was in 21 personnel on
+`{python} pct(P21_MED.min())`–`{python} pct(P21_MED.max())` of its plays.[^part] Sean McVay's Rams,
+from the same family, did the opposite: they essentially never used 21 personnel
+(`{python} f"{100 * P21_LA:.1f}%"` of plays) and built their disguise out of 11 personnel instead. Two branches of one tree
+solved the same personnel problem in opposite ways, and you will meet McVay's version in the film room.
+
+### 3. Motion, which makes the defense answer first
+
+Shanahan's offenses move players before almost every snap: a receiver running across the formation
+([across or "zoom" motion](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)), a receiver
+sprinting toward the quarterback at the snap ([jet motion](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)),
+a receiver circling behind the quarterback ([orbit motion](../02-personnel-and-formations/02-06-motion-and-shifts.qmd)).
+[Motion and Shifts](../02-personnel-and-formations/02-06-motion-and-shifts.qmd) explains each one. In
+this system motion does three jobs at once:
+
+- **It asks the defense a question the offense can read.** If a defender
+  [travels](../../appendices/glossary.qmd#gl-travel-man-defender-follows-motion) across the formation with
+  the motion man, the coverage is probably man-to-man; if defenders
+  [bump](../../appendices/glossary.qmd#gl-bump-defensive-adjustment) over a spot or the safeties rotate,
+  it is probably zone. That was a clean first rule in 2017. In the 2020s defenses learned to blur it (zone
+  defenders bump, man defenders pass the motion man to a teammate instead of following him), which is one
+  reason McDaniel's Dolphins moved so much of their motion to
+  [the snap](../../appendices/glossary.qmd#gl-motion-at-the-snap): a man still moving when the ball is
+  snapped gives the defense no time to disguise its answer.
+- **It changes the run's arithmetic.** A receiver in jet motion is just behind the quarterback at the snap and
+  keeps running toward the far sideline, so the edge defender on that side has to respect a jet sweep even
+  when the ball goes elsewhere; motion away from the play drags a defender out of the box.
+- **It moves the strength after the defense has set.** Defenses line up their front to the tight end's side.
+  Shift the tight end across ([a trade](../../appendices/glossary.qmd#gl-trade-te-trade)) or bring a receiver
+  across, and the 3-technique the defense put on the strong side is suddenly on the weak side, or a linebacker
+  is a gap out of place, with seconds to fix it.
+- **It hides the play.** Because the same motion is used on runs, bootlegs and dropback passes, the motion
+  itself tells the defense nothing: one look, many plays.
+
+By the charting of FTN (a data company whose staff tags every NFL snap by hand: motion, play-action, where the
+quarterback lined up), the 49ers used motion (before or at the snap) on more plays than all but one or two teams
+in every season from 2022 to 2025; the numbers are in the fingerprint section below.
+
+### 4. Passes designed for yards after the catch
+
+The last ingredient is the most distinctive. Most offenses judge a pass play by where the ball is
+caught. Shanahan's judges it by what happens *after* the ball is caught.
+
+Think about where receivers are when the ball arrives on the plays you've seen so far. On a bootleg the
+tight end is crossing the field at full speed, behind linebackers who just ran the other way. On
+play-action the slot receiver is running a crossing route through the space the linebackers vacated
+when they stepped up for the run. On a jet sweep or a screen the ball carrier already has blockers in
+front of him. In every case the receiver catches the ball *moving*, *facing upfield* and with *space
+ahead of him*. That is a play designed to produce [YAC](../04-the-passing-game/04-01-passing-fundamentals.qmd),
+yards after the catch.
+
+The roster follows the design. The 49ers' most famous skill players of the Shanahan years were chosen
+less for how they get open deep than for what they do with the ball: George Kittle, a tight end who
+blocks like a lineman and in 2018 gained 870 of his 1,377 receiving yards after the catch; Deebo Samuel,
+a receiver built like a running back, who in 2021 had 1,405 receiving yards and also ran for eight
+touchdowns lining up in the backfield; and Christian McCaffrey, a back who catches like a receiver.[^skill]
+
+To measure this, you need a way to separate "the play put him in space" from "he did something with it."
+That is what the next statistic is for.
+
+### YAC over expected: separating the play from the player
+
+**[YAC over expected](../../appendices/glossary.qmd#gl-yac-over-expected)**, or
+**[YACOE](../../appendices/glossary.qmd#gl-yacoe)**, is the yards a receiver gains after the catch minus
+the yards a model *expects* him to gain from that catch, averaged per reception. Positive means more
+than the situation predicted.
+
+The idea works like [CPOE](../04-the-passing-game/04-07-quarterback-play.qmd) for quarterbacks. Raw YAC
+rewards receivers whose catches come in easy places: a screen caught behind the line with three blockers
+in front of it will produce more yards after the catch than a 20-yard out caught at the sideline, no matter
+who catches either. So a model first estimates the *expected* YAC of each catch from its circumstances,
+and YACOE is what is left:
+
+> YACOE on one catch = actual YAC − expected YAC
+
+A worked example: a crossing route caught 6 yards downfield, in the middle of the field, on the run. The
+model, having seen thousands of similar catches, expects about 6 yards after the catch. The receiver breaks
+a tackle and gains 15. His YACOE on that catch is +9. A screen caught behind the line where the model
+expects 8 and the receiver gains 5 is −3. Over a season the noise averages out and the per-catch average
+tells you whether a team's receivers *consistently* beat what their catches should produce.
+
+Two models are in common use, and they disagree in an instructive way:
+
+- **nflverse's expected YAC** (the `xyac_mean_yardage` column in the free play-by-play) is built from
+  what the play-by-play knows: air yards, where on the field the ball was caught, down, distance and
+  field position. It doesn't know where the defenders were. So when a play *design* creates empty grass
+  in front of the receiver, the nflverse model doesn't see the grass, and the design shows up as
+  YACOE.
+- **[Next Gen Stats](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd)** (the NFL's
+  tracking-data service) builds its expected YAC from player tracking: the receiver's speed and
+  direction at the catch and the positions of the defenders around him. Space the scheme created is
+  already in its expectation, so its YACOE leans more toward what the *receiver* did with that space.
+
+A team that ranks high on both is probably getting yards from design *and* from players. Keep that in
+mind for the fingerprint section, because that is exactly what the 49ers did.
+
+### Why the four are one idea
+
+Put the four together and each one makes the others work.
+
+Wide zone makes linebackers flow fast and sideways; that flow is what empties the crossing lanes the
+YAC passes run through. The fullback forces the defense to choose between a light box (good for wide
+zone) and slower linebackers on the field (good for the passes). Motion tells the quarterback which
+coverage he is facing and moves defenders before the play starts. And all of it comes from the same few
+formations, so the defense cannot tell, in the first second, which ingredient is the one that matters on
+this snap. [08-02](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd) draws the signature
+plate of this idea, "one formation, four plays" (wide zone, a naked bootleg, counter and a play-action
+shot, identical for the first half-second); it is worth a second look before you read on.
+
+## Signature play: wide zone against the bear
+
+Every great offense forces defenses to invent answers. The oldest answer to wide zone is to take away
+the double teams it depends on. Wide zone works by pairing linemen: an uncovered lineman helps his covered
+neighbor reach a defender (the [reach-and-overtake](../03-the-run-game/03-02-zone-running.qmd)), then
+climbs to a linebacker. A defense that covers *every* interior lineman leaves no free lineman to help or to
+climb. That front has a name: the [**bear front**](../05-defensive-fronts-and-run-defense/05-02-even-fronts.qmd),
+a nose on the center and a 3-technique on each guard, named after the 1985 Chicago Bears' 46 defense that made
+it famous. [Even Fronts](../05-defensive-fronts-and-run-defense/05-02-even-fronts.qmd) explains how it
+breaks blocking schemes in general. @fig-bear-wide-zone shows what it does to wide zone, and how the
+Shanahan offense answers.
+
+```{python}
+#| label: fig-bear-wide-zone
+#| fig-cap: "Wide zone right against a bear front (illustrative). The defense covers the center and both guards (a 0 and two 3s), puts a 9-technique outside the tight end and rolls the strong safety into the box: eight defenders in the box against seven blockers (five linemen, the Y and the fullback). The center (purple outline) has to reach a nose head-up on him with no help, because both guards are covered. The right tackle gets his hands on the play-side 3 and the right guard overtakes that block (dashed green), freeing the tackle to climb to the Mike; the Y reaches the 9; the fullback runs flat and fast outside the Y and leads onto the safety; the left tackle climbs to the Will and the left guard cuts off the backside 3. Out wide, the X runs his corner off and the Z blocks the other one. The quarterback reverses out and hands off (the ball) to the back (green ring), who runs at his aiming point, the Y's outside leg (green cross), and cuts once. Eight defenders, seven blockers: somebody goes unblocked, and the offense chooses who. It leaves the backside end (E, red ring), the defender farthest from the play, and makes him pay later with the bootleg."
+p = Play([q.moved(w=0.4) if q.key == "RB" else q for q in off21()], bear(), los=35, to_go=10,
+         title="Wide zone right vs a bear front")
+go_to(p, "RT", (3.4, 3.8), via=[(-0.1, 2.95)])            # hands on the 3 ... then climb to the Mike
+go_to(p, "C", (0.45, 0.75), via=[(-0.45, 0.85)])          # reach the nose alone
+go_to(p, "LG", (0.5, -1.55), via=[(-0.4, -1.15)])         # cut off the backside 3
+go_to(p, "LT", (3.6, -2.2), via=[(-0.4, -2.6)])           # climb to the Will
+go_to(p, "Y", (0.45, 6.25), via=[(-0.45, 5.55)])          # reach the 9
+go_to(p, "FB", (4.0, 7.8), via=[(-4.3, 4.4), (-1.6, 7.9)])  # flat and fast outside the Y, onto the safety
+go_to(p, "Z", (4.6, 10.1), via=[(2.8, 10.0)])             # stalk the corner
+p.route("X", [(0, 0), (8.5, 0)])                          # run the corner off
+go_to(p, "QB", (-3.25, 2.75), "path", speed=3.2)          # reverse out to the mesh
+go_to(p, "RB", (1.6, 5.9), "run", via=[(-3.6, 3.4), (-1.1, 5.6)])   # mesh, aiming point, one cut
+p.handoff("RB", t=0.7)
+p.highlight("RB")
+p.highlight("BE", color=style.DEFENSE_DARK)
+fld = draw(p, lateral=(-13.5, 13.5), window=(-9.0, 15.2))
+cx, cy = _P(fld, p, -0.7, 0.0)                            # purple outline behind the center's marker
+fld.ax.add_patch(Circle((float(cx), float(cy)), 1.0, fc=PURPLE, ec="none", zorder=7.9))
+branch(fld, p, [(-0.7, 1.6), (-1.35, 2.25), (-0.2, 3.05), (0.85, 3.25)], color=ZONE_GREEN, end="tee", lw=2.6,
+       z=8.5)                                                 # RG overtakes the 3, drawn over the markers
+spot(fld, p, -1.1, 5.6)
+bx, by = _P(fld, p, -3.6, 3.4)                            # the handoff
+fld.ax.add_patch(Ellipse((float(bx), float(by)), 0.95, 0.6, fc=style.BALL, ec="white", lw=0.6, zorder=9))
+point_to(fld, p, (-2.9, -3.4), (-3.6, 3.2), "handoff", color=style.OFFENSE_DARK, fontsize=6.6, shrink=3)
+point_to(fld, p, (-3.6, 10.0), (-1.1, 5.6), "aiming point", color=ZONE_GREEN, fontsize=6.6, shrink=5)
+point_to(fld, p, (9.4, -4.6), (0.45, 0.4), "C must reach the 0\nwith no help", color=PURPLE, fontsize=6.9)
+say(fld, p, -6.0, 8.6, "RT hands on the 3, RG\novertakes (dashed green),\nRT climbs to M",
+    color=ZONE_GREEN, fontsize=6.6)
+point_to(fld, p, (10.4, 5.4), (4.0, 7.8), "F leads\non the SS", color=style.OFFENSE_DARK, fontsize=6.7)
+point_to(fld, p, (-5.6, -9.2), (1.0, -4.9), "unblocked on purpose:\nthe bootleg's target",
+         color=style.DEFENSE_DARK, fontsize=6.8)
+say(fld, p, 13.4, -8.8, "8 in the box, 7 blockers", color=style.INK, fontsize=7.2)
+plt.show()
+```
+
+Walk through it the way a defensive coordinator would.
+
+**What the bear takes away.** Look at the middle of the line. On a normal four-man front, one guard is
+uncovered, and that guard is the engine of zone: he helps his neighbor, then climbs to a linebacker. Against
+the bear, the center and both guards each have a man in front of them, so **nobody is free to help or to
+climb**. No single block is impossible; the damage is that every interior lineman is on his own. The center
+has to reach a nose who can play either A gap. If the nose fights across the center's reach, he is in the
+front-side lane before the back gets there. If he lets the center's momentum carry past him, he falls into the
+backside A gap, which is exactly where the back's [cutback](../03-the-run-game/03-02-zone-running.qmd) goes (the
+*bend* of [bang-bend-bounce](../../appendices/glossary.qmd#gl-bang-bend-bounce): the cut against the flow,
+behind defenders who over-ran the play). The left guard can't help, because he is busy cutting off the backside 3
+alone. Add an eighth defender in the box and the offense has more defenders than blockers.
+
+**What the offense does about it.** Four things, and you can watch for all of them.
+
+- **Bring the fullback.** The fullback is the seventh blocker, and against an eight-man box he is the
+  difference between one unblocked defender and two. Here he leads outside the tight end onto the safety,
+  the man who would otherwise meet the back in the [alley](../../appendices/glossary.qmd#gl-alley-player)
+  (the lane just outside the box).
+- **Choose who goes unblocked.** With eight defenders and seven blockers, someone is free. The offense
+  picks the one who can hurt it least: the backside end, the man farthest from the ball. On a wide-zone run
+  to the right he has to run the length of the line to make the tackle, from behind.
+- **Change the run.** Shanahan teams don't only run wide zone into a bear. From the same look they run
+  [split zone](../../appendices/glossary.qmd#gl-split-zone), where the fullback crosses behind the line and
+  kicks out that backside end, so every defender has a blocker;
+  [crack-toss](../../appendices/glossary.qmd#gl-crack-toss), where the Z blocks down on the safety who rolled into
+  the box and the ball gets outside the 3-techniques instead of asking linemen to reach them; and gap runs like
+  [duo](../../appendices/glossary.qmd#gl-duo) and [counter](../../appendices/glossary.qmd#gl-counter), which
+  don't depend on reaching anyone.
+- **Make the free man pay.** An unblocked defender who is taught to chase the run is the exact defender the
+  bootleg is built to beat. Which brings us to the play that keeps the bear honest.
+
+::: {.callout-important title="Why it exists"}
+The bear exists to take away the double teams and climbs that zone runs depend on, and it is a reasonable
+thing to show a wide-zone team on early downs. It is one of two opposite ways to defend this offense, and
+they trade the same things in reverse. **The bear** puts eight in the box with one deep safety: it wins the
+numbers against the run and gives up the bootleg and the play-action shot over the top. **Two deep safeties
+with a light box** (the 2020s answer you'll meet under "How defenses answered") takes away the shot and the
+easy boot and gives up runs: it bets that six or seven defenders can hold the line. Neither is a solution;
+each is a choice of which plays to give up.
+:::
+
+## Signature play: the bootleg-keeper off wide zone
+
+The [bootleg](../04-the-passing-game/04-05-play-action-boots-screens.qmd) is the quarterback faking the
+run one way and rolling out the other; in the **naked** version nobody blocks for him, and the
+[keeper](../04-the-passing-game/04-05-play-action-boots-screens.qmd) is the option built into it: if
+nobody comes to stop him, the quarterback runs. [Play-Action, Bootlegs, and Screens](../04-the-passing-game/04-05-play-action-boots-screens.qmd)
+builds the full play from a two-tight-end set. @fig-boot-strip runs the Shanahan version: the same 21-personnel
+look and the same bear front as @fig-bear-wide-zone, so you can watch what happens to the defender the run
+left alone.
+
+```{python}
+#| label: fig-boot-strip
+#| fig-cap: "The bootleg-keeper off wide zone against the bear, frame by frame (simulated: a computer-generated version of the play, in the same format as the NFL's real player-tracking data; faint lines are each player's path so far). The snap is the picture in @fig-bear-wide-zone. (1) For the first second it is the run: the line steps right, the back runs the zone track, the linebackers and the safety flow with it, and the backside end (red ring), unblocked as on the run, crashes flat down the line after the back. The one difference is the fullback: he is crossing toward that end on the path he takes on split zone, so to the end he looks like a block coming, not a receiver. (2) The quarterback never handed it off. He is rolling left, behind the end; the fullback has slipped past the end toward the flat, and the Y (green ring), who showed his run block, has released. (3) Three receivers at three depths on the boot side: the fullback in the flat at about 2 yards, the Y crossing behind the linebackers at about 10, the Z's deep over on its way across; X's deep route has carried the left corner away. The end is inside and behind the quarterback, who has the edge, and nobody is in front of him, so the keeper (running it himself, green arrow) is open too. (4) The ball went to the Y; he catches it running across the field at about 10 yards, with the Will trailing underneath and open grass in front: yards after the catch by design."
+def boot_play():
+    p = Play([q.moved(w=0.4) if q.key == "RB" else q for q in off21()], bear(), los=35, to_go=10)
+    for k in ("LT", "LG", "C", "RG", "RT"):
+        p.block(k, pts=[(0.25, 1.3)], speed=2.0)                     # the same first steps as wide zone
+    go_to(p, "Y", (-0.4, 5.6), speed=2.0)                            # shows his reach block on the 9 ...
+    go_to(p, "Y", (10.5, -15.0), "route", delay=0.3, speed=6.9,      # ... then a deep cross behind the flow
+          via=[(1.4, 4.8), (5.5, 2.6), (8.6, -1.2), (9.6, -7.0)])
+    go_to(p, "FB", (2.4, -13.5), "route", delay=0.1, speed=6.4,      # split zone's "slice" at the end, then the flat
+          via=[(-3.7, -1.2), (-1.6, -4.7), (0.4, -8.6)])
+    go_to(p, "X", (17.5, -9.5), "route", speed=7.5)                  # deep: take the corner away
+    go_to(p, "Z", (18.5, -12.0), "route", speed=7.8,                 # deep over
+          via=[(5.0, 9.0), (11.0, 4.5), (16.0, -3.0)])
+    go_to(p, "RB", (2.4, 6.8), "path", speed=5.6, via=[(-3.6, 3.4), (-1.1, 5.6)])   # the fake, carried out
+    go_to(p, "QB", (-3.3, 1.6), "path", speed=3.0)                   # reverse out, show the ball ...
+    go_to(p, "QB", (-6.0, -6.4), "path", speed=5.8, delay=0.1)       # ... then boot left
+    go_to(p, "QB", (-6.4, -10.6), "path", speed=4.4)                 # outside the tackle box
+    # the defense reacts to the run
+    go_to(p, "BE", (-2.5, 0.2), "path", speed=4.6, via=[(-0.3, -4.0), (-2.3, -1.9)])  # crashes flat down the line
+    go_to(p, "BE", (-3.4, -2.6), "path", speed=3.0)                  # too late: the QB is behind him
+    go_to(p, "B3", (1.0, -0.8), "path", speed=1.4)
+    go_to(p, "NT", (1.1, 1.0), "path", speed=1.4)
+    go_to(p, "P3", (1.2, 3.3), "path", speed=1.4)
+    go_to(p, "EDGE", (0.8, 6.1), "path", speed=1.0)
+    go_to(p, "MIKE", (2.6, 5.4), "path", speed=3.6)                  # downhill with the fake ...
+    go_to(p, "MIKE", (6.0, 0.0), "path", speed=3.6, delay=0.45)      # ... then turns back, late
+    go_to(p, "WILL", (2.8, 1.8), "path", speed=3.8)                  # downhill with the fake ...
+    go_to(p, "WILL", (6.6, -5.8), "path", speed=4.0, delay=0.25)     # ... then trails the crosser
+    go_to(p, "SS", (3.4, 7.6), "path", speed=3.2)
+    go_to(p, "FS", (15.0, -5.5), "path", speed=3.4, delay=0.6)
+    go_to(p, "LCB", (18.0, -11.0), "path", speed=6.6, delay=0.25)
+    go_to(p, "RCB", (15.0, 6.5), "path", speed=4.6, delay=0.2)
+    p.pass_to("Y", t=2.45)
+    return p
+
+
+def mark_slice(fld, p, t):
+    f = p.position("FB", t)
+    point_to(fld, p, (f[0] - 3.2, f[1] - 1.5), tuple(f), "F: slice\n(the one tell)", color=style.OFFENSE_DARK,
+             fontsize=6.2, shrink=4)
+
+
+def mark_keeper(fld, p, t):
+    e, q = p.position("BE", t), p.position("QB", t)
+    point_to(fld, p, (e[0] - 3.4, e[1] + 4.6), tuple(e), "E: inside and\nbehind the QB", color=style.DEFENSE_DARK,
+             fontsize=6.2, shrink=4)
+    branch(fld, p, [tuple(q + [0.9, 0]), tuple(q + [5.0, -0.2])], color=ZONE_GREEN, lw=1.6)
+    say(fld, p, q[0] + 6.6, q[1] - 0.2, "keeper", color=ZONE_GREEN, fontsize=6.2)
+
+
+BOOT = boot_play()
+T_CATCH = next(t for t in np.arange(2.45, 5.0, 0.05)                  # when the ball reaches the Y
+               if np.linalg.norm(BOOT.ball_position(t) - BOOT.position("Y", t)) < 0.3)
+play_animation(BOOT, [0.7, 1.5, 2.4, round(float(T_CATCH) + 0.2, 1)],
+               notes=["the fake: line, back, linebackers go right; E crashes",
+                      "the QB kept it: boot left, behind the end",
+                      "flat, cross, deep over at three depths",
+                      "the Y catches it in stride: room to run"],
+               rings=(("BE", style.DEFENSE_DARK), ("Y", style.THIRD)), marks={0: mark_slice, 2: mark_keeper},
+               lateral=(-17.0, 9.0), window=(-8.3, 20.5), ncols=2)
+```
+
+Notice three things.
+
+**The first second is the run, with one deliberate exception.** Freeze the strip at frame 1 and compare it
+with @fig-bear-wide-zone: the line's steps, the back's path, the quarterback's turn and the linebackers' flow
+are the same. A linebacker who waits to find out which play it is has already lost on the run; one who flows
+fast has already lost on the boot. The exception is the fullback. Instead of leading to the right he crosses
+behind the line toward the backside end, which is exactly what he does on
+[split zone](../../appendices/glossary.qmd#gl-split-zone), when he kicks that end out. The family pairs the
+boot with that look on purpose. To the end, a fullback coming at him means "a block is coming," so he attacks
+it, and the fullback slips past him into the flat. This is also why the boot is a 21-personnel play rather
+than the two-tight-end version in [04-05](../04-the-passing-game/04-05-play-action-boots-screens.qmd): a
+fullback starts behind the line with a running start and a view of the end, so his "block" and his route
+look identical until the last step, while a tight end has to get off the line of scrimmage first.
+
+**The unblocked end is now the victim.** On the run, leaving him free was cheap: he was chasing a back who
+was running away from him. On the boot, chasing is exactly wrong. His job against a bootleg is
+[contain](../05-defensive-fronts-and-run-defense/05-01-dl-techniques-and-gap-control.qmd) (stay outside the
+quarterback and force him back toward the pursuit), and he has given it up to chase a back who doesn't have
+the ball. In frame 3 he is close to the quarterback, but he is *inside and behind* him, running the wrong way;
+a quarterback with a two-yard head start toward the sideline is gone. The more he is taught by the run, the
+better the boot gets.
+
+**The read is simple, even if the throw isn't.** The quarterback's first look is that end. If the end has
+stayed home and is on him, the ball goes to the fullback in the flat at once, the answer
+[04-05](../04-the-passing-game/04-05-play-action-boots-screens.qmd) teaches. If the end chased, the
+quarterback has three receivers on one side at three depths (the flat, the crosser, the deep over) and reads
+them high to low. His legs are the fourth option: the man he watches for the keeper is the first defender who
+could come up to meet him on that side, usually the flat defender (here the corner, who has gone deep with the
+X). If that man drops with the routes, nobody is in front of the quarterback and he runs. Throwing on the move
+is *harder* than throwing from the pocket, which is why the throws are short and to receivers already
+running; what the boot buys him is a simpler decision and time, because every rusher is behind him. That is
+the "easy throws" half of Kyle Shanahan's answer to the 2017 problem, and the reason this chapter's next
+section is about quarterbacks.
+
+**What if the end doesn't chase?** That is the **squeeze** of
+[Constraint Theory and Sequencing](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd):
+the end shuffles down the line square, eyes on the quarterback, and the naked boot dies. 08-02 drew that
+duel; what this offense adds is what it does next. A squeezing end has stopped closing the back's
+*bend* lane from behind, so the cutback opens on wide zone; split zone puts the fullback on him so the run is
+fully blocked; and if the offense still wants to boot, the fullback blocks him instead of releasing (the
+protected bootleg of [04-05](../04-the-passing-game/04-05-play-action-boots-screens.qmd)). Every defensive
+answer leaves something else open; the play-caller's job is to find out which answer the defense has chosen.
+
+::: {.callout-note title="Madden vs. real life"}
+In Madden, "PA Boot" is a play you pick when you feel like it. In a Shanahan game plan, the bootleg is
+*earned*: it is aimed at a habit, a backside end and linebackers who flow hard with the run. The staff learns
+that habit from the opponent's film all week (scripted openings often include a boot when the film says the
+end chases) and confirms it in the first quarter from the booth, and it often calls the boot on the next first
+down after a successful run from the same look. Called blind, against an end who isn't chasing, the same play
+is a much worse one.
+:::
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (find real 49ers bootlegs in Big Data Bowl tracking; not run in the build)"
+import pandas as pd
+from gridiron import bdb, show_animation
+
+plays = pd.read_csv("data/bdb/plays.csv")       # BDB 2025 files: 2022 season, weeks 1-9
+# check the year's data dictionary for exact column values
+boots = plays[(plays["possessionTeam"] == "SF") & (plays["playAction"] == True)
+              & plays["dropbackType"].astype(str).str.contains("ROLLOUT")]
+print(len(boots), "49ers play-action rollouts")
+g, pl = boots.iloc[0][["gameId", "playId"]]
+trk = bdb.load_tracking("data/bdb/tracking_week_*.csv")
+one = bdb.prepare(trk, plays, game_id=g, play_id=pl)
+show_animation(one, times=[0.0, 0.7, 1.35, 2.0, 2.6, 3.25])    # same panels as the simulated boot
+```
+
+## The quarterback question
+
+Here is the claim that makes the Shanahan system famous, and controversial: it makes quarterbacks
+efficient. Not great, necessarily; efficient. A quarterback in this offense completes a lot of passes,
+throws for a lot of yards per attempt, and produces strong EPA per dropback, and he does it with a
+smaller share of difficult throws than quarterbacks in most other systems.
+
+### Why the system helps the passer
+
+The reasons are all in the four ingredients.
+
+- **The run fake moves the defenders out of the throwing windows.** Linebackers who flow with wide zone are
+  not in the middle of the field when the ball comes out on play-action; the crossing routes run behind them.
+- **The bootleg halves the field and simplifies the read.** A quarterback rolling right reads three receivers
+  on one side, high to low, with no need to scan the whole field. The throw itself is harder (on the move,
+  without setting his feet), so the routes are short and timed; the gain is that the rushers are behind him and
+  the decision is simple.
+- **Motion tells him the coverage before the snap,** so the read after the snap is a confirmation, not a
+  discovery.
+- **Receivers catch it running.** Throws are timed to receivers already moving, often across the field, so a
+  catch tends to turn into yards. A five-yard throw that becomes a 20-yard gain counts as 20 passing yards for
+  the quarterback.
+- **Under center, the fake is better.** When the quarterback turns his back to the defense to fake a handoff,
+  the defense can't see the ball, and the fake is more convincing than one from the shotgun
+  ([04-05](../04-the-passing-game/04-05-play-action-boots-screens.qmd) compares the two). The cost is that the
+  quarterback has less time to read the defense on dropback passes, which the system accepts.
+
+### The debate: is that the quarterback or the system?
+
+That design creates the argument every Shanahan-tree quarterback lives with. If the scheme manufactures
+open receivers and yards after the catch, how much credit does the passer deserve? It matters, because
+quarterback contracts are the biggest decisions a franchise makes.
+
+The case for "system" is a list of names. Jimmy Garoppolo was efficient in San Francisco and was not after
+he left. Brock Purdy was the last pick of the 2022 draft, the 262nd player chosen, "Mr. Irrelevant," and in
+2023 he led the league in [passer rating](../../appendices/glossary.qmd#gl-passer-rating) (the NFL's
+official passing formula) and yards per attempt.[^purdy] Sam Darnold struggled with the Jets and
+Panthers, spent 2023 as Purdy's backup, then had his two best seasons in offenses from the same family:
+Kevin O'Connell's Minnesota Vikings in 2024 and Klint Kubiak's Seattle Seahawks in 2025, where he won Super
+Bowl LX. @fig-same-qb puts numbers on the most-cited cases.
+
+```{python}
+#| label: fig-same-qb
+#| fig-cap: "Same quarterback, different offense: EPA per dropback (every dropback, including sacks and scrambles; regular seasons) inside and outside a Shanahan-family offense. Blue dots: seasons with a Shanahan-family play-caller; grey dots: the same quarterback's other seasons (the number of dropbacks is beside each dot). The dashed line is the league average dropback, 2012–2025 (its value is printed at the bottom). Most of these quarterbacks were much better inside the family. The exception: Jared Goff was about as good in Detroit (2021–2025) as he had been under McVay, in an offense whose coordinator from 2022 to 2024, Ben Johnson, borrowed heavily from the same ideas. Samples are small and nothing here controls for age, teammates or opponents. Data: nflverse play-by-play."
+# (label, quarterback, [(team, seasons)] inside the family, [(team, seasons)] elsewhere, note)
+QBS = [
+    ("Matt Ryan", "M.Ryan", [("ATL", [2015, 2016])], [("ATL", [2012, 2013, 2014, 2017, 2018, 2019, 2020, 2021])],
+     "Kyle Shanahan's Falcons vs Ryan's other Atlanta years"),
+    ("Jared Goff", "J.Goff", [("LA", [2017, 2018, 2019, 2020])], [("DET", list(range(2021, 2026)))],
+     "McVay's Rams vs Detroit (his rookie year under Jeff Fisher left out)"),
+    ("Jimmy Garoppolo", "J.Garoppolo", [("SF", list(range(2017, 2023)))], [("NE", list(range(2014, 2018))), ("LV", [2023])],
+     "49ers vs New England and Las Vegas"),
+    ("Tua Tagovailoa", "T.Tagovailoa", [("MIA", [2022, 2023, 2024, 2025])], [("MIA", [2020, 2021])],
+     "McDaniel's Dolphins vs his first two seasons"),
+    ("Sam Darnold", "S.Darnold", [("SF", [2023]), ("MIN", [2024]), ("SEA", [2025])],
+     [("NYJ", [2018, 2019, 2020]), ("CAR", [2021, 2022])], "SF, O'Connell's Vikings, Kubiak's Seahawks vs Jets, Panthers"),
+    ("Mac Jones", "M.Jones", [("SF", [2025])], [("NE", [2021, 2022, 2023]), ("JAX", [2024])],
+     "49ers vs New England and Jacksonville"),
+]
+
+
+def qb_epa(name, spans):
+    rows = pd.concat([DROP[(DROP["passer"] == name) & (DROP["posteam"] == t) & DROP["season"].isin(s)]
+                      for t, s in spans])
+    return rows["epa"].mean(), len(rows)
+
+
+QB_ROWS = []
+for lab, name, inside, outside, note in QBS:
+    (ei, ni), (eo, no) = qb_epa(name, inside), qb_epa(name, outside)
+    QB_ROWS.append((lab, ei, ni, eo, no, note))
+QB = pd.DataFrame(QB_ROWS, columns=["qb", "epa_in", "n_in", "epa_out", "n_out", "note"]).set_index("qb")
+LG_DROP = DROP["epa"].mean()
+
+fig, ax = plt.subplots(figsize=(6.6, 3.7))
+ys = np.arange(len(QB))[::-1]
+for y, (lab, r) in zip(ys, QB.iterrows()):
+    ax.plot([r.epa_out, r.epa_in], [y, y], color=style.BASELINE, lw=2.2, zorder=1)
+    ax.scatter([r.epa_out], [y], s=70, color=style.MUTED, edgecolor=style.SURFACE, lw=1.2, zorder=3)
+    ax.scatter([r.epa_in], [y], s=70, color=style.SERIES[0], edgecolor=style.SURFACE, lw=1.2, zorder=3.5)
+    close = abs(r.epa_in - r.epa_out) < 0.03                    # nearly equal: put the blue label above
+    for v, n, col, inside in [(r.epa_out, r.n_out, style.INK_2, False), (r.epa_in, r.n_in, style.OFFENSE_DARK, True)]:
+        right = v >= min(r.epa_out, r.epa_in) + 1e-9 and v == max(r.epa_out, r.epa_in)
+        if close and inside:
+            xy, ha, va = (0, 7), "center", "bottom"
+        elif close:
+            xy, ha, va = (-8, 0), "right", "center"
+        else:
+            xy, ha, va = (8 if right else -8, 0), "left" if right else "right", "center"
+        ax.annotate(f"{v:+.2f} ({n:,})", (v, y), xytext=xy, textcoords="offset points",
+                    ha=ha, va=va, fontsize=7, color=col, zorder=4,
+                    bbox=dict(boxstyle="round,pad=0.1", fc=style.SURFACE, ec="none"))
+    ax.text(-0.235, y - 0.33, r.note, fontsize=6.3, color=style.MUTED, va="center", ha="left")
+ax.axvline(LG_DROP, color=style.INK_2, lw=1, ls=(0, (3, 2)), zorder=0)
+ax.text(LG_DROP + 0.004, -0.62, f"league average ({LG_DROP:+.2f})", fontsize=6.6, color=style.INK_2, va="center")
+ax.set_yticks(ys, QB.index, fontsize=8)
+ax.set_xlim(-0.24, 0.33)
+ax.set_ylim(-0.8, len(QB) + 0.15)
+ax.set_xlabel("EPA per dropback", fontsize=8)
+ax.tick_params(axis="x", labelsize=7.5)
+ax.grid(axis="y", visible=False)
+ax.scatter([], [], s=50, color=style.SERIES[0], label="in a Shanahan-family offense")
+ax.scatter([], [], s=50, color=style.MUTED, label="elsewhere")
+ax.legend(loc="upper left", fontsize=7.2, handletextpad=0.3, ncol=2, borderaxespad=0.2)
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| code-summary: "Show the Python (Goff and Stafford with the Rams; third-and-long dropbacks, 2019-2025)"
+#| output: false
+def rams_qb(name, seasons):
+    x = DROP[(DROP["passer"] == name) & (DROP["posteam"] == "LA") & DROP["season"].isin(seasons)]
+    y = x[(x["down"] == 3) & (x["ydstogo"] >= 7)]
+    return x["epa"].mean(), y["epa"].mean()
+
+
+GOFF_LA, GOFF_T3 = rams_qb("J.Goff", [2017, 2018, 2019, 2020])
+STAF_LA, STAF_T3 = rams_qb("M.Stafford", list(range(2021, 2026)))
+
+_d = DROP[(DROP["season"] >= 2019) & (DROP["down"] == 3) & (DROP["ydstogo"] >= 7)]
+_t = _d.groupby("posteam")["epa"].mean().sort_values(ascending=False)
+T3_SF, T3_LG, T3_RANK = _t["SF"], _d["epa"].mean(), list(_t.index).index("SF") + 1
+_air = _d.groupby("posteam")["air_yards"].mean().rank(ascending=False, method="min")
+_yac = _d[_d["complete_pass"] == 1].groupby("posteam")["yards_after_catch"].mean().rank(ascending=False, method="min")
+T3_AIR_RK, T3_YAC_RK = int(_air["SF"]), int(_yac["SF"])
+```
+
+Read @fig-same-qb with care, because it is the kind of chart that can prove whatever you want. Darnold's
+jump from `{python} f"{QB.loc['Sam Darnold', 'epa_out']:+.2f}"` to `{python} f"{QB.loc['Sam Darnold', 'epa_in']:+.2f}"`
+EPA per dropback and Mac Jones's from `{python} f"{QB.loc['Mac Jones', 'epa_out']:+.2f}"` to
+`{python} f"{QB.loc['Mac Jones', 'epa_in']:+.2f}"` are large, and they happened with new teammates, new
+offensive lines and, in Darnold's case, a few more years of experience. Tagovailoa is the cleanest
+comparison (same team, same player, a new head coach in 2022), and his line hides a collapse: his 2025 season
+under McDaniel was his worst since his rookie year, and McDaniel was fired that winter. Garoppolo's drop after
+leaving San Francisco came at age 32 and after injuries. And Goff, traded by McVay to Detroit for Matthew
+Stafford in 2021, averaged `{python} f"{QB.loc['Jared Goff', 'epa_out']:+.2f}"` per dropback in Detroit against
+`{python} f"{QB.loc['Jared Goff', 'epa_in']:+.2f}"` in Los Angeles, and had his best season (2024) after the Lions built
+their own run-and-play-action offense around him. Goff's line doesn't show a limit; it shows that the ideas
+travel to a cousin offense.
+
+The Goff-for-Stafford trade is the sharpest test of the "system" argument, and the averages can't settle it.
+With the Rams, Goff (2017–2020) averaged `{python} f"{GOFF_LA:+.2f}"` EPA per dropback and Stafford (2021–2025)
+`{python} f"{STAF_LA:+.2f}"`; on third down with 7 or more to go, `{python} f"{GOFF_T3:+.2f}"` and
+`{python} f"{STAF_T3:+.2f}"`. Yet McVay made the trade, won Super Bowl LVI in Stafford's first season, and in
+2025, with Stafford at 37, the Rams led the league in play-action and still had the MVP at quarterback: Stafford
+threw a league-leading 46 touchdown passes.[^stafford] Whatever McVay was paying for lives in the handful of
+plays an average hides, the ones that decide January games. That is a coach's judgment, not a number, and it's
+honest to call it one.
+
+The critics have one more argument: the big games. Kyle Shanahan's offenses have led in the second half of
+three Super Bowls and lost all three: as Atlanta's coordinator in Super Bowl LI (up 28–3 in the third quarter,
+lost 34–28 in overtime), and as the 49ers' head coach in Super Bowl LIV (up 20–10 in the fourth quarter, lost
+31–20) and Super Bowl LVIII (lost 25–22 in overtime).[^sbs] Those losses get pinned on play-calling with a lead
+and on an offense that, critics say, can't throw its way out of obvious passing downs. The second claim is
+testable, and the data doesn't support it. From 2019 to 2025, on third down with 7 or more yards to go (the
+downs where everybody knows it is a pass), the 49ers' dropbacks averaged
+`{python} f"{T3_SF:+.2f}"` EPA, `{python} ordinal(T3_RANK)` of 32 teams, against a league average of
+`{python} f"{T3_LG:+.2f}"`. Look at *how*, though: their throws travelled less far in the air than most teams'
+(`{python} ordinal(T3_AIR_RK)` in average air yards on those snaps) and their completions gained more after the
+catch (`{python} ordinal(T3_YAC_RK)` in YAC per catch). Even on third-and-long, the 49ers' answer is designed:
+a schemed throw to a receiver on the move, not a quarterback inventing something.
+
+So the honest summary is in between. The system reliably raises the *floor*: quarterbacks who can read a
+defense, deliver the ball on time and throw on the move become efficient in it, and some of them have looked
+like stars. Its third-and-long numbers say the design reaches further than critics think. What no design
+supplies is the throw after the design breaks (the coverage was right, the protection failed, and the
+quarterback has to create something), and those plays are rare enough that season averages barely see them.
+Whether they decide the biggest games is the real argument, and it is one the data in this chapter can't end.
+
+::: {.callout-caution title="Common misconception"}
+**"System quarterback" means "bad quarterback."** It doesn't, and the phrase is used carelessly in both
+directions. Every quarterback plays in a system; the Shanahan system just makes its contribution unusually
+visible. Matt Ryan's MVP season (2016), Aaron Rodgers's MVP seasons under Matt LaFleur (2020 and 2021) and
+Stafford's in 2025 all came in this family's offenses, from quarterbacks nobody calls system players. The
+useful question isn't "system or quarterback?" but "how much does this quarterback add *beyond* what the design
+gives him?", which is what EPA, CPOE and YAC over expected try to separate.
+:::
+
+## The data fingerprint
+
+How would you recognise this offense from data alone, without watching a snap? Four measurements do most
+of the work: how often the quarterback is under center, how often he fakes a handoff, how much the receivers
+gain after the catch, and (to check that all this produces anything) how efficient the offense is.
+
+### Under center and play-action
+
+The chart below sorts the 2025 play-callers into two generations. The **first generation** are the coaches who
+worked on the Shanahans' or Kubiaks' own staffs and called plays in 2025: Kyle Shanahan (49ers), Sean McVay
+(Rams), Matt LaFleur (Packers), Mike McDaniel (Dolphins) and Klint Kubiak (Seahawks); the tree section below
+traces how each got there. The **second generation** came up on McVay's Rams staffs: Kevin O'Connell (Vikings),
+Zac Taylor (Bengals), Liam Coen (Jaguars), and two coordinators who called plays in 2025, Zac Robinson in
+Atlanta and Nick Caley in Houston.[^gen2]
+
+```{python}
+#| label: fig-fingerprint
+#| fig-cap: "The 2025 fingerprint: how often each offense put the quarterback under center (share of runs and passes) against how often it used play-action (share of dropbacks), from FTN's charting. Dark blue: the five first-generation play-callers (Shanahan, McVay, Matt LaFleur, McDaniel and Klint Kubiak). Green: five play-callers who came up on McVay's Rams staffs. Grey: the rest of the league. The dashed lines are the league medians. Four of the five first-generation teams sit right of the under-center median, the Rams at the far corner of both; McDaniel's Dolphins, the speed-and-motion branch, worked mostly from the shotgun and pistol. The dashed arrow is the one 2024 element: Seattle's move from 2024 to 2025, Klint Kubiak's one season as play-caller. The second generation is spread out: a coaching tree passes on ideas, not a single formula. Data: nflverse play-by-play joined to FTN charting, regular seasons."
+FP_SEASONS = [2022, 2023, 2024, 2025]
+ftn = nfl().load_ftn_charting(FP_SEASONS).to_pandas()
+fp = PLAYS[PLAYS["season"].isin(FP_SEASONS)].merge(
+    ftn[["nflverse_game_id", "nflverse_play_id", "qb_location", "is_play_action", "is_motion"]],
+    left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "nflverse_play_id"])
+fp["uc"] = fp["qb_location"].eq("U")
+FP = fp.groupby(["season", "posteam"]).agg(uc=("uc", "mean"), motion=("is_motion", "mean"))
+FP = FP.join(fp[fp["qb_dropback"] == 1].groupby(["season", "posteam"]).agg(pa=("is_play_action", "mean")))
+for col in ("uc", "pa", "motion"):
+    FP[col + "_rk"] = FP.groupby(level="season")[col].rank(ascending=False, method="min").astype(int)
+LG_UC = fp.groupby("season")["uc"].mean()
+
+CORE = {"SF": "49ers (Shanahan)", "LA": "Rams (McVay)", "GB": "Packers (LaFleur)",
+        "MIA": "Dolphins (McDaniel)", "SEA": "Seahawks (Kubiak)"}
+MCVAY = {"MIN": "Vikings", "CIN": "Bengals", "JAX": "Jaguars", "ATL": "Falcons", "HOU": "Texans"}
+f25 = FP.xs(2025, level="season")
+fig, ax = plt.subplots(figsize=(6.6, 4.3))
+rest = f25[~f25.index.isin(list(CORE) + list(MCVAY))]
+ax.scatter(rest["uc"], rest["pa"], s=34, color=style.BASELINE, edgecolor=style.SURFACE, lw=0.8, zorder=2,
+           label="other offenses")
+ax.scatter(f25.loc[list(MCVAY), "uc"], f25.loc[list(MCVAY), "pa"], s=46, color=style.SERIES[2],
+           edgecolor=style.SURFACE, lw=0.8, zorder=3, label="second generation (from McVay's staffs)")
+ax.scatter(f25.loc[list(CORE), "uc"], f25.loc[list(CORE), "pa"], s=62, color=style.OFFENSE_DARK,
+           edgecolor=style.SURFACE, lw=0.8, zorder=4, label="first generation")
+LABEL_OFF = {"SF": (7, -10), "LA": (-6, 8), "GB": (-6, 9), "MIA": (-7, -8), "SEA": (7, 4),
+             "MIN": (7, 2), "CIN": (-7, 0), "JAX": (7, -4), "ATL": (7, -6), "HOU": (7, 2)}
+LABEL_AT = {"GB": (0.405, 0.292), "MIA": (0.205, 0.292)}     # crowded spots: label in open space, with a leader
+for tm, off_ in LABEL_OFF.items():
+    lab = CORE.get(tm, MCVAY.get(tm))
+    r = f25.loc[tm]
+    if tm in LABEL_AT:
+        ax.annotate(lab, (r["uc"], r["pa"]), xytext=LABEL_AT[tm], textcoords="data", fontsize=6.8,
+                    color=style.INK, fontweight="bold", ha="center", va="center",
+                    arrowprops=dict(arrowstyle="-", color=style.INK_2, lw=0.6, shrinkA=2, shrinkB=4))
+        continue
+    ax.annotate(lab, (r["uc"], r["pa"]), xytext=off_, textcoords="offset points", fontsize=6.8,
+                color=style.INK if tm in CORE else style.INK_2, fontweight="bold" if tm in CORE else "normal",
+                ha="left" if off_[0] > 0 else "right", va="center")
+s24 = FP.loc[(2024, "SEA")]
+ax.annotate("", (f25.loc["SEA", "uc"], f25.loc["SEA", "pa"]), xytext=(s24["uc"], s24["pa"]),
+            arrowprops=dict(arrowstyle="-|>", color=style.OFFENSE_DARK, lw=1.1, ls=(0, (3, 2)),
+                            shrinkA=3, shrinkB=6))
+ax.annotate("Seattle 2024", (s24["uc"], s24["pa"]), xytext=(0, -9), textcoords="offset points", fontsize=6.4,
+            color=style.INK_2, ha="center", va="top")
+ax.axvline(f25["uc"].median(), color=style.MUTED, lw=0.8, ls=(0, (3, 2)), zorder=1)
+ax.axhline(f25["pa"].median(), color=style.MUTED, lw=0.8, ls=(0, (3, 2)), zorder=1)
+ax.text(f25["uc"].median() + 0.004, 0.147, "league median", fontsize=6.4, color=style.INK_2, ha="left", va="bottom")
+ax.text(0.103, f25["pa"].median() + 0.002, "league median", fontsize=6.4, color=style.INK_2, ha="left", va="bottom")
+ax.yaxis.set_major_locator(plt.MultipleLocator(0.05))
+ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+ax.set_xlabel("Quarterback under center (share of plays), 2025", fontsize=8)
+ax.set_ylabel("Play-action (share of dropbacks)", fontsize=8)
+ax.tick_params(labelsize=7.5)
+ax.legend(loc="upper left", fontsize=7, handletextpad=0.2)
+fig.tight_layout()
+plt.show()
+```
+
+The core of the family is easy to spot in @fig-fingerprint. In 2025 the Rams put Stafford under center on
+`{python} pct(FP.loc[(2025, 'LA'), 'uc'])` of their plays, the most in the league, and used play-action on
+`{python} pct(FP.loc[(2025, 'LA'), 'pa'])` of dropbacks, also the most. The 49ers were under center on
+`{python} pct(FP.loc[(2025, 'SF'), 'uc'])` (`{python} ordinal(int(FP.loc[(2025, 'SF'), 'uc_rk']))`). Seattle
+made the most dramatic move of any team in the chart: under center on `{python} pct(FP.loc[(2024, 'SEA'), 'uc'])`
+of plays in 2024, `{python} ordinal(int(FP.loc[(2024, 'SEA'), 'uc_rk']))` in the league, and on
+`{python} pct(FP.loc[(2025, 'SEA'), 'uc'])` in 2025, `{python} ordinal(int(FP.loc[(2025, 'SEA'), 'uc_rk']))`,
+the year Klint Kubiak arrived as offensive coordinator. One new play-caller, and the fingerprint moved across
+the whole chart.
+
+Two surprises are worth noticing. The first is San Francisco's play-action rate, which in FTN's charting is
+ordinary: `{python} pct(FP.loc[(2025, 'SF'), 'pa'])` of dropbacks in 2025,
+`{python} ordinal(int(FP.loc[(2025, 'SF'), 'pa_rk']))` in the league, and in the bottom half in every season
+from 2022 to 2025. FTN's play-action flag counts snaps with a fake handoff, and the 49ers fake less than you'd guess:
+their "it all looks the same" effect comes less from the fake itself than from the formation, the
+personnel and the motion that the runs, the passes and the boots all share. Where the 49ers *are* extreme is
+motion (`{python} ordinal(int(FP.loc[(2025, 'SF'), 'motion_rk']))` in 2025,
+`{python} ", ".join(ordinal(int(FP.loc[(s, 'SF'), 'motion_rk'])) for s in [2022, 2023])` and
+`{python} ordinal(int(FP.loc[(2024, 'SF'), 'motion_rk']))` in the three seasons before) and personnel. The second surprise is how scattered the second generation is: the Bengals
+under Zac Taylor are a shotgun passing team, and Atlanta in 2025 was under center less than almost anyone. A
+coaching tree hands down a way of thinking and a vocabulary, not a formation chart.
+
+```{python}
+#| code-summary: "Show the Python (where 49ers runs ended up, 2019-2025)"
+#| output: false
+_r = PLAYS[(PLAYS["play_type"] == "run") & (PLAYS["qb_scramble"] != 1) & PLAYS["season"].between(2019, 2025)]
+_out = _r.groupby("posteam")["run_gap"].apply(lambda g: g.eq("end").mean())
+OUT_SF, OUT_RK, OUT_LG = _out["SF"], int(_out.rank(ascending=False, method="min")["SF"]), _r["run_gap"].eq("end").mean()
+```
+
+One thing the fingerprint can't show is how often the 49ers run wide zone. Public play-by-play doesn't
+record the blocking scheme, only where the run ended up, and by that measure San Francisco looks ordinary:
+`{python} pct(OUT_SF)` of its runs from 2019 to 2025 were charted outside the tackles,
+`{python} ordinal(OUT_RK)` in the league, against `{python} pct(OUT_LG)` for the league. That isn't a contradiction.
+A wide-zone run is *aimed* outside, but the back cuts wherever the crease is, and a run that bends back inside is
+charted as an inside run. The scheme is in the aim, not the destination, which is why the charting services that
+grade blocking schemes from film are the only source for it.
+
+The fingerprint has also been *spreading* beyond the tree. League-wide, quarterbacks were under
+center on `{python} pct(LG_UC.loc[2023])` of plays in 2023 and `{python} pct(LG_UC.loc[2025])` in 2025 by FTN's
+charting, the reversal of a decade-long slide toward the shotgun.[^ftn] Offenses that are not in the tree have
+been borrowing its habits.
+
+### YAC over expected
+
+```{python}
+#| label: fig-yacoe
+#| fig-cap: "YAC over expected, the 49ers' signature. Left: every team's yards after the catch per completion above nflverse's expected YAC, pooled over the 2019–2025 regular seasons; San Francisco (blue) is first by a wide margin. Right: the 49ers season by season, 2017–2025, with their rank among the 32 teams above each bar (nflverse model) and below it in grey the rank by Next Gen Stats' tracking-based model (available from 2018; NGS team values are reception-weighted averages of the receivers it lists). Both models put San Francisco first in most seasons from 2018 to 2023. The 2025 drop came in a season when the receiving corps changed and Mac Jones started about half the games. Data: nflverse play-by-play; NGS receiving via nflreadpy."
+ngs = nfl().load_nextgen_stats(seasons=list(range(2018, 2026)), stat_type="receiving").to_pandas()
+ngs = ngs[(ngs["week"] == 0) & (ngs["season_type"] == "REG") & ngs["team_abbr"].notna()].copy()
+ngs["tot"] = ngs["avg_yac_above_expectation"] * ngs["receptions"]
+NGS_T = ngs.groupby(["season", "team_abbr"]).agg(tot=("tot", "sum"), rec=("receptions", "sum")).reset_index()
+NGS_T["yacoe"] = NGS_T["tot"] / NGS_T["rec"]
+NGS_T["rank"] = NGS_T.groupby("season")["yacoe"].rank(ascending=False).astype(int)
+NGS_SF = NGS_T[NGS_T["team_abbr"] == "SF"].set_index("season")["rank"]
+
+POOL = CATCH[CATCH["season"].between(2019, 2025)].groupby("posteam")["yacoe"].mean().sort_values()
+SF_SEASONS = list(range(2017, 2026))
+sf_y = YR.xs("SF", level="posteam").loc[SF_SEASONS]
+
+fig, (a1, a2) = plt.subplots(1, 2, figsize=(6.6, 4.9), gridspec_kw=dict(width_ratios=[1, 1.35]))
+cols = [style.SERIES[0] if t == "SF" else style.BASELINE for t in POOL.index]
+a1.barh(np.arange(len(POOL)), POOL.values, color=cols, height=0.72)
+a1.set_yticks(np.arange(len(POOL)), POOL.index, fontsize=6.2)
+a1.axvline(0, color=style.INK_2, lw=0.8)
+a1.set_xlim(-0.85, 1.12)
+a1.set_title("All teams, 2019–2025", fontsize=9)
+a1.set_xlabel("YAC over expected per catch (yards)", fontsize=7.5)
+a1.tick_params(axis="x", labelsize=7)
+a1.grid(axis="y", visible=False)
+a1.annotate(f"{POOL['SF']:+.2f}", (POOL["SF"], len(POOL) - 1), xytext=(-3, 0), textcoords="offset points",
+            ha="right", va="center", fontsize=7, color="white", fontweight="bold")
+a1.set_ylim(-0.7, len(POOL) - 0.3)
+
+x = np.arange(len(SF_SEASONS))
+a2.bar(x, sf_y["yacoe"].values, color=[style.SERIES[0] if v > 0 else style.SERIES[1] for v in sf_y["yacoe"]],
+       width=0.66)
+a2.axhline(0, color=style.INK_2, lw=0.8)
+for xi, s, v, rk in zip(x, SF_SEASONS, sf_y["yacoe"].values, sf_y["rank"].values):
+    a2.text(xi, v + (0.06 if v >= 0 else -0.06), ordinal(int(rk)), ha="center",
+            va="bottom" if v >= 0 else "top", fontsize=7.2, color=style.INK, fontweight="bold")
+    ng = f"NGS\n{ordinal(int(NGS_SF[s]))}" if s in NGS_SF.index else "NGS\nn/a"
+    a2.text(xi, -1.02, ng, ha="center", va="center", fontsize=6.2, color=style.MUTED)
+a2.set_xticks(x, [str(s) for s in SF_SEASONS], fontsize=7)
+a2.set_ylim(-1.25, 2.3)
+a2.set_title("49ers by season (rank of 32)", fontsize=9)
+a2.set_ylabel("YAC over expected per catch (yards)", fontsize=7.5)
+a2.tick_params(axis="y", labelsize=7)
+a2.grid(axis="x", visible=False)
+fig.tight_layout(w_pad=1.2)
+plt.show()
+
+NUM1 = int((sf_y.loc[2018:2023, "rank"] == 1).sum())
+```
+
+```{python}
+#| code-summary: "Show the Python (the 2021 Deebo Samuel row, which NGS lists without a team)"
+#| output: false
+_n = nfl().load_nextgen_stats(seasons=list(range(2018, 2026)), stat_type="receiving").to_pandas()
+_n = _n[(_n["week"] == 0) & (_n["season_type"] == "REG") & (_n["receptions"] >= 40)]
+DEEBO = _n[(_n["player_display_name"] == "Deebo Samuel") & (_n["season"] == 2021)].iloc[0]
+DEEBO_RANK = int((_n["avg_yac_above_expectation"] > DEEBO["avg_yac_above_expectation"]).sum()) + 1
+REC_MED, REC_P90 = _n["avg_yac_above_expectation"].quantile([0.5, 0.9])
+```
+
+No team in the period comes close to San Francisco in @fig-yacoe. From 2019 to 2025 the 49ers' receivers gained
+`{python} f"{POOL['SF']:+.2f}"` yards after the catch per reception beyond what nflverse's model expected,
+against `{python} f"{POOL.iloc[-2]:+.2f}"` for the next team, `{python} POOL.index[-2]`. They ranked first in
+`{python} "every one" if NUM1 == 6 else WORDS[NUM1]` of the six seasons from 2018 to 2023, a stretch that began with C. J. Beathard and Nick Mullens
+throwing to Kittle in 2018. Among receivers with 40 or more catches from 2018 to 2025, Deebo Samuel's 2021
+ranks `{python} ordinal(DEEBO_RANK)` in Next Gen Stats' YAC over expected:
+`{python} f"{DEEBO['avg_yac_above_expectation']:+.1f}"` yards per catch above what the tracking model expected.
+For scale: the median receiver-season in that group is `{python} f"{REC_MED:+.1f}"` and one in ten beats
+`{python} f"{REC_P90:+.1f}"`, so Samuel's season is an outlier even among individuals. Team numbers are much
+smaller because they average every catch by every receiver, the tight end's six-yard out included; a team
+half a yard per catch above expectation is very good, and the 49ers' seven-year average was
+`{python} f"{POOL['SF']:+.2f}"`.
+
+The two models agreeing matters. nflverse's model doesn't know where the defenders were, so it credits the
+49ers for space the *design* created; Next Gen Stats' model does know, and it still ranked them first in most
+of those seasons, so their receivers were also doing more with the space than the space alone predicts. Design
+and players, together. The 2025 bars are the reminder that YAC is partly personnel: Deebo Samuel was traded to
+Washington before the 2025 season, and Mac Jones started about half the games.[^sf25]
+
+### Does it produce points?
+
+All of that would be trivia if the offense weren't good. @fig-epa-rank shows where San Francisco's offense
+ranked in EPA per play in each season from 2019 to 2025, with the quarterbacks who took its dropbacks.
+
+```{python}
+#| label: fig-epa-rank
+#| fig-cap: "San Francisco's offense, EPA per play rank among the 32 teams, 2019–2025 regular seasons (all runs and passes; 1st = most efficient), with the quarterbacks who took the most dropbacks each season beneath (a second name if he took at least a quarter of them). Six of the seven seasons are in the top ten (shaded), with the dropbacks spread across several quarterbacks. The outlier, 2020, was a season of injuries in which three quarterbacks started. Data: nflverse play-by-play."
+RANK_SEASONS = list(range(2019, 2026))
+sf_rank = [int(RANK[(s, "SF")]) for s in RANK_SEASONS]
+sf_epa = [float(TEAM_EPA[(TEAM_EPA["season"] == s) & (TEAM_EPA["posteam"] == "SF")]["epa"].iloc[0]) for s in RANK_SEASONS]
+sfd = DROP[(DROP["posteam"] == "SF") & DROP["passer"].notna()]
+
+
+def qb_line(season):
+    c = sfd[sfd["season"] == season]["passer"].value_counts(normalize=True)
+    names = [c.index[0]] + [n for n in c.index[1:2] if c[n] >= 0.25]
+    return ",\n".join(n.split(".", 1)[1] for n in names)
+
+
+N_QB = sfd[sfd["season"].isin(RANK_SEASONS)].groupby("season")["passer"].agg(lambda c: c.value_counts().index[0]).nunique()
+N_QB_ALL = len({n for s_ in RANK_SEASONS for n in qb_line(s_).replace(",\n", "|").split("|")})
+fig, ax = plt.subplots(figsize=(6.6, 3.5))
+ax.axhspan(0.5, 10.5, color=style.OFFENSE_TINT, alpha=0.55, zorder=0, lw=0)
+ax.text(len(RANK_SEASONS) - 0.62, 10.0, "top ten", fontsize=7, color=style.OFFENSE_DARK, va="bottom", ha="right")
+x = np.arange(len(RANK_SEASONS))
+ax.plot(x, sf_rank, color=style.SERIES[0], lw=2, marker="o", ms=8, mec=style.SURFACE, mew=1.5, zorder=3)
+for xi, rk, e in zip(x, sf_rank, sf_epa):
+    ax.annotate(f"{ordinal(rk)}\n{e:+.2f}", (xi, rk), xytext=(0, 10), textcoords="offset points",
+                ha="center", va="bottom", fontsize=7, color=style.INK)
+ax.set_xticks(x, [f"{s}\n{qb_line(s)}" for s in RANK_SEASONS], fontsize=7)
+ax.set_ylim(33, -4)
+ax.set_yticks([1, 8, 16, 24, 32])
+ax.set_ylabel("EPA per play rank (1 = best)", fontsize=8)
+ax.tick_params(axis="y", labelsize=7.5)
+ax.grid(axis="x", visible=False)
+fig.tight_layout()
+plt.show()
+```
+
+Six of seven seasons in the top ten, including first in 2023 (Purdy's league-leading season, with McCaffrey the
+Offensive Player of the Year), with `{python} WORDS[N_QB]` different quarterbacks leading the team in dropbacks
+along the way and `{python} WORDS[N_QB_ALL]` taking at least a quarter of them in some season. Before
+2019 the system was still being built: the 49ers ranked `{python} ordinal(int(RANK[(2017, 'SF')]))` in 2017 and
+`{python} ordinal(int(RANK[(2018, 'SF')]))` in 2018, with Hoyer, Beathard, Garoppolo and Mullens all starting
+games. That steadiness across passers is the strongest single piece of evidence for the system's claim. It
+isn't proof (the 49ers also had elite players at tight end, running back, receiver and left tackle in most
+of those seasons), but no other offense of the period stayed this efficient through this much change at
+quarterback.
+
+::: {.callout-note title="Film room: San Francisco 49ers 2019"}
+**The game:** the NFC Championship Game against Green Bay, January 19, 2020, the purest wide-zone game of
+the era. San Francisco won 37–20 while Jimmy Garoppolo threw eight passes (six completions) and was sacked
+once. The 49ers ran 42 times for 285 yards, and Raheem Mostert had 220 of them and four touchdowns.[^nfccg]
+
+**What to notice:**
+
+- The same track to both sides. Watch the five linemen's first step and the back's path on run after run: it
+  is the same play aimed left, right, and left again, with the fullback (Kyle Juszczyk) leading outside.
+- The backside end. Find him on each run: nobody blocks him, and he spends the afternoon chasing from behind.
+- How little the offense needed to pass. Eight throws is the system's base play doing all of the work,
+  because the defense never made it stop.
+:::
+
+::: {.callout-note title="Film room: Atlanta Falcons 2016"}
+**The season:** Kyle Shanahan's second and last as Atlanta's offensive coordinator. The Falcons led the NFL
+with 540 points, Matt Ryan was named MVP, and they reached Super Bowl LI, where they led New England 28–3 in
+the third quarter and lost 34–28 in the first overtime in Super Bowl history.[^atl16]
+
+**What to notice:**
+
+- This is the system before San Francisco: outside zone with two backs who could both run and catch
+  (Devonta Freeman and Tevin Coleman), bootlegs off it, and play-action shots to Julio Jones. The fullback
+  ingredient is already here too: Patrick DiMarco made the Pro Bowl after Kyle's first Atlanta season (2015).[^dimarco]
+- Watch the running backs as receivers. Much of the Shanahan YAC game in its later 49ers form (the back
+  leaking out of the backfield, the screen against a blitz) is already here.
+- Watch Ryan's feet on play-action. He turns his back to the defense under center, carries out the fake, and
+  throws to a receiver who is already open, often crossing. It is the "easy throw" in action.
+- The clip the critics cite. Super Bowl LI, fourth quarter, Atlanta up 28–20 with 3:56 left and the ball on New
+  England's 23 after a Julio Jones catch: on second-and-11 Ryan dropped back and was sacked for a 12-yard loss,
+  and a holding penalty on the next snap pushed Atlanta out of field-goal range. A field goal would have made it
+  a two-score game; New England tied it and won in overtime.[^sb51]
+:::
+
+::: {.callout-note title="Film room: Miami Dolphins 2023"}
+**The season:** Mike McDaniel's second as Miami's head coach. McDaniel spent most of his career on Kyle
+Shanahan's staffs (in Houston, Washington, Cleveland, Atlanta and San Francisco, where he was run-game
+coordinator and then, in 2021, offensive coordinator) and brought the system to Miami in 2022 with a twist: speed. In Week 3 of 2023 the
+Dolphins beat Denver 70–20; Tua Tagovailoa led the league with 4,624 passing yards and Tyreek Hill had 1,799
+receiving yards.[^mia23]
+
+**What to notice:**
+
+- Motion on almost every snap, much of it at the snap, the most of any team in the league (by FTN's charting
+  Miami was first in motion in 2022, 2023 and 2025). Three weeks into 2023, ESPN's tracking had Miami with a
+  man in motion *at* the snap on 59% of plays, the highest rate for any team since ESPN began counting in 2017.[^motion]
+- The fullback. Miami was the league leader in 21 personnel in 2022 and 2023 by nflverse's data, with Alec
+  Ingold leading wide zone and slicing on boots, but Miami's backs and receivers were sprinters, so the same
+  ideas produced longer plays.
+- The limit. The Dolphins' offense faded late in 2023 and fell to the bottom half of the league in EPA per play
+  in 2024 and 2025, and McDaniel was fired in January 2026. A system can raise a team's floor; it doesn't
+  guarantee a ceiling, and it doesn't protect a coach.
+:::
+
+::: {.callout-note title="Film room: Los Angeles Rams 2018 and 2025"}
+**The seasons:** two versions of Sean McVay's offense, seven years apart. In 2018 the Rams went 13–3 and reached
+Super Bowl LIII with Jared Goff, running the whole offense out of one personnel group (11 personnel on about
+93% of plays, [08-02](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd)'s film room). In 2025,
+with Matthew Stafford at 37, the Rams were first in the league in both under-center rate and play-action rate
+and second in EPA per play, and Stafford was MVP.
+
+**What to do:** watch one game from each. In 2018 count the snaps in 11 personnel and notice how much of the
+deception comes from receivers' splits and motion, not substitutions; that is McVay's answer to the personnel
+problem the 49ers solved with a fullback. In 2025 watch the play-action passes from under center and see how quickly
+Stafford's eyes come back downfield after the fake and the ball comes out on the first hitch of his drop. Then compare the two
+quarterbacks on third-and-long: that is the debate from earlier, on film.
+:::
+
+::: {.callout-note title="Film room: Seattle Seahawks 2025"}
+**The season:** Klint Kubiak's only year as Seattle's offensive coordinator, under defensive head coach Mike
+Macdonald, ending in Super Bowl LX: Seattle 29, New England 13. Kenneth Walker III ran 27 times for 135 yards and
+was the game's MVP.[^sblx]
+
+**What to notice:**
+
+- The fingerprint on film. Seattle went from the bottom third of the league in under-center rate in 2024 to
+  near the top in 2025 (@fig-fingerprint), and in the Super Bowl the quarterback was under center on about half
+  the snaps, as he had been all year.
+- Wide zone as the base play, with Walker as the one-cut back: press the aiming point, cut once, go.
+- The pairing. When Seattle has run from a look two or three times, watch the backside end on the next snap
+  from it; that is when the boot and the play-action come. Seattle's 2025 quarterback was Sam Darnold
+  (see @fig-same-qb).
+:::
+
+## The tree in 2025 and 2026
+
+A [coaching tree](12-01-walsh-49ers-west-coast.qmd) is the family of coaches descended from one head coach,
+traced through who worked on whose staff. [The Walsh case study](12-01-walsh-49ers-west-coast.qmd) draws the
+whole Walsh tree, of which this family is the largest modern branch: Mike Shanahan was Seifert's coordinator
+in San Francisco before he went to Denver. This section zooms in on the part of it that calls plays today.
+
+The family has two roots in the Denver building of the 1990s. Gary Kubiak, Mike Shanahan's coordinator, carried
+the system to Houston as head coach (2006–13) and back to Denver, where he won Super Bowl 50 after the 2015
+season; his sons Klint and Klay are coaches in it now. Kyle Shanahan took it through Houston, Washington,
+Cleveland and Atlanta to San Francisco. The decisive moment was the Washington staff of 2010–13, under Mike
+Shanahan with Kyle as offensive coordinator: Sean McVay coached the tight ends, Matt LaFleur the quarterbacks,
+and Mike McDaniel (from 2011) was an offensive assistant and then the receivers coach. All four became NFL head coaches.[^was] (That Washington offense
+also produced one of the scheme's purest seasons: in 2012 Alfred Morris, a sixth-round rookie, ran for 1,613
+yards in wide zone, beside rookie quarterback Robert Griffin III and the read-option plays the staff borrowed
+from Baylor, which [The College Laboratory](../11-history/11-03-the-college-laboratory.qmd) covers.)[^morris]
+
+From there it branched. McVay's own staffs in Los Angeles produced head coaches Zac Taylor (Bengals, 2019),
+Kevin O'Connell (Vikings, 2022) and Liam Coen (Jaguars, 2025). LaFleur took the system to Green Bay in 2019;
+Aaron Rodgers won two MVPs in it. Kyle's 49ers staffs produced McDaniel (Dolphins, 2022), Mike LaFleur (Matt's
+brother) and Brian Fleury, and they gave Klint Kubiak a season on the staff before he went on to run offenses in
+New Orleans and Seattle.
+
+Staffs change every winter, and this one changed a lot. @fig-staff-moves lays out who held which job in the
+2025 season and the 2026 season.
+
+```{python}
+#| label: fig-staff-moves
+#| fig-cap: "Recent staff moves: the Shanahan family's play-callers and coordinators, 2025 season vs 2026 season (staffs as of October 2026). Each row is one coach; the left card is his 2025 job, the right card his 2026 job (OC: offensive coordinator). Orange cards changed over the winter. 'Calls plays' marks the coach who called his offense's plays that season; it is left off where the coach didn't call them (Stefanski handed Cleveland's play-calling to Tommy Rees during 2025, and Rees calls Atlanta's in 2026) or where no report confirms who does. The family lost a head coach in Miami and gained three, in Las Vegas, Arizona and Atlanta; Miami's offense stays in the family under Slowik, and Seattle replaced one family play-caller with another."
+# (coach, how he joined the family, 2025 job, 2026 job, calls plays 2025, calls plays 2026)
+MOVES = [
+    ("Kyle Shanahan", "Mike Shanahan's son; Kubiak's Texans", "49ers head coach", "49ers head coach", True, True),
+    ("Klay Kubiak", "Gary Kubiak's son, Klint's brother", "49ers OC", "49ers OC", False, False),
+    ("Brian Fleury", "49ers staff 2019–25", "49ers run-game coordinator & TEs", "Seahawks OC", False, True),
+    ("Klint Kubiak", "Gary Kubiak's son, Klay's brother", "Seahawks OC", "Raiders head coach", True, True),
+    ("Mike McDaniel", "Kyle's staffs, Houston to SF", "Dolphins head coach", "Chargers OC", True, True),
+    ("Bobby Slowik", "49ers 2017–22; Texans OC 2023–24", "Dolphins senior pass-game coordinator", "Dolphins OC", False, False),
+    ("Kevin Stefanski", "Vikings OC 2019, Gary Kubiak advising", "Browns head coach", "Falcons head coach", False, False),
+    ("Sean McVay", "Washington staff 2010–16", "Rams head coach", "Rams head coach", True, True),
+    ("Mike LaFleur", "Kyle's staffs; Matt's brother", "Rams OC", "Cardinals head coach", False, True),
+    ("Matt LaFleur", "Washington, Atlanta; McVay's OC 2017", "Packers head coach", "Packers head coach", True, True),
+    ("Kevin O'Connell", "McVay's OC 2020–21", "Vikings head coach", "Vikings head coach", True, True),
+    ("Liam Coen", "McVay's Rams staffs", "Jaguars head coach", "Jaguars head coach", True, True),
+    ("Zac Taylor", "McVay's Rams 2017–18", "Bengals head coach", "Bengals head coach", True, True),
+    ("Nick Caley", "from McVay's Rams staff", "Texans OC", "Texans OC", True, False),
+]
+W, H = 6.6, 0.34 * len(MOVES) + 0.75
+fig = plt.figure(figsize=(W, H))
+ax = fig.add_axes([0, 0, 1, 1])
+ax.set_xlim(0, W); ax.set_ylim(0, H); ax.axis("off")
+X_NAME, X25, X26, CW, CH = 0.06, 1.84, 4.26, 2.28, 0.27
+ax.text(X25 + CW / 2, H - 0.2, "2025 season", ha="center", va="center", fontsize=8.5, fontweight="bold",
+        color=style.INK)
+ax.text(X26 + CW / 2, H - 0.2, "2026 season", ha="center", va="center", fontsize=8.5, fontweight="bold",
+        color=style.INK)
+ax.text(X_NAME, H - 0.2, "Coach (how he joined the family)", ha="left", va="center", fontsize=7.6,
+        fontweight="bold", color=style.INK_2)
+for i, (name, root, j25, j26, c25, c26) in enumerate(MOVES):
+    y = H - 0.55 - i * 0.34
+    changed = j25 != j26
+    ax.text(X_NAME, y + 0.055, name, fontsize=7.4, fontweight="bold", color=style.INK, va="center")
+    ax.text(X_NAME, y - 0.085, root, fontsize=5.8, color=style.INK_2, va="center")
+    for xc, job, calls, hot in [(X25, j25, c25, False), (X26, j26, c26, changed)]:
+        ax.add_patch(FancyBboxPatch((xc, y - CH / 2), CW, CH, boxstyle="round,pad=0.01,rounding_size=0.05",
+                                    fc=style.DEFENSE_TINT if hot else style.SURFACE,
+                                    ec=style.DEFENSE if hot else style.BASELINE, lw=1.1 if hot else 0.7))
+        ax.text(xc + 0.07, y, job, fontsize=6.6, color=style.INK, va="center",
+                fontweight="bold" if hot else "normal")
+        if calls:
+            ax.text(xc + CW - 0.07, y, "calls plays", fontsize=5.6, color=style.OFFENSE_DARK, va="center",
+                    ha="right", style="italic")
+    ax.annotate("", (X26 - 0.03, y), xytext=(X25 + CW + 0.03, y),
+                arrowprops=dict(arrowstyle="-|>", color=style.DEFENSE if changed else style.BASELINE, lw=0.9))
+plt.show()
+```
+
+Read @fig-staff-moves with the season labels in mind, because the two lists are easy to blur.
+
+**In the 2025 season** the family's play-callers ran the 49ers (Kyle Shanahan), the Rams (McVay, with Mike
+LaFleur as offensive coordinator), the Packers (Matt LaFleur), the Dolphins (McDaniel), the Seahawks (Klint
+Kubiak, as offensive coordinator under defensive head coach Mike Macdonald), and, a generation down, the
+Vikings, Jaguars and Bengals, plus coordinators from McVay's staffs calling plays in Atlanta and Houston. The season ended with the family everywhere: the NFC Championship Game was Seattle
+against the Rams, 31–27, and Seattle went on to win Super Bowl LX 29–13 over New England.[^lx]
+
+**In the 2026 season** the map is different. Miami fired McDaniel in January and he became the Chargers'
+offensive coordinator and play-caller; Klint Kubiak became the Raiders' head coach after his one season in
+Seattle and kept calling plays; Mike LaFleur left the Rams to become the Cardinals' head coach and calls their
+plays; Seattle replaced Kubiak with Brian Fleury, the 49ers' run-game coordinator and tight ends coach, so the
+Seahawks stayed in the family. Miami's offense did too: the new head coach, Jeff Hafley, is a defensive coach, and
+his offensive coordinator is Bobby Slowik, who spent 2017–22 on Kyle Shanahan's staffs and 2025 on McDaniel's. A
+third branch runs through Gary Kubiak himself: Kevin Stefanski called the 2019 Vikings' plays with Kubiak beside
+him as adviser, the season Kubiak's zone scheme came to Minnesota, coached Cleveland from 2020 to 2025, and is
+Atlanta's head coach in 2026. In San Francisco, Shanahan still calls the plays with Klay Kubiak as offensive
+coordinator, in Los Angeles Nathan Scheelhaase was promoted to replace Mike LaFleur, and in Houston Nick Caley is
+still the coordinator.[^staffs] Whether the 2026 branches are working is too early to say; this chapter's data
+stops with the 2025 season.
+
+The lesson of the moves board is how the system *spreads*: not by teams copying film, but by assistants
+leaving with the playbook and the vocabulary in their heads. That is also why the family's offenses differ. A
+coordinator who leaves takes the ideas, but he builds them around his own quarterback, his own roster and his
+own instincts, which is how a shotgun team in Cincinnati and an under-center team in Los Angeles can share a
+grandfather.
+
+## How defenses answered
+
+A system this successful for this long gets studied by every defensive staff in the league. Their answers
+fall into four groups, and you will see all four on any Sunday.
+
+**1. Change the front.** The bear in @fig-bear-wide-zone is the oldest answer: cover the interior linemen
+so nobody can climb. Its cousin is the [tite front](../05-defensive-fronts-and-run-defense/05-03-odd-and-hybrid-fronts.qmd)
+(a nose and two linemen on the tackles' inside shoulders), which walls off the middle and asks the edges to
+win; and its opposite is a *wide* four-man front with a quick 3-technique who penetrates before the guard's reach
+can land ([05-01](../05-defensive-fronts-and-run-defense/05-01-dl-techniques-and-gap-control.qmd) animates it).
+[Odd and Hybrid Fronts](../05-defensive-fronts-and-run-defense/05-03-odd-and-hybrid-fronts.qmd) explains why no
+single front stops both zone runs, so defenses change fronts by opponent and by down. The offense's counter is
+everything in this chapter: the fullback, the unblocked backside end and the boot, and the change-ups from the
+bear section (split zone, crack-toss, duo and counter) out of the same looks when the front is built for zone.
+
+**2. Keep two safeties deep and play the run with fewer men.** The most important defensive trend of the
+2020s, the [two-high](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) shell, is partly an
+answer to this family. Play-action and bootlegs work best against a defense that brings a safety down to stop
+the run, so defenses led by Vic Fangio and his descendants kept both safeties deep, accepted a
+[light box](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd), and trusted bigger fronts
+to hold up against the run. Two-high coverage rose from 32.9% of snaps in 2018 to 42.0% in 2025 by Next Gen
+Stats' count, the highest since tracking began.[^twohigh] The fight between that idea and this one is the subject
+of [Fangio's Two-High Revolution and Macdonald's Answer](12-08-two-high-to-macdonald.qmd), and of
+[The Modern Era](../11-history/11-05-the-modern-era.qmd).
+
+**3. Take away the middle and make the quarterback hold the ball.** The crossing routes that produce all that
+YAC run through the middle of the field at linebacker depth. Fill that area with defenders, rush with
+stunts that take a moment to develop, and the quarterback who wanted to throw to a receiver on the move is
+holding the ball. The most famous example is New England's plan in Super Bowl LIII, which held McVay's Rams to 3
+points; [The Belichick case study](12-02-belichick-patriots-game-plan.qmd) draws it.
+
+**4. Hunt the tells.** An offense built on looking the same can be beaten if it *doesn't* quite look the same.
+Defensive staffs grade the running back's depth, the fullback's alignment, the receivers' splits and the
+direction of the motion, looking for any detail that separates the run from the boot. That is the self-scouting
+war of [08-02](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd): the offense's job is to keep
+its tendencies balanced inside each look, and the defense's job is to find the one look that isn't.
+
+And the system answered back. When defenses went light and two-high, the family ran the ball more and got
+heavier (in 2025 offenses used fewer than three wide receivers on 41.7% of plays, the highest rate in the Next
+Gen Stats era), and when the bear came, the boots came with it.[^heavy] When defenses took away the
+crossers, McVay went and got a quarterback who could beat them from the pocket.
+
+## What survives
+
+Ideas from this family are now just *how offense is played* in much of the NFL, including by teams with no
+connection to it:
+
+- **Under center is back,** led by this family (the numbers are in the fingerprint section).
+- **Motion is universal.** PFF counted a shift or motion on 63.9% of plays in 2025, up from 38.4% in 2016;
+  every team but one used it on at least half its plays.[^pff]
+- **Heavier personnel is back,** for the same reason the 49ers kept a fullback: to make light defenses pay.
+- **YAC as a design goal.** Receivers are now scouted and drafted for what they do after the catch, and
+  offenses design throws to catch them on the move.
+- **The illusion of complexity** (few plays, many looks; many plays, one look) is standard teaching on almost
+  every offensive staff, inside the tree and out.
+
+What may not survive is the specific balance. The 2025 Rams leaned harder on play-action from under center
+than anyone, while the 49ers' play-action rate was ordinary, and the 2025 second generation in Cincinnati and Atlanta
+looks more like a spread offense than like Denver in 1998. A tree spreads by mutating. That is also how you will
+know it is still alive: the family resemblance will be in the questions the offense asks a defense, not in any
+one formation.
+
+::: {.callout-tip title="Watch for it"}
+**On Sunday: same look, different plays.** Pick one Shanahan-family offense (in 2026: the 49ers, Rams,
+Packers, Vikings, Jaguars, Bengals, Texans, the Seahawks under Fleury, the Raiders under Klint Kubiak, the
+Cardinals under Mike LaFleur, the Chargers under McDaniel, the Dolphins under Slowik or the Falcons under
+Stefanski) and keep a simple chart for one half.
+
+*Before each snap*
+
+- Write the **look**: personnel (count the backs and tight ends), where the quarterback is (under center or
+  shotgun), and the **motion** (none, across, jet, orbit). For example, "21, under center, Z across."
+- Is there a **fullback**? If so, where is he: offset to the tight end (the base look) or away from it? A
+  fullback's alignment is one of the tells defensive staffs grade, so when it changes, note what follows.
+
+*In the first second*
+
+- Do all five linemen step the same way? (Zone.) Does the back run toward the tight end? (Wide zone, or a fake of it.)
+- Find the **backside end** and watch him. Does he chase the back, or stay home?
+
+*After the play*
+
+- Write what the play turned out to be: wide zone, gap run, bootleg, keeper, play-action shot, dropback.
+- If it was a pass, where was the receiver when he caught it: **moving or standing**, and with how much space
+  ahead? That is YAC by design.
+
+*At halftime*
+
+- For each look, list the different plays run from it. A good Shanahan-family half has several plays from each
+  look; a look that produced only one play is a tendency the defense can find (and so can you). When a look has
+  produced a run or two and the backside end has been chasing, start watching for the bootleg from that look.
+
+A template:
+
+| Look (personnel, alignment, motion) | Plays seen | Backside end |
+|---|---|---|
+| 21, under center, Z across | wide zone R, wide zone R, boot L | chased twice |
+| 11, gun, jet from left | jet sweep, play-action cross | stayed home |
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play"}
+**Drill 1.** First-and-10 from your own 35, third quarter. The offense is in 21 personnel, the quarterback under
+center, the fullback offset to the tight end, who is lined up on the **left** this time. The defense shows the bear
+again: the center and both guards covered, eight in the box, one deep safety. On the offense's last three wide-zone
+runs toward the tight end, the backside end (on the **right**, ringed) crashed hard down the line after the back,
+and one of those runs lost two yards anyway. What is the offense's best call, and which way will it go?
+
+```{python}
+#| label: fig-predict-1
+#| fig-cap: "Drill 1: 21 personnel, offset I, the tight end on the left; a bear front with the strong safety in the box and one deep safety. The backside end (ringed) is on the offense's right."
+p = Play(off21(strength="left"), bear(s=-1), los=35, to_go=10)
+p.highlight("BE", color=style.DEFENSE_DARK)
+f = draw(p, lateral=(-13.5, 13.5), window=(-9.0, 15.0))
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**A bootleg to the right (the side away from the tight end), probably naked, with the keeper built in.** Wide zone
+here goes left, toward the tight end, so the play's backside is the offense's right, where the end has been
+crashing. Three runs have taught him to chase, and he is the defender the offense leaves unblocked against the
+bear. The quarterback fakes wide zone left, keeps the ball and rolls right behind him: the fullback slices into
+the right flat, the tight end crosses from left to right behind the linebackers who flowed with the fake, and if
+nobody comes up to stop him, the quarterback runs. First-and-10 is the ideal down for it: the defense expects run,
+and a short completion keeps the offense on schedule.
+
+*Why not run wide zone again?* Against the bear it was losing yards; the defense has the numbers. The offense's
+answer is not to block the bear better but to punish the habit the bear's backside end has fallen into.
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 2.** Second-and-6, early in the first quarter. The offense has one back and one tight end (11
+personnel), the tight end in-line on the left, the quarterback under center and the receivers in tight splits
+(lined up 9–10 yards from the ball, well inside the numbers, instead of out near the sideline).
+Before the snap the Z, a slot receiver on the right, goes in jet motion from right to left (dashed). The defense keeps **two** deep safeties and nobody runs across with the
+motion; there are six defenders in the box. Run or pass, and which way?
+
+```{python}
+#| label: fig-predict-2
+#| fig-cap: "Drill 2: 11 personnel under center, the Y in-line on the left, receivers in tight splits (H, the third receiver, and X about 10 yards from the ball); the Z, a slot receiver on the right, goes in jet motion to the left (the dashed arrow ends where he will be at the snap, just behind the quarterback). The defense: a four-man front (a 9 outside the Y, a 3, a 1 and a 5) and two linebackers in the box, a nickel back (NB) who stays outside where the Z started, two cornerbacks and two deep safeties. Nobody follows the motion."
+off = named_line(offense("singleback"))
+SPOTS = {"Y": (-0.7, -4.8), "H": (-1.5, -10.0), "X": (-0.7, 10.5), "Z": (-1.5, 7.2)}   # Y on the left
+off = [q.moved(d=SPOTS[q.key][0], w=SPOTS[q.key][1]) if q.key in SPOTS else
+       (q.moved(label="R") if q.key == "RB" else q) for q in off]
+dfn = [D("LE", "DE", 1.0, -5.7, "9"), D("LT3", "DT", 1.0, -technique("3"), "3"),
+       D("RT1", "DT", 1.0, technique("1"), "1"), D("RE", "DE", 1.0, technique("5"), "5"),
+       D("MIKE", "MIKE", 4.6, -1.4, "M"), D("WILL", "WILL", 4.6, 2.4, "W"),
+       D("NB", "NB", 5.5, 7.8, "NB"), D("LCB", "CB", 6.5, -10.5, "CB"), D("RCB", "CB", 6.5, 10.5, "CB"),
+       D("FS", "FS", 12.5, -6.5, "FS"), D("SS", "SS", 12.5, 6.5, "SS")]
+p = Play(off, dfn, los=35, to_go=6)
+p.motion("Z", to=(-2.6, 1.6))
+f = draw(p, lateral=(-14.0, 14.0), window=(-9.0, 15.0))
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**A run.** Count the box: six defenders against six blockers (five linemen and the tight end), with both safeties
+12 yards deep. That is a [light box](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd), and the
+system's standing answer to two-high safeties is to run the ball at them. The motion told the quarterback two more
+things: nobody ran across with the Z, so the coverage is very likely zone, and the safeties didn't rotate down, so
+the box is staying light.
+
+Which way is the play-caller's choice, and both answers are textbook in this family:
+
+- **Wide zone left, toward the motion (or the jet sweep itself, handed to the Z).** The Z is just behind the
+  quarterback at the snap and keeps running through the mesh toward the left sideline. He doesn't block anyone;
+  he is a threat, and the defender on the left edge has to respect a jet sweep for a beat, which is a beat he
+  isn't attacking the run.
+- **Fake the jet, wide zone right, away from it.** The fake drags the Will and the nickel back toward the motion
+  and thins the right side, where the run is going.
+
+If you said "run," you read the picture; the direction is the bonus question.
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 3.** First-and-10, a series after the bootleg in Drill 1 went for 22 yards. Same 21-personnel look,
+tight end on the left, quarterback under center. The defense has changed two things. It now shows **two** deep
+safeties before the snap, and when the Z goes in motion across the formation to the right, one safety spins down
+into the box on that side while the other runs to the middle of the field. And the backside end on the right is
+no longer chasing: on the last two runs he squeezed down the line, square, with his eyes on the quarterback. The
+offense's last two wide-zone runs gained 3 and 2 yards. What should the offense call?
+
+```{python}
+#| label: fig-predict-3
+#| fig-cap: "Drill 3: the same 21-personnel look, the Z in motion across to the right (dashed blue). Before the snap the defense shows two deep safeties; as the Z moves, the right-side safety spins down into the box and the other rotates to the deep middle (dashed orange), leaving eight in the box and one deep safety still moving at the snap. The backside end (ringed) squeezes with his eyes on the quarterback."
+off3 = off21(strength="left")
+d3 = [q.moved(d=12.5, w=8.5) if q.key == "SS" else (q.moved(d=12.5, w=-8.5) if q.key == "FS" else q)
+      for q in bear(s=-1)]
+p = Play(off3, d3, los=35, to_go=10)
+p.motion("Z", to=(-1.5, 6.6))
+p.drop("SS", (5.4, 6.6), label=None)
+p.drop("FS", (14.0, 0.0), label=None)
+p.highlight("BE", color=style.DEFENSE_DARK)
+f = draw(p, lateral=(-13.5, 13.5), window=(-9.0, 16.5))
+say(f, p, 9.0, 10.6, "spins down\non the motion", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 14.0, -4.6, "rotates to\nthe middle", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, -3.4, 9.2, "squeezes,\neyes on the QB", color=style.DEFENSE_DARK, fontsize=6.8)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**A play-action shot from under center, with max protection: two deep routes against the one safety.** Put
+the two changes together. The naked boot is off the table, because the end who used to chase is squeezing and
+would be waiting for the quarterback. Wide zone is running into eight in the box, which is what the spin was
+for. But the spin has a price: one safety is left to cover the whole deep field, and at the snap he is still
+running to the middle. That is the picture the
+[yankee](../../appendices/glossary.qmd#gl-yankee) concept from
+[04-05](../04-the-passing-game/04-05-play-action-boots-screens.qmd) is built for: fake wide zone, keep the
+fullback and the back in to protect, and send two receivers deep, a post from one side and a deep over from the
+other. The linebackers and the safety who came down step up for the fake; the lone deep safety can take only one
+of the two routes, and the quarterback throws the other.
+
+*Why not the protected boot?* It's a fine safe call, and a good one on second-and-long. But it attacks the short
+and middle areas the eight-man box is already crowding; on first-and-10 with one deep safety still moving, the
+shot is the bigger reward. This back-and-forth, base play, constraint, a new answer, a new constraint, is
+[sequencing](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd), and it is how a Shanahan
+play-caller spends a game.
+:::
+:::
+
+## Takeaways
+
+- **Two problems, one family.** Gibbs's and Mike Shanahan's 1990s Broncos built wide zone and the bootleg to block
+  defenses that never stood still; Kyle Shanahan's 2017 49ers added the fullback, motion and YAC passing to beat
+  fast, light defenses without a star quarterback.
+- **Four ingredients, one picture.** Wide zone moves the defense sideways, the fullback forces a personnel choice,
+  motion makes the defense answer first, and YAC passes throw into the space all of that empties. The same few
+  looks carry all of it.
+- **Leave a man free on purpose, then punish him.** Against a bear front the offense can't block everyone, so it
+  leaves the backside end and beats him with the bootleg-keeper when he crashes; when he squeezes, the cutback,
+  split zone and the protected boot are waiting. The defense's answer to the base play sets up the constraint play.
+- **The system raises the quarterback's floor, and the ceiling is still argued.** Several quarterbacks were much
+  more efficient inside the family than outside it; even the 49ers' third-and-long success is designed. Goff
+  thrived in a cousin offense in Detroit, and EPA can't see the difference McVay paid for in Stafford: the
+  plays after the design breaks are a coach's judgment, not a number.
+- **The fingerprint:** under center and in motion, 21 or heavy personnel (49ers), play-action at the top of the
+  league (Rams), and receivers who gain far more after the catch than the catch predicts. From 2019 to 2025 the
+  49ers were first in YAC over expected by a wide margin and top ten in EPA per play in six of seven seasons.
+- **Label every staff by season.** In 2025 the family's first generation called plays in San Francisco, Los
+  Angeles, Green Bay, Miami and Seattle (Super Bowl LX champions), with McVay's former assistants calling them in
+  Minnesota, Jacksonville, Cincinnati, Atlanta and Houston. In 2026 Kubiak (Las Vegas) and Mike LaFleur (Arizona)
+  are head coaches who call plays, McDaniel calls the Chargers' plays, Fleury Seattle's, Slowik coordinates Miami's
+  offense and Stefanski is Atlanta's head coach.
+
+## Connections
+
+**Builds on:** [Constraint Theory and Sequencing](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd)
+(base and constraint plays, the illusion of complexity and the "one formation, four plays" plate);
+[The Modern Era](../11-history/11-05-the-modern-era.qmd) (the spread, the two-high answer and the under-center
+return); [Zone Running](../03-the-run-game/03-02-zone-running.qmd) (how outside zone is blocked, the cutback and
+the zone-boot pairing); [Play-Action, Bootlegs, and Screens](../04-the-passing-game/04-05-play-action-boots-screens.qmd)
+(the full bootleg family); [Even Fronts](../05-defensive-fronts-and-run-defense/05-02-even-fronts.qmd) (the bear);
+[Offensive Systems and Languages](../04-the-passing-game/04-08-offensive-systems-and-languages.qmd) (the long
+Shanahan/McVay play call).
+
+**Sets up:** [Fangio's Two-High Revolution and Macdonald's Answer](12-08-two-high-to-macdonald.qmd) (the defense that
+grew up fighting this offense); [The Lions: Ben Johnson's Offense and Dan Campbell's Aggression](12-07-lions-ben-johnson-and-campbell.qmd)
+(a close cousin, built outside the tree); [Tendencies, PROE and Charting](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd)
+and [Tracking Data and the Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd)
+(build your own fingerprint and your own expected-YAC model); [Building a Roster](../14-the-business-of-scheme/14-01-building-a-roster.qmd)
+(paying for a scheme fit: fullbacks, YAC receivers and quarterbacks).
+
+**See also:** [Case Study: Bill Walsh's 49ers and the West Coast Offense](12-01-walsh-49ers-west-coast.qmd), the tree
+this one grew from.
+
+::: {.callout-note title="Go deeper"}
+Chris B. Brown, *The Art of Smart Football* (2015) and his Grantland piece on Gary Kubiak's Houston run game
+(2012) are the best short introductions to the Gibbs zone system. Alex Gibbs's own clinic video, "Outside Zone,
+Tight Zone, Boots and Thoughts on the Power," is still sold to coaches. Robert Mays's film writing and podcasts at The
+Ringer cover the modern Shanahan and McVay versions in detail. For the data,
+nflverse's play-by-play carries the expected-YAC columns used here, and Next Gen Stats publishes receiver YAC over
+expected on its website; [Tracking Data and the Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd)
+shows how to build an expected-YAC model of your own from tracking data.
+:::
+
+[^mike]: Mike Shanahan was the 49ers' offensive coordinator 1992–94 (Super Bowl XXIX after the 1994 season) and
+    Denver's head coach 1995–2008: Pro Football Reference, <https://www.pro-football-reference.com/coaches/ShanMi0.htm>.
+
+[^espn2019]: Kevin Seifert, "The secret to the NFL's best rushing teams: Why zone blocking is here to stay," ESPN,
+    Dec 23, 2019 (Kubiak on the zone blitzes Denver faced):
+    <https://www.espn.com/nfl/story/_/id/28353469/the-secret-nfl-best-rushing-teams-why-zone-blocking-here-stay>.
+
+[^gibbs]: Gibbs coached Denver's line 1984–87 and again 1995–2003, and died July 12, 2021, aged 80:
+    ProFootballTalk, "Alex Gibbs dies at 80" (Jul 12, 2021):
+    <https://www.nbcsports.com/nfl/profootballtalk/rumor-mill/news/alex-gibbs-dies-at-80>. On his philosophy (two runs,
+    technique over size on the line, one-cut backs): Chris B. Brown, Grantland, Jan 10, 2012:
+    <https://grantland.com/features/chris-brown-gary-kubiak-houston-texans-running-game/>. Clinic video: "Alex Gibbs:
+    Outside Zone, Tight Zone, Boots and Thoughts on the Power" (CoachTube):
+    <https://coachtube.com/course/football/alex-gibbs-outside-zone-tight-zone-boots-and-thoughts-on-the-power/14602600>.
+
+[^davis]: Pro Football Hall of Fame, Terrell Davis (sixth round, 1995; 2,008 rushing yards and MVP in 1998):
+    <https://www.profootballhof.com/players/terrell-davis/>. Denver's later 1,000-yard backs under Shanahan (Olandis
+    Gary, Mike Anderson, Clinton Portis, Reuben Droughns, Tatum Bell): Pro Football Reference team pages,
+    <https://www.pro-football-reference.com/teams/den/>; the list is checked in this book's
+    [Zone Running](../03-the-run-game/03-02-zone-running.qmd) notes.
+
+[^niners]: 2016 San Francisco 49ers, 2–14: <https://www.pro-football-reference.com/teams/sfo/2016.htm>. 2017
+    starters (Hoyer, Beathard, Garoppolo, who arrived in a trade with New England in October 2017):
+    <https://www.pro-football-reference.com/teams/sfo/2017.htm>.
+
+[^kyle]: Kyle Shanahan's coaching career (Buccaneers 2004–05; Texans 2006–09, offensive coordinator 2008–09;
+    Washington offensive coordinator 2010–13; Browns 2014; Falcons 2015–16; 49ers head coach from 2017): Pro Football
+    Reference, <https://www.pro-football-reference.com/coaches/ShanKy0.htm>. The 2016 Falcons led the NFL with 540
+    points and Matt Ryan was the AP MVP: <https://www.pro-football-reference.com/teams/atl/2016.htm>.
+    Titles by year (Tampa Bay offensive quality control; Houston receivers 2006, quarterbacks 2007, coordinator from
+    January 2008): Texas Athletics, <https://texaslonghorns.com/news/2010/1/22/012210aaa_409>.
+
+[^backs]: Mostert, 2019 NFC Championship (Jan 19, 2020): 29 carries, 220 yards, 4 TD:
+    <https://www.pro-football-reference.com/boxscores/202001190sfo.htm>. Elijah Mitchell, sixth-round pick in 2021,
+    963 rushing yards in 11 games (nflverse player stats, 2021 regular season; checks with
+    <https://www.pro-football-reference.com/players/M/MitcEl00.htm>). McCaffrey, AP Offensive Player of the Year 2023:
+    <https://www.nfl.com/news/niners-rb-christian-mccaffrey-named-ap-2023-nfl-offensive-player-of-the-year>.
+
+[^juice]: Juszczyk agreed to a four-year, $21 million contract with San Francisco on March 8, 2017 ($5.25 million a
+    year), reported at the time as the largest ever for a fullback: CBS Sports, "Here's why fullbacks were the biggest
+    winners in the NFL on Wednesday," <https://www.cbssports.com/nfl/news/heres-why-fullbacks-were-the-biggest-winners-in-the-nfl-on-wednesday>.
+    He has since topped it himself (five years, up to $27 million, in 2021).
+
+[^part]: Course calculation from nflverse participation data joined to play-by-play, regular-season runs and passes
+    with a recorded personnel grouping, 2019–2025. Personnel is backs (RB + FB) then tight ends. The participation
+    source changes from Next Gen Stats to FTN in 2023 and the personnel strings change format, which the code handles.
+
+[^skill]: nflverse player stats (regular seasons): Kittle 2018, 88 catches, 1,377 yards, 870 after the catch; Samuel
+    2021, 77 catches, 1,405 receiving yards, 59 carries, 365 rushing yards, 8 rushing touchdowns. Checks with Pro Football
+    Reference: <https://www.pro-football-reference.com/players/K/KittGe00.htm>,
+    <https://www.pro-football-reference.com/players/S/SamuDe00.htm>.
+
+[^purdy]: Purdy was the 262nd and final pick of the 2022 draft. In 2023 he led qualifying passers in passer rating
+    (113.0) and yards per attempt (9.6): <https://www.pro-football-reference.com/players/P/PurdBr00.htm>;
+    <https://www.pro-football-reference.com/years/2023/passing.htm>; also NBC Sports Bay Area,
+    <https://www.nbcsportsbayarea.com/nfl/san-francisco-49ers/four-49ers-led-nfl-key-stats-2023/1689409/>.
+
+[^stafford]: The Rams traded Goff and draft picks to Detroit for Stafford in January 2021 and won Super Bowl LVI,
+    23–20 over Cincinnati, on Feb 13, 2022: <https://www.pro-football-reference.com/boxscores/202202130ram.htm>.
+    Stafford was the 2025 AP MVP with a league-leading 46 touchdown passes (this book's checked facts, from
+    <https://amp.nfl.com/news/list-of-nfl-honors-award-winners-from-2025-nfl-season>).
+
+[^sbs]: Super Bowl LI (Feb 5, 2017): New England 34, Atlanta 28 (OT), after Atlanta led 28–3 in the third quarter:
+    <https://www.pro-football-reference.com/boxscores/201702050atl.htm>. Super Bowl LIV (Feb 2, 2020): Kansas City 31,
+    San Francisco 20, after the 49ers led 20–10 in the fourth quarter: <https://www.pro-football-reference.com/boxscores/202002020kan.htm>.
+    Super Bowl LVIII (Feb 11, 2024): Kansas City 25, San Francisco 22 (OT). Scores also check against nflverse schedules.
+
+[^ftn]: Course calculation, nflverse play-by-play joined to FTN charting (`qb_location == "U"`), regular-season runs
+    and passes. The same series is in this book's checked facts (FACTS-current §10).
+
+[^sf25]: Samuel's trade to Washington for a fifth-round pick was agreed on March 1, 2025 and became official when the
+    league year opened on March 12: ESPN, "49ers deal Deebo Samuel to Commanders, sources say,"
+    <https://www.espn.com/nfl/story/_/id/44071829/49ers-deal-deebo-samuel-commanders-sources-say>. Jones and Purdy split
+    the 49ers' 2025 dropbacks almost evenly in nflverse play-by-play (Purdy 9 starts, Jones 8).
+
+[^sblx]: Super Bowl LX (Feb 8, 2026), Seattle 29, New England 13; Walker 27 carries, 135 yards, MVP: this book's checked
+    facts (FACTS-current §1) and <https://en.wikipedia.org/wiki/Super_Bowl_LX>. Under-center share in the game (about 51% of
+    Seattle's runs and passes) and in the 2025 regular season (53%): course calculation, nflverse play-by-play joined to FTN
+    charting.
+
+[^nfccg]: 2019 NFC Championship Game (Jan 19, 2020), San Francisco 37, Green Bay 20: Pro Football Reference box score,
+    <https://www.pro-football-reference.com/boxscores/202001190sfo.htm>. Team totals (42 runs for 285 yards; Garoppolo 6 of
+    8 with one sack) and Mostert's 29 carries for 220 yards and 4 touchdowns recounted from nflverse play-by-play.
+
+[^dimarco]: Atlanta Falcons, "DiMarco, Trufant named to Pro Bowl roster" (January 2016, for the 2015 season):
+    <https://atlantafalcons.com/news/dimarco-trufant-named-to-pro-bowl-roster-16745796>.
+
+[^sb51]: nflverse play-by-play, Super Bowl LI (game `2016_21_NE_ATL`): 2nd-and-11 at the NE 23 with 3:56 left, Ryan sacked
+    for −12 by Trey Flowers; on 3rd-and-23 a 9-yard completion was wiped out by offensive holding, leaving 3rd-and-33 at the
+    NE 45; Atlanta punted. Box score: <https://www.pro-football-reference.com/boxscores/201702050atl.htm>.
+
+[^atl16]: Pro Football Reference, 2016 Atlanta Falcons: <https://www.pro-football-reference.com/teams/atl/2016.htm>;
+    Super Bowl LI box score: <https://www.pro-football-reference.com/boxscores/201702050atl.htm>.
+
+[^mia23]: Miami 70, Denver 20, Sept 24, 2023 (nflverse schedules); Tagovailoa 4,624 passing yards and Hill 1,799
+    receiving yards in 2023 (nflverse player stats), both league-leading:
+    <https://www.pro-football-reference.com/years/2023/passing.htm>,
+    <https://www.pro-football-reference.com/years/2023/receiving.htm>. McDaniel's career: Pro Football Reference,
+    <https://www.pro-football-reference.com/coaches/McDaMi0.htm>: Texans offensive assistant 2006–08; Washington
+    offensive assistant 2011–12 and receivers coach 2013; Browns receivers 2014; Falcons offensive assistant 2015–16;
+    49ers run-game specialist 2017, run-game coordinator 2018–20, offensive coordinator 2021 (also
+    <https://en.wikipedia.org/wiki/Mike_McDaniel>).
+
+[^pff]: Daire Carragher, "NFL pre-snap motion usage reaches new highs across the NFL," PFF, Feb 23, 2026:
+    <https://www.pff.com/news/nfl-pre-snap-motion-usage-reaches-new-highs-across-the-nfl>. PFF counts shifts as well as
+    motion, so its series is not comparable with FTN's `is_motion` flag.
+
+[^motion]: Seth Walder (ESPN Analytics), as reported by ProFootballTalk, "Dolphins using motion like no other NFL offense
+    ever" (Michael David Smith, Sept 26, 2023): <https://www.nbcsports.com/nfl/profootballtalk/rumor-mill/news/dolphins-using-motion-like-no-other-nfl-offense-ever>.
+    The 59% covers the first three weeks; later in-season reports put it higher. FTN's `is_motion` flag counts motion
+    before *or* at the snap and is not comparable.
+
+[^was]: On the 2010–13 Washington staff (Kyle Shanahan offensive coordinator, McVay tight ends, Matt LaFleur
+    quarterbacks, McDaniel an offensive assistant): CBS Sports, "Dolphins hiring Mike McDaniel: four of NFL's youngest
+    head coaches worked together on same staff in 2013":
+    <https://www.cbssports.com/nfl/news/dolphins-hiring-mike-mcdaniel-four-of-nfls-youngest-head-coaches-worked-together-on-same-staff-in-2013>.
+    Gary Kubiak: <https://www.pro-football-reference.com/coaches/KubiGa0.htm>.
+
+[^morris]: Alfred Morris, 2012: 1,613 rushing yards as a sixth-round rookie:
+    <https://www.pro-football-reference.com/players/M/MorrAl00.htm> (sixth round, 173rd overall, 2012).
+
+[^lx]: 2025 NFC Championship (Jan 25, 2026): Seattle 31, Los Angeles Rams 27; Super Bowl LX (Feb 8, 2026): Seattle 29,
+    New England 13. This book's checked facts (FACTS-current §1–2) and nflverse schedules;
+    <https://en.wikipedia.org/wiki/Super_Bowl_LX>.
+
+[^staffs]: 2026 staffs from this book's checked facts (FACTS-current §0 C2 and §9): Klint Kubiak Raiders head coach;
+    McDaniel fired by Miami (Jan 8, 2026) and hired as Chargers offensive coordinator; Mike LaFleur Cardinals head coach;
+    Brian Fleury (49ers staff from 2019; run-game coordinator and tight ends coach in 2025) Seattle's offensive coordinator
+    and, for the first time in his career, its play-caller (CBS Sports, Feb 15, 2026,
+    <https://www.cbssports.com/nfl/news/seahawks-hire-brian-fleury-49ers-offensive-coordinator>); Scheelhaase promoted to Rams
+    offensive coordinator; Klay Kubiak 49ers offensive coordinator, promoted in February 2025 with Shanahan still calling plays
+    (<https://www.si.com/nfl/49ers-kyle-shanahan-promote-klay-kubiak-offensive-coordinator>). Klint Kubiak was the 49ers'
+    passing game specialist in 2023 before becoming Saints OC (2024) and Seahawks OC (2025). Sources include
+    <https://www.profootballrumors.com/2026/02/2026-nfl-offensive-defensive-coordinator-search-tracker> and
+    <https://www.ksat.com/sports/2026/02/16/seahawks-expected-to-hire-49ers-tight-end-coach-fleury-as-offensive-coordinator-ap-source-says/>.
+    2026 play-callers: Kubiak "plans to still call plays" (AP, Feb 16, 2026,
+    <https://www.fox5vegas.com/2026/02/16/raiders-coach-klint-kubiak-elevates-rob-leonard-hires-andrew-janocko-coordinators>);
+    Mike LaFleur "will call the offense" (Arizona Sports, Feb 2, 2026,
+    <https://arizonasports.com/nfl/arizona-cardinals/mike-lafleur-call-plays/3610387>); McDaniel and Fleury among
+    2026's new primary play-callers (AP, Aug 2026,
+    <https://wtop.com/nfl/2026/08/the-chargers-and-eagles-are-among-playoff-teams-hoping-for-boosts-from-new-play-callers/>).
+    Slowik: 49ers 2017–22, Texans offensive coordinator 2023–24, Dolphins senior pass game coordinator 2025, promoted to
+    offensive coordinator under Hafley in 2026 (<https://en.wikipedia.org/wiki/Bobby_Slowik>;
+    <https://michigantechhuskies.com/news/2026/2/16/football-slowik-promoted-to-offensive-coordinator-with-miami-dolphins.aspx>).
+    Stefanski: Vikings offensive coordinator and play-caller in 2019 with Gary Kubiak as assistant head coach and offensive
+    adviser (<https://www.vikings.com/news/gary-kubiak-role-with-minnesota-vikings>); Falcons head coach in 2026 (FACTS-current
+    §9), with Tommy Rees as offensive coordinator and play-caller, the arrangement the two used in Cleveland after
+    Stefanski handed Rees the play-calling in Week 10 of 2025
+    (<https://www.atlantafalcons.com/news/tommy-rees-offensive-play-caller-kevin-stefanski>). Caley: Texans offensive
+    coordinator in 2025 and 2026 (FACTS-current §9).
+
+[^gen2]: Second-generation play-callers in 2025: O'Connell (MIN), Taylor (CIN), Coen (JAX), Zac Robinson
+    (ATL offensive coordinator and play-caller, from the Rams; <https://www.atlantafalcons.com/news/zac-robinson-call-plays-sideline-week-4-change>)
+    and Nick Caley (HOU offensive coordinator and play-caller, from the Rams; <https://abc13.com/15861425>).
+
+[^twohigh]: NFL Next Gen Stats: split-safety coverage on 32.9% of snaps in 2018 and 42.0% in 2025:
+    <https://www.nfl.com/news/the-coverage-that-turned-the-seahawks-into-super-bowl-winners-and-is-taking-the-nfl-by-storm>.
+
+[^heavy]: NFL Next Gen Stats (James Reber): offenses used fewer than three wide receivers on 41.7% of plays in 2025:
+    <https://www.nfl.com/news/nfl-trend-watch-heavy-personnel-could-shape-super-bowl-lx-showdown-between-patriots-and-seahawks>.
