@@ -6,6 +6,9 @@ glossary:
   "Film-study protocol": "A fixed routine for studying each snap on game film: freeze the picture at the snap and check your pre-snap read, then watch the play once for each group (the offensive line, the quarterback, the coverage, the receivers and backs), and finish with one line saying why the play worked or failed. The order runs from what sets the play's clock to what uses it."
   "Game charting": {def: "Recording every snap of a game as one row of the same fixed fields (situation, personnel, formation, motion, the defense's look, what happened after the snap, the result), coded the same way every time, so that a game becomes data you can count, compare and check your predictions against.", aliases: ["Charting"]}
   "Brier score": "The average, over a set of probability forecasts, of the squared gap between the stated probability and what happened (1 if it came true, 0 if not). Lower is better: 0 is perfect, saying 50% every time scores 0.25, and a confident miss costs far more than a timid one. Named for the meteorologist Glenn Brier, who proposed it in 1950."
+  "Brier skill score": "One minus the ratio of your Brier score to a reference forecaster's on the same events: 0 means no better than the reference, positive means better, and 1 would be perfect."
+  "Proper scoring rule": "A way of scoring probability forecasts whose expected score is best when you state exactly the probability you believe, so it can't be gamed by shading numbers up or down. The Brier score and log loss are proper."
+  "Resolution": "How much a forecaster's stated probabilities sort events apart: different numbers on different occasions, with the higher numbers really coming true more often. One of the three parts of the Brier score; it's the part that rewards knowing more, where calibration rewards knowing how sure to be."
   "Calibration": "How closely stated confidences match how often things come true: a well-calibrated forecaster's 70% calls come true about 70% of the time. Shown on a calibration plot (stated confidence against the actual hit rate, with the diagonal as perfect); points below the diagonal mean overconfidence, points above it underconfidence."
 ---
 
@@ -126,8 +129,9 @@ def animate_or_strip(play, times, labels, lateral, window):
         show_animation(play, times=times)
 
 
-def wash(fld, play, t, keys, reads=False, alpha=0.66):
-    """Fade the whole picture, then redraw only `keys` (with their trails) on top: one pass of the film."""
+def wash(fld, play, t, keys, reads=False, alpha=0.66, half=()):
+    """Fade the whole picture, then redraw only `keys` (with their trails) on top: one pass of the film.
+    Players in `half` are redrawn at half strength, as context for the group being watched."""
     ax = fld.ax
     (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
     ax.add_patch(Rectangle((min(x0, x1), min(y0, y1)), abs(x1 - x0), abs(y1 - y0), fc=style.SURFACE, ec="none",
@@ -135,16 +139,19 @@ def wash(fld, play, t, keys, reads=False, alpha=0.66):
     ppy = fld.pts_per_yard()
     P = lambda d, w: fld.xy(*play.to_abs(d, w))  # noqa: E731
     t0 = play._compile()[1]
-    for k in keys:
+    for k in list(half) + list(keys):
         pl = play.players[k]
+        a_ = 0.5 if k in half else 1.0
         pts = np.array([play.position(k, tt) for tt in np.linspace(t0, t, 50)])
         if np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) > 0.4:
             xs, ys = P(pts[:, 0], pts[:, 1])
             col = style.OFFENSE if pl.side == "off" else style.DEFENSE
-            ax.plot(xs, ys, color=col, lw=1.4, ls="-" if pl.side == "off" else (0, (3, 2)), zorder=13)
+            ax.plot(xs, ys, color=col, lw=1.4, alpha=a_, ls="-" if pl.side == "off" else (0, (3, 2)), zorder=13)
         x, y = P(*play.position(k, t))
         for a in draw_marker(ax, float(x), float(y), pl.side, pl.label, ppy, ring=play.highlights.get(k)):
             a.set_zorder(a.get_zorder() + 10)
+            if a_ < 1:
+                a.set_alpha(a_)
     if reads:
         for who, tgt in play.reads:
             (xa, ya), (xb, yb) = P(*play.position(who, t)), P(*play.position(tgt, t))
@@ -156,6 +163,43 @@ def protect(p, linemen=("LT", "LG", "C", "RG", "RT")):
     """Linemen set back into pass protection."""
     for k in linemen:
         p.block(k, pts=[(-1.2, 0.0)])
+
+
+from gridiron.play import _interp  # noqa: E402  (keyframe interpolation, used by the trail-technique play below)
+
+
+class TrailPlay(Play):
+    """A Play whose man defenders play trail technique: from their alignment at the snap they settle, within
+    about a second, a yard behind and a yard inside their receiver ("on his inside hip, underneath").
+    gridiron's own p.man() closes the cushion to almost nothing, which draws the defender on top of the
+    receiver and hides him; this keeps both visible, and it's the technique 2-Man actually asks for."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.trail = {}
+
+    def trail_man(self, key, target, behind=1.0, inside=1.1, lag=0.15, settle=1.0):
+        self.trail[key] = (target, behind, inside, lag, settle)
+        self._compiled = None
+        return self
+
+    def _compile(self):
+        if self._compiled is not None:
+            return self._compiled
+        kf, t_start, t_end = super()._compile()
+        for key, (tgt, behind, inside, lag, settle) in self.trail.items():
+            own, rec = kf[key], kf[tgt]
+            s0, r0 = _interp(own, 0.0), _interp(rec, 0.0)
+            off0 = s0 - r0
+            want = np.array([-behind, -np.sign(r0[1]) * inside])          # behind him, toward the ball
+            rows = [row for row in own if row[0] < 0]
+            for t in np.linspace(0.0, t_end + 0.6, 70):
+                f = np.clip(t / settle, 0, 1)
+                f = f * f * (3 - 2 * f)                                     # ease in, ease out
+                rows.append((t, *(_interp(rec, max(t - lag, 0.0)) + off0 * (1 - f) + want * f)))
+            kf[key] = np.array(rows, dtype=float)
+        self._compiled = (kf, t_start, t_end)
+        return self._compiled
 ```
 
 ```{python}
@@ -238,7 +282,7 @@ def chart_codes(d):
             return "TD"
         return f"{int(row.yards_gained):+d}".replace("-", "−")
     d["res"] = d.apply(res, axis=1)
-    d["hash"] = d.starting_hash.fillna("?")
+    d["hash"] = d.starting_hash.where(d.starting_hash.isin(["L", "M", "R"]), "?")   # FTN writes 0 when unknown
     return d
 
 
@@ -277,7 +321,9 @@ REG_LAB = REG[REG.c.isin(TWO_HIGH | ONE_HIGH)]
 SEA_REG = REG_LAB[REG_LAB.defteam == "SEA"]
 SEASON = dict(sea_two=float(SEA_REG.c.isin(TWO_HIGH).mean()), lg_two=float(REG_LAB.c.isin(TWO_HIGH).mean()),
               sea_four=float((REG[(REG.defteam == "SEA") & (REG.n_pass_rushers > 0)].n_pass_rushers == 4).mean()),
-              lg_four=float((REG[REG.n_pass_rushers > 0].n_pass_rushers == 4).mean()))
+              lg_four=float((REG[REG.n_pass_rushers > 0].n_pass_rushers == 4).mean()),
+              sea_press=float(REG.loc[REG.defteam == "SEA", "was_pressure"].fillna(False).astype(float).mean()),
+              lg_press=float(REG.was_pressure.fillna(False).astype(float).mean()))
 
 
 def sea_two_rate(down):
@@ -422,6 +468,30 @@ def murphy(f, o):
 F_PASS = np.where(ME_CALL == "P", ME_CONF, 1 - ME_CONF)          # the same calls, as a chance of a pass
 MUR1 = murphy(F_PASS[FIRST], Y[FIRST])
 MUR2 = murphy(F_PASS[~FIRST], Y[~FIRST])
+
+# the season in four stretches (the same split the scoring code prints)
+_PART = pd.cut(LOGDF.game, [0, 4, 8, 13, 18], labels=False)
+QTR = [brier_of(ME_CONF[_PART == i], HIT[_PART == i]) for i in range(4)]
+QTR_ACC = [float(HIT[_PART == i].mean()) for i in range(4)]
+QTR_CONF = [float(ME_CONF[_PART == i].mean()) for i in range(4)]
+
+
+def group_cost(c, h):
+    """Expected Brier score per call for a group stated at c that came true a share h of the time."""
+    return h * (1 - c) ** 2 + (1 - h) * c ** 2
+
+
+_A90 = A_CONF >= 0.9
+AB["a90_c"], AB["a90_share"] = float(A_CONF[_A90].mean()), float(_A90.mean())
+AB["a90_cost"] = group_cost(AB["a90_c"], AB["a_90"][0])
+AB["a90_fixcost"] = group_cost(AB["a_90"][0], AB["a_90"][0])
+_B_LO = B_CONF <= 0.65
+AB["b_lo_c"], AB["b_lo_h"], AB["b_lo_share"] = (float(B_CONF[_B_LO].mean()), float(HIT_B[_B_LO].mean()),
+                                                float(_B_LO.mean()))
+AB["b_lo_cost"] = group_cost(AB["b_lo_c"], AB["b_lo_h"])
+
+# Seattle's 2025 two-high rate by down, as printed on the scouting card in the second-layer code below
+CARD = {d_: round(sea_two_rate(d_), 2) for d_ in (1, 2, 3)}
 ```
 
 **Super Bowl LX, February 8, 2026.** Seattle sacked Drake Maye `{python} SBX["sacks"]` times, and every one
@@ -463,7 +533,8 @@ This is the last chapter, and it leans on three earlier ones more than the rest:
 - **The film itself** ([How to Watch a Broadcast Like You Mean It](../01-foundations/01-06-how-to-watch-a-broadcast.qmd)):
   [coaches film](../../appendices/glossary.qmd#gl-coaches-film) shows every snap from a high sideline angle
   (the [All-22](../../appendices/glossary.qmd#gl-all-22)) and from a high
-  [end-zone camera](../../appendices/glossary.qmd#gl-end-zone-camera), with no replays or graphics.
+  [end-zone camera](../../appendices/glossary.qmd#gl-end-zone-camera), with no replays and no on-screen
+  graphics (so no scorebug or clock).
 :::
 
 ## What Sunday can't tell you
@@ -509,65 +580,63 @@ comes with a short version.
 
 You met coaches film in [How to Watch a Broadcast](../01-foundations/01-06-how-to-watch-a-broadcast.qmd): every
 snap shown twice, once from the high wide sideline angle that keeps all 22 players in frame, and once from a high
-camera behind the end zone. Fans have been able to buy it since 2012; it currently comes with the league's NFL+
-Premium subscription, which offered it for the 2026 season and, when the league described the package in 2024,
-kept an archive back to the 2022 season.[^nflplus] Coaches film isn't posted the moment the game ends; expect it
-within a day or two. <!-- VERIFY: typical delay between a game ending and All-22 being available on NFL+ Premium in 2026 -->
-Subscription packages change often, so check what's included before you pay.
+camera behind the end zone. Fans have been able to buy it since 2012. Today it comes with NFL+ Premium, the league's
+own subscription: it was part of Premium for the 2026 season, and when the league described the package in 2024 its
+archive went back to the 2022 season.[^nflplus] It isn't posted the moment the game ends: the league's help pages say
+to expect it 24 to 36 hours after the final whistle, so a Sunday game is ready by Monday night or Tuesday. Packages and
+prices change often, so check what's included before you pay.
 
 If you don't have it, you can still do a lot with what's free. The broadcast's own replays include the
 [skycam](../../appendices/glossary.qmd#gl-skycam) and end-zone angles on many snaps. Teams post highlight clips,
 and several film-breakdown writers post All-22 clips of the plays they analyse (there's a list at the end of the
 chapter). None of it is every snap from every angle, which is what charting a whole game needs, but it's plenty
-for studying the snaps that mattered.
+for studying the snaps that mattered. (Which chart columns the broadcast alone can fill is in the codebook below.)
 
 **Setting up.** Three things, side by side if you have the screen for it:
 
 - **The film**, in a player that can pause cleanly on a single frame, step a frame at a time, and slow down to
-  half speed. Most of what you'll do is pause on the snap, play a second and a half, and go back.
+  half speed. Most of what you'll do is pause on the snap, play a second and a half, and go back. If the
+  subscription's own player won't step frames on your device, try it on a computer's browser before you give up on it.
 - **The chart**, a spreadsheet with one row per snap ([the template is below](#charting-a-game)), already filled
   with everything the play-by-play knows, so you only type what the film adds.
 - **Your live log**, the sheet you kept on Sunday. You'll check it against the film, but you won't change it: it's
   a record of what you knew *before* the snap, and correcting it after watching the film would make your score
-  meaningless.
+  meaningless. Film notes go in their own column, marked as written after the fact.
 
-The game clock in the film is your index. Each row of the play-by-play carries the quarter and the clock at the
-snap (`qtr` and `time` in nflverse), so you can always find the snap you're looking for and keep the film, the
-chart and the log lined up on the same row.
+**Keeping the three lined up.** Coaches film has no scorebug, so it can't tell you which snap you're on; the
+play-by-play can. Every row carries the quarter, the clock at the snap, the down and distance and the ball's spot
+(`qtr`, `time`, `down`, `ydstogo` and `yrdln` in nflverse), and the film shows the snaps in the order they happened.
+Number the snaps in the chart, keep a finger on the down and distance and the yard line (both visible on the field),
+and the film, the chart and your log stay on the same row. Your log already has the quarter and clock from Sunday,
+which is how the two get joined later.
 
-| Pass | Best angle | Why that angle |
-|:--------------|:-----------|:------------------------------|
-| Freeze at the snap | All-22 (sideline) | The only angle with all 22 in frame: personnel, formation, safeties and corners together |
-| 1 · The line | End zone | Looks straight down the line: who stepped where, which gap opened, who came free |
-| 2 · The quarterback | End zone, then All-22 | His feet and eyes from behind; then, from the side, where his eyes were pointing |
-| 3 · The coverage | All-22 | The safeties' first steps and the corners' technique are only in the wide shot |
-| 4 · The skill players | All-22 | Routes against the coverage and who was open when the quarterback looked |
+**Timing a snap.** Several passes below ask you to count seconds from the snap. A phone stopwatch started on the snap
+is good to a few tenths, which is enough to tell 2 seconds from 3.5. For better, step frames: video usually runs at 30
+or 60 frames a second, so at 30, two and a half seconds is 75 frames.
 
-: Which angle answers which pass of the protocol. Coaches film gives you both angles for every snap; the broadcast gives you only some of them, on some snaps.
-
-::: {.callout-note title="Madden vs. real life"}
-In *Madden* the film study is done for you. You picked the play, so you know the call; the play art shows every
-assignment; and the replay camera can fly anywhere. Real film gives you none of that. You never see the call
-sheet, so every assignment on the film is something you *infer*: a cornerback who turned and ran with a receiver
-might be in man coverage, or in a zone that turns into man when the receiver goes deep, or simply beaten. Film
-study is the craft of making those inferences carefully, writing down how sure you are, and noticing when the
-next snap from the same look contradicts you. It's the same habit as your live log, applied to the past.
-:::
+**Knowing who's who.** Jersey numbers are small in the wide shot. Keep both teams' rosters open, identify players by
+where they line up first (the left tackle is the left tackle whatever his number), and confirm a number on the end-zone
+angle when it matters.
 
 ## The four-pass film protocol
 
 Here is the routine. It's the course's [**film-study protocol**](../../appendices/glossary.qmd#gl-film-study-protocol):
 a fixed way to study each snap on film, the same way every time. You freeze the picture at the snap and check your
 pre-snap read; then you watch the play four times, once for each group (the line, the quarterback, the coverage,
-the receivers and backs); then you write one line saying why the play worked or failed.
+the receivers and backs); then you write one line saying why the play worked or failed. Before any of that,
+watch the snap once at full speed, to see the play whole and where the ball went.
+
+Each step uses the angle that shows its group best. The All-22 is the only one with every player in frame, so it's
+the angle for the freeze, the coverage and the routes. The end-zone camera looks straight down the line, so it's the
+angle for the blocks and for the quarterback's feet and eyes.
 
 ```{python}
 #| label: fig-protocol-card
-#| fig-cap: "The four-pass film protocol on one card. Start frozen at the snap (step 0) and check the pre-snap columns of your log against the film. Then watch the play four times, a different group each time: the line, the quarterback, the coverage, the skill players. The order runs from what sets the play's clock (the line) to what uses it (the routes and the run). Finish with one 'because' line that names whose play it was. The middle column says which angle of the coaches film to use, the right-hand column why the step sits where it does."
+#| fig-cap: "The protocol on one card, to keep beside the film. The middle column is the angle of the coaches film to use for each step; the right-hand column is why the step sits where it does: the order runs from what sets the play's clock (the line) to what uses it (the routes and the run)."
 items = [
     ("0", "Freeze at the snap",
-     "Pause on the snap. Check the log's pre-snap columns: personnel, formation and strength, motion and the "
-     "defense's answer, box, shell, leverage. Write what you missed live.", "All-22",
+     "One look at full speed, then pause on the snap. Check the log's pre-snap columns: personnel, formation and "
+     "strength, motion and the defense's answer, box, shell, leverage. Write what you missed live.", "All-22",
      "Your read was made here; grade it before you know the result"),
     ("1", "The line (and the front)",
      "First step: forward (run) or back (pass). Run: zone or gap, who pulled, who was left unblocked on purpose, "
@@ -586,8 +655,8 @@ items = [
      "the catch. Runs: the back's aim, his cut, yards after contact; blocks by receivers and tight ends.", "All-22",
      "Routes only make sense against the coverage"),
     ("✓", "The 'because' line",
-     "One line: why it worked or failed, and whose play it was (the call, the line, the quarterback, the coverage, "
-     "the skill players). Then fill in the chart row.", "",
+     "One line: why it worked or failed, and whose play it was (either side's call, the line, the quarterback, the "
+     "coverage, the skill players). Then fill in the chart row.", "",
      "A snap you can't explain in one line needs another pass"),
 ]
 rows = []
@@ -631,11 +700,16 @@ Each step deserves its reasons.
 
 ### Step 0: freeze at the snap
 
-Before you watch anything move, pause on the frame where the ball is snapped and grade your Sunday read. The
+Watch the snap once at full speed first: you want the play as a whole, and the result, before you take it apart.
+Then go back to the frame where the ball is snapped and grade your Sunday read. The
 pre-snap columns of your log (personnel, alignment, box, shell) were your best guesses from a tight broadcast
 shot; the All-22 shows the truth. Was it really two-high, or was the second safety already at eight yards and
 creeping? Was the box six or seven? Which way did the defense set its strength, and did a linebacker shift when
 the motion went? Write what you missed in a notes column. Don't overwrite the log.
+
+Be honest with yourself here, because you now know how the play turned out. The test for each note is whether it was
+*visible at the snap*: "the second safety was at eight yards" is; "it was obviously Cover 3" usually isn't, if the
+proof only came after the snap.
 
 This step does two jobs. It grades the *inputs* of your call, which your score can't: a 70% pass call that came
 true is a good result, but if you'd miscounted the backfield it was a lucky one. And it trains your live eye. After a
@@ -646,32 +720,42 @@ broadcast angle flattens the field), and you'll start correcting for it on Sunda
 
 Use the end-zone angle and watch only the ten big men: the five offensive linemen and whoever lines up across from
 them, plus any back or tight end who blocks. The first thing to see happens in the first half-second: **did the
-line step forward or back?** Linemen who fire out are blocking a run; linemen who sit back are protecting a pass
-(and on play-action they'll try to fake the first, so look at how far they go).
+line step forward or back?** Coaches say it as "low hats, run; high hats, pass": linemen who fire out low are
+blocking a run; linemen who rise and sit back are protecting a pass. Two exceptions. On play-action they fake the
+first, so look at how far they go: in the NFL a lineman may be only a yard past the line when a pass is thrown, so a
+line that surges and then stops is often a pass. And on an [RPO](../../appendices/glossary.qmd#gl-rpo) the line
+run-blocks even when the ball is thrown; there the tell is the quarterback and the ball, not the line.
 
 On a run, ask what scheme it was. If every lineman steps the same direction together, it's
 [zone blocking](../../appendices/glossary.qmd#gl-zone-blocking) ([Zone Running](../03-the-run-game/03-02-zone-running.qmd)).
-If linemen [down-block](../../appendices/glossary.qmd#gl-down-block) toward the middle while someone
-[pulls](../../appendices/glossary.qmd#gl-pull) across behind them, it's a
+If they drive straight ahead in double-teams with no lateral step and no puller, it's
+[duo](../../appendices/glossary.qmd#gl-duo). If linemen [down-block](../../appendices/glossary.qmd#gl-down-block)
+toward the middle while someone [pulls](../../appendices/glossary.qmd#gl-pull) across behind them, it's a
 [gap scheme](../../appendices/glossary.qmd#gl-gap-scheme) ([Gap and Power Runs](../03-the-run-game/03-03-gap-and-power-runs.qmd)).
 Then find the defender nobody blocked. On most runs one is left alone on purpose (the backside end on power, the
-[read key](../../appendices/glossary.qmd#gl-read-key) on an option), and knowing which one tells you what the play
-was meant to do. Finally, where did the hole open, and was that where the back ran?
+[read key](../../appendices/glossary.qmd#gl-read-key) on an option, and often the backside end on inside zone too,
+for the quarterback to hold with a fake or for a tight end to cut across and block), and knowing which one tells you
+what the play was meant to do. Finally, where did the hole open, and was that where the back ran?
 
 On a pass, count. How many rushed, how many blocked? Which way did the line
 [slide](../../appendices/glossary.qmd#gl-slide-protection), and did a back or tight end stay in? Then the most useful
 habit in pass-protection film: **start counting when the ball is snapped.** If a rusher gets to the quarterback in
 under two and a half seconds, the protection lost. If the quarterback still has the ball at three and a half
-seconds, something else went wrong first, and pass 2 and pass 3 will tell you what. (Those thresholds are rules of
-thumb, not laws; a seven-step drop and a quick game have different clocks, so judge against the drop.)
+seconds, something else went wrong first, and pass 2 and pass 3 will tell you what. In between is shared ground: the
+protection held long enough for a normal drop, but not forever, so the sack belongs partly to the line and partly to
+whatever kept the ball in the quarterback's hand, and passes 2 to 4 decide the split. (Those thresholds are rules of
+thumb, not laws; a seven-step drop and a quick game have different clocks, so judge against the drop.) And when the
+offense has more blockers than the defense has rushers, ask where the spares went: a center with nobody to block and
+a back who helped nobody are part of the sack too.
 
 Why first: the line sets the clock for everyone else. A quarterback with 1.8 seconds and one with 3.5 seconds are
 playing different games, and a run's whole design is visible in the line's first two steps.
 
 ### Pass 2: the quarterback
 
-Now watch only the quarterback, starting from the end-zone angle. His feet: a quick drop from the shotgun, a
-five- or seven-step drop from under center, a run fake, a rollout. His
+Now watch only the quarterback, starting from the end-zone angle. His feet: a three- or five-step drop from the
+shotgun (roughly the timing of a five- or seven-step drop from under center, since he starts five yards back), a run
+fake, a rollout. His
 [launch point](../../appendices/glossary.qmd#gl-launch-point), the spot he throws from. His eyes: where does he look
 first, and does he move them? A quarterback working a [progression](../../appendices/glossary.qmd#gl-progression)
 turns his head from one receiver to the next in order; one throwing on rhythm hitches once and lets it go at the top
@@ -688,9 +772,9 @@ fault get blamed on quarterbacks every week, and the reverse.
 ### Pass 3: the coverage
 
 Switch to the All-22 and start at the snap with the **safeties**. Their first step tells you more than anything
-else in the secondary: a safety who backpedals straight is playing his half or his quarter; one who runs toward the
-middle is becoming the single high safety; one who drops down toward the line is rotating into a short zone or
-taking a man. A second later, ask the question from the coverage chapters: is the middle of the field
+else in the secondary: a safety who pedals back and widens is playing a deep half; one who sits flat-footed, reading
+the slot receiver, is playing a quarter (and will come downhill if it's a run); one who runs toward the middle is
+becoming the single high safety; one who drops down toward the line is rotating into a short zone or taking a man. A second later, ask the question from the coverage chapters: is the middle of the field
 [closed](../../appendices/glossary.qmd#gl-mofc) (one deep safety in the middle) or
 [open](../../appendices/glossary.qmd#gl-mofo) (two deep, the middle between them)? That single answer splits the
 coverages into families ([Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)).
@@ -698,10 +782,11 @@ coverages into families ([Disguise, Rotation, and Split-Field Coverage](../06-pa
 Then the corners: did each one **bail** (turn and run to a deep third), **squat** (sit on a short zone near the
 sideline), or **trail** (follow his receiver underneath, with help over the top)? Who traveled with the motion before
 the snap? Who blitzed, and who dropped into the spot he left? Defenders looking at the quarterback are usually in
-zone; defenders looking at a receiver are usually in man. Then write the coverage family, and a confidence. Coverage
-read from film is still an inference, as [Tendencies](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd)
-warned about professional charters' labels: match coverages turn from zone into man by rule, and a busted
-assignment can look like a design.
+zone; defenders looking at a receiver are usually in man. Then write the coverage family, and a confidence. You never
+see the defense's call sheet, so coverage read from film is still an inference, as
+[Tendencies](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd) warned about professional charters'
+labels: match coverages turn from zone into man by rule, a cornerback who turned and ran with a receiver might be in
+man or simply beaten, and a busted assignment can look like a design.
 
 Why third: coverage is the hardest read on the film and deserves a clean pass with nothing else to look at. And by
 now you know where the ball went, so you can tell whether the coverage was beaten, or whether the ball went
@@ -725,11 +810,14 @@ moment you found in pass 2.
 
 ### The "because" line
 
-Finish every snap with one line that says why it worked or failed, and whose play it was. There are five
+Finish every snap with one line that says why it worked or failed, and whose play it was. There are six
 candidates, and a disciplined charter picks one first and adds a second only if he must:
 
-- **The call.** The play was wrong for the defense it met: a run into an eight-man box, a deep concept against a
-  coverage built to stop it. Nobody failed; the play-caller lost the guess.
+- **The offense's call.** The play was wrong for the defense it met: a run into an eight-man box, a deep concept
+  against a coverage built to stop it. Nobody failed; the play-caller lost the guess.
+- **The defense's call.** The mirror image: a pressure or a coverage that beat the protection or the concept by
+  design, such as a [simulated pressure](../../appendices/glossary.qmd#gl-simulated-pressure) that left a blocker with
+  nobody to block while a defender came free.
 - **The line.** A block lost and the play died there.
 - **The quarterback.** He had time and an open man, and he did something else.
 - **The coverage.** On defense: a rotation took the throw away, or a defender lost his man.
@@ -738,17 +826,13 @@ candidates, and a disciplined charter picks one first and adds a second only if 
 "Pass, incomplete, because the boundary safety rotated down and took away the out; QB stayed with it too long" is a
 good line. "Bad play" isn't. If you can't write the line, you haven't seen the play yet: watch it again.
 
-### Why this order, and why not more passes
-
-The order runs from **what sets the clock to what uses it.** The line decides how long the play lasts; the
-quarterback decides what to do inside that time; the coverage decides what's available; the skill players decide
-whether it gets used. Watch it in that order and every pass gives you context for the next one. Watch the receivers
-first and you'll call a receiver "open" who the quarterback never had time to look at.
+### Why four passes, and not more
 
 Why four, and not one per position? Because a fan's eye can hold about one group at a time, and these four groups
-answer different questions. More passes add little: by pass 4 you've seen every player, and what's left is
-re-watching the moment that matters, which you should do as often as you need. A snap takes about two minutes this
-way once you're practised, more at first.
+answer different questions in an order where each pass gives context to the next (watch the receivers first and
+you'll call a receiver "open" who the quarterback never had time to look at). More passes add little: by pass 4
+you've seen every player, and what's left is re-watching the moment that matters, which you should do as often as
+you need. A snap takes about two minutes this way once you're practised, more at first.
 
 ### A full game, in the time you have
 
@@ -757,11 +841,14 @@ a Monday. So run the protocol in layers:
 
 - **Every snap:** step 0 (freeze and check the pre-snap columns) and pass 3 (the coverage), because those are the two
   things the broadcast hid from you and your log's second layer needs.
-- **Every third down, red-zone snap, sack, turnover and explosive play** (a run of 10 yards or more, a pass of 20 or
-  more): the full protocol. These are the snaps that decided the game, and there are usually 20 to 30 of them.
+- **Every third down, red-zone snap, sack, turnover and explosive play**: the full protocol. These are the snaps
+  that decided the game, and there are usually 20 to 30 of them. (For an "explosive" use the analysts' version from
+  [Expected Points and Success Rate](../13-analytics-and-data/13-02-expected-points-and-success-rate.qmd), a run of 10
+  yards or more or a pass of 20 or more; staffs vary, and many count runs of 12 or more and passes of 16 or more.)
 - **Everything else:** at real speed once, then the chart row.
 
 That's two or three hours for one team's offense against the other's defense, which is a realistic weekly habit.
+(Coaches chart the kicking game too, every punt and kickoff; this chapter sticks to the snaps from scrimmage.)
 
 ## Film room: one snap, four passes
 
@@ -789,67 +876,78 @@ yourself.
 
 ```{python}
 #| label: fig-strip-sack
-#| fig-cap: "The strip-sack, third-and-6 (a reconstruction, simulated in Big Data Bowl format). Charted facts: 11 personnel in the shotgun with one back and motion; Seattle's dime (six defensive backs), six in the box; four rushers; 2-Man (man coverage underneath, two safeties deep); a sack by Derick Hall (B, ringed), who forced a fumble. Illustrative: the alignments, the motion (here the tight end, Y, across to the left, with his defender, D, following him), the routes, the protection, and the time Hall took. What to notice: the second panel, where every receiver has a defender on his inside hip and a safety above him, and the third, where the quarterback has hitched up with nowhere to go while Hall turns the corner on the left tackle."
+#| fig-cap: "The strip-sack, third-and-6 (a reconstruction, simulated in Big Data Bowl format). Charted facts: 11 personnel in the shotgun with one back and motion; Seattle's dime (six defensive backs), six in the box; four rushers; 2-Man (man coverage underneath, two safeties deep); a sack by Derick Hall (58, ringed), who forced a fumble. Illustrative: the alignments, the motion (here the tight end, Y, across to the left wing, with his defender, D, following him), the routes, the protection, and the time Hall took. What to notice: in the second panel every receiver has a defender a yard behind him and a yard inside, two safeties sit deep, and the middle linebacker (M) is free because the back stayed in; in the third the left tackle is still riding Hall wide as the quarterback climbs; in the fourth Hall has come back under the tackle to the quarterback."
 def strip_sack():
     off = offense("gun_2x2")
-    off = [p_.moved(w=1.5) if p_.key == "RB" else p_ for p_ in off]          # back on the right, helps left
-    dfn = [Player("HALL", "OLB", "def", 1.0, -6.4), Player("DT", "DT", "def", 1.0, -1.0),
+    off = [p_.moved(w=1.5) if p_.key == "RB" else p_.moved(w=-18.5) if p_.key == "X" else p_ for p_ in off]
+    dfn = [Player("HALL", "OLB", "def", 1.0, -7.4, label="58"), Player("DT", "DT", "def", 1.0, -1.0),
            Player("DE", "DE", "def", 1.0, 2.4), Player("OLB", "OLB", "def", 1.0, 6.0),
-           Player("M", "ILB", "def", 5.0, 0.8, label="M"),
-           Player("LCB", "CB", "def", 1.8, -14.2, label="CB"), Player("RCB", "CB", "def", 1.8, 14.2, label="CB"),
-           Player("NB", "NB", "def", 2.2, -8.2), Player("DM", "DB", "def", 2.2, 8.2),
-           Player("FS", "FS", "def", 12.5, -9.0), Player("SS", "SS", "def", 12.5, 9.0)]
-    p = Play(off, dfn, los=54, to_go=6, ball_y="right")
+           Player("M", "ILB", "def", 5.0, 0.6, label="M"),
+           Player("LCB", "CB", "def", 1.6, -17.6, label="CB"), Player("RCB", "CB", "def", 1.6, 14.2, label="CB"),
+           Player("NB", "NB", "def", 3.4, -8.6), Player("DM", "DB", "def", 2.4, 8.2),
+           Player("FS", "FS", "def", 12.5, -11.0), Player("SS", "SS", "def", 12.5, 9.0)]
+    p = TrailPlay(off, dfn, los=54, to_go=6, ball_y="right")
     p.highlight("HALL")
-    p.motion("Y", to=(-1.5, -5.6), speed=5.0)                  # the tight end motions across; his man follows
+    # the tight end motions across behind the line (well clear of the linemen) to a wing on the left; his man,
+    # D, travels with him at linebacker depth and arrives at the same moment
+    y_pts = [(-1.5, -5.0), (-1.5, -13.0), (0.5, -14.6)]                 # offsets from Y's spot (-1.5, 9.0)
+    p.motion("Y", pts=y_pts, speed=5.0)
+    y_len = float(np.hypot(1.5, 5.0) + 8.0 + np.hypot(2.0, 1.6))
+    d_pts = [(0.4, -4.0), (0.4, -12.0), (0.6, -13.0)]                   # offsets from D's spot (2.4, 8.2)
+    d_len = float(np.hypot(0.4, 4.0) + 8.0 + np.hypot(0.2, 1.0))
+    p.motion("DM", pts=d_pts, speed=5.0 * d_len / y_len)
     for d_, rcv in (("LCB", "X"), ("NB", "H"), ("DM", "Y"), ("RCB", "Z")):
-        p.man(d_, rcv)
-    # offense: protect with six (the back helps on the left); four routes, nothing quick
-    for k in ("LG", "C", "RG", "RT"):
-        p.block(k, pts=[(-1.2, 0.0)])
-    p.block("LT", pts=[(-1.6, -0.8), (-2.4, -0.4)], speed=1.5)   # kicks, and gets turned
-    p.block("RB", pts=[(-0.3, -3.0)], speed=2.2)                # steps across to help inside
-    p.route("X", r.go(19)); p.route("Z", r.dig(12, 7)); p.route("H", r.out(8, 4))
-    p.route("Y", r.path((5.0, 0.0), (8.0, 2.5)), side=-1)        # from the left wing: up and into the flat
+        p.trail_man(d_, rcv)                                             # trail technique: inside hip, underneath
+    # offense: six block four. C and LG double the tackle, RG and RT take the right side one-on-one, the back
+    # checks the A gap for a blitz and stays to help inside; the LT has Hall alone and rides him wide
+    p.block("C", pts=[(-0.7, -0.3)]); p.block("LG", pts=[(-0.7, -0.1)])
+    p.block("RG", pts=[(-0.9, 0.4)]); p.block("RT", pts=[(-1.2, 1.4)], speed=1.6)
+    p.block("RB", pts=[(1.6, -1.9), (2.4, -2.5)], speed=2.4)
+    p.block("LT", pts=[(-1.8, -1.2), (-3.7, -2.0), (-5.2, -2.0)], speed=1.7)
+    # routes: a high-low on the left (H out at the sticks, Y in the flat under him), X clears deep, Z digs
+    p.route("X", r.go(19)); p.route("H", r.out(7, 4)); p.route("Y", r.flat(2.0, 6.0), side=-1)
+    p.route("Z", r.dig(12, 7))
     p.dropback(2.0)
-    p.path("QB", [(1.0, -0.2)], speed=2.0, delay=1.4)             # hitches up into the pocket
+    p.path("QB", [(1.0, -0.2)], speed=2.0, delay=1.4)                   # hitches up into the pocket
     p.read("Z")
-    # defense: four rush; the middle linebacker sits on the back; two deep halves
-    p.rush("DT", pts=[(-1.4, 0.0)], speed=2.0); p.rush("DE", pts=[(-1.4, 0.0)], speed=2.0)
-    p.rush("OLB", pts=[(-1.8, 0.4)], speed=2.0)
-    p.rush("HALL", pts=[(-5.2, -0.6), (-7.2, 5.6)], speed=3.5)  # wide around the tackle, then under to the QB
-    p.drop("M", (5.5, 0.0), speed=2.0)
-    p.drop("FS", (19.0, -10.0), speed=3.5); p.drop("SS", (19.0, 10.0), speed=3.5)
+    # defense: four rush, three of them held; Hall arcs past the launch point, then comes back under the tackle
+    p.rush("DT", pts=[(-1.4, 0.1)], speed=0.9); p.rush("DE", pts=[(-1.4, 0.1)], speed=1.0)
+    p.rush("OLB", pts=[(-2.0, -0.4)], speed=1.2)
+    p.rush("HALL", pts=[(-3.2, -0.8), (-6.6, -0.4), (-8.6, 2.4), (-7.4, 6.2)], speed=4.3)
+    p.drop("M", (4.5, -0.4), speed=2.0)                                  # the low hole, eyes on the quarterback
+    p.drop("FS", (19.0, -14.0), speed=3.5); p.drop("SS", (19.0, 10.0), speed=3.5)
     return p
 
 
 SSP = strip_sack()
 T_SACK = 3.3
+LAT_SS, WIN_SS = (-24, 21), (-10.5, 21.5)
 animate_or_strip(SSP, [0.0, 1.5, 2.7, T_SACK],
-                 ["Snap · Y's defender went with him", "+1.5 s · two deep, five in man",
-                  "+2.7 s · QB hitches; Hall turns the corner", f"+{T_SACK} s · strip-sack"],
-                 lateral=(-21, 21), window=(-10.5, 21.5))
+                 ["Snap · Y motioned left; D went with him", "+1.5 s · two deep, four in man, M free",
+                  "+2.7 s · QB climbs; the LT rides 58 wide", f"+{T_SACK} s · 58 comes back under: strip-sack"],
+                 lateral=LAT_SS, window=WIN_SS)
 ```
 
 ```{python}
 #| label: fig-four-passes
-#| fig-cap: "The same snap at 2.7 seconds, watched four times. Each panel fades everyone except the group that pass watches, with the paths they have run so far. Pass 1, the line: four rushers against five linemen and the back; three rushers are stalemated, and Hall (ringed) has run around the left tackle. Pass 2, the quarterback: a short drop, eyes to the right (the green dashed line), then a hitch up into the pocket. Pass 3, the coverage: both safeties in deep halves, the four man defenders trailing on the receivers' inside hips, and the middle linebacker (M) sitting in the short middle because the back stayed in to block. Pass 4, the skill players: four routes, each with a defender attached and a safety above. A reconstruction, as in the previous figure."
+#| fig-cap: "The same snap at 2.7 seconds, watched four times. Each panel fades everyone except the group that pass watches, with the paths they have run so far. Pass 1, the line: four rushers against five linemen and the back; the center and left guard double the tackle, the right side is one-on-one and holding, the back is helping inside, and Hall (58, ringed) has run wide and deep around the left tackle, who is still on him. Pass 2, the quarterback: a short drop, eyes to the right (the green dashed line), then a hitch up into the pocket. Pass 3, the coverage: both safeties in deep halves, the four man defenders a yard behind and inside their receivers (trail technique), and the middle linebacker (M) sitting in the short middle because the back stayed in to block. Pass 4, the skill players: four routes, each with a defender attached (drawn at half strength) and a safety above. A reconstruction, as in the previous figure."
 T4 = 2.7
+MAN_D = ["LCB", "NB", "DM", "RCB"]
 PASSES = [
     ("Pass 1 · the line: 4 rushers, 6 blockers", ["LT", "LG", "C", "RG", "RT", "RB", "HALL", "DT", "DE", "OLB"], False,
-     [("4 rush vs 5 + the back", (-9.0, 9.5))]),
-    ("Pass 2 · the QB: eyes right, hitch, no throw", ["QB"], True, [("2.7 s: still holding it", (-9.0, 9.5))]),
-    ("Pass 3 · coverage: two deep, five under", ["LCB", "NB", "DM", "RCB", "M", "FS", "SS"], False,
-     [("deep half", (16.2, -10.0)), ("deep half", (16.2, 10.0))]),
-    ("Pass 4 · receivers: anyone open?", ["X", "H", "Y", "Z"], False, [("a defender on every route", (-9.0, 9.5))]),
+     [("C + LG double the T;\nthe back helps inside", (-8.2, 12.5))], ()),
+    ("Pass 2 · the QB: eyes right, hitch, no throw", ["QB"], True, [("2.7 s: still holding it", (-9.0, 11.5))], ()),
+    ("Pass 3 · coverage: two deep, five under", MAN_D + ["M", "FS", "SS"], False,
+     [("deep half", (15.6, -11.0)), ("deep half", (15.6, 10.0))], ()),
+    ("Pass 4 · receivers: anyone open?", ["X", "H", "Y", "Z"], False, [("a defender on every route", (-9.0, 11.5))],
+     MAN_D),
 ]
-LAT4, WIN4 = (-21, 21), (-10.5, 21.5)
-fig, axes = plt.subplots(2, 2, figsize=(6.5, 2 * (3.25 * (WIN4[1] - WIN4[0]) / (LAT4[1] - LAT4[0]) + 0.36)))
-for ax, (title, keys, eyes, tags_) in zip(axes.flat, PASSES):
-    fld = snapshot(SSP, T4, ax, LAT4, WIN4)
-    wash(fld, SSP, T4, keys, reads=eyes)
+fig, axes = plt.subplots(2, 2, figsize=(6.5, 2 * (3.25 * (WIN_SS[1] - WIN_SS[0]) / (LAT_SS[1] - LAT_SS[0]) + 0.36)))
+for ax, (title, keys, eyes, tags_, half_) in zip(axes.flat, PASSES):
+    fld = snapshot(SSP, T4, ax, LAT_SS, WIN_SS)
+    wash(fld, SSP, T4, keys, reads=eyes, half=half_)
     for txt, at in tags_:
-        tag(fld, SSP, txt, at, fs=6.2)
+        tag(fld, SSP, txt, at, fs=6.0)
     ax.set_title(title, fontsize=8.0, color=style.INK, loc="left")
 fig.tight_layout(h_pad=0.5, w_pad=0.4)
 plt.show()
@@ -862,32 +960,46 @@ certain. The
 offense is in 11 personnel in the shotgun; the defense in dime with six in the box and two safeties at about 12
 yards. The motion is the useful clue: when the tight end crossed the formation, his defender went *with* him. That's
 the [man/zone indicator](../../appendices/glossary.qmd#gl-man-zone-indicator) from
-[Motion and Shifts](../02-personnel-and-formations/02-06-motion-and-shifts.qmd) saying man, and the two deep safeties
-say two-high. Put them together and the pre-snap read is 2-Man or a disguised rotation; on third-and-6 2-Man is a
-common answer, because it puts a defender on every receiver short of the sticks and two safeties over the top of them.
+[Motion and Shifts](../02-personnel-and-formations/02-06-motion-and-shifts.qmd) voting man. A vote, not a verdict:
+Macdonald's defenses disguise heavily and play plenty of match coverage
+([Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd)), in which a
+defender can travel with a receiver too; and the other answer to watch for is a *bump*, the defenders sliding over a man each, which says zone or match. The two deep
+safeties say two-high. Put them together and the pre-snap read is 2-Man or a disguised rotation; on third-and-6 2-Man
+is a common answer, because it puts a defender on every receiver short of the sticks and two safeties over the top of
+them.
 
-**Pass 1, the line.** Four rushers against six blockers (five linemen and the back). The line had the numbers, so if
-the sack came fast, someone lost a one-on-one block. Count from the snap: in the reconstruction, Hall gets to Maye at
-about `{python} T_SACK` seconds, which on a shotgun drop is *late*. The charting doesn't record that time; on the real
-film it's the first thing you'd measure, because it decides how much of the sack is the left tackle's.
+**Pass 1, the line.** Four rushers against six blockers (five linemen and the back). Ask where the two spares went:
+here the center and left guard double the tackle, and the back checks the gap in front of him for a blitzing
+linebacker, finds none, and stays to help inside. The right side holds one-on-one. That leaves the left tackle alone
+on Hall, which is normal: a tackle is expected to handle an edge rusher by himself for a few seconds. He does, riding
+Hall wide and deep past the quarterback's launch point; the problem is that Maye climbs, and Hall comes back under. Count
+from the snap: in the reconstruction Hall arrives at about `{python} T_SACK` seconds, in the shared zone between 2.5
+and 3.5, where the line held long enough for the drop and the rest of the answer is in passes 2 to 4. The charting
+doesn't record that time; on the real film it's the first thing you'd measure.
 
 **Pass 2, the quarterback.** Maye takes his drop, looks right, hitches up into the pocket and still doesn't throw.
 That's a quarterback with time and no answer, or one who missed an answer. Which, pass 4 will say.
 
-**Pass 3, the coverage.** Both safeties backpedal into deep halves. Underneath, every receiver has a defender on his
-inside hip in [trail technique](../../appendices/glossary.qmd#gl-trail-technique), so anything short and inside is
-contested and anything deep has a safety coming. The middle linebacker has the back, and when the back stays in to
-block, he sits in the short middle as an extra defender, taking away the throw a quarterback looks for against man:
-the crossing route underneath. Seven defenders in coverage against four receivers is the whole idea of rushing four:
-the rush doesn't have to win quickly, because the coverage is designed to hold out.
+**Pass 3, the coverage.** Both safeties pedal back and widen into deep halves. Underneath, every receiver has a
+defender a yard behind him and a yard inside, in [trail technique](../../appendices/glossary.qmd#gl-trail-technique),
+so anything short and inside is contested and anything deep has a safety coming. The middle linebacker has the back,
+and when the back stays in to block, he has a choice his coach gave him: add himself to the rush, or sit in the short
+middle as an extra defender. Here he sits, taking away the throw a quarterback looks for against man (the crossing
+route underneath) and, just as important, watching Maye. 2-Man's great weakness is the quarterback scramble: every man
+defender has his back to the quarterback, so against a mobile one the linebacker in the low hole and the rushers'
+lanes (who keeps him from escaping outside) are part of the coverage. Seven defenders in coverage against four
+receivers is the whole idea of rushing four: the rush doesn't have to win quickly, because the coverage is designed
+to hold out.
 
 **Pass 4, the skill players.** Against 2-Man, receivers need to win on their own: the route that beats it is the one
 that gets *away* from a trailing defender toward the sideline or back toward the quarterback, before the safety
-arrives. At the moment Maye hitched, nobody had. That's the question to answer on the real film, frame by frame:
-was there a window at 2.5 seconds he passed up?
+arrives. The drawn concept tries exactly that on the left, an out at the sticks over a flat underneath, with a dig on
+the right as the backside throw. At the moment Maye hitched, nobody had won. That's the question to answer on the real
+film, frame by frame: was there a window at 2.5 seconds he passed up?
 
 **The "because" line.** In this version: *Sack because of the coverage: 2-Man took away everything inside and short of
-the sticks, and the four-man rush won late, at 3.3 seconds.* If on the real film Hall had arrived in two seconds, it
+the sticks, the protection held for a normal drop, and the four-man rush won late, at 3.3 seconds, when the
+quarterback climbed into the edge rusher's second move.* If on the real film Hall had arrived in two seconds, it
 would read *because the left tackle lost*, and if a receiver had been open at 2.5 seconds, *because the quarterback
 held it*. Same play in the box score, three different lessons. That's what the film is for.
 
@@ -898,7 +1010,8 @@ defense that rushes four and covers with seven is betting that its coverage will
 win *eventually*, and when that bet pays off it's a coverage sack. In Super Bowl LX Seattle rushed four on
 `{python} SBX["four"]` of New England's `{python} SBX["ne_db"]` dropbacks and got `{python} SBX["sacks4"]` of its
 `{python} SBX["sacks"]` sacks that way. You can't tell from the box score which of those were the line's fault and
-which were the coverage's. The film can.
+which were the coverage's. The film can. (And against a mobile quarterback the bet has a second half: the four
+rushers must keep their lanes, so the quarterback can't escape the pocket while the coverage holds.)
 :::
 
 ## Charting a game
@@ -917,7 +1030,7 @@ tag every snap of every opponent, and the tags become the tendency report
 **Why chart, when FTN and nflverse already do?** Three reasons.
 
 1. **Timing.** The public charting doesn't all arrive at once. The play-by-play for a game is usually available within
-   a day or so; FTN's charting (alignment, motion, play-action, rushers) is updated weekly during the season; but
+   hours; FTN's charting (alignment, motion, play-action, rushers) arrives game by game during the season; but
    personnel and coverage labels, in the participation file, arrive only after the season ends, around
    February.[^timing] If you want to know what coverage Seattle played against 12 personnel in *this* season, the public
    data can't tell you until the season is over. Your chart can tell you tonight.
@@ -935,9 +1048,9 @@ Here is the template. One row per snap, in seven blocks of columns:
 
 ```{python}
 #| label: fig-chart-sheet
-#| fig-cap: "The charting sheet, with New England's first eight snaps of Super Bowl LX filled in from public data. The sheet is one long row per snap, printed here in two tiers that share the snap number. Grey blocks fill themselves from the play-by-play; blue and orange blocks (the offense's and the defense's look) and the after-the-snap block are what you chart from film, filled here from FTN's charting and the participation file where those record the field; the cream-shaded cells are fields no public source records (formation, strength, the pre-snap shell, the corners, the rotation, the play concept, the 'because' line), which only your own film can fill. The green block is your live log, filled here with calls made by rule from the pre-snap columns (as in Watching Live), standing in for yours; its second layer is a call on whether Seattle would play two-high, at Seattle's 2025 rate for the down. Abbreviations are in the codebook below."
+#| fig-cap: "The charting sheet, with New England's first eight snaps of Super Bowl LX filled in from public data. The sheet is one long row per snap, printed here in two tiers that share the snap number (#). Grey blocks fill themselves from the play-by-play. The blue block (the offense before the snap), the peach block (the defense before the snap) and the lavender block (after the snap) are what you chart from film, filled here from FTN's charting and the participation file where those record the field. Cream-shaded cells are fields no public source records (formation, strength, the pre-snap shell, the corners, the rotation, the play concept, the 'because' line), which only your own film can fill. The green block is your live log, filled here with calls made by rule from the pre-snap columns (as in Watching Live), standing in for yours: a run-or-pass call and its confidence, then a second-layer call (l2) on whether Seattle would play two-high or one-high and its confidence (l2conf), made from Seattle's 2025 rate for the down. Every column is decoded in the codebook below."
 SHEET = NE[NE.fixed_drive == NE.fixed_drive.min()].copy()
-SHEET["l2c"] = SHEET.down.map(lambda d_: conf_of(sea_two_rate(int(d_)), cap=0.9))
+SHEET["l2conf"] = SHEET.down.map(lambda d_: conf_of(sea_two_rate(int(d_)), cap=0.9))
 SHEET["l2"] = SHEET.down.map(lambda d_: "2-hi" if sea_two_rate(int(d_)) >= 0.5 else "1-hi")
 SHEET["call"] = SB.set_index("play_id").loc[SHEET.play_id, "call"].values
 SHEET["conf"] = SB.set_index("play_id").loc[SHEET.play_id, "conf"].values
@@ -963,8 +1076,8 @@ T2 = [("#", 3.0, "auto", lambda r_, i: str(i + 1)),
           r_["pass_location"] if r_["qb_dropback"] == 1 else r_["run_location"], "–")),
       ("yds", 4.6, "auto", lambda r_, i: r_["res"]), ("succ", 3.8, "auto", lambda r_, i: "✓" if r_["success"] == 1 else "✗"),
       ("call", 3.6, "log", lambda r_, i: r_["call"]), ("conf", 4.0, "log", lambda r_, i: f"{r_['conf']:.2f}".lstrip("0")),
-      ("l2", 4.0, "log", lambda r_, i: r_["l2"]), ("l2c", 3.8, "log", lambda r_, i: f"{r_['l2c']:.2f}".lstrip("0")),
-      ("because", 11.0, "film", None)]
+      ("l2", 4.0, "log", lambda r_, i: r_["l2"]), ("l2conf", 4.8, "log", lambda r_, i: f"{r_['l2conf']:.2f}".lstrip("0")),
+      ("because", 10.0, "film", None)]
 FILL = {"auto": AUTO_TINT, "off": style.OFFENSE_TINT, "def": style.DEFENSE_TINT, "post": "#efe3f4", "log": LOG_TINT,
         "film": FILM_TINT}
 GROUPS1 = [("FROM PLAY-BY-PLAY", 0, 5, "auto"), ("OFFENSE BEFORE THE SNAP", 5, 10, "off"),
@@ -1005,26 +1118,34 @@ And here is the codebook that goes with it. The codes matter less than the rule 
 start, write them on the sheet, and use them the same way on every snap.** A chart in which "Cover 3" meant one thing in
 the first quarter and another in the fourth can't be counted.
 
-| Column | Codes | The rule |
-|:-----|:------------------|:-----------------------|
-| `pers` | 11, 12, 21, 13, 10, 22 … | Backs, then tight ends; count as they run on |
-| `align` | U, S or P plus the number of backs: U1, S0, P1 | Where the quarterback stands, how many in the backfield |
-| `form` | 2x2, 3x1, bunch, empty 3x2, I, offset I … | Pick one name per look and reuse it |
-| `str` | L, R | The strong side, by one rule you write at the top of the sheet (tight end, receivers, or field) |
-| `mot` | –, M (motion), S (shift), J (still moving at the snap) | What moved, and when |
-| `dpers` | base, nickel, dime | Count the defensive backs |
-| `box` | a number | Defenders inside the tight ends, within about five yards of the ball |
-| `shell` | 0, 1, 2 | Deep safeties at the snap (before any rotation) |
-| `CB` | P or O, plus i or o | Press or off; inside or outside leverage |
-| `rush` | a number | Rushers after the snap |
-| `cov` | C0, C1, C2, 2M, C3, C4, C6, C9, `?` | The coverage played after the snap |
-| `rot` | –, B, F, L | Rotation: none, to the boundary, to the field, late |
-| `play` | R, P, PA, SCR, RPO | Run, dropback, play-action, screen, run-pass option |
-| `concept` | IZ, OZ, PWR, CTR, DUO; smash, flood, mesh, stick … | The run scheme or pass concept, in the course's names |
-| `dir` | L, M, R | Where the run hit or the pass went |
-| `because` | free text | One line from the protocol: whose play it was |
+| Column | Codes | The rule | TV? |
+|:-----|:------------------|:-----------------------|:--:|
+| `qtr clock` | Q1 15:00 | Quarter and game clock at the snap | ✓ |
+| `dn&to` | 3&6 | Down and yards to go | ✓ |
+| `ball on` | NE 44 | The ball's spot (the side of the field, then the yard line) | ✓ |
+| `hash` | L, M, R | Where the ball was spotted: left hash, middle, right hash | ✓ |
+| `pers` | 11, 12, 21, 13, 10, 22 … | Backs, then tight ends; count as they run on | ✓ |
+| `align` | U, S or P plus the number of backs: U1, S0, P1 | Where the quarterback stands, how many in the backfield | ✓ |
+| `form` | 2x2, 3x1, bunch, empty 3x2, I, offset I … | Pick one name per look and reuse it | some |
+| `str` | L, R | The strong side, by one rule you write at the top of the sheet (tight end, receivers, or field) | some |
+| `mot` | –, M (motion), S (shift), J (still moving at the snap) | What moved, and when | ✓ |
+| `dpers` | base, nickel, dime | Count the defensive backs | some |
+| `box` | a number | Defenders in the [box](../../appendices/glossary.qmd#gl-box-count) (from just outside the end men on the line, about 5 to 7 yards deep), counted at the snap, after any motion | some |
+| `shell` | 0, 1, 2 | Deep safeties at the snap (before any rotation) | rarely |
+| `CB` | P or O, plus i or o | Press or off; inside or outside leverage | rarely |
+| `rush` | a number | Rushers after the snap | some |
+| `cov` | C0, C1, C2, 2M, C3, C4, C6, C9, `?` | The coverage played after the snap | rarely |
+| `rot` | –, B, F; add `*` if late (`B*`) | Rotation: none, to the boundary, to the field; the star marks one that started at or after the snap | rarely |
+| `play` | R, P, PA, SCR, RPO | Run, dropback, play-action, screen, run-pass option; a scramble is a dropback (P), a designed quarterback run is a run (R) | ✓ |
+| `concept` | IZ, OZ, PWR, CTR, DUO, TRAP, TOSS, ZR (zone read), QB (designed QB run); smash, flood, mesh, stick … | The run scheme or pass concept, in the course's names | some |
+| `dir` | L, M, R | Where the run hit or the pass went | ✓ |
+| `yds` | +7, −3, sk −7, INT, FUM, TD | The result: yards, a sack, a turnover or a score | ✓ |
+| `succ` | ✓ or ✗ | A successful play: positive EPA, nflverse's `success` flag ([Expected Points and Success Rate](../13-analytics-and-data/13-02-expected-points-and-success-rate.qmd)) | ✓ |
+| `call`, `conf` | P or R; 0.50 to 0.90 | Your live log: the run-or-pass call and its stated confidence | ✓ |
+| `l2`, `l2conf` | 2-hi, 1-hi, zone, man, 5+, left …; 0.50 to 0.90 | Your live log's second-layer call and *its* confidence (how sure you were of that call, as for `conf`) | ✓ |
+| `because` | free text | One line from the protocol: whose play it was | |
 
-: The codebook for the charting sheet. `?` is always allowed and is better than a guess. {#tbl-codebook}
+: The codebook for the charting sheet. `?` is always allowed and is better than a guess. The last column says whether a careful viewer can usually fill the field from the broadcast alone: ✓ yes, "some" on most snaps, "rarely" only when a replay happens to show it. {#tbl-codebook}
 
 Three rules keep a chart honest:
 
@@ -1038,31 +1159,33 @@ Three rules keep a chart honest:
 ### The skeleton: let the play-by-play do the typing
 
 A third of the sheet is already known before you press play: the snap order, the clock, down and distance, the ball's
-spot, the result. nflverse publishes all of it within a day or so of each game, so the sensible way to start a chart is
+spot, the result. nflverse publishes all of it within hours of each game, so the sensible way to start a chart is
 to build the skeleton in code and spend your film time only on what the film adds. This function does it for any game
 in any season nflverse covers:
 
 ```{python}
 #| echo: true
 #| code-fold: false
+import numpy as np
 import pandas as pd
 from gridiron.data import pbp
 
 FILM_COLUMNS = ["pers", "align", "form", "str", "mot", "dpers", "box", "shell", "CB",
-                "rush", "cov", "rot", "concept", "because"]
+                "rush", "cov", "rot", "concept", "because", "notes"]
 
 
 def chart_skeleton(game_id, team):
     """One row per snap of `team`'s offense, with the play-by-play columns filled and the film columns empty."""
     season = int(game_id[:4])
     d = pbp([season])
-    d = d[(d.game_id == game_id) & (d.posteam == team) & d.play_type.isin(["pass", "run"])]
+    d = d[(d.game_id == game_id) & (d.posteam == team) & d.play_type.isin(["pass", "run"])
+          & d.down.notna()]               # a two-point try has no down; it isn't a charted snap
     sheet = pd.DataFrame({
         "play_id": d.play_id.astype(int), "qtr": d.qtr.astype(int), "clock": d.time,
-        "down": d.down, "togo": d.ydstogo, "ball_on": d.yrdln,
-        "play": d.play_type.map({"pass": "P", "run": "R"}),
+        "down": d.down.astype(int), "togo": d.ydstogo.astype(int), "ball_on": d.yrdln,
+        "play": np.where(d.qb_dropback == 1, "P", "R"),        # scrambles and sacks are dropbacks
         "dir": d.pass_location.fillna(d.run_location).str[0].str.upper(),
-        "yds": d.yards_gained, "success": d.success, "epa": d.epa.round(2)})
+        "yds": d.yards_gained.astype(int), "success": d.success.astype(int), "epa": d.epa.round(2)})
     for c in FILM_COLUMNS:
         sheet[c] = ""                     # yours to fill from the film
     return sheet.reset_index(drop=True)
@@ -1073,10 +1196,11 @@ print(f"{len(sheet)} snaps; first five of the play-by-play half:")
 print(sheet.iloc[:5, :11].to_string(index=False))
 ```
 
-Save it with `sheet.to_csv("sb60_ne.csv", index=False)`, open it in a spreadsheet next to the film, and fill the empty
-columns. (Penalties that wipe out a snap, kneels and spikes aren't in this skeleton; add a row by hand if a wiped-out
-snap told you something.) For a current-season game, the same call gives you the skeleton the day after the game, weeks
-or months before the public coverage labels exist.
+The skeleton *is* the blank template: save it with `sheet.to_csv("sb60_ne.csv", index=False)`, open it in a
+spreadsheet next to the film, and the empty columns, in the codebook's order, are the ones to fill. (Penalties that
+wipe out a snap, kneels and spikes aren't in it; add a row by hand if a wiped-out snap told you something.) For a
+current-season game, the same call gives you the skeleton within hours of the game, weeks or months before the public
+coverage labels exist.
 
 ### Is your chart any good?
 
@@ -1105,7 +1229,7 @@ the playoffs).[^sbdata] The film-only columns are left empty: they're yours.
 
 ```{python}
 #| label: fig-game-board
-#| fig-cap: "Super Bowl LX on one page: every run and dropback, one cell per snap, one row per drive, New England's offense on top and Seattle's below. Blue cells are dropbacks (including sacks and scrambles), amber cells runs; a dark outline marks a successful play (one that gained enough of the yards needed, by nflverse's EPA-based definition). For dropbacks the top line gives the number of rushers and the charted coverage (2M = 2-Man, C6 = Cover 6, and so on; '–' where none was charted); for runs it says 'run'. The bottom line is the result: yards, a sack, an interception (INT), a lost fumble (FUM) or a touchdown (TD). The right-hand label is how the drive ended. What to notice: the Patriots' first nine drives, none longer than eight snaps, eight ending in punts and the ninth in the strip-sack, against a defense rushing four on almost every dropback and playing two-deep behind it; and Seattle's offense, steady rather than explosive, turning four of its first seven drives into field goals. Source: nflverse play-by-play, FTN charting and participation, game 2025_22_SEA_NE."
+#| fig-cap: "Super Bowl LX on one page: every run and dropback, one cell per snap, one row per drive, New England's offense on top and Seattle's below. Blue cells are dropbacks (including sacks and scrambles), amber cells runs; a dark outline marks a successful play (one with positive EPA: it left the offense better placed to score than before the snap). For dropbacks the top line gives the number of rushers and the charted coverage (2M = 2-Man, C6 = Cover 6, and so on; '–' where none was charted); for runs it says 'run'. The bottom line is the result: yards, a sack, an interception (INT), a lost fumble (FUM) or a touchdown (TD). The right-hand label is how the drive ended. What to notice: the Patriots' first nine drives, none longer than eight snaps, eight ending in punts and the ninth in the strip-sack, against a defense rushing four on almost every dropback and playing two-deep behind it; and Seattle's offense, steady rather than explosive, turning four of its first seven drives into field goals. Source: nflverse play-by-play, FTN charting and participation, game 2025_22_SEA_NE."
 RES_TXT = {"Punt": "punt", "Field goal": "FG", "Touchdown": "TD", "Turnover": "turnover", "Opp touchdown": "pick-six",
            "End of half": "end", "Missed field goal": "missed FG", "Turnover on downs": "downs"}
 
@@ -1166,13 +1290,13 @@ Now read the chart the way a coach reads a tendency report: count, then ask why.
 | New England dropbacks with four rushers | `{python} SBX["four"]` of `{python} SBX["ne_db"]` (`{python} pct(SBX["four"] / SBX["ne_db"])`) | `{python} pct(SEASON["sea_four"])` | `{python} pct(SEASON["lg_four"])` |
 | Two-high coverage after the snap (of labelled dropbacks) | `{python} pct(SBX["two"])` (`{python} SBX["n_lab"]` labelled) | `{python} pct(SEASON["sea_two"])` | `{python} pct(SEASON["lg_two"])` |
 | Man coverage (of dropbacks charted man or zone) | `{python} pct(SBX["man"])` | — | — |
-| Pressure on New England dropbacks | `{python} pct(SBX["press"])` | — | — |
+| Pressure on New England dropbacks | `{python} pct(SBX["press"])` | `{python} pct(SEASON["sea_press"])` | `{python} pct(SEASON["lg_press"])` |
 | Sacks; with four rushers | `{python} SBX["sacks"]`; `{python} SBX["sacks4"]` | — | — |
 | New England snaps that were dropbacks | `{python} pct(SBX["ne_pass"])` of `{python} SBX["ne_snaps"]` | New England: `{python} pct(SBX["ne_reg_pass"])` | — |
 | Seattle snaps that were runs | `{python} pct(SBX["sea_run"])` of `{python} SBX["sea_snaps"]` | Seattle: `{python} pct(SBX["sea_reg_run"])` | — |
 | Kenneth Walker III | `{python} SBX["walker_n"]` carries, `{python} SBX["walker_y"]` yards | — | — |
 
-: What the charted Super Bowl says, set against the teams' regular-season habits (Seattle's defense, unless the row says otherwise) and the league's. Two-high counts Cover 2, 2-Man, Cover 4 and Cover 6; the labelled dropbacks exclude the snaps FTN coded as COMBO. Source: nflverse play-by-play, FTN charting and participation; course calculation.
+: What the charted Super Bowl says, set against the teams' regular-season habits (Seattle's defense, unless the row says otherwise) and the league's. Two-high counts Cover 2, 2-Man, Cover 4 and Cover 6; the labelled dropbacks exclude the snaps FTN coded as COMBO. Pressure is the participation file's `was_pressure` flag on dropbacks, the same definition in every column. Source: nflverse play-by-play, FTN charting and participation; course calculation.
 
 Four things jump out of those rows.
 
@@ -1182,9 +1306,12 @@ and the Super Bowl chart is that identity turned up: four rushers on
 `{python} pct(SBX["four"] / SBX["ne_db"])` of dropbacks and two-high on `{python} pct(SBX["two"])` of the labelled
 ones. A tendency report told New England this was coming. Knowing it and beating it are different things.
 
-**The four-man rush still got home.** Pressure on `{python} pct(SBX["press"])` of dropbacks and
-`{python} SBX["sacks"]` sacks, `{python} SBX["sacks4"]` of them with four rushers, is the "coverage holds, rush wins
-late" bet from the strip-sack paying off across a whole game.
+**The four-man rush didn't pressure more often; it finished.** Seattle pressured Maye on
+`{python} pct(SBX["press"])` of dropbacks, no more than its regular-season rate (`{python} pct(SEASON["sea_press"])`)
+or the league's (`{python} pct(SEASON["lg_press"])`). What changed was what pressure turned into:
+`{python} SBX["sacks"]` sacks, `{python} SBX["sacks4"]` of them with four rushers. That's the "coverage holds, rush
+wins late" bet from the strip-sack paying off across a whole game: when the coverage leaves nowhere to throw, ordinary
+pressure becomes sacks. It's also the kind of claim only film can settle, snap by snap.
 
 **The scoreboard shaped the play-calling.** New England dropped back on `{python} pct(SBX["ne_pass"])` of its snaps,
 against `{python} pct(SBX["ne_reg_pass"])` in its regular season, because it trailed from the first quarter on and spent
@@ -1200,6 +1327,52 @@ were *shown* before the snap and which were *played* after it, which receivers S
 or who lost the block on each sack. Those are the cream-shaded columns of the sheet, and they're where the answers to
 "how did Seattle do it?" live. A full chart of this game, with the film columns filled, is a weekend's project and the
 best one this chapter can offer you.
+
+### From rows to tendencies
+
+Counting a chart is a few lines of pandas. Start from the skeleton, fill the film columns (here two of them, the
+coverage and the rush, are filled from the participation file so the example runs; on your own chart you'd have typed
+them), and ask the chart a question in the form *how often is it this, when it's that?*
+
+```{python}
+#| echo: true
+#| code-fold: false
+from gridiron.data import nfl
+
+# The skeleton from above, with two film columns filled from the public labels (stand-ins for your own film)
+part = nfl().load_participation([2025]).to_pandas()
+part = part[part.nflverse_game_id == "2025_22_SEA_NE"]
+part = pd.DataFrame({"play_id": part.play_id.astype(int), "cov": part.defense_coverage_type,
+                     "rush": part.number_of_pass_rushers.astype("Int64")})
+chart = sheet.drop(columns=["cov", "rush"]).merge(part, on="play_id", how="left")
+
+TWO_HIGH_CODES = {"COVER_2", "2_MAN", "COVER_4", "COVER_6"}
+ONE_HIGH_CODES = {"COVER_0", "COVER_1", "COVER_3", "COVER_9"}
+chart["shell_played"] = np.select([chart["cov"].isin(TWO_HIGH_CODES), chart["cov"].isin(ONE_HIGH_CODES)],
+                                  ["2-hi", "1-hi"], default="?")
+
+
+def tendency(chart, by, col):
+    """For each value of `by`, the share of snaps with each code in `col`, and how many snaps that is."""
+    t = pd.crosstab(chart[by], chart[col], normalize="index").round(2)
+    t["snaps"] = chart[by].value_counts()
+    return t
+
+
+drops = chart[chart.play == "P"]
+print("Seattle's coverage shell against New England's dropbacks, by down:")
+print(tendency(drops, "down", "shell_played").to_string())
+print("\nSeattle's rushers, by down:")
+print(tendency(drops[drops.rush.fillna(0) > 0], "down", "rush").to_string())
+```
+
+Two lines of output and you have the start of a tendency report: what Seattle played, and how many it sent, on each
+down. With your own film columns filled, the same function asks the questions no public file can.
+`tendency(drops, "shell", "shell_played")` is shown against played: how often a two-high shell at the snap stayed
+two-high. `tendency(chart[chart.play == "R"], "str", "dir")` is how often the runs went to the strength.
+`tendency(chart, "pers", "form")` is what each personnel group lines up in. Keep the `snaps` column in view: a share
+from five snaps is a hint, not a tendency, which is the same small-sample warning
+[Tendencies](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd) gave about the public data.
 
 ::: {.callout-caution title="Common misconception"}
 "The chart is the truth about the game." A chart is a record of *one charter's judgements*, coded consistently. It's far
@@ -1221,7 +1394,12 @@ To make that concrete, the rest of the chapter uses an example log: **every Pant
 season**, `{python} ME["n"]` calls across `{python} N_GAMES` games (17 regular-season games and the wild-card loss to
 the Rams). The situations and the results are real. The *calls* are simulated: a reader who sees roughly what a model
 using the situation and the formation sees, through some noise, and who starts the season overconfident and settles down
-as it goes on.[^sim] It's a stand-in for your log, built so that its mistakes are the common ones.
+as it goes on.[^sim] It's a stand-in for your log, built so that its mistakes are the common ones. Its `clue` column
+uses just two codes, so it can be counted: `align` on snaps where the formation moved the call away from what the
+situation alone said (where the situation-and-formation model and xpass differ by more than ten points), and `sit`
+where the situation alone decided it. (In [Watching Live](15-01-watching-live.qmd) the clue column was free text;
+settling on a few codes is what lets you score it.) On the website, the folded code at the top of the chapter builds
+this log; `LOGDF.to_csv("prediction_log_2025.csv", index=False)` writes it out if you want to run what follows.
 
 ### Why hit rate isn't enough
 
@@ -1264,7 +1442,7 @@ misses costs a moderate amount (0.36). A confident call that misses costs a lot 
 every snap, never committing to anything, scores exactly 0.25, whatever happens, because every gap is one half. So
 **0.25 is the "I have nothing" line**: a log that scores worse than 0.25 has done harm by stating its confidences.
 
-Glenn Brier, a meteorologist at the U.S. Weather Bureau, proposed the score in 1950<!-- VERIFY: Brier's affiliation in 1950 (U.S. Weather Bureau) --> to grade forecasts like "70% chance
+Glenn Brier, a statistician and meteorologist at the U.S. Weather Bureau, proposed the score in 1950 to grade forecasts like "70% chance
 of rain", and it's still the standard way to grade probability forecasts in weather, in medicine, and in the forecasting
 tournaments that taught [Watching Live](15-01-watching-live.qmd) its habit of stating numbers.[^brier] It doesn't matter
 which way round you write your calls: scoring "pass, 0.70" against whether it was a pass gives the same number as
@@ -1302,10 +1480,12 @@ fig.tight_layout(w_pad=2.0, rect=(0, 0.08, 1, 1))
 plt.show()
 ```
 
-That property has a name: the Brier score is a **proper** scoring rule. Its expected value is lowest when you state
-exactly the probability you believe, so there's no way to game it by shading your numbers up or down. It also explains
-the advice in [Watching Live](15-01-watching-live.qmd) to rarely go above 90%: near the bottom of each curve the score
-is flat, so stating 90% when the truth is 95% costs very little, while stating 99% when the truth is 85% costs a lot.
+That property has a name: the Brier score is a
+[proper scoring rule](../../appendices/glossary.qmd#gl-proper-scoring-rule). Its expected value is lowest when you
+state exactly the probability you believe, so there's no way to game it by shading your numbers up or down. The
+curves also explain the advice in [Watching Live](15-01-watching-live.qmd) to rarely go above 90%: near the bottom
+each curve is flat, and away from it it climbs fast. On the 75% curve, saying 80% instead of 75% costs 0.0025 a call;
+saying 100% costs 0.0625, twenty-five times as much.
 
 ### Skill: compared with what?
 
@@ -1316,19 +1496,25 @@ with forecasters who know less than you, on the same snaps. On the Panthers' 202
 |:------------|:--------------------|:----:|
 | Always 50% | Nothing | `{python} f"{REF['half']:.3f}"` |
 | The base rate | The Panthers threw on `{python} pct(BASE_P)` of snaps; says that every time | `{python} f"{REF['base']:.3f}"` |
-| xpass | The situation: down, distance, field position, score, clock | `{python} f"{REF['xpass']:.3f}"` |
+| xpass | The situation on the scorebug: down, distance, field position, score, clock | `{python} f"{REF['xpass']:.3f}"` |
 | **The example reader** | What the reader saw, as logged | **`{python} f"{REF['me']:.3f}"`** |
 | Situation + formation model | The situation, plus the quarterback's alignment and the number of backs | `{python} f"{REF['info']:.3f}"` |
 
-: The example log against honest baselines, on the same Panthers snaps. xpass is nflverse's model (fitted on seasons that include 2025, so it has a small home advantage here); the last row is the situation-and-formation model from Watching Live's steps 1 to 3, learned on 2024. Course calculation from nflverse play-by-play and FTN charting.
+: The example log against honest baselines, on the same Panthers snaps. xpass is nflverse's model (trained on the 2006–2019 seasons, so it has never seen these snaps either); the last row is the situation-and-formation model from Watching Live's steps 1 to 3, learned on 2024. Course calculation from nflverse play-by-play and FTN charting.
 
-The **Brier skill score** turns a comparison into one number: one minus the ratio of your score to the reference's. Against
+The [**Brier skill score**](../../appendices/glossary.qmd#gl-brier-skill-score) turns a comparison into one number: one minus the ratio of your score to the reference's. Against
 the base rate, the example reader's skill is `{python} f"{1 - REF['me'] / REF['base']:.2f}"`, meaning the log removed
 about `{python} pct(1 - REF['me'] / REF['base'])` of the error of a forecaster who only knew the team's pass rate. Against
-xpass it's `{python} f"{1 - REF['me'] / REF['xpass']:.2f}"`: the reader beat the scorebug, because the formation was
-working for him. And the last row is the honest ceiling for a reader who only uses those two things. The gap between the
-reader and that row is the room left: some of it is calibration (stating the right number), some of it is the noise of
-reading a broadcast in twenty seconds.
+xpass it's `{python} f"{1 - REF['me'] / REF['xpass']:.2f}"`: the reader beat "the scorebug" (xpass knows only what the
+scorebug shows: down, distance, field position, score and clock), because the formation was working for him. And the
+last row is the bar for a reader who uses only those two clues, the situation and the formation; the box, the shell
+and the tells of [Watching Live](15-01-watching-live.qmd) can take a reader past it. The gap between the reader and
+that row is the room left with those two clues: some of it is calibration (stating the right number), some of it is the
+noise of reading a broadcast in twenty seconds.
+
+There's no published table of what a "good fan" scores, and it would mean little if there were, because the number
+depends on the snaps: a team that runs on every short-yardage down is easier to read than one that doesn't. Your bars
+are the baselines on your own snaps.
 
 That's the comparison to make with your own log. **Beat 0.25** and your confidences are doing more good than harm. **Beat
 the base rate** and you know more than the team's tendency. **Beat xpass** and you're reading something the scorebug
@@ -1344,7 +1530,7 @@ that actually came true. Perfect calibration is the diagonal.
 
 ```{python}
 #| label: fig-calibration
-#| fig-cap: "The calibration plot of the example log: every Panthers snap of 2025, called by a simulated reader (real snaps and results, simulated calls). Calls are grouped by the confidence stated (50–55%, 60–65%, and so on); each dot is a group's actual hit rate, plotted at its average stated confidence, with a 95% interval (the vertical bar) for how much a group of that size could wobble by chance. The diagonal is perfect calibration; below it means overconfident. Orange, games 1 to 8: from 60% up, every group comes true less often than stated, by about ten points in the 70s and 80s. Blue, games 9 to 18: closer to the diagonal through the middle, though still low at the top. The bars at the bottom count the calls in each group: the early reader put about half his calls at 90% or above, the later one spread them out."
+#| fig-cap: "The calibration plot of the example log: every Panthers snap of 2025, called by a simulated reader (real snaps and results, simulated calls). Calls are grouped by the confidence stated (50–55%, 60–65%, and so on); each dot is a group's actual hit rate, plotted at its average stated confidence, with a 95% interval (the vertical bar) for how much a group of that size could wobble by chance. The diagonal is perfect calibration; below it means overconfident. Orange, games 1 to 8: from 60% up, every group comes true less often than stated, by about fifteen points in the 70s and 80s. Blue, games 9 to 18: closer to the diagonal through the middle, though still low at the top. The bars at the bottom count the calls in each group: the early reader put about half his calls at 90% or above, the later one spread them out."
 def bins(conf):
     return pd.cut(conf, [0.49, 0.575, 0.675, 0.775, 0.875, 1.0], labels=False)
 
@@ -1403,7 +1589,7 @@ Three things to read off a calibration plot, in this order.
 
 **Where are the dots relative to the diagonal?** In the first half of the season the example reader's dots sit well below
 it: his 70–75% calls came true `{python} pct(ME["mid1"])` of the time, and his 90%-plus calls
-`{python} pct(ME["top1"])`. That's **overconfidence**, the commonest pattern there is: in study after study, people's
+`{python} pct(ME["top1"])`. That's overconfidence, the commonest pattern there is: in study after study, people's
 "90% sure" comes true well short of 90% of the time ([Watching Live](15-01-watching-live.qmd) cited the classic
 review). The fix is mechanical. Pull the confidences in: when you feel 90%, write 80% for a few weeks, and watch whether
 the dots climb toward the line.
@@ -1411,14 +1597,28 @@ the dots climb toward the line.
 **How wide are the bars?** A dot from 30 calls can sit ten points off the diagonal by chance alone; a dot from 300 can't.
 The vertical bars are 95% intervals for that wobble.[^wilson] Where a bar crosses the diagonal, the gap may be noise. This
 is why one game can't tell you whether you're calibrated: sixty calls spread over five groups is about a dozen per group,
-and every bar would span thirty points. A season can.
+and every bar would span more than thirty points. A season can. As a rule of thumb, wait for about 50 calls in a group
+before you trust its dot: at 50 calls, a group that comes true 75% of the time has a bar about 12 points either side.
+With five groups that's roughly 300 calls, five or six games of every snap.
 
 **How spread out are the dots?** This is the one people forget. A reader who says 60% on every snap of a team that throws
 60% of the time is *perfectly* calibrated: his single dot sits right on the diagonal. He's also useless; he never tells you
-anything the team's pass rate didn't. What makes a reader good is **resolution**: stating different confidences on
+anything the team's pass rate didn't. What makes a reader good is
+[**resolution**](../../appendices/glossary.qmd#gl-resolution): stating different confidences on
 different snaps, and having those differences come true. On a calibration plot, resolution is the dots being spread from
 the bottom-left to the top-right, with the 90% calls really coming true more often than the 60% calls. The Brier score
 rewards both. Calibration is knowing how sure to be; resolution is knowing more.
+
+**A Brier score you can read off the plot.** Each dot is enough to estimate what its group costs. If a group was stated
+at $c$ and came true a share $h$ of the time, each call in it costs, on average,
+
+$$
+h\,(1-c)^2 + (1-h)\,c^2 .
+$$
+
+A group stated at 90% that came true 80% of the time costs 0.8 × 0.01 + 0.2 × 0.81 = 0.17 a call; the same calls stated
+at 80% would have cost 0.8 × 0.04 + 0.2 × 0.64 = 0.16. Weight each group by its number of calls (the bars under the
+plot) and you have the whole log's score, near enough.
 
 ::: {.callout-note title="Go deeper: the Brier score in three pieces"}
 Allan Murphy showed in 1973 that the Brier score splits exactly into three parts:[^murphy]
@@ -1492,10 +1692,49 @@ log["sq_gap"] = (log.conf - log.right) ** 2
 print(log.groupby("part", observed=True).sq_gap.mean().round(3).to_string())
 ```
 
+And the calibration plot itself, for the whole season, in a few more lines:
+
+```{python}
+#| echo: true
+#| code-fold: false
+#| label: fig-calibration-code
+#| fig-cap: "The output of calibration_plot() on the example log: the whole 2025 season in one series (the calibration plot earlier in the section splits it into two halves). Dot size is the number of calls in the group."
+import matplotlib.pyplot as plt
+
+
+def calibration_plot(log, ax=None):
+    """Stated confidence against the share that came true, one dot per confidence group."""
+    hit = (log["call"] == log["result"]).astype(float)
+    groups = pd.cut(log["conf"], [0.49, 0.575, 0.675, 0.775, 0.875, 1.0])
+    t = (pd.DataFrame({"stated": log["conf"], "right": hit})
+         .groupby(groups, observed=True).agg(stated=("stated", "mean"), right=("right", "mean"),
+                                              calls=("right", "size")))
+    ax = ax or plt.gca()
+    ax.plot([0.5, 1.0], [0.5, 1.0], ls="--", color="grey", lw=1)          # perfect calibration
+    ax.scatter(t.stated, t.right, s=t.calls / 3, zorder=3)                 # bigger dot = more calls
+    ax.set_xlabel("stated confidence")
+    ax.set_ylabel("share that came true")
+    return t
+
+
+fig, ax = plt.subplots(figsize=(4.2, 3.0))
+calibration_plot(log, ax)
+plt.show()
+```
+
 ```{python}
 #| echo: false
 os.chdir(_cwd)
 ```
+
+Read the last block of the printout first. The score barely moved across the season
+(`{python} f"{QTR[0]:.3f}"`, `{python} f"{QTR[1]:.3f}"`, `{python} f"{QTR[2]:.3f}"`, `{python} f"{QTR[3]:.3f}"`), and
+the first four games scored as well as any stretch, though that was when the reader was at his most overconfident (he stated
+`{python} pct(QTR_CONF[0])` on average and was right `{python} pct(QTR_ACC[0])` of the time). That isn't a
+contradiction. A Brier score mixes how sure you were with how readable the snaps were, and the first two games were
+unusually readable (they stand out in the game-by-game figure below): on snaps like those, even an overconfident
+reader's 90% calls mostly come true. Week to week a Brier score measures the snaps as much as the reader; the
+calibration plot, not the raw score, is what shows him improving.
 
 The `gap` column is the calibration plot in numbers, and the clue table is the one
 [How to Watch a Broadcast](../01-foundations/01-06-how-to-watch-a-broadcast.qmd) told you to watch: a clue you lean on
@@ -1513,8 +1752,9 @@ Once a month, or at the end of the season, run the score and match what you see 
 |:-----------------------|:--------------|:-------------------------|
 | Dots below the diagonal, worst at the top | Overconfident | Pull every confidence in by about ten points for a month; cap yourself at 85% |
 | Dots above the diagonal | Underconfident: you know more than you admit | Push the confidences out where the formation agrees with the situation |
-| All calls between 50% and 65% | Hedging; low resolution | Use the formation step: [Watching Live](15-01-watching-live.qmd) showed it's the one big move after the situation |
-| Brier worse than the base rate | Your clues are pointing the wrong way | Score by clue; drop or reverse the one that's below 50% |
+| Most calls between 50% and 65%, and the dots flat (each group comes true about as often as the next) | Hedging; low resolution | Use the formation step: [Watching Live](15-01-watching-live.qmd) showed it's the one big move after the situation |
+| Most calls between 50% and 65%, but the dots climb steeply and sit above the line | Underconfident, with good resolution | You're reading well; say so. Push the confidences out where the dots sit highest |
+| Brier worse than the base rate | Badly overconfident, or your clues are pointing the wrong way | Check the calibration plot first; if the dots are near the line, score by clue and drop or reverse the one that's below 50% |
 | Good on run/pass, poor on the second layer | Normal: coverage is hard | Keep second-layer confidences at 55–70%; check them against your chart |
 | One bad game | Probably nothing | Look at the whole season; a game is too few calls to judge |
 
@@ -1527,7 +1767,7 @@ score too. Then put every game since on the same chart:
 
 ```{python}
 #| label: fig-progress
-#| fig-cap: "The example reader's season, game by game (every 2025 Panthers snap; real results, simulated calls). Top: the share of calls that came true, with the bars to beat from How to Watch a Broadcast drawn across: 'always pass' and the down-and-distance rule of your first tally, on these same snaps. Bottom: the Brier score per game (lower is better), with the line for saying 50% every time, the base rate, and xpass. The line is a four-game rolling average. The reader beats the scorebug (xpass) in most games, but look how far the dots jump: a game is only 43 to 76 calls, and some games are simply easier to read than others (the first two were). Week to week, the score mostly measures the games; only across a season does it measure the reader."
+#| fig-cap: "The example reader's season, game by game (every 2025 Panthers snap; real results, simulated calls). Top: the share of calls that came true, with the bars to beat from How to Watch a Broadcast drawn across: 'always pass' and the down-and-distance rule of your first tally, on these same snaps (the two bars nearly coincide, so they read as one line with two labels). Bottom: the Brier score per game (lower is better), with the line for saying 50% every time, the base rate, and xpass. The line is a four-game rolling average. The reader beats the scorebug (xpass) in most games, but look how far the dots jump: a game is only 43 to 76 calls, and some games are simply easier to read than others (the first two were). Week to week, the score mostly measures the games; only across a season does it measure the reader."
 G = LOGDF.assign(hit=HIT, b=(ME_CONF - HIT) ** 2, xb=(CAR.xpass.values - Y) ** 2).groupby("game").agg(
     acc=("hit", "mean"), brier=("b", "mean"), xb=("xb", "mean"), n=("hit", "size"), opp=("opp", "first"),
     week=("week", "first"))
@@ -1563,27 +1803,51 @@ plt.show()
 
 Your run-or-pass calls can be scored from the play-by-play alone. The second layer can't: "zone, 65%" needs to know what
 coverage was played, "five or more rushers, 60%" needs the rush count, "the run goes left" needs the direction. That's
-what the chart is for. Join the log to the chart on the snap, and score each second-layer call the same way:
+what the chart is for. Join the log to the chart on the snap (your log has the quarter and the clock from Sunday, and
+so does the chart), and score each second-layer call exactly as you scored the first: its confidence against whether it
+came true.
+
+Here it is on Super Bowl LX, with a second-layer call on every New England dropback: will Seattle play two-high or
+one-high after the snap? The calls come from a scouting card, Seattle's 2025 regular-season two-high rate on dropbacks
+by down, which is the kind of call a fan could make from [Tendencies](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd)
+before the game. The chart is the one from the tendencies section above.
+
+```{python}
+#| echo: false
+_card_lit = {1: 0.63, 2: 0.48, 3: 0.44}
+assert CARD == _card_lit, f"scouting-card literals out of date: {CARD}"
+```
 
 ```{python}
 #| echo: true
 #| code-fold: false
-# A second-layer call on every New England dropback of Super Bowl LX: "two-high after the snap",
-# stated at Seattle's 2025 regular-season rate for the down (the kind of call a scouting card supports)
-l2 = SB[(SB.posteam == "NE") & (SB.qb_dropback == 1) & SB.cv.isin(TWO_HIGH | ONE_HIGH)].copy()
-l2["l2conf"] = l2.down.map(lambda d_: sea_two_rate(int(d_)))           # the stated chance of two-high
-l2["came_true"] = l2.cv.isin(TWO_HIGH).astype(float)                    # the chart's answer
-brier_l2 = ((l2.l2conf - l2.came_true) ** 2).mean()
-print(f"{len(l2)} coverage calls; two-high came true on {l2.came_true.mean():.0%}; "
-      f"average stated {l2.l2conf.mean():.0%}; Brier {brier_l2:.3f}")
+# Your live log's second layer for the game: one call per dropback, from the scouting card
+# Seattle's 2025 two-high rate on dropbacks, by down (3 = third or fourth)
+card = {1: 0.63, 2: 0.48, 3: 0.44}
+log2 = chart.loc[chart.play == "P", ["qtr", "clock", "down"]].copy()
+p_two = log2.down.clip(upper=3).map(card)
+log2["l2"] = np.where(p_two >= 0.5, "2-hi", "1-hi")
+log2["l2conf"] = np.maximum(p_two, 1 - p_two)                 # confidence in the call, as for the first layer
+
+# Join on the snap, keep the snaps the chart could label, and score
+scored = log2.merge(chart[["qtr", "clock", "shell_played"]], on=["qtr", "clock"])
+scored = scored[scored.shell_played != "?"]                    # a "?" in the chart can't be scored
+hit2 = (scored.l2 == scored.shell_played).astype(float)
+brier2 = ((scored.l2conf - hit2) ** 2).mean()
+two = (scored.shell_played == "2-hi").mean()
+print(f"{len(scored)} coverage calls: right {hit2.mean():.0%}, average stated {scored.l2conf.mean():.0%}")
+print(f"Brier {brier2:.3f}; always 50%: 0.250; "
+      f"knowing in advance that two-high would come {two:.0%} of the time: {two * (1 - two):.3f}")
 ```
 
-Calls made from Seattle's season-long habit were far too timid for this game: Seattle played two-high on
-`{python} pct(SBX["two"])` of these dropbacks, against the `{python} pct(SEASON["sea_two"])` its regular season suggested.
-One game can't tell you whether that's a flaw in the calls or a game plan built for one opponent (here, almost certainly
-the game plan). Over a season you'd score second-layer calls exactly as you score the first layer, with their own
-calibration plot. Expect it to be flatter: the second layer is harder, and a reader whose coverage calls are calibrated at
-60% is doing well.
+That's better than saying 50% every time, but not by much, and the reason is in the baselines. Seattle played two-high on `{python} pct(two)` of these
+dropbacks, against the `{python} pct(SEASON["sea_two"])` its regular season suggested, so calls aimed at the season's
+habit were aimed at the wrong number for this game: most of them said one-high on second and third down, and most of
+those were wrong. One game can't tell you whether that's a flaw in the calls or a game plan built for one opponent (here,
+almost certainly the game plan; the last number in the printout is a hindsight bar no one could have reached before
+kickoff). Over a season you'd score second-layer calls exactly as you score the first layer, with their own calibration
+plot. Expect it to be flatter, with the dots bunched between 50% and 70%: the second layer is harder, and a reader whose
+coverage calls are calibrated at 60% is doing well.
 
 ::: {.callout-note title="Go deeper: Brier score or log loss?"}
 [Tendencies](../13-analytics-and-data/13-04-tendencies-proe-and-charting.qmd) scored xpass with *log loss*, the average of
@@ -1591,7 +1855,8 @@ $-\ln(\text{probability you gave to what happened})$. It's also proper, and it's
 trained on. The difference is in how it treats confident misses. A 95% call that misses costs 0.90 in Brier and 3.0 in
 log loss; a 99% call that misses costs 0.98 in Brier and 4.6 in log loss; a 100% call that misses costs 1 in Brier and
 infinity in log loss. For a model, that's a useful alarm. For a human log, where one careless 99% would swamp a season, the
-Brier score's cap is kinder and easier to read, and it's what forecasting tournaments use for people.
+Brier score's cap is kinder and easier to read, and it's what the best-known forecasting tournament for people, the one
+behind *Superforecasting*, used.
 :::
 
 ## Where to keep learning
@@ -1599,8 +1864,9 @@ Brier score's cap is kinder and easier to read, and it's what forecasting tourna
 This is the end of the course, not of the subject. Four directions are worth your time.
 
 **The coaches themselves.** Coaches teach each other in clinics: talks at the American Football Coaches Association's
-annual convention, regional clinic tours such as the Nike Coach of the Year and Glazier clinics, and the notes and videos
-that circulate from them.<!-- VERIFY: clinic names and that they still run in 2026 --> A clinic talk is a coach explaining
+annual convention, regional clinic tours such as Glazier Clinics and the Coach of the Year Clinics (for years sponsored by Nike, so older
+notes call them the Nike Coach of the Year Clinics),
+and the notes and videos that circulate from them.[^clinics] A clinic talk is a coach explaining
 one scheme to other coaches, with the drawings, the rules, and the problems it solves; it's the closest thing to the inside
 of a meeting room a fan can get, and it's where the "why" behind most of this course came from. Read them with the
 vocabulary you now have, and with the habit from [Constraint Theory and Sequencing](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd):
@@ -1609,7 +1875,7 @@ every scheme has a weakness the coach giving the talk is managing. Coaches have 
 Chris B. Brown's *The Art of Smart Football* and Tim Layden's *Blood, Sweat and Chalk*.
 
 **The film-breakdown community.** A generation of writers and video makers now does on the internet what this chapter
-asks you to do: All-22 clips, frozen frames, arrows. Ted Nguyen at *The Athletic*,<!-- VERIFY: Nguyen's outlet in 2026 --> Cody Alexander's MatchQuarters on
+asks you to do: All-22 clips, frozen frames, arrows. Ted Nguyen's All-22 breakdowns, Cody Alexander's MatchQuarters on
 defense, Brett Kollmann's film-room videos, and the quarterback-focused breakdowns of JT O'Sullivan's QB School are good
 places to start, and Greg Cosell's decades of All-22 study at NFL Films are behind much of the public vocabulary. Watch
 how they work: freeze, rewind, one group at a time. Disagree with them when your own film says otherwise.
@@ -1645,7 +1911,9 @@ One game, one team's offense against the other's defense, end to end:
 - **Before kickoff**, build the skeleton with `chart_skeleton()` from last week's game to test your setup, and write your
   codebook rules (the strength rule, where the box ends) at the top of a blank sheet.
 - **During the game**, keep the live log exactly as in [Watching Live](15-01-watching-live.qmd): every snap, the checklist,
-  a call and a confidence before the snap, and a second-layer call when there's time.
+  a call and a confidence before the snap, and a second-layer call when there's time. When the offense goes no-huddle
+  and you can't get a call down before the snap, leave that row's call blank rather than fill it in afterwards: a call
+  written after the snap isn't a prediction.
 - **The day after**, build the real skeleton for this game, and with the coaches film run step 0 and pass 3 on every snap
   and the full four-pass protocol on third downs, red-zone snaps, sacks, turnovers and explosives. Fill every film column;
   use `?` without shame.
@@ -1663,20 +1931,21 @@ frames from the film, and the question is what the next pass of the protocol wil
 ::: {.callout-tip title="Predict the play 1: pass 3, before you press play"}
 ```{python}
 #| label: fig-predict-rotation
-#| fig-cap: "Frozen at the snap. Second-and-8 at midfield, ball on the offense's left hash, so the wide side of the field is to the right. Shotgun, 11 personnel, two receivers each side. The defense is in nickel with two safeties deep, but not evenly: the safety on the short side (left, ringed) is at about 9 yards and pinched toward the ball, while the field safety (right) is at 13 yards and wide. Both corners are about seven yards off with outside leverage, and the nickel ($) is splitting the difference between the slot and the tackle."
+#| fig-cap: "Frozen at the snap. Second-and-8 at midfield, ball on the offense's left hash, so the wide side of the field is to the right. Shotgun, 11 personnel, two receivers each side. The defense is in nickel with two safeties deep (both lettered S here, since which one is 'free' or 'strong' is what the drill asks), but not evenly: the safety on the short side (left, ringed) is at about 9 yards and pinched toward the ball, while the field safety (right) is at 14 yards, just outside the far hash. Both corners are about seven yards off with outside leverage, and the nickel ($) is splitting the difference between the slot and the tackle on the field side."
 off = offense("gun_2x2")
 dfn = defense("nickel", "two_high", off)
-DMV = {"FS": (9.0, -3.2), "SS": (13.0, 12.5), "LCB": (7.0, -15.6), "RCB": (7.0, 15.6), "NB": (5.0, 6.2),
+DMV = {"FS": (9.0, -3.2), "SS": (14.0, 8.0), "LCB": (7.0, -15.6), "RCB": (7.0, 15.6), "NB": (5.0, 6.2),
        "MIKE": (4.5, 1.6), "WILL": (4.5, -2.4)}
 dfn = [p_.moved(d=DMV[p_.key][0], w=DMV[p_.key][1]) if p_.key in DMV else p_ for p_ in dfn]
-dfn = [p_.moved(label="CB") if p_.pos == "CB" else p_ for p_ in dfn]
+dfn = [p_.moved(label="CB") if p_.pos == "CB" else p_.moved(label="S") if p_.pos in ("FS", "SS") else p_
+       for p_ in dfn]
 pr1 = Play(off, dfn, los=60, to_go=8, ball_y="left")
 pr1.highlight("FS")
-fld = pr1.draw(lateral=(-20, 23), window=(-8.5, 17.5), title=False)
+fld = pr1.draw(lateral=(-20, 23), window=(-8.5, 19.0), title=False)
 no_numbers(fld.ax)
 scorebug(fld, pr1, ["Q2  7:40", "2nd & 8, 50"], at=(-6.6, -18.3))
 tag(fld, pr1, "boundary safety: 9 yd, pinched", (11.4, -10.4), fs=6.4)
-tag(fld, pr1, "field safety: 13 yd, wide", (15.6, 13.0), fs=6.4)
+tag(fld, pr1, "field safety: 14 yd, wider", (16.6, 11.5), fs=6.4)
 tag(fld, pr1, "field →", (-6.8, 19.6), fs=6.4, color=style.INK_2)
 plt.show()
 ```
@@ -1691,28 +1960,35 @@ than the other and pinched toward the ball. That's the tell from the tells catal
 He's already close enough to drop into a short zone on the boundary side at the snap (a
 [buzz rotation](../../appendices/glossary.qmd#gl-buzz-rotation) if he goes to the hook area, a
 [sky rotation](../../appendices/glossary.qmd#gl-sky-rotation) if he goes to the flat), and the field safety, already wide,
-would then run to the deep middle. The corners agree: off and outside leverage is how corners line up to bail into deep
-thirds with help inside ([The Cover 3 Family](../06-pass-coverage/06-03-cover-3-family.qmd)).
+would then run to the deep middle. Look at the slot on the short side, too: nobody is aligned over H. The pinched
+safety is the only defender who can get to that area quickly, another sign that he's the one coming down. The corners
+fit: off, outside leverage, eyes inside is the alignment of a corner who will bail to a deep third and keep everything in
+front of him and outside him ([The Cover 3 Family](../06-pass-coverage/06-03-cover-3-family.qmd)), and the seven-yard
+cushion is the zone-ish part of that clue.
 
 Why not 90%? Because disguise is the norm ([Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)):
 the pinched safety could be a quarters safety cheating to take away a slot route, or bait for a quarterback who reads
-exactly this tell. And Cover 1 is possible too, if the corners turn and run with their receivers instead of bailing.
+exactly this tell. The field safety's width argues the other way: he's well outside the middle of the field, and to
+become the single-high safety he has to cover a lot of ground at the snap. And Cover 1 is possible too, with the same
+rotation: the pinched safety comes down as the [robber](../../appendices/glossary.qmd#gl-robber) in the short middle
+and the corners turn and run with their receivers instead of bailing.
 
 What to watch: the **field safety's first step**. If he drives toward the middle of the field, the middle is closing and
 it's single-high. If he backpedals straight, it's still two-high, and the pinched safety was playing a quarter or a half
 from a cheated spot. Then the corners: bail (Cover 3) or turn and trail (Cover 1). On the chart: `shell 2`, then `cov C3`,
-`rot B` if you were right.
+`rot B` if you were right (`B*` if the safety held his spot until the snap and only then came down).
 :::
 :::
 
 ::: {.callout-tip title="Predict the play 2: pass 1, a guard on his heels"}
 ```{python}
 #| label: fig-predict-power
-#| fig-cap: "Frozen at the snap. Second-and-4 at the opponent's 45, first quarter. 21 personnel in an I-formation: the quarterback under center, the fullback (F) and tailback (T) behind him, the tight end (Y) on the right. The defense is in base with one safety deep and the strong safety walked down: eight in the box. On the end-zone angle, the left guard (arrow) is set a little deeper than the center and the right guard, with less weight on his hand (exaggerated here so it shows)."
+#| fig-cap: "Frozen at the snap. Second-and-4 at the opponent's 45, first quarter. 21 personnel in an I-formation: the quarterback under center, the fullback (F) and tailback (T) behind him, the tight end (Y) on the right. The defense is in base, a 4-3 with the Sam linebacker (S) walked up onto the line outside the tight end, one safety deep (FS) and the strong safety (SS) walked down outside the Sam: eight in the box. Defensive tackles are lettered T too; the tailback is the T in the offense's backfield. On the end-zone angle, the left guard (arrow) is set a little deeper than the center and the right guard, with less weight on his hand. The drawing exaggerates his depth so it shows: in reality it's a matter of inches, and he must still be on the line of scrimmage."
 off = offense("i_form")
 off = [p_.moved(d=-1.45) if p_.key == "LG" else p_ for p_ in off]
 dfn = defense("4-3_over", "single_high", off)
-dfn = [p_.moved(d=6.0, w=7.6) if p_.key == "SS" else p_ for p_ in dfn]
+dfn = [p_.moved(d=5.5, w=8.6) if p_.key == "SS" else p_.moved(d=1.0, w=6.0) if p_.key == "SAM" else p_
+       for p_ in dfn]
 dfn = [p_.moved(label="CB") if p_.pos == "CB" else p_ for p_ in dfn]
 pr2 = Play(off, dfn, los=75, to_go=4)
 fld = pr2.draw(lateral=(-20, 20), window=(-9.5, 16.0), title=False)
@@ -1730,23 +2006,29 @@ plt.show()
 **What will pass 1 show at the snap, which way will the run go, and which defender will nobody block?**
 
 ::: {.callout-tip title="Answer" collapse="true"}
-**A gap run to the right, most likely power: the left guard pulls, the line blocks down, and the backside end is left
-alone. Run about 75%; right, about 65%.** Start with run or pass: second-and-4 from 21 personnel under center is a run look,
+**A gap run to the right, most likely power: the left guard pulls, the line blocks down, and two defenders go
+unblocked: the backside end by design and the walked-down safety by arithmetic. Run about 75%; right, about 65%.** Start with run or pass: second-and-4 from 21 personnel under center is a run look,
 though eight in the box is the defense inviting play-action, so not 90%.
 
 The guard is the scheme tell from [Watching Live](15-01-watching-live.qmd)'s catalogue: a lineman about to pull sideways
 sets up for it, with less weight forward and a little depth. A pulling left guard runs to the right, toward the tight end,
 so this looks like **power** ([Gap and Power Runs](../03-the-run-game/03-03-gap-and-power-runs.qmd)). What pass 1 should
-show, if that's right: at the snap the center, right guard, right tackle and tight end all block *down*, toward the left;
-the fullback runs at the defender on the end of the line on the right and
+show, if that's right, against this front: the center blocks *back* on the tackle shaded toward the pulling guard's
+side; the right guard and right tackle double-team the tackle outside the guard and one of them climbs to the backside
+linebacker; the tight end blocks down on the end over him; the fullback runs at the Sam, the last man on the line, and
 [kicks him out](../../appendices/glossary.qmd#gl-kick-out); and the left guard pulls behind the line and turns up through
-the hole the kick-out and the down blocks create, looking for a linebacker.
+the hole the kick-out and the down blocks create, looking for the middle linebacker.
 
-**Who's unblocked?** The defensive end on the *left*, the backside. The left tackle steps inside to fill the gap the guard
-left, and the end outside him is too far from the play to matter, if the play is fast enough. That's the trade power makes:
-it spends the backside guard to get an extra blocker at the point of attack, and it accepts one free defender chasing from
-behind. If the film shows that end making the tackle, the "because" line is about speed: the play was too slow, or the back
-hesitated.
+**Who's unblocked?** Count it. Power brings seven blockers to this front (the five linemen, the tight end and the
+fullback). The left tackle spends his on the gap the guard left, so six of them block a defender, and eight
+defenders are in the box: two are free.
+One is the defensive end on the *left*, the backside, left alone on purpose: he's too far from the play to matter if
+it's fast enough. That's the trade power makes: it spends the backside guard to get an extra blocker at the point of
+attack, and it accepts one free defender chasing from behind. The other is the strong safety, walked down outside the
+Sam. Nobody has him; he's the defense's extra man, and the back has to make him miss. That's why runs into eight-man
+boxes are so often checked to play-action, or sent with a receiver cracking down on the safety. If the film shows the
+backside end making the tackle, the "because" line is about speed (the play was too slow, or the back hesitated); if
+the safety makes it two yards downfield, the call lost to the eight-man box.
 
 And if the line instead steps *together*, all to one side, with no puller, the guard's stance was a false tell: it's zone,
 and you note it in your clue column.
@@ -1790,12 +2072,18 @@ plt.show()
 
 ::: {.callout-tip title="Answer" collapse="true"}
 **Reader B scores better (`{python} f"{AB['b_b']:.3f}"` against `{python} f"{AB['a_b']:.3f}"`), though both are making
-a fixable mistake in opposite directions.** Their hit rates are almost identical (`{python} pct(AB['a_acc'])` and
-`{python} pct(AB['b_acc'])`), so the whole difference is in the confidence column.
+a fixable mistake in opposite directions.** Both were right on about `{python} pct((AB['a_acc'] + AB['b_acc']) / 2)` of
+calls, so the whole difference is in the confidence column.
 
 **Reader A is overconfident.** His dots sit below the diagonal all the way up, and his 90%-plus calls, the bulk of his
-log, came true only `{python} pct(AB['a_90'][0])` of the time. Each of those misses costs between 0.8 and 1 in Brier score. The
-fix: pull everything in. His calls already sort snaps well (his dots climb from left to right, which is resolution);
+log, came true only `{python} pct(AB['a_90'][0])` of the time. Each of those misses costs between 0.8 and 1 in Brier score.
+With the back-of-envelope rule from the calibration section: that group, `{python} pct(AB['a90_share'])` of his calls,
+was stated at `{python} pct(AB['a90_c'])` on average and came true `{python} pct(AB['a_90'][0])` of the time, so it cost
+about `{python} f"{AB['a90_cost']:.2f}"` a call; stated at its true rate it would have cost
+`{python} f"{AB['a90_fixcost']:.2f}"`. B's big group, the `{python} pct(AB['b_lo_share'])` of his calls at 65% or less,
+was stated at `{python} pct(AB['b_lo_c'])` and came true `{python} pct(AB['b_lo_h'])`: about
+`{python} f"{AB['b_lo_cost']:.2f}"` a call. The comparison is closer than the pictures suggest, which is why the
+answer has to come from the numbers rather than the look of the plot. The fix for A: pull everything in. His calls already sort snaps well (his dots climb from left to right, which is resolution);
 his numbers are just too big.
 
 **Reader B is underconfident.** His dots sit *above* the diagonal: his 70% calls came true far more often than 70%. He knows
@@ -1853,13 +2141,13 @@ are the natural next project; the atlases (appendices A to D) are the reference 
 
 [^gorilla]: Daniel J. Simons and Christopher F. Chabris, "Gorillas in our midst: sustained inattentional blindness for dynamic events," *Perception* 28 (1999): 1059–1074. In the best-known condition, about half of the observers counting passes failed to notice the person in the gorilla suit.
 
-[^nflplus]: The history and the current package are covered, with sources, in [How to Watch a Broadcast](../01-foundations/01-06-how-to-watch-a-broadcast.qmd): Buffalo Bills, "Watch film like a coach with Game Rewind" (July 30, 2012), https://www.buffalobills.com/news/watch-film-like-a-coach-with-game-rewind-7721721 ; NFL.com, "Launch of NFL Pro highlights third season of NFL+" (2024), https://www.nfl.com/news/launch-of-nfl-pro-highlights-third-season-of-nfl .
+[^nflplus]: The history and the current package are covered, with sources, in [How to Watch a Broadcast](../01-foundations/01-06-how-to-watch-a-broadcast.qmd): Buffalo Bills, "Watch film like a coach with Game Rewind" (July 30, 2012), https://www.buffalobills.com/news/watch-film-like-a-coach-with-game-rewind-7721721 ; NFL.com, "Launch of NFL Pro highlights third season of NFL+" (2024), https://www.nfl.com/news/launch-of-nfl-pro-highlights-third-season-of-nfl . Timing: NFL+ Help Center, "How do I watch Coaches Film" (All-22 "available 24-36 hours after the completion of each game"), https://support.nfl.com/hc/en-us/articles/35869780989332-How-do-I-watch-Coaches-Film .
 
 [^lx]: Score, date and site: nflverse schedules and play-by-play (game `2025_22_SEA_NE`); "Super Bowl LX," Wikipedia: https://en.wikipedia.org/wiki/Super_Bowl_LX . Quarter-by-quarter, Seattle led 3–0, 9–0 and 12–0 at the ends of the first three quarters, all on Jason Myers field goals.
 
 [^ssfacts]: nflverse play-by-play, FTN charting and participation for game `2025_22_SEA_NE`, the Patriots' third-quarter play with 0:16 left: "D.Maye sacked at NE 37 for -7 yards (58-D.Hall). FUMBLES (58-D.Hall) … RECOVERED by SEA-91-B.Murphy at NE 37." Personnel, alignment, motion, box, rushers and the coverage label (`2_MAN`) are FTN's charting, not the teams' calls. The touchdown that followed: "S.Darnold pass deep right to 88-A.Barner for 16 yards, TOUCHDOWN," 13:29 of the fourth quarter.
 
-[^timing]: Release timing from the nflverse data dictionaries and release notes: FTN charting is updated weekly during the season and participation (personnel and coverage) is released after the season ends; https://nflreadr.nflverse.com/articles/dictionary_ftn_charting.html , https://nflreadr.nflverse.com/articles/dictionary_participation.html . Play-by-play for the current season is updated shortly after games. <!-- VERIFY: nflverse in-season play-by-play update cadence in 2026 (nightly or within a day of each game) -->
+[^timing]: Release timing from the nflverse data dictionaries and update workflows. In season, nflverse rebuilds play-by-play after each game window (Thursday night, Sunday early and late, Sunday and Monday night) and again every morning (https://github.com/nflverse/nflverse-pbp/blob/master/.github/workflows/update_data.yaml); it checks FTN for new charting every six hours (https://github.com/nflverse/nflverse-ftn/tree/main/.github/workflows); and participation (personnel and coverage), supplied by FTN, is released only after the season ends. Dictionaries: https://nflreadr.nflverse.com/articles/dictionary_ftn_charting.html , https://nflreadr.nflverse.com/articles/dictionary_participation.html .
 
 [^kappa]: Jacob Cohen, "A coefficient of agreement for nominal scales," *Educational and Psychological Measurement* 20 (1960): 37–46. Kappa compares the agreement you observed with the agreement two coders would reach by chance, given how often each uses each code.
 
@@ -1867,15 +2155,17 @@ are the natural next project; the atlases (appendices A to D) are the reference 
 
 [^sbdata]: nflverse play-by-play, FTN charting (via `load_ftn_charting`) and participation (via `load_participation`) for game `2025_22_SEA_NE`; plays with `play_type` pass or run and a down recorded, so two-point tries, kneels, spikes and penalties that wiped out a snap are not on the board. Coverage labels and rusher counts are FTN's charting; FTN's data is used under the CC-BY-SA 4.0 licence. Success is nflverse's `success` flag (EPA greater than zero).
 
-[^sim]: The example log uses every Panthers run and dropback of the 2025 season with an xpass value (nflverse play-by-play joined to FTN charting), including the wild-card game. For each snap, a "situation + formation" model (a logistic regression on nflverse's xpass, the quarterback's alignment and the number of backs, learned on the 2024 regular season) gives the chance of a pass; the simulated reader sees that chance on the log-odds scale multiplied by an overconfidence factor (1.5 in the first game, falling to 0.95 by the last) plus random noise, calls whichever side is more likely, and rounds his confidence to the nearest 5%, capped at 95% in the first eight games and 90% after. Results are the real plays. The readers in the third drill use the same method with fixed factors (A: 2.2, B: 0.35).
+[^sim]: The example log uses every Panthers run and dropback of the 2025 season with an xpass value (nflverse play-by-play joined to FTN charting), including the wild-card game. For each snap, a "situation + formation" model (a logistic regression on nflverse's xpass, the quarterback's alignment and the number of backs, learned on the 2024 regular season) gives the chance of a pass; the simulated reader sees that chance on the log-odds scale multiplied by an overconfidence factor (1.5 in the first game, falling to 0.95 by the last) plus random noise, calls whichever side is more likely, and rounds his confidence to the nearest 5%, capped at 95% in the first eight games and 90% after. Results are the real plays. The readers in the third drill use the same method with fixed factors (A: 2.2, B: 0.35). The xpass baseline is nflverse's model as shipped, trained on the 2006–2019 seasons (`seasons <- 2006:2019` in https://github.com/nflverse/nflfastR-data/blob/master/models/_dropback_model_data.R ).
 
-[^brier]: Glenn W. Brier, "Verification of forecasts expressed in terms of probability," *Monthly Weather Review* 78, no. 1 (1950): 1–3. Brier's original version summed over both outcomes, so it runs from 0 to 2; the version used here (and almost everywhere today) is half of that for a yes-or-no event, running from 0 to 1.
+[^brier]: Glenn W. Brier, "Verification of forecasts expressed in terms of probability," *Monthly Weather Review* 78, no. 1 (1950): 1–3. Brier's original version summed over both outcomes, so it runs from 0 to 2; the version used here (and almost everywhere today) is half of that for a yes-or-no event, running from 0 to 1. Brier worked in the Weather Bureau's Office of Meteorological Research from 1939: "Glenn W. Brier," Wikipedia, https://en.wikipedia.org/wiki/Glenn_W._Brier .
 
 [^wilson]: The intervals are Wilson score intervals: Edwin B. Wilson, "Probable inference, the law of succession, and statistical inference," *Journal of the American Statistical Association* 22 (1927): 209–212. They behave better than the simple "plus or minus two standard errors" when a group is small or its hit rate is near 100%.
 
 [^murphy]: Allan H. Murphy, "A new vector partition of the probability score," *Journal of Applied Meteorology* 12 (1973): 595–600. The split is exact when calls are grouped by their distinct stated values, as here (confidences rounded to 5%).
 
 [^bdb]: NFL Football Operations, "Big Data Bowl": https://operations.nfl.com/gameday/analytics/big-data-bowl . The 2026 edition (the eighth) studied player movement while the ball was in the air, using 2023-season tracking data; no 2027 edition had been announced as of October 6, 2026.
+
+[^clinics]: AFCA, "AFCA Announces General Speakers for the 2026 AFCA Convention" (Charlotte, January 11–13, 2026), https://www.afca.com/afca-announces-general-speakers-for-the-2026-afca-convention/ ; Glazier Clinics' 2026 calendar (27 football clinics, January to March), https://glazierclinics.com/clinics ; Coaches Insider lists 2026 Coach of the Year Clinics (Orlando, Tunica, Atlanta) after Nike-branded series through 2024, https://coachesinsider.com/football-plus/ .
 
 [^gjp]: In the Good Judgment Project, the team Tetlock led in the forecasting tournament run by IARPA (the U.S. intelligence community's research agency) from 2011, every forecaster was scored with the Brier score; Tetlock and Gardner, *Superforecasting: The Art and Science of Prediction* (Crown, 2015), ch. 3.
 
