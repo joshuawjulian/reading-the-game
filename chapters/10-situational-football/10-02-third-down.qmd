@@ -1,0 +1,1728 @@
+---
+title: "Third Down: The Money Down"
+subtitle: "The down that decides drives: how far the offense has to go changes everything both sides do, from the routes and the personnel to how many rush, who covers, and who just watches the quarterback."
+description: "Third down from both sides of the ball: bucketing third downs (short, medium, long, very long) with league conversion rates by distance and play type; the offense's tools (sticks routes set a yard or two past the line to gain, option routes and other man-beaters, empty formations, third-down protection, and the third-and-long screens and draws that play for field position); the defense's third-down package (dime personnel, pass-rush specialists and stunts) and calls (sticks defense, 2-Man and brackets, simulated pressure and the blitz, Cover 0, rush three/drop eight, the QB spy) with the pre-snap tells for each; why 'past the sticks' matters and when it doesn't; and film-room examples from the Patriots' option routes, Brian Flores's Cover 0, Steve Spagnuolo's third-down pressure and the spies sent after Lamar Jackson."
+glossary:
+  "Sticks route": "A route whose depth is set by the line to gain, usually so the receiver breaks or settles a yard or two past it, so that a catch at the break is a first down without needing any yards after the catch."
+  "Third-down package": "The personnel and calls a team keeps for third down. On defense: extra defensive backs (often dime), pass-rush specialists, and its pressures, disguises and spies. On offense: its best quick concepts and man-beaters, the protections for the opponent's pressures, and the receivers and back it trusts most there."
+  "Rush three, drop eight": "A pass defense that sends only three pass rushers and puts eight defenders in coverage, usually on third-and-long, to crowd the throwing windows at and past the line to gain and make the quarterback hold the ball."
+  Spy: {def: "A defender (usually a linebacker, safety or nickel back) assigned to the quarterback instead of a receiver or a rush lane: he stays at linebacker depth, keeps his eyes on the quarterback, mirrors his movement and tackles him if he runs or scrambles.", aliases: ["QB spy"]}
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import os
+import logging
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, Patch
+from matplotlib.lines import Line2D
+
+from gridiron import Play, Player, style, draw_marker, show_animation, routes as r
+from gridiron.play import MARKER_R
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+PURPLE = style.SERIES[6]   # the spy: a ring colour that is neither offense blue nor defense orange
+SPLIT = 1.6                # center-to-guard and guard-to-tackle spacing, as in the rest of the book
+FIELD_W = 160 / 3
+
+
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=key if label is None else label)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def oline():
+    """The five offensive linemen; only the center is labelled (wide pictures overprint the rest)."""
+    return [O(k, k, -0.7, (i - 2) * SPLIT, "C" if k == "C" else "")
+            for i, k in enumerate(["LT", "LG", "C", "RG", "RT"])]
+
+
+def spread(rb_w=-1.6):
+    """11 personnel, shotgun 2x2. X and Z on the line, H (slot) and Y (the tight end, flexed out
+    like a second slot) a step off it: seven on the line (five linemen, X and Z)."""
+    return oline() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, rb_w, "R"),
+                      O("X", "WR", -0.7, -15.0), O("H", "WR", -1.5, -9.0),
+                      O("Y", "TE", -1.5, 9.0), O("Z", "WR", -0.7, 15.0)]
+
+
+def trips():
+    """11 personnel, shotgun 3x1 to the right. X alone on the left, on the line; the tight end Y attached
+    to the right tackle, on the line (so he is the end); H and Z off the ball outside him. Numbered from
+    the sideline in, #1 is Z, #2 is H, #3 is Y. Seven on the line: five linemen, X and Y."""
+    return oline() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -1.6, "R"),
+                      O("X", "WR", -0.7, -15.0), O("Y", "TE", -0.7, 4.8),
+                      O("H", "WR", -1.5, 10.0), O("Z", "WR", -1.5, 16.0)]
+
+
+def four_down(lde=-5.6, ldt=-0.7, rdt=2.35, rde=5.6):
+    """Four defensive linemen: ends outside the tackles, a 1-technique and a 3-technique."""
+    return [D("LDE", "DE", 1.0, lde, "E"), D("LDT", "DT", 1.0, ldt, "T"), D("RDT", "DT", 1.0, rdt, "T"),
+            D("RDE", "DE", 1.0, rde, "E")]
+
+
+def P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def say(fld, p, d, w, text, color=style.INK, fontsize=6.8, ha="center"):
+    """A short boxed on-field label at (d, w)."""
+    x, y = P(fld, p, d, w)
+    fld.ax.text(float(x), float(y), text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=13,
+                bbox=dict(boxstyle="round,pad=0.22", fc=style.SURFACE, ec=style.BASELINE, lw=0.5))
+
+
+def point_to(fld, p, text_at, target, text, fontsize=6.8, ha="center", shrink=7):
+    """A boxed label with a thin leader line to the player or spot it names (both in (d, w))."""
+    (xt, yt), (xp, yp) = P(fld, p, *text_at), P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=style.INK, ha=ha, va="center", zorder=13,
+                    arrowprops=dict(arrowstyle="-", color=style.INK_2, lw=0.7, shrinkA=2, shrinkB=shrink),
+                    bbox=dict(boxstyle="round,pad=0.22", fc=style.SURFACE, ec=style.BASELINE, lw=0.5))
+
+
+def clean(ax):
+    """Drop the painted yard-line numbers (they sit where receivers and safeties stand)."""
+    for t in list(ax.texts):
+        if t.get_alpha() == 0.55:
+            t.remove()
+
+
+def ruler(fld, play, fs=6.3, upto=40):
+    """Depth labels (yards past the line of scrimmage) down the left edge of the field window, so the
+    faint 5-yard lines read as a scale. Drawn on the Field's ax: gridiron has no ruler."""
+    ax = fld.ax
+    x_left = FIELD_W - fld.y1 + 0.35
+    first = True
+    for d in range(5, upto + 1, 5):
+        y = play.los + d
+        if play.to_go is not None and abs(d - play.to_go) < 1.0:
+            continue          # the orange line to gain would run through the label
+        if fld.x0 + 0.8 <= y <= fld.x1 - 0.8:
+            ax.text(x_left, y, f"{d}" + (" yd" if first else ""), fontsize=fs, color=style.INK_2,
+                    ha="left", va="center", zorder=12,
+                    bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec="none", alpha=0.85))
+            first = False
+
+
+def timed(p, key, way, kind="path"):
+    """Script a player: `way` = [(t, d, w), ...] absolute spots reached at time t (s after the snap).
+    Standing still between two times is allowed. (gridiron's actions are speed-based; this turns
+    'be here at this moment' into the speed and delay each leg needs.)"""
+    cur = np.array(p._cur(key), dtype=float)
+    tc, wait = 0.0, 0.0
+    for t, d, w in way:
+        nxt = np.array([d, w], dtype=float)
+        dist = float(np.hypot(*(nxt - cur)))
+        if dist < 1e-3:
+            wait += t - tc
+        else:
+            p._add(kind, key, [tuple(cur), tuple(nxt)], speed=dist / (t - tc), delay=wait)
+            wait = 0.0
+            cur = nxt
+        tc = t
+    return p
+
+
+def protect(p, keys=("LT", "LG", "C", "RG", "RT"), back=1.2):
+    """Five linemen set back in pass protection: enough to say 'pass', no more."""
+    for k in keys:
+        p.block(k, pts=[(-back, 0.0)])
+
+
+# --------------------------------------------------------------- frame strips for print
+def snapshot(play, t, ax=None, lateral=(-21, 21), window=(-9.0, 17.0), width_in=6.5, notes=(), trail_from=None,
+             ruler_fs=5.2):
+    """Everyone where he is at time t, with faint trails of where he has been (since `trail_from`, if given),
+    and the depth ruler down the left edge."""
+    pos = {k: play.position(k, t) for k in play.players}
+    mv = [pl.moved(d=float(pos[k][0]), w=float(pos[k][1])) for k, pl in play.players.items()]
+    q = Play([m for m in mv if m.side == "off"], [m for m in mv if m.side == "def"],
+             los=play.los, ball_y=play.ball_y, to_go=play.to_go)
+    q.highlights = dict(play.highlights)
+    fld = q.draw(ax=ax, lateral=lateral, window=window, width_in=width_in, title=False)
+    ax, ppy = fld.ax, fld.pts_per_yard()
+    clean(ax)
+    if ruler_fs:
+        ruler(fld, play, fs=ruler_fs, upto=int(window[1]))
+    PP = lambda d, w: fld.xy(*play.to_abs(d, w))  # noqa: E731
+    start = play._compile()[1] if trail_from is None else trail_from
+    for k, pl in play.players.items():
+        if pl.side == "off" and pl.pos in ("LT", "LG", "C", "RG", "RT"):
+            continue
+        if t <= start:
+            continue
+        pts = np.array([play.position(k, tt) for tt in np.linspace(start, t, 30)])
+        if np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) < 0.3:
+            continue
+        xs, ys = PP(pts[:, 0], pts[:, 1])
+        if pl.side == "off":
+            ax.plot(xs, ys, color=style.OFFENSE, lw=0.9, alpha=0.45, zorder=3)
+        else:
+            ax.plot(xs, ys, color=style.DEFENSE, lw=1.1, ls=(0, (3, 2)), zorder=3)
+    handed = any(kind == "handoff" and t >= te for kind, _, te in play.ball_events)
+    if t <= 0 or handed:            # in the quarterback's hands the ball would hide his label
+        bx, by = PP(*play.ball_position(t))
+        draw_marker(ax, float(bx) - (0.9 if handed else 0.0), float(by), "ball", "", ppy)
+    for note in notes:              # (text, (d, w)) or (text, (d, w), (d, w) of the player it names)
+        text, (d, w) = note[0], note[1]
+        x, y = PP(d, w)
+        box = dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec=style.BASELINE, lw=0.5)
+        if len(note) > 2:
+            xp, yp = PP(*note[2])
+            ax.annotate(text, (float(xp), float(yp)), xytext=(float(x), float(y)), fontsize=6.0, color=style.INK,
+                        ha="center", va="center", zorder=13, bbox=box,
+                        arrowprops=dict(arrowstyle="-", color=style.INK_2, lw=0.7, shrinkA=1, shrinkB=5))
+        else:
+            ax.text(float(x), float(y), text, fontsize=6.0, color=style.INK, ha="center", va="center", zorder=13,
+                    bbox=box)
+    return fld
+
+
+def strip(play, times, labels, notes_at=None, ncols=2, width_in=6.5, lateral=(-21, 21), window=(-9.0, 17.0),
+          trails_from=None):
+    """The print version of an animation: panels at chosen moments of one simulated play.
+    `trails_from` = {panel index: time} starts that panel's trails later, so only the late movement shows."""
+    n = len(times)
+    nrows = int(np.ceil(n / ncols))
+    pw = width_in / ncols
+    h = nrows * (pw * (window[1] - window[0]) / abs(lateral[1] - lateral[0]) + 0.34)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(width_in, h), squeeze=False)
+    for ax in axes.flat[n:]:
+        ax.axis("off")
+    for i, (ax, t, lab) in enumerate(zip(axes.flat, times, labels)):
+        snapshot(play, t, ax=ax, lateral=lateral, window=window, notes=(notes_at or {}).get(i, ()),
+                 trail_from=(trails_from or {}).get(i))
+        ax.set_title(lab, fontsize=8.2, color=style.INK, loc="left")
+    fig.tight_layout(h_pad=0.6, w_pad=0.4)
+    return fig
+
+
+pct = lambda x, k=0: f"{100 * x:.{k}f}%"      # noqa: E731
+
+
+def ordinal(n):
+    n = int(n)
+    if n == 1:
+        return "first"
+    if n == 2:
+        return "second"
+    if n == 3:
+        return "third"
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+```
+
+```{python}
+#| code-summary: "Show the Python (the data behind this chapter's numbers: nflverse via nflreadpy)"
+#| output: false
+from gridiron.data import nfl, pbp
+
+COLS = ["game_id", "play_id", "season", "season_type", "posteam", "defteam", "home_team", "away_team",
+        "total_home_score", "total_away_score", "down", "ydstogo", "yardline_100", "play_type", "pass",
+        "qb_dropback", "qb_scramble", "sack", "qb_kneel", "qb_spike", "third_down_converted", "touchdown", "epa",
+        "success", "air_yards", "complete_pass", "receiver_player_name", "rusher_player_name", "rushing_yards",
+        "td_team", "penalty", "penalty_team", "penalty_type", "first_down_penalty"]
+RAW = pbp(range(2009, 2026), columns=COLS)
+PLAYS = RAW[(RAW.season_type == "REG") & RAW.play_type.isin(["pass", "run"])
+            & (RAW.qb_kneel != 1) & (RAW.qb_spike != 1)].copy()
+# a third down is converted if it gains the line to gain (or the offense scores); penalties are left out.
+# A touchdown counts only if the offense scored it: a fumble or interception returned for a touchdown is a failure.
+PLAYS["conv"] = PLAYS.third_down_converted.eq(1) | (PLAYS.touchdown.eq(1) & PLAYS.td_team.eq(PLAYS.posteam))
+T3 = PLAYS[PLAYS.down == 3].copy()
+
+# ---- how often, league-wide, 2016-2025
+SR = T3[T3.season >= 2016].groupby("season").conv.mean()
+SR_LO, SR_HI = SR.min(), SR.max()
+SNAP3 = (PLAYS[PLAYS.season.between(2021, 2025)].down == 3).mean()
+
+# ---- the five seasons the chapter's charts use
+R = T3[T3.season.between(2021, 2025)].copy()
+R["kind"] = np.where(R.qb_dropback == 1, "drop", "run")
+LABS = ["1", "2", "3", "4–6", "7–10", "11+"]
+R["b"] = pd.cut(R.ydstogo, [0, 1, 2, 3, 6, 10, 99], labels=LABS)
+R["b4"] = pd.cut(R.ydstogo, [0, 3, 6, 10, 99], labels=["1–3", "4–6", "7–10", "11+"])
+BK = R.groupby("b", observed=True).agg(conv=("conv", "mean"), n=("conv", "size"), drop=("qb_dropback", "mean"))
+B4 = R.groupby("b4", observed=True).agg(conv=("conv", "mean"), n=("conv", "size"))
+B4["share"] = B4.n / B4.n.sum()
+CB = R.groupby(["b", "kind"], observed=True).conv.agg(["mean", "size"]).unstack()
+EPA_CONV = R.loc[R.conv, "epa"].mean()
+EPA_FAIL = R.loc[~R.conv, "epa"].mean()
+SWING = EPA_CONV - EPA_FAIL
+
+# ---- past the sticks: aimed passes (no sacks, no scrambles) by where they were thrown
+A = R[(R["pass"] == 1) & (R.sack != 1) & (R.qb_scramble != 1) & R.air_yards.notna()].copy()
+A["rel"] = A.air_yards - A.ydstogo
+REL_LABS = ["10+ short", "6–9 short", "3–5 short", "1–2 short", "at it", "1–2 past", "3–5 past", "6–10 past",
+            "11+ past"]
+A["rb"] = pd.cut(A.rel, [-99, -10, -6, -3, -1, 0, 2, 5, 10, 99], labels=REL_LABS)
+PS = A.groupby("rb", observed=True).agg(n=("conv", "size"), comp=("complete_pass", "mean"), conv=("conv", "mean"))
+A["past"] = A.air_yards >= A.ydstogo
+PAST_SHARE = A.groupby("b4", observed=True).past.mean()
+PAST_CONV = A.groupby(["b4", "past"], observed=True).conv.mean().unstack()
+SHORT_COMP = A[(A.complete_pass == 1) & ~A.past].groupby("b", observed=True).conv.mean()
+
+# ---- the defense, from charting (participation: FTN, one source, 2023-2025)
+PART = nfl().load_participation(seasons=list(range(2020, 2026))).to_pandas()[
+    ["nflverse_game_id", "play_id", "defense_personnel", "number_of_pass_rushers", "defense_coverage_type",
+     "defense_man_zone_type", "offense_formation"]]
+DB3 = PLAYS[(PLAYS.season >= 2020) & (PLAYS.qb_dropback == 1)].merge(
+    PART, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"], how="inner")
+
+
+def n_dbs(s):
+    if not isinstance(s, str):
+        return np.nan
+    n = 0
+    for part in s.split(","):
+        bits = part.strip().split(" ", 1)
+        if len(bits) == 2 and bits[0].isdigit() and bits[1] in ("DB", "CB", "FS", "SS", "S"):
+            n += int(bits[0])
+    return n
+
+
+DB3["ndb"] = DB3.defense_personnel.map(n_dbs)
+DB3["b4"] = pd.cut(DB3.ydstogo, [0, 3, 6, 10, 99], labels=["1–3", "4–6", "7–10", "11+"])
+F = DB3[(DB3.season >= 2023) & (DB3.down == 3)].copy()
+lab = F.defense_coverage_type.notna()
+mz = F.defense_man_zone_type.isin(["MAN_COVERAGE", "ZONE_COVERAGE"])
+DEF = pd.DataFrame({
+    "dime": F.groupby("b4", observed=True).ndb.apply(lambda x: (x >= 6).mean()),
+    "blitz": F.groupby("b4", observed=True).number_of_pass_rushers.apply(lambda x: (x >= 5).mean()),
+    "rush3": F.groupby("b4", observed=True).number_of_pass_rushers.apply(lambda x: (x <= 3).mean()),
+    "four": F.groupby("b4", observed=True).number_of_pass_rushers.apply(lambda x: (x == 4).mean()),
+    "cov0": F[lab].groupby("b4", observed=True).defense_coverage_type.apply(lambda x: (x == "COVER_0").mean()),
+    "man": F[mz].groupby("b4", observed=True).defense_man_zone_type.apply(lambda x: (x == "MAN_COVERAGE").mean()),
+})
+E12 = DB3[(DB3.season >= 2023) & DB3.down.isin([1, 2])]
+DIME_EARLY = (E12.ndb >= 6).mean()
+BLITZ_EARLY = (E12.number_of_pass_rushers >= 5).mean()
+
+# outcomes on third-and-7-plus by rushers sent
+L = F[F.ydstogo >= 7].copy()
+L["rush"] = pd.cut(L.number_of_pass_rushers, [0, 3, 4, 99], labels=["3 or fewer", "4", "5+"])
+RO = L.groupby("rush", observed=True).agg(n=("conv", "size"), conv=("conv", "mean"), sack=("sack", "mean"))
+R3T = L.groupby(["season", "defteam"]).number_of_pass_rushers.apply(lambda x: (x <= 3).mean())
+# the same comparison with the distance held still: third-and-7 to 10 only
+RO10 = L[L.ydstogo <= 10].groupby("rush", observed=True).agg(n=("conv", "size"), conv=("conv", "mean"),
+                                                              epa=("epa", "mean"), sack=("sack", "mean"))
+
+# 2-Man (two deep safeties, man underneath) by distance, and on early downs
+lab_e = DB3[(DB3.season >= 2023) & DB3.down.isin([1, 2]) & DB3.defense_coverage_type.notna()]
+TWO_MAN = F[lab].groupby("b4", observed=True).defense_coverage_type.apply(lambda x: (x == "2_MAN").mean())
+TWO_MAN_EARLY = (lab_e.defense_coverage_type == "2_MAN").mean()
+
+# empty formations (nobody in the backfield); the formation label exists only through 2022 (NGS charting)
+EM = DB3[DB3.season.between(2020, 2022)]
+EMPTY_3 = (EM[EM.down == 3].offense_formation == "EMPTY").mean()
+EMPTY_E = (EM[EM.down.isin([1, 2])].offense_formation == "EMPTY").mean()
+
+# scrambles on third down, 2021-2025
+SCR = R[R.qb_dropback == 1].assign(scr=lambda x: x.qb_scramble == 1)
+SCR_SHARE = SCR.scr.mean()
+SCR_CONV_LONG = SCR[SCR.scr & SCR.ydstogo.between(7, 10)].conv.mean()
+DROP_CONV_LONG = SCR[SCR.ydstogo.between(7, 10)].conv.mean()
+
+# first downs by defensive penalty on third down (every third-down snap, including plays wiped out by a flag)
+S3 = RAW[(RAW.season.between(2021, 2025)) & (RAW.season_type == "REG") & (RAW.down == 3)
+         & RAW.play_type.isin(["pass", "run", "no_play"]) & (RAW.qb_kneel != 1) & (RAW.qb_spike != 1)].copy()
+S3["pen_fd"] = (S3.penalty == 1) & (S3.penalty_team == S3.defteam) & (S3.first_down_penalty == 1)
+PEN_FD = S3.pen_fd.mean()
+PEN_TOP = S3[S3.pen_fd].penalty_type.value_counts(normalize=True)
+# coverage flags (pass interference, holding, illegal contact) against man and zone, charted third-down dropbacks
+CF = S3[(S3.season >= 2023) & ((S3.qb_dropback == 1) | (S3.play_type == "no_play"))].merge(
+    PART, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"], how="inner")
+CF = CF[CF.defense_man_zone_type.isin(["MAN_COVERAGE", "ZONE_COVERAGE"])]
+CF["flag"] = ((CF.penalty == 1) & (CF.penalty_team == CF.defteam)
+              & CF.penalty_type.isin(["Defensive Pass Interference", "Defensive Holding", "Illegal Contact"]))
+COV_FLAG = CF.groupby("defense_man_zone_type").flag.mean()
+
+# Cover 0 on third down by defense and season (2020-2022 labels come from NGS, 2023+ from FTN)
+C0T = (DB3[(DB3.down == 3) & DB3.defense_coverage_type.notna()]
+       .groupby(["season", "defteam"]).defense_coverage_type.apply(lambda x: (x == "COVER_0").mean()))
+MIA21_C0, MIA21_RANK = C0T[2021]["MIA"], int(C0T[2021].rank(ascending=False)["MIA"])
+MED21_C0 = C0T[2021].median()
+MIA20_C0 = C0T[2020]["MIA"]
+NE20_C0 = C0T[2020]["NE"]
+KC25_C0, KC25_RANK = C0T[2025]["KC"], int(C0T[2025].rank(ascending=False)["KC"])
+# ... and on third-and-7 or longer only, where most of the league nearly stops calling it
+C07 = (DB3[(DB3.down == 3) & (DB3.ydstogo >= 7) & DB3.defense_coverage_type.notna()]
+       .groupby(["season", "defteam"]).defense_coverage_type.apply(lambda x: (x == "COVER_0").mean()))
+MIA21_C07, MIA21_C07_RK, MED21_C07 = C07[2021]["MIA"], int(C07[2021].rank(ascending=False)["MIA"]), C07[2021].median()
+KC25_C07, KC25_C07_RK, MED25_C07 = C07[2025]["KC"], int(C07[2025].rank(ascending=False)["KC"]), C07[2025].median()
+
+# the Thursday-night game in Miami, November 11, 2021
+G = DB3[(DB3.game_id == "2021_10_BAL_MIA") & (DB3.defteam == "MIA")]
+G_N, G_C0, G_BL = len(G), int((G.defense_coverage_type == "COVER_0").sum()), (G.number_of_pass_rushers >= 5).mean()
+G3 = T3[(T3.game_id == "2021_10_BAL_MIA") & (T3.posteam == "BAL")]
+G3_CONV, G3_N = int(G3.conv.sum()), len(G3)
+_last = PLAYS[PLAYS.game_id == "2021_10_BAL_MIA"].iloc[-1]
+G_HS, G_AS = int(_last.total_home_score), int(_last.total_away_score)      # Miami was the home team
+
+# Spagnuolo's Chiefs: blitz rate (5+ rushers) on early downs and third down
+def blitz_rank(season, team="KC"):
+    x = DB3[DB3.season == season]
+    t3 = x[x.down == 3].groupby("defteam").number_of_pass_rushers.apply(lambda s: (s >= 5).mean())
+    e = x[x.down.isin([1, 2])].groupby("defteam").number_of_pass_rushers.apply(lambda s: (s >= 5).mean())
+    return e[team], t3[team], int(t3.rank(ascending=False)[team]), t3.median(), e.median()
+
+
+KC24_E, KC24_3, KC24_RK, MED24_3, MED24_E = blitz_rank(2024)
+KC25_E, KC25_3, KC25_RK, _, _ = blitz_rank(2025)
+KC20_E, KC20_3, KC20_RK, _, _ = blitz_rank(2020)
+C3A = T3.groupby(["season", "defteam"]).conv.mean()
+KC24_ALLOW, KC24_ALLOW_RK = C3A[2024]["KC"], int(C3A[2024].rank()["KC"])
+
+# ---- stability: does a team's third-down rate carry over to next season?
+TS = T3[T3.season >= 2016].groupby(["posteam", "season"]).conv.mean().rename("c3")
+ES = PLAYS[(PLAYS.season >= 2016) & PLAYS.down.isin([1, 2])].groupby(["posteam", "season"]).success.mean().rename("esr")
+TS = pd.concat([TS, ES], axis=1).reset_index()
+NX = TS.assign(season=TS.season - 1)
+M = TS.merge(NX, on=["posteam", "season"], suffixes=("", "_next"))
+R_OFF = M.c3.corr(M.c3_next)
+R_ESR = M.esr.corr(M.c3_next)
+TD = T3[T3.season >= 2016].groupby(["defteam", "season"]).conv.mean().rename("c3").reset_index()
+MD = TD.merge(TD.assign(season=TD.season - 1), on=["defteam", "season"], suffixes=("", "_next"))
+R_DEF = MD.c3.corr(MD.c3_next)
+T25 = T3[T3.season == 2025].groupby("posteam").conv.mean()
+
+# ---- the Patriots' third-down targets (receiver names are complete in nflverse from 2009)
+AIM = T3[(T3["pass"] == 1) & (T3.sack != 1) & (T3.qb_scramble != 1) & T3.receiver_player_name.notna()]
+
+
+def target_line(name, seasons):
+    ne = AIM[(AIM.posteam == "NE") & AIM.season.isin(seasons)]
+    me = ne[ne.receiver_player_name == name]
+    lg = AIM[AIM.season.isin(seasons)]
+    return dict(n=len(me), share=len(me) / len(ne), conv=me.conv.mean(), lg=lg.conv.mean(),
+                rel=float((me.air_yards - me.ydstogo).median()))
+
+
+WEL = target_line("W.Welker", range(2009, 2013))
+EDE = target_line("J.Edelman", [2013, 2016, 2019])
+WHI = target_line("J.White", [2018, 2019])
+TOP_NE = {s: AIM[(AIM.posteam == "NE") & (AIM.season == s)].receiver_player_name.value_counts().index[0]
+          for s in range(2009, 2020)}
+WEL_TOP = sum(TOP_NE[s] == "W.Welker" for s in range(2009, 2013))
+
+# ---- the spies sent after Lamar Jackson
+def spy_game(gid):
+    g = PLAYS[(PLAYS.game_id == gid)]
+    bal = g[g.posteam == "BAL"]
+    lj = bal[(bal.rusher_player_name == "L.Jackson") & (bal.play_type == "run")]
+    lj3 = lj[lj.down == 3]
+    last = g.iloc[-1]
+    return dict(car=len(lj), yds=int(lj.rushing_yards.sum()), scr=int(lj.qb_scramble.sum()),
+                car3=len(lj3), yds3=int(lj3.rushing_yards.sum()), conv3=int(lj3.conv.sum()),
+                sacks=int(bal.sack.sum()), hs=int(last.total_home_score), as_=int(last.total_away_score))
+
+
+KC24 = spy_game("2024_01_BAL_KC")
+DET25 = spy_game("2025_03_DET_BAL")
+```
+
+Third-and-7, early in the fourth quarter, a three-point game. You can tell it matters before anyone
+lines up. The broadcast puts up a graphic of the offense's third-down conversions so far. On the
+defensive sideline, two linebackers jog off and two defensive backs jog on, and a pass rusher who has
+been standing by the bench all series pulls on his helmet. The offense's best receiver, who stood out
+wide on first and second down, now lines up in the slot. The quarterback looks to the sideline, then
+points at a safety creeping toward the line and shouts. At the snap that safety drops into the middle
+instead of rushing, four defenders rush, the slot receiver pushes eight yards upfield, looks at the
+defender in front of him and turns *away* from him toward the sideline, and the ball is already there.
+The chains move. Why did half the defense change before the play? What was the quarterback pointing
+at? Why eight yards, not seven, and why did the receiver seem to decide where to go after he started
+running? And why does the whole stadium seem to agree that this one snap is worth more than the two
+before it? This chapter is about **third down**, the down that decides drives, and about why everyone
+on the field plays it differently.
+
+**You'll be able to…**
+
+- Bucket a third down (short, medium, long or very long) and say roughly how often each is converted,
+  by a run and by a pass.
+- Predict, before the snap, whether the throw will go past the line to gain, and explain when a throw
+  short of it is the right call anyway.
+- Name the offense's third-down tools (sticks routes, option routes and other man-beaters, empty
+  formations, protection, and the screens and draws of third-and-long) and say which distance each is for.
+- Use the distance and the defense's personnel to name its most likely call (sticks defense, 2-Man,
+  simulated pressure, a blitz, Cover 0, rush three/drop eight, or a spy), spot the few pre-snap tells
+  that give a call away, and explain why the rest are disguised.
+- Read a conversion chart by distance and play type, and explain why the money down is not quite as
+  predictable as it feels.
+
+::: {.callout-note title="You'll need"}
+This chapter sits on [Early Downs and Field Zones](10-01-early-downs-and-field-zones.qmd) and the pressure
+chapters, and borrows from most of the parts before them. One line each:
+
+- **Downs and value** ([Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd)):
+  the offense has four downs to reach the [line to gain](../../appendices/glossary.qmd#gl-line-to-gain), marked
+  by [the sticks](../../appendices/glossary.qmd#gl-the-sticks); fail on third down and it usually punts.
+  [EPA](../../appendices/glossary.qmd#gl-epa) scores a play by how much it changed the drive's expected points.
+- **Early downs** ([Early Downs and Field Zones](10-01-early-downs-and-field-zones.qmd)): an offense is
+  [on schedule](../../appendices/glossary.qmd#gl-on-schedule-behind-schedule) when first and second down leave a
+  short third down; in [four-down territory](../../appendices/glossary.qmd#gl-four-down-territory) it may plan
+  to go for it on fourth down.
+- **Packages and shells** ([A First Look at Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)):
+  [nickel](../../appendices/glossary.qmd#gl-nickel) is five defensive backs, [dime](../../appendices/glossary.qmd#gl-dime)
+  six; a [two-high](../../appendices/glossary.qmd#gl-two-high) shell has two deep safeties.
+- **Coverage** ([Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd), [The Cover 3 Family](../06-pass-coverage/06-03-cover-3-family.qmd)):
+  [Cover 1](../../appendices/glossary.qmd#gl-cover-1) is man coverage with one deep safety, often with a
+  [robber](../../appendices/glossary.qmd#gl-robber) in the middle to jump in-breaking routes;
+  [Cover 0](../../appendices/glossary.qmd#gl-cover-0) is man with nobody deep;
+  [Cover 3](../../appendices/glossary.qmd#gl-cover-3) is zone with three deep and four underneath.
+- **Pressure and protection** ([Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd),
+  [Blitzing](../07-pressure/07-02-blitz-and-man-pressure.qmd), [Zone Blitzes, Fire Zones, and Simulated
+  Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd)): a
+  [blitz](../../appendices/glossary.qmd#gl-blitz) sends five or more; a
+  [simulated pressure](../../appendices/glossary.qmd#gl-simulated-pressure) (a "creeper") rushes four from
+  unexpected places. Linebackers standing in both gaps beside the center are a
+  [double A-gap mug](../../appendices/glossary.qmd#gl-double-a-gap-mug). When rushers outnumber blockers the
+  quarterback throws [hot](../../appendices/glossary.qmd#gl-hot-route).
+- **Routes** ([Passing Game Fundamentals](../04-the-passing-game/04-01-passing-fundamentals.qmd),
+  [The Quick Game](../04-the-passing-game/04-03-quick-game.qmd)): a defender's
+  [leverage](../../appendices/glossary.qmd#gl-leverage-inside-outside) is the side of the receiver he lines up on,
+  the side he is protecting; on an [option route](../../appendices/glossary.qmd#gl-option-route) the receiver
+  picks his break after the snap from that leverage. [Air yards](../../appendices/glossary.qmd#gl-air-yards) are
+  how far past the line of scrimmage the ball travels in the air.
+- **Third-and-long plays** ([Gap Schemes](../03-the-run-game/03-03-gap-and-power-runs.qmd),
+  [Play-Action, Bootlegs, and Screens](../04-the-passing-game/04-05-play-action-boots-screens.qmd)): a
+  [draw play](../../appendices/glossary.qmd#gl-draw-play) shows pass, then hands off; a
+  [screen](../../appendices/glossary.qmd#gl-screen) lets the rush through and throws behind it.
+:::
+
+**How to read the diagrams.** Offense is blue circles: the linemen (only the center, C, is labelled
+on wide pictures), Q the quarterback, R the running back, X and Z the outside receivers, H the slot
+receiver and Y the tight end. Defense is outlined orange squares: E and T the defensive ends and
+tackles, N a nose tackle, B a stand-up edge player, M the Mike and W the Will linebacker, $ the nickel
+back (the slot cornerback), D a dime back (the sixth defensive back), CB the cornerbacks, FS and SS the
+free and strong safety. A **green ring** marks the player to watch and a **purple ring** a spy. Blue
+arrows are routes, the thick dark-blue arrow a ball carrier's path; solid orange arrows are rushers and
+dashed orange arrows zone drops, with the shaded ovals the zones; dotted orange lines join a man-coverage
+defender to his receiver. The thick orange line across the field is the **line to gain**, the blue line
+the line of scrimmage, and the small numbers on the left edge count yards past the line of scrimmage.
+Pictures of a moment in a simulated play show faint lines for where each player has been, and an **×**
+where a tackle is made. Left and right are the offense's.
+
+## Why third down is the money down
+
+Start with what third down *is*. On first and second down a bad play is a setback; on third down it is
+usually the end of the drive. Convert, and the offense gets three more tries and keeps the ball. Fail,
+and outside field-goal range it punts, giving the ball away 40 yards downfield. That cliff is why the
+down gets its nickname.
+
+Put a number on the cliff. In the 2021–2025 regular seasons, a converted third down was worth
+`{python} f"{EPA_CONV:+.1f}"` expected points to the offense on average, and a failed one
+`{python} f"{EPA_FAIL:+.1f}"`. The difference, about **`{python} f"{SWING:.1f}"` points**, rides on one
+snap.[^swing] No other ordinary play swings that much so often: a first-and-10 that gains four yards or
+loses one leaves the drive alive either way. Third downs are only about `{python} pct(SNAP3)` of all runs
+and passes, but they decide whether most drives become points or punts.
+
+And the league converts them at a remarkably steady rate: between `{python} pct(SR_LO)` and
+`{python} pct(SR_HI)` in every season from 2016 to 2025, about two in five.[^conv] Rule changes, the
+passing boom and the [two-high](../../appendices/glossary.qmd#gl-two-high) defenses of the last decade have barely
+moved it. That stability is a
+clue. Third down is a contest both sides prepare for more than any other, and the offense's gains
+and the defense's answers have stayed roughly matched.
+
+What makes third down special isn't just the stakes; it's the **information**. On first-and-10 the
+defense has to guard against everything, because the offense can do anything. On third-and-8 both
+sides know what the offense needs: eight yards, almost certainly through the air. Knowing that, the
+defense can specialise. It can take off run defenders and put on pass defenders, take off a big run-stopping
+tackle and put on a quick pass rusher, and set every underneath defender's depth by the line to gain.
+The offense specialises too: its best receiver moves to where he can get a free release, its routes
+are cut to a depth measured from the sticks, and it calls the plays it has practised all week for
+exactly this distance. Third down is the down on which the situation tells both teams the most, so it
+is the down on which they each carry a separate plan.
+
+::: {.callout-note title="Madden vs. real life"}
+In a video game you pick a play from a menu on every down, and the menu looks the same on third-and-8
+as on first-and-10. In the NFL, third down has its own section of the call sheet, its own practice day
+(in a typical week the third-down plan is installed on Thursday, after the early-down plan;
+[The Game Plan](../08-the-chess-match/08-03-game-planning-week.qmd)), its own personnel and
+often its own play-caller's mindset. The plays on that page are sorted by distance: third-and-1,
+third-and-2 to 3, third-and-4 to 6, third-and-7 to 10, third-and-long. A coordinator calling a
+third-down play is choosing from a short list built for exactly this distance against exactly this
+opponent's third-down habits, not from the whole playbook.
+:::
+
+## Four kinds of third down
+
+A broadcaster will tell you "third and short" or "third and long." Coaches cut it finer, because each
+distance changes what both sides can do. This book uses four buckets: **short** (1 to 3 yards),
+**medium** (4 to 6), **long** (7 to 10) and **very long** (11 or more). Start with how often each kind is
+converted, and how.
+
+```{python}
+#| label: fig-conversion
+#| fig-cap: "Third-down conversion rate by yards to go and by play type, NFL regular seasons 2021–2025. Designed runs convert more often at 1 and 2 yards to go; from 4 yards on, dropbacks (passes, sacks and scrambles together) convert far more often, and a run on third-and-11 or more almost never does. The small number under each bar is the number of plays (k = thousand); runs are rare from 4 yards on, so those bars are mostly deliberate, low-risk calls. Source: nflverse play-by-play."
+fig, ax = plt.subplots(figsize=(6.5, 3.1))
+xs = np.arange(len(LABS))
+wbar = 0.38
+for j, (kind, lab, col) in enumerate([("run", "Designed runs", style.SERIES[0]),
+                                      ("drop", "Dropbacks (pass, sack, scramble)", style.SERIES[1])]):
+    vals = CB["mean"][kind].reindex(LABS).values
+    ns = CB["size"][kind].reindex(LABS).values
+    x = xs + (j - 0.5) * (wbar + 0.03)
+    ax.bar(x, vals, width=wbar, color=col, label=lab, zorder=3)
+    for xi, v, n in zip(x, vals, ns):
+        ax.text(xi, v + 0.012, f"{100 * v:.0f}", ha="center", va="bottom", fontsize=7.2, color=style.INK)
+        ax.text(xi, -0.035, f"{n / 1000:.1f}k" if n >= 1000 else f"{n}", ha="center", va="top", fontsize=6.0,
+                color=style.INK_2)
+ax.set_xticks(xs, [f"3rd & {b}" for b in LABS], fontsize=7.8)
+ax.tick_params(axis="x", pad=13, length=0)
+ax.set_ylim(-0.075, 0.85)
+ax.set_yticks([0, 0.2, 0.4, 0.6, 0.8])
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{100 * y:.0f}%"))
+ax.tick_params(axis="y", labelsize=7.5)
+ax.set_ylabel("Converted to a first down", fontsize=8)
+ax.grid(axis="x", visible=False)
+ax.axhline(0, color=style.BASELINE, lw=0.8, zorder=2)
+ax.legend(loc="upper right", fontsize=7.5, frameon=False)
+fig.tight_layout()
+plt.show()
+```
+
+The chart has two sets of bars, designed runs and dropbacks, at each distance.[^buckets] On
+**third-and-1**, runs convert `{python} pct(CB['mean']['run']['1'])` of the time and dropbacks
+`{python} pct(CB['mean']['drop']['1'])`. That isn't because passing is worse; it's because a run needs only a
+yard and gets it on a good push, while a pass can go wrong in more ways (a sack, a drop, an incompletion)
+that a run can't. By **third-and-3** the two are level, and from **4 yards** on the pass is the only
+sensible way: runs on third-and-4 to 6 convert `{python} pct(CB['mean']['run']['4–6'])`, dropbacks
+`{python} pct(CB['mean']['drop']['4–6'])`. Offenses know it, which is why they pass on
+`{python} pct(BK.loc['4–6', 'drop'])` of third-and-4 to 6 snaps and `{python} pct(BK.loc['7–10', 'drop'])`
+of third-and-7 to 10.
+
+Each bucket has its own conversion rate and its own logic, and the rest of the chapter follows them
+(rates are for 2021–2025).
+
+**Short, 1–3 yards: converted `{python} pct(B4.loc['1–3', 'conv'])`.** A run can get it, so the offense's
+whole menu is open and the defense has to defend both. It can't fill the field with defensive backs, it
+usually plays tight man coverage because any completion converts, and it often packs the
+[box](../../appendices/glossary.qmd#gl-box). The offense's best weapons are a power run, a quarterback
+sneak, or a quick throw that beats tight coverage before the rush arrives. (Third-and-1 and the sneak get
+their own chapter, [Red Zone, Goal Line, Two-Point Plays, and Short Yardage](10-03-red-zone-goal-line-and-short-yardage.qmd).)
+
+**Medium, 4–6 yards: converted `{python} pct(B4.loc['4–6', 'conv'])`.** The most contested distance. The
+offense will almost certainly throw, but it doesn't need to throw far: a 6-yard route run well converts.
+The defense plays tight man coverage, mixes in pressure, and leans on mugs and disguise to make the
+quarterback guess. It is the bucket of option routes, rubs and mesh on one side and of Cover 1 and
+A-gap mugs on the other.
+
+**Long, 7–10 yards: converted `{python} pct(B4.loc['7–10', 'conv'])`.** Almost always a pass, and one that
+has to travel past the defenders waiting at the sticks. Now the offense needs a route that takes time to
+run, and that time is what the defense attacks: this is where the blitz peaks, because a hot throw to beat
+it usually lands short of the line.
+
+**Very long, 11 or more: converted `{python} pct(B4.loc['11+', 'conv'])`.** The defense can concede anything
+short and still win, so it drops more players into coverage, plays deep, and rallies to tackle. Some
+offenses take a shot; many take the safe completion, the screen or the draw, and play for a better punt
+or a field-goal try.
+
+And the long kinds are common: `{python} pct(B4.loc['7–10', 'share'] + B4.loc['11+', 'share'])` of third
+downs needed 7 yards or more. That is why coaches care so much about first and second down: a four-yard
+gain on first down doesn't look like much, but it is the difference between a third down at the top of
+that list and one at the bottom ([Early Downs and Field Zones](10-01-early-downs-and-field-zones.qmd)).
+
+## The sticks route: a yard past the line
+
+If the target is a known distance, aim past it. That is the whole idea behind a **[sticks
+route](../../appendices/glossary.qmd#gl-sticks-route)**: a route whose depth is set by the line to gain,
+usually so the receiver breaks or settles a yard or two beyond it. On first-and-10 a curl might be run
+at 12 yards because that's where it fits the defense. On third-and-6 the same receiver runs it at 7 or 8,
+because what matters now is that the catch is a first down *at the catch*, with no need for yards after it.
+Coaches teach it bluntly: get past the sticks before you break, and don't break short of them.
+
+Why a yard or two past, and not exactly on the line? Two reasons, both about the catch point.
+
+1. **Receivers drift back toward the ball.** A receiver who breaks at 7 and turns back to the
+   quarterback is caught at 6 and a half, short of a third-and-7. A route designed at 8 leaves room for
+   that.
+2. **Defenders sit on the sticks.** On third down the underneath defenders' landmark *is* the line to
+   gain (more below). A ball caught right on the line is caught in front of a defender who is already
+   there and only has to tackle forward.
+
+But a sticks route can't go *too* far past the line, because every extra yard of depth costs completion
+probability: it takes the receiver longer to get there, and the quarterback has to hold the ball against
+the rush. The design problem of third-and-medium is to get a receiver open as close past the sticks as
+possible, as fast as possible. Against the man coverage defenses favour at those distances, that means
+beating a defender who knows where you're going.
+
+### The answer to man: routes that choose
+
+Here is a typical third-and-7 against Cover 1. The offense is in trips to the right; the defense plays
+man coverage with one deep safety and a robber. (Staffs call that low middle player a **robber**, a
+[**rat**](../../appendices/glossary.qmd#gl-rat) or a **hole** player depending on the playbook and how deep he sits;
+[Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd) draws the versions.)
+
+```{python}
+#| label: fig-sticks-vs-cover1
+#| fig-cap: "Third-and-7 against Cover 1 (illustrative). The offense is in trips to the right: Z (#1), H (#2) and the tight end Y (#3, attached to the line), with X alone on the left. The defense plays man coverage (dotted lines) with the free safety (FS) deep and the strong safety (SS) as a robber in the middle. Z and X run go routes that take their cornerbacks deep, and Y's seam holds the free safety in the middle. H runs an option route set past the line to gain: the nickel back ($) lines up a yard and a half inside him, protecting the middle, so H pushes to 8 yards and breaks away from that leverage, toward the sideline, where the robber can't help. The ball is out at about 1.6 seconds. The back checks for a blitzer, then releases to the flat as the checkdown."
+def cover1_play():
+    dfn = four_down(rde=6.0) + [
+        D("WILL", "WILL", 4.5, -2.2, "W"), D("MIKE", "MIKE", 4.5, 2.6, "M"),
+        D("NB", "NB", 4.0, 8.4, "$"), D("LCB", "CB", 1.2, -15.8, "CB"), D("RCB", "CB", 1.2, 16.8, "CB"),
+        D("SS", "SS", 9.5, 3.0, "SS"), D("FS", "FS", 14.0, -1.0, "FS")]
+    p = Play(trips(), dfn, los=45, to_go=7)
+    p.route("X", r.go(19)); p.route("Z", r.go(18)); p.route("Y", r.seam(16))
+    # route offsets are from H's alignment (1.5 yards off the line): a 9.5-yard stem breaks at 8 past the LOS
+    p.route("H", r.out(9.5, 4)); p.route("RB", r.flat(1.0, 5), side=-1)
+    p.dropback(2.0); p.pass_to("H", t=1.55)
+    protect(p)
+    for k in ("LDE", "LDT", "RDT", "RDE"):
+        p.rush(k, pts=[(-1.6, 0.0)])
+    for dk, ok in (("LCB", "X"), ("RCB", "Z"), ("NB", "H"), ("MIKE", "Y"), ("WILL", "RB")):
+        p.man(dk, ok)
+    p.drop("SS", (10.0, 4.0)); p.drop("FS", (17.0, 0.0))
+    p.highlight("H")
+    return p
+
+
+p = cover1_play()
+fld = p.draw(lateral=(-21, 23), window=(-9.5, 21.5), title=False)
+clean(fld.ax); ruler(fld, p)
+say(fld, p, 7.0, -7.5, "line to gain (3rd & 7)", color=style.INK_2, fontsize=6.5)
+point_to(fld, p, (-5.0, 13.6), (8.0, 11.6),
+         "H's option route: the nickel ($)\nis inside, so H breaks out at\n8 yards, one past the line")
+point_to(fld, p, (11.8, -8.0), (9.6, 2.6), "robber (SS): sits inside,\nwaiting for the in-cut")
+point_to(fld, p, (18.8, -9.0), (14.0, -1.0), "free safety: one man deep,\nheld in the middle by the seam")
+point_to(fld, p, (-6.2, -11.5), (-4.0, -6.0), "checkdown: back\nin the flat, short\nof the line")
+plt.show()
+```
+
+The option route is the heart of it ([Passing Game Fundamentals](../04-the-passing-game/04-01-passing-fundamentals.qmd)
+taught the rule). A man defender has to line up on one side of his receiver, and that side, his
+[leverage](../../appendices/glossary.qmd#gl-leverage-inside-outside), is the side he is protecting. Here the
+nickel sits inside H, taking away the quickest throws, the slant and the in-cut toward the middle. So H
+pushes to 8 yards, past the line, and breaks the other way, toward the sideline, where the nickel can't get
+to him in time and the robber can't help.
+
+That inside alignment is a choice, not the default. With a robber in the middle, many defenses play the
+slot defender *outside* and funnel the receiver inside to the help; this one is taking away the quick
+slant instead. Against that outside alignment the rule sends H inside, straight toward the robber, and the
+quarterback has to see it and look elsewhere. And the rule has a third branch that coaches always teach:
+if the defender is soft, head-up, or dropping into a zone, **sit it down** in the open space past the
+sticks, face the quarterback and catch the ball. That is why the quarterback reads two things, not one: the
+nickel's leverage and where the robber is standing. The receiver doesn't guess; he reads, and the
+quarterback reads with him, which is why option routes go to the receivers a quarterback trusts most.
+
+The rest of the concept exists to protect that one decision. The two go routes outside are
+*clear-outs*: they take the cornerbacks, who are in man coverage and must run with them, out of the area
+where H will break. Y's seam up the middle gives the single deep safety something to worry about, so he
+can't drift toward the sideline to help on H. And the back is the checkdown. If the defense blitzes, he
+blocks; if it doesn't, he is the safe throw, short of the sticks, for when the option route is covered.
+
+The option route is one of a family of third-down man-beaters, all of which do the same job by
+different means: give the receiver an advantage over a defender who has no help.
+
+- **Rubs and bunches.** Line receivers up close together, a [bunch](../../appendices/glossary.qmd#gl-bunch),
+  and send them across each other's paths. Each man defender has to fight through traffic to follow his
+  receiver, while zone defenders would just swap receivers. ([Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd)
+  draws the concepts; where a rub becomes illegal offensive pass interference is in
+  [Contact Rules and Penalties as Strategy](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd).)
+- **Mesh.** Two shallow crossers who brush past each other in the middle
+  ([mesh](../../appendices/glossary.qmd#gl-mesh)), with the same traffic problem for their defenders; the
+  crossers usually settle a few yards past a third-and-medium line to gain.
+- **Slants and quick outs.** The fastest throws on the field, aimed at the receiver who has the
+  leverage he wants before the snap. They beat a blitz too, because the ball is out before the rush
+  arrives.
+- **Matchups.** The offense moves its best receiver to wherever the defense's worst cover man will
+  have to take him, usually the slot, against a linebacker or a safety. On third down, *who* covers whom
+  often matters more than the concept, which is why defenses answer the best receiver with a
+  [bracket](../../appendices/glossary.qmd#gl-bracket): two defenders on him, one under and one over, or one
+  inside and one outside. "Take away their guy and make somebody else beat us" is a third-down plan in
+  itself.
+- **Empty.** Five receivers spread across the field and nobody in the backfield
+  ([empty](../../appendices/glossary.qmd#gl-empty)). It thins the box, forces the defense to show man or zone
+  by how it lines up, and usually leaves a linebacker on a receiver. Offenses lined up in empty on
+  `{python} pct(EMPTY_3)` of third-down dropbacks in 2020–2022, against `{python} pct(EMPTY_E)` on first and
+  second down.[^empty] The price is protection: with no back to block, a sixth rusher is the quarterback's
+  problem, and he has to throw hot.
+
+Why does all this aim at man coverage? Because that is what defenses play on third-and-short and
+medium. In 2023–2025, charted third-down dropbacks at 1 to 3 yards to go were played in man coverage
+`{python} pct(DEF.loc['1–3', 'man'])` of the time, and at 4 to 6 yards `{python} pct(DEF.loc['4–6', 'man'])`;
+at 11 or more it fell to `{python} pct(DEF.loc['11+', 'man'])`.[^defdata] A zone defense on
+third-and-4 has defenders spread across the field waiting for the ball, and any route that finds the
+space between two of them, five yards deep, converts. Man coverage takes that space away by putting a
+defender on every receiver. The offense's reply is to make that defender's life as hard as possible
+for about a second and a half.
+
+Man coverage has one more price on third down: **flags**. A man defender is attached to his receiver, and
+when he is beaten his last resort is a grab. On charted third-down dropbacks in 2023–2025, defenders were
+flagged for [pass interference](../../appendices/glossary.qmd#gl-defensive-pass-interference),
+[defensive holding](../../appendices/glossary.qmd#gl-defensive-holding) or illegal contact on
+`{python} pct(COV_FLAG['MAN_COVERAGE'], 1)` of snaps in man coverage, against
+`{python} pct(COV_FLAG['ZONE_COVERAGE'], 1)` in zone, about three times as often. All three give the offense
+an automatic first down whatever the distance. Across 2021–2025, about one third-down snap in 25
+(`{python} pct(PEN_FD, 1)`) ended in a first down by defensive penalty, pass interference and holding the
+most common.[^flags] The conversion rates in this chapter leave those out, so they slightly understate how
+often drives survive third down, and every one of those flags is a quiet cost of playing man.
+
+::: {.callout-important title="Why it exists"}
+The sticks route exists because on third down the distance is fixed in advance, so the offense can aim
+at one yard and give the receiver the right to choose his break. **What it gives up:** a route set to the
+sticks hands the defense a target depth too, and the two sides have been trading moves over that yard
+ever since. Defenders learn to sit at the sticks and drive on the break; receivers answer by selling the
+sit and turning upfield (a "stick-nod"), quarterbacks by throwing to the back shoulder, away from the
+defender's drive. Defenses answer with man coverage from depth and safeties over the top, so that the
+receiver who turns upfield runs into help; offenses answer that with rubs. That steady trading of moves
+is why the league's third-down rate barely moves.
+:::
+
+## Past the sticks: what the numbers say, and when it doesn't matter
+
+Every broadcaster has said it: "you have to throw it past the sticks on third down." Here is how true
+that is.
+
+```{python}
+#| label: fig-past-sticks
+#| fig-cap: "Where third-down passes were aimed, and what happened. Each bar is the share of attempts that converted, grouped by how far past (or short of) the line to gain the ball was thrown (air yards minus yards to go); the line is the completion rate for the same throws. Throws short of the line are caught more often but convert rarely, because the receiver still has to run for the rest; throws one or two yards past it convert most often; deeper throws are completed, and so convert, less often. Third-down aimed passes (sacks, scrambles and throwaways without a charted depth excluded), NFL regular seasons 2021–2025. Source: nflverse play-by-play."
+fig, ax = plt.subplots(figsize=(6.5, 3.0))
+xs = np.arange(len(REL_LABS))
+short = xs < 4
+ax.axvspan(-0.5, 3.5, color=style.GRID, alpha=0.45, lw=0, zorder=0)
+ax.text(1.5, 0.93, "thrown short of the line to gain", ha="center", fontsize=7.2, color=style.INK_2)
+ax.text(6.5, 0.93, "at or past it", ha="center", fontsize=7.2, color=style.INK_2)
+ax.bar(xs, PS.conv.reindex(REL_LABS).values, width=0.62, color=style.SERIES[0], zorder=3,
+       label="Converted (share of attempts)")
+ax.plot(xs, PS.comp.reindex(REL_LABS).values, color=style.SERIES[1], lw=2, marker="o", ms=5, zorder=4,
+        label="Completed")
+for x, v in zip(xs, PS.conv.reindex(REL_LABS).values):
+    if v > 0.25:   # inside the bar, clear of the completion line that meets the bar tops past the sticks
+        ax.text(x, v - 0.03, f"{100 * v:.0f}", ha="center", va="top", fontsize=7, color="white", zorder=5)
+    else:
+        ax.text(x, v + 0.015, f"{100 * v:.0f}", ha="center", va="bottom", fontsize=7, color=style.INK)
+ax.set_xticks(xs, REL_LABS, fontsize=7.2)
+ax.set_xlabel("Where the ball was thrown, relative to the line to gain (yards)", fontsize=8)
+ax.set_ylim(0, 1.0)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{100 * y:.0f}%"))
+ax.tick_params(axis="y", labelsize=7.5)
+ax.grid(axis="x", visible=False)
+ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.24), ncol=2, fontsize=7.5, frameon=False)
+fig.tight_layout()
+plt.show()
+```
+
+The shape of the bars is the case for the sticks route.[^sticksdata] Throws aimed 10 or more yards short
+of the line to gain were completed `{python} pct(PS.loc['10+ short', 'comp'])` of the time and converted
+only `{python} pct(PS.loc['10+ short', 'conv'])`. Throws aimed one or two yards past it converted
+`{python} pct(PS.loc['1–2 past', 'conv'])`, the best of any group. Past the line, the bar and the line meet:
+every completion there converts, so conversion simply tracks completion rate, and falls as the throws get
+deeper and harder to complete. Notice
+the dip for throws aimed right **at** the line (`{python} pct(PS.loc['at it', 'conv'])`, with completions
+falling off too): that is very likely, at least in part, the sticks-sitting defender at work, and it is the
+reason the sticks route is set a yard or two beyond.
+
+So the broadcasters are mostly right. But "past the sticks" is a rule about *averages*, and there are
+four situations in which a throw short of the line is the right one.
+
+1. **Third-and-short.** Even a catch behind the line can convert when the line is only a yard or two
+   away. Completed throws short of the sticks converted `{python} pct(SHORT_COMP['1'])` of the time on
+   third-and-1 and `{python} pct(SHORT_COMP['2'])` on third-and-2, against `{python} pct(SHORT_COMP['7–10'])`
+   on third-and-7 to 10 and `{python} pct(SHORT_COMP['11+'])` on 11 or more. On third-and-1 a pass to
+   the flat, caught a yard *behind* the line with nobody near the receiver, is a good play; it's a run
+   with a better start.
+2. **The receiver who will run after the catch.** Screens and quick throws to the offense's best
+   open-field runner are short by design: the bet is on the yards after the catch, and against a defense
+   playing deep it can be a good bet.
+3. **Four-down territory.** When an offense near midfield has already decided it will go for it on
+   fourth down if it needs to, third-and-6 is really "third-and-6 with two tries." A five-yard completion
+   that sets up fourth-and-1 is then a fine outcome
+   ([Early Downs and Field Zones](10-01-early-downs-and-field-zones.qmd) has the field zones;
+   [The Clock, the Two-Minute Drill, and Fourth Down](10-04-clock-and-game-management.qmd) the decision).
+4. **Field-goal range and field position.** On third-and-12 at the opponent's 35, a 7-yard completion
+   doesn't convert, but it turns a 52-yard field-goal try into a 45-yard one. Deep in his own end, an
+   offense facing third-and-15 may simply want a safe gain and a punt from further out.
+
+How often do offenses throw past the line? It depends heavily on the distance:
+`{python} pct(PAST_SHARE['1–3'])` of aimed passes on third-and-1 to 3 were thrown at or past it,
+`{python} pct(PAST_SHARE['4–6'])` at 4 to 6, `{python} pct(PAST_SHARE['7–10'])` at 7 to 10 and only
+`{python} pct(PAST_SHARE['11+'])` at 11 or more. The longer the distance, the more the defense can make
+the deep throw hard and the short throw easy, and the more often the quarterback takes the short one.
+
+::: {.callout-caution title="Common misconception"}
+"A completion short of the sticks on third down is a quarterback mistake." Sometimes. But on
+third-and-11 or more the defense's whole design is to make the short completion the only open one, with
+everybody else deep and waiting at the line to gain. A quarterback who forces the ball into that coverage
+risks an interception to chase a first down that converts less than one time in five even when
+everything goes right. Taking the checkdown, getting five yards, and punting from further out is often
+the better play. The mistake is the *other* one: the third-and-5 checkdown that gets four, when a
+receiver was open at six.
+:::
+
+## Third-and-long: screens, draws and the punt
+
+On third-and-12 the odds are poor whatever the offense calls: dropbacks converted
+`{python} pct(CB['mean']['drop']['11+'])` of third-and-11-or-more snaps in 2021–2025. Here a lot of
+offenses stop trying to win the down outright and start trying to win the *possession*: to avoid the
+sack, the interception and the holding penalty, and to make the punt that follows a little shorter. Two
+plays do most of that work, and both turn the defense's third-and-long plan against it.
+
+The **screen** lets the pass rush through and throws behind it. On third-and-long the defense's
+rushers are going all-out for the quarterback and its coverage players are deep and facing the quarterback, so a
+back or receiver who catches the ball behind the line with linemen in front of him has room. The
+**draw** shows a pass, then hands the ball off up the middle, into the space the linebackers just left
+by dropping into coverage. Its mechanics, and Paul Brown's Browns who made it famous, are in
+[Gap Schemes](../03-the-run-game/03-03-gap-and-power-runs.qmd). Here is why it lives on third down.
+
+```{python}
+#| label: fig-draw-vs-dime
+#| fig-cap: "A third-and-12 draw against a dime defense (simulated, illustrative). Snap: the defense has four rushers (both tackles lined up outside the guards, so nobody is over the center), one linebacker (M) and six defensive backs, two of them deep. +0.8 s: everything says pass. The quarterback has dropped, the linemen have set back as if to pass-block and let the rushers come upfield, the receivers are running deep, and the defense is dropping into coverage. +1.7 s: the back takes the handoff and heads up the middle, where the Mike was standing before he bailed to 10 yards; the guards ride the tackles outward, and the center, with nobody over him, climbs to the Mike. +3.3 s: the back has cut off the center's block on the Mike and reached the defensive backs, who rallied down from the sticks (their trails from 2.4 s shown) and tackle him at about 9.5 yards, short of the line to gain (orange). The draw worked as designed and still didn't convert: that is the bargain."
+def draw_play():
+    dfn = four_down(ldt=-2.35, rdt=2.35) + [
+        D("MIKE", "MIKE", 6.0, 0.6, "M"), D("NB", "NB", 6.0, -9.5, "$"), D("DB", "DB", 6.0, 9.5, "D"),
+        D("LCB", "CB", 8.0, -15.8, "CB"), D("RCB", "CB", 8.0, 15.8, "CB"),
+        D("FS", "FS", 14.0, -8.0, "FS"), D("SS", "SS", 14.0, 8.0, "SS")]
+    p = Play(spread(), dfn, los=40, to_go=12)
+    # receivers sell the pass: verticals that pull the defensive backs away
+    p.route("X", r.go(16.5)); p.route("Z", r.go(16.5)); p.route("H", r.seam(15)); p.route("Y", r.seam(15))
+    # quarterback: a short drop as if to throw; the handoff comes at 0.9 s
+    timed(p, "QB", [(0.6, -6.5, 0.0), (1.2, -6.5, 0.0)], "qbdrop")
+    timed(p, "RB", [(0.55, -5.0, -1.6), (0.9, -5.6, -0.6), (1.5, -2.5, 0.3), (2.1, 1.5, 1.1),
+                    (2.7, 6.0, 2.2), (3.3, 9.4, 2.5)], "run")
+    p.handoff("RB", t=0.9)
+    # line: pass sets, then each guard rides his tackle out and upfield from the inside shoulder;
+    # the uncovered center climbs to the Mike and stays on him
+    timed(p, "LT", [(0.6, -2.4, -4.6), (1.6, -3.4, -5.6)], "block")
+    timed(p, "LG", [(0.6, -1.5, -1.9), (1.6, -2.0, -2.2)], "block")
+    timed(p, "C", [(0.8, -0.2, 0.2), (2.2, 4.6, 0.4), (3.3, 5.0, 0.5)], "block")
+    timed(p, "RG", [(0.6, -1.5, 1.9), (1.6, -2.0, 2.3)], "block")
+    timed(p, "RT", [(0.6, -2.4, 4.6), (1.6, -3.4, 5.8)], "block")
+    timed(p, "LDE", [(0.6, -1.6, -6.4), (1.6, -3.6, -6.8)], "rush")
+    timed(p, "LDT", [(0.6, -0.8, -2.6), (1.6, -1.8, -3.2)], "rush")
+    timed(p, "RDT", [(0.6, -0.8, 2.6), (1.6, -1.8, 3.2)], "rush")
+    timed(p, "RDE", [(0.6, -1.6, 6.4), (1.6, -3.6, 6.8)], "rush")
+    # the defense drops for the pass, then has to come back; the Mike is met by the center
+    timed(p, "MIKE", [(0.9, 10.0, 0.4), (1.6, 10.0, 0.4), (2.3, 5.8, 0.4), (3.3, 5.8, 0.4)], "drop")
+    timed(p, "NB", [(1.2, 10.5, -11.0), (2.0, 12.5, -10.5), (3.3, 10.2, 1.0)], "drop")
+    timed(p, "DB", [(1.2, 10.5, 11.0), (2.0, 12.5, 10.5), (3.3, 11.6, 4.6)], "drop")
+    timed(p, "FS", [(1.2, 17.0, -8.5), (2.0, 17.0, -8.0), (3.3, 12.4, 0.9)], "drop")
+    timed(p, "SS", [(1.2, 17.0, 8.5), (2.0, 17.0, 8.0), (3.3, 10.6, 3.6)], "drop")
+    timed(p, "LCB", [(1.6, 15.0, -15.8)], "drop"); timed(p, "RCB", [(1.6, 15.0, 15.8)], "drop")
+    p.highlight("RB")
+    return p
+
+
+drw = draw_play()
+DRAW_T = [0.0, 0.8, 1.7, 3.3]
+if PDF:
+    fig = strip(drw, DRAW_T, ["Snap · 3rd & 12, dime, two deep", "+0.8 s · it looks like a pass",
+                              "+1.7 s · handoff, through the vacated middle", "+3.3 s · tackled at 9–10: short of the sticks"],
+                lateral=(-21, 21), window=(-9.0, 20.0), trails_from={3: 2.4},
+                notes_at={1: [("linemen let the\nrushers upfield", (-5.5, 10.5), (-3.4, 6.6))],
+                          2: [("Mike bailed\nto 10 yards", (5.8, 7.0), (9.4, 0.4)),
+                              ("center climbs\nto the Mike", (3.0, -8.5), (2.8, 0.3))],
+                          3: [("center on\nthe Mike", (3.0, -8.0), (5.0, 0.5)),
+                              ("tackled at 9.5:\n2.5 yards short", (4.0, 12.5), (9.4, 2.5))]})
+    plt.show()
+else:
+    show_animation(drw, times=DRAW_T)
+```
+
+Watch what the defense's third-and-long plan does to itself. It has taken off a linebacker for a sixth
+defensive back, so there is one fewer big body near the line. Its remaining linebacker drops to 10 yards
+at the snap, because that is where the passing windows are. Its rushers come upfield as fast as they can,
+because they are trying to reach a quarterback who is about to throw. The draw uses all three: the
+linemen let the rushers run themselves past the play, and the back runs into the space the dropping
+linebacker left. Against a defense playing the pass, it's one of the few runs with numbers on its side.
+
+And it still usually fails to convert. Designed runs on third-and-11 or more converted only
+`{python} pct(CB['mean']['run']['11+'])` of the time in 2021–2025, because the defensive backs who dropped
+to the sticks are waiting there to tackle. So why call it? Partly because a 9-yard run on third-and-12 is
+a better outcome than a sack, an interception or an incompletion, especially near midfield, where it
+improves the punt or sets up a long field-goal try. Partly to protect the next third down: a defense that
+has been gashed by a draw rushes a half-step more carefully the next time, and its linebacker drops a
+half-step later. That is a [constraint play](../../appendices/glossary.qmd#gl-constraint-play), a call
+that exists to keep the defense honest against another ([Constraint Theory](../08-the-chess-match/08-02-constraint-theory-and-sequencing.qmd)).
+
+The same logic explains the third-and-long screen, which also rarely converts but pays in the same
+currency. Both are cheap ways to lose the down safely, with a small chance of winning
+it big against a defense that guessed wrong.
+
+## The defense's third-down package
+
+When the defense knows the offense will throw, it changes the people on the field. That is a
+**[third-down package](../../appendices/glossary.qmd#gl-third-down-package)**: the personnel and calls
+a team keeps for third down. On defense it means more defensive backs, faster pass rushers, and the
+pressures and disguises it has practised all week. On offense it means its best quick concepts, its
+protections for the opponent's pressures, and the receivers and back it trusts most on the money down.
+
+The defensive half is visible from your couch, and the data show it clearly.
+
+```{python}
+#| label: fig-defense-by-distance
+#| fig-cap: "What NFL defenses did on third-down dropbacks, by yards to go, 2023–2025 regular seasons: how often they had six or more defensive backs on the field (dime or quarter personnel), blitzed (five or more rushers), played Cover 0 (man coverage with no deep safety) and rushed three or fewer. Dime grows with the distance; Cover 0 shrinks; the blitz peaks at 7 to 10 yards and falls away at 11 or more, where rushing three (dashed) becomes more common. Rates are shares of charted dropbacks; Cover 0 is a share of dropbacks with a charted coverage. Source: nflverse participation data (FTN charting)."
+ORDER = ["1–3", "4–6", "7–10", "11+"]
+series = [("dime", "6+ defensive backs", style.SERIES[0], "o", "-"),
+          ("blitz", "Blitz (5+ rushers)", style.SERIES[1], "s", "-"),
+          ("cov0", "Cover 0", style.SERIES[2], "^", "-"),
+          ("rush3", "Rush 3 or fewer", style.SERIES[3], "D", (0, (4, 2)))]
+fig, ax = plt.subplots(figsize=(6.5, 3.0))
+xs = np.arange(len(ORDER))
+for key, lab, col, mk, ls in series:
+    ys = DEF[key].reindex(ORDER).values
+    ax.plot(xs, ys, color=col, lw=2, ls=ls, marker=mk, ms=5.5, zorder=3)
+    # direct labels at the right end replace a legend
+    ax.text(xs[-1] + 0.12, ys[-1], f"{lab}  {100 * ys[-1]:.0f}%", va="center", fontsize=7.2, color=col,
+            fontweight="bold")
+ax.set_xticks(xs, [f"3rd & {b}" for b in ORDER], fontsize=8)
+ax.set_xlim(-0.25, 4.6)
+ax.set_ylim(0, 0.5)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{100 * y:.0f}%"))
+ax.tick_params(axis="y", labelsize=7.5)
+ax.set_ylabel("Share of third-down dropbacks", fontsize=8)
+ax.grid(axis="x", visible=False)
+ax.spines["bottom"].set_bounds(0, 3)
+fig.tight_layout()
+plt.show()
+```
+
+**Personnel.** Defenses had six or more defensive backs on the field for
+`{python} pct(DEF.loc['1–3', 'dime'])` of third-and-short dropbacks, `{python} pct(DEF.loc['7–10', 'dime'])`
+at 7 to 10 yards and `{python} pct(DEF.loc['11+', 'dime'])` at 11 or more, against
+`{python} pct(DIME_EARLY)` on first and second down.[^defdata2] The dime back replaces a linebacker: he
+covers better and tackles worse, and on a down when the offense is very likely to throw that is a good
+trade. It is also a bet, and the draw above is how the offense makes the defense pay when the bet is wrong.
+
+**Pass rushers.** The same logic applies up front. A 330-pound run-stopping tackle who is excellent on
+first-and-10 is wasted on third-and-9, so many defenses replace him with a lighter, quicker rusher, or put
+four edge rushers on the field together, with two of them lined up inside over the guards. Steve
+Spagnuolo's 2007 Giants had a package of four pass rushers that *Sports Illustrated* later called his
+"Four Aces"; by 2011 the Giants' version, four defensive ends on third-and-long, was known as their
+"NASCAR" package, for its speed.[^nascar] Most NFL defenses now have some version of it, and many rosters
+carry a rusher or two who play mostly on passing downs. And the most common third-down "pressure" is not a
+blitz at all: it is four rushers running a [stunt](../../appendices/glossary.qmd#gl-stunt), an end and a
+tackle crossing paths so that one of them comes free through a gap the protection thought was covered
+([The Pass Rush](../07-pressure/07-01-pass-rush.qmd)). A front of four quick rushers is built for exactly
+that.
+
+**Calls.** Third down is also where a defense spends the calls it has been saving. The chart shows their
+shape by distance; the rest of this chapter takes the families in turn: sitting at the sticks, 2-Man,
+pressure, Cover 0, rushing three, and spying the quarterback.
+
+::: {.callout-note title="Film room: the third-down back, Patriots 2018–2019"}
+The offensive half of the package has faces too. Under Bill Belichick and Josh McDaniels the Patriots
+kept a running back whose main job was third down: first picking up blitzers in pass protection, then
+catching passes and running the option routes out of the backfield that linebackers struggle to cover. James White was New England's
+most-targeted receiver on third down in both 2018 and 2019, the target on
+`{python} pct(WHI['share'])` of Tom Brady's third-down throws to a named receiver across the two seasons.[^pats]
+**What to notice:** on third down, watch which back comes into the game. If it isn't the starter, the
+substitution is a statement: protection and routes, not runs.
+:::
+
+## Sticks defense: keep it in front
+
+The simplest third-down defense is the one that makes the offense's own target its landmark. If the
+offense needs 12 yards, the defense can give up 11. Coaches call it playing the sticks: zone defenders
+drop to (or just past) the line to gain, keep every receiver in front of them, and tackle the catch
+short of it.
+
+```{python}
+#| label: fig-sticks-defense
+#| fig-cap: "The same Cover 3 at two distances (illustrative). Cover 3 is a zone defense with three deep defenders, each guarding a third of the field's width (here the two cornerbacks and the free safety), and four underneath. Left, third-and-4: the four underneath defenders squeeze to about 6 yards, the depth where a sticks route would break, so they can drive forward on the throw and tackle short of the line to gain; the deep defenders play tighter. Right, third-and-12: the same four sink to 12 or 13 yards, right on the line to gain (orange), and the cornerbacks and free safety play deeper, because nothing short of 12 yards hurts. The shaded ovals are the zones; the numbers on the left edge count yards past the line of scrimmage."
+def c3_def(to_go, under_d, cb_drop, cb_d, fs_d, fs_drop):
+    dfn = four_down() + [
+        D("WILL", "WILL", 4.5, -2.2, "W"), D("MIKE", "MIKE", 4.5, 2.2, "M"),
+        D("NB", "NB", 5.0, -10.0, "$"), D("SS", "SS", 7.5, 10.0, "SS"),
+        D("LCB", "CB", cb_d, -15.8, "CB"), D("RCB", "CB", cb_d, 15.8, "CB"), D("FS", "FS", fs_d, 0.0, "FS")]
+    p = Play(spread(), dfn, los=40, to_go=to_go)
+    for k in ("LDE", "LDT", "RDT", "RDE"):
+        p.rush(k, pts=[(-1.6, 0.0)])
+    zs = (6.0, 8.0) if under_d < 9 else (5.0, 8.0)
+    p.drop("NB", (under_d, -11.5), zone=zs); p.drop("WILL", (under_d, -4.5), zone=zs)
+    p.drop("MIKE", (under_d, 4.5), zone=zs); p.drop("SS", (under_d, 11.5), zone=zs)
+    p.drop("LCB", (cb_drop, -15.5), zone=(8.0, 9.5)); p.drop("RCB", (cb_drop, 15.5), zone=(8.0, 9.5))
+    p.drop("FS", (fs_drop, 0.0), zone=(8.0, 12.0))
+    return p
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.5, 4.0))
+for ax, (tg, ud, cbx, cbd, fsd, fsx, title) in zip(axes, [
+        (4, 6.0, 14.0, 5.5, 11.0, 15.0, "3rd & 4: underneath squeezes to 6"),
+        (12, 12.5, 18.5, 8.0, 15.5, 20.5, "3rd & 12: underneath sinks to the sticks")]):
+    p = c3_def(tg, ud, cbx, cbd, fsd, fsx)
+    fld = p.draw(ax=ax, lateral=(-21, 21), window=(-7.0, 27.0), title=False, width_in=3.2)
+    clean(fld.ax); ruler(fld, p, fs=5.5)
+    ax.set_title(title, fontsize=7.8, loc="left", color=style.INK)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+Why does this work? Because the offense's routes have to be *finished* to be useful. A curl at 14 yards
+takes about two seconds to run; a defender who starts at 12 and only has to take one step and tackle has
+almost no ground to cover. And the defense doesn't need to stop the catch, only the extra yard. This is
+very likely part of the reason for the dip in the past-the-sticks chart at throws aimed right at the line:
+the defender standing on the line to gain catches the receiver there.
+
+What does it give up? **Everything short.** A sticks defense on third-and-12 hands the offense an open
+6-yard route on almost every snap, which is fine until the offense is in four-down territory and happy to
+take it, or has a receiver who can make a man miss. It also gives the quarterback **time**, because the
+underneath defenders are reading him rather than rushing him. And it asks for good **tackling**: a defense
+that misses the first tackle at the sticks has turned a stop into a first down. The cure for the short
+completion is a fast defense that rallies to it; for the time, mixing in pressure; for the tackling, there
+is no scheme.
+
+### Man under, two deep: 2-Man
+
+Zone at the sticks has a cousin built on man coverage. In
+**[2-Man](../../appendices/glossary.qmd#gl-2-man)** (also called Cover 5), two safeties split the deep field
+in halves and the five defenders underneath play man, usually in
+[trail technique](../../appendices/glossary.qmd#gl-trail-technique): a step behind the receiver and on his
+inside hip, daring him to run past, because a safety is waiting over the top. It is the classic
+third-and-medium-to-long man call against option-route offenses. The underneath defender can sit on the
+short break, the sticks route, with no fear of the deep ball, and the receiver who turns upfield runs into
+a safety. Defenses played it on `{python} pct(TWO_MAN['4–6'])` to `{python} pct(TWO_MAN['7–10'])` of charted
+third-and-4-to-10 dropbacks in 2023–2025, against `{python} pct(TWO_MAN_EARLY)` on early downs.[^twoman]
+
+The price is the rush and the middle. Two deep and five in man leaves four rushers and nobody to spy or rob,
+so a quarterback who escapes the pocket has open grass in front of him: the man defenders are running with
+their receivers, backs turned. That is why 2-Man is a favourite against pocket passers and a risk against
+quarterbacks who run (the spy, below, is the answer to that). The pre-snap tell is two high safeties with the
+cornerbacks and the nickel tight and *inside* their receivers; the trap is that the same picture can turn into
+a two-deep zone at the snap.
+
+## Pressure on third down: simulated pressure and the blitz
+
+The second family is pressure. [Zone Blitzes, Fire Zones, and Simulated Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd)
+built the tools; here is why third down is where they live.
+
+On third down the quarterback has to hold the ball until a route past the sticks is open, so every
+fraction of a second the defense takes away is worth more than on any other down. Pressure that forces
+the ball out early forces it out *short*, usually to a hot receiver in front of the line to gain, and on
+third-and-8 a hot throw that gains five is a defensive win.
+
+That is why the blitz peaks at **third-and-7 to 10**. In 2023–2025 defenses sent five or more rushers on
+`{python} pct(DEF.loc['7–10', 'blitz'])` of third-and-7 to 10 dropbacks, against `{python} pct(BLITZ_EARLY)`
+on first and second down. At that distance the hot throw is short of the sticks, so the defense can live
+with it; the routes that convert take time to develop, so pressure can kill them. At **11 or more** the
+blitz rate falls to `{python} pct(DEF.loc['11+', 'blitz'])`: the defense doesn't need to force the ball out,
+because a short throw already loses. At **4 to 6**, blitzing is more dangerous, because the hot throw can
+convert, so blitz rates there are lower, and most defenses that do blitz play man coverage behind it, not
+zone (the third-down chart in
+[Zone Blitzes, Fire Zones, and Simulated Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd) counts it).
+
+**Simulated pressure** fits third down even better. It shows a blitz, gets the protection to commit and
+the quarterback to plan a hot throw, then rushes four from unexpected places and drops seven, often with a
+lineman sitting in exactly the short window the hot throw was aimed at. On third-and-long the quarterback
+who throws hot into that window gains nothing, and the one who waits for a route past the sticks is facing
+a rusher his protection didn't count. To see why "didn't count" matters, look at the other side of the ball.
+
+### The offense's answer: count, slide, keep the back in
+
+Remember the quarterback in the opening, pointing at a safety and shouting. He was **counting**. Before
+every third-down snap the offense names the defenders it thinks can rush, picks one as the reference point
+(the [Mike identification](../../appendices/glossary.qmd#gl-mike-identification)), and every blocker
+counts his man from him, so all of them block the same picture ([Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd)).
+On third down that call does most of the work:
+
+- **Slide toward the threat.** The line [slides](../../appendices/glossary.qmd#gl-slide-protection) toward
+  the side the extra rusher is most likely to come from, blocking gaps rather than men, so a stunt or a
+  late blitzer runs into a blocker.
+- **Six-man protection.** The back stays in to take the first extra rusher (the
+  [half-slide](../../appendices/glossary.qmd#gl-half-slide) is the everyday version), which answers a
+  five-man pressure with six blockers. The cost is one fewer receiver, on the down when the offense most
+  needs a man open.
+- **Hot and sight adjust.** When the defense brings more than the protection can block, the quarterback
+  throws [hot](../../appendices/glossary.qmd#gl-hot-route) to the receiver whose defender just blitzed, and a
+  receiver who sees the same blitz may cut his route short
+  ([sight adjust](../../appendices/glossary.qmd#gl-sight-adjust)). That is the defense's bet: the hot throw
+  is fast, and on third-and-8 it is usually short.
+
+So when a simulated pressure walks a safety down and then drops him, it isn't just "showing blitz." It is
+attacking the count: the protection slid toward the safety, the back was told to check him, and the
+fourth rusher comes from the other side, where the count left a gap. Simulated pressures are designed to
+beat the protection's counting rules ("who's the fifth?"), and that is why third down is where they live.
+
+::: {.callout-note title="Film room: Chiefs 2024 — Spagnuolo saves it for third down"}
+Steve Spagnuolo, the Chiefs' defensive coordinator since 2019 (and still in 2026), is the clearest modern
+case of a coordinator whose pressure is *situational*. In 2024 the Chiefs sent five or more rushers on
+`{python} pct(KC24_E)` of first- and second-down dropbacks, already above the league's typical rate
+(median `{python} pct(MED24_E)`); on third down it was `{python} pct(KC24_3)`, the `{python} ordinal(KC24_RK)`-highest rate in the
+NFL (league median `{python} pct(MED24_3)`). In 2025 the pattern held: `{python} pct(KC25_E)` early,
+`{python} pct(KC25_3)` on third down. The 2025 Chiefs also played Cover 0 on `{python} pct(KC25_C0, 1)` of
+their charted third-down dropbacks, the most in the league.[^kc] The two calls go together: the all-out
+blitz with no deep safety, kept for third down, when a hot throw that doesn't get to the line ends the drive.
+
+**What to notice:** on a Chiefs third down, count the defenders within five yards of the line before the
+snap, then count again after it. Spagnuolo's famous calls are the six-man zeros
+([Blitzing](../07-pressure/07-02-blitz-and-man-pressure.qmd) breaks down the ones from Super Bowl LVIII),
+but most of his third downs show that look and bring four or five.
+
+**And the honest footnote:** pressure is a bet, not a guarantee. The 2024 Chiefs allowed third-down
+conversions on `{python} pct(KC24_ALLOW)` of opponents' third downs, only the
+`{python} ordinal(KC24_ALLOW_RK)`-best rate in the league, in a 15–2 season. A blitz that gets home ends the drive;
+one that doesn't leaves a receiver alone.
+:::
+
+## Cover 0: all in
+
+The most aggressive third-down call is **Cover 0**: man coverage on every eligible receiver, nobody deep,
+and everyone else rushing. [Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd) and
+[Blitzing](../07-pressure/07-02-blitz-and-man-pressure.qmd) drew it; this section is about *when*.
+
+Across the league it is above all a **short-yardage** call. On third-and-1 to 3, Cover 0 was played on
+`{python} pct(DEF.loc['1–3', 'cov0'])` of charted dropbacks in 2023–2025; on third-and-11 or more,
+`{python} pct(DEF.loc['11+', 'cov0'])`. Why short? Two reasons.
+
+1. **A completion costs less.** With nobody deep, any completion that beats its man can go a long way. But
+   on third-and-2 the defense loses the down on almost any completion anyway, so the bet risks less than on
+   third-and-10, where a short completion is still a stop and the defense would be giving up its safe
+   outcome to gamble.
+2. **Every defender is close to the line, which helps against the run.** On third-and-short the offense
+   might run; Cover 0 puts eight or nine defenders within a few yards of the ball.
+
+Some coordinators use it at longer distances too, for a third reason: **it forces the decision now.** A
+quarterback facing six rushers and no safety has well under two seconds. He must throw hot, against tight
+man coverage, before the route has developed. On third-and-2 that hot throw can convert, but on
+third-and-6 or 7 the routes fast enough to beat the rush mostly end short of the line. That is the Cover 0
+of the film rooms below. Spagnuolo's Chiefs and Flores's Dolphins called it on short third downs like
+everyone else, but kept calling it on long ones, where most of the league nearly stops: on third-and-7 or
+longer, the 2021 Dolphins played Cover 0 on `{python} pct(MIA21_C07)` of charted dropbacks
+(`{python} ordinal(MIA21_C07_RK)` in the NFL; league median `{python} pct(MED21_C07)`), and the 2025 Chiefs on
+`{python} pct(KC25_C07)` (`{python} ordinal(KC25_C07_RK)`; median `{python} pct(MED25_C07)`).[^c0long] They were
+betting that the hot throw would land short. The league habit (short yardage, for the run and because the
+completion converts anyway) and theirs (medium and long, because the completion lands short) are two
+answers to the same question: where is the quick completion least damaging?
+
+What it gives up is everything behind it. A Cover 0 blitz that doesn't get home is one broken tackle away
+from a touchdown, and offenses that see it coming (both safeties walking down, corners pressed, linebackers
+mugged in the A gaps) answer with slants, rubs, and protection that keeps an extra blocker in.
+
+::: {.callout-note title="Film room: Dolphins 2021 — Brian Flores's third-down zeros"}
+Brian Flores spent fifteen seasons in Bill Belichick's New England organisation (four in scouting, then
+eleven on the coaching staff) before becoming Miami's head coach (2019–2021), and his Dolphins played Cover 0 more than anyone. In 2020 they played it on
+`{python} pct(MIA20_C0)` of charted third-down dropbacks, level with Belichick's Patriots
+(`{python} pct(NE20_C0)`) at the top of the league; in 2021 on `{python} pct(MIA21_C0)`, the most in the NFL
+and more than four times the league median (`{python} pct(MED21_C0)`).[^mia]
+
+The signature night came on Thursday, November 11, 2021, when the 2–7 Dolphins beat the 6–2 Ravens
+`{python} G_HS`–`{python} G_AS` in Miami. Flores sent five or more rushers on
+`{python} pct(G_BL)` of Lamar Jackson's `{python} G_N` charted dropbacks and played Cover 0 on
+`{python} G_C0` of them, with his safeties walked up as rushers or man defenders, and Baltimore converted
+`{python} G3_CONV` of `{python} G3_N` third downs. The Ravens' own columnist described an offense
+"overwhelmed by relentless blitzes."[^eisenberg]
+
+**What to notice:** before the snap, count the deep safeties. If there are none, and the corners are
+pressed, it is Cover 0 or a disguise of it, and the ball has to come out in well under two seconds. Flores kept
+the same idea in Minnesota (he has been the Vikings' defensive coordinator since 2023, and still is in
+2026), where the Cover 0 look is as often a disguise as a call.
+:::
+
+## Rush three, drop eight
+
+At the other end of the dial is a call that sounds like giving up: **[rush three, drop
+eight](../../appendices/glossary.qmd#gl-rush-three-drop-eight)**. Three rushers, eight defenders in
+coverage, usually on third-and-long.
+
+```{python}
+#| label: fig-rush-three
+#| fig-cap: "Rush three, drop eight on third-and-12 (illustrative). Three linemen rush; a stand-up edge player (B) who looked like a fourth rusher drops instead. Behind them, five underneath defenders sink to 11 to 13 yards, right on the line to gain (orange), and three deep defenders sit at 18 to 21 yards. The offense runs a typical third-and-long pattern: curls at the sticks outside, a dig at 13 from the left slot, and the tight end up the seam to hold the deep middle. Every one of those windows has a defender in it. The offense has five blockers for three rushers, so the center and left guard double the nose and the right guard looks for work, and the back's checkdown is wide open, about 10 yards short."
+def rush3_play():
+    dfn = [D("LDE", "DE", 1.0, -4.0, "E"), D("NT", "NT", 1.0, 0.0, "N"), D("RDE", "DE", 1.0, 4.0, "E"),
+           D("OLB", "OLB", 1.0, -6.6, "B"), D("MIKE", "MIKE", 6.5, 0.8, "M"),
+           D("NB", "NB", 6.0, -9.5, "$"), D("DB", "DB", 6.0, 9.5, "D"), D("SS", "SS", 11.0, 6.0, "SS"),
+           D("LCB", "CB", 8.0, -15.8, "CB"), D("RCB", "CB", 8.0, 15.8, "CB"), D("FS", "FS", 15.0, 0.0, "FS")]
+    p = Play(spread(), dfn, los=40, to_go=12)
+    for k in ("LDE", "NT", "RDE"):
+        p.rush(k, pts=[(-2.0, 0.0)])
+    # protection: tackles on the ends, center and left guard double the nose, right guard looks for work
+    p.block("LT", pts=[(-1.3, -0.5)]); p.block("RT", pts=[(-1.3, 0.5)])
+    p.block("LG", pts=[(-0.8, 0.8)]); p.block("C", pts=[(-0.7, 0.0)]); p.block("RG", pts=[(-1.2, 0.9)])
+    p.route("X", r.curl(13.5)); p.route("Z", r.curl(13.5))
+    p.route("H", r.dig(14.5, 8)); p.route("Y", r.seam(17))
+    p.route("RB", [(0, 0), (2.5, 3.4), (8.0, 3.7)], side=-1)       # check, then release past the line
+    zs = (5.0, 7.5)
+    p.drop("NB", (12.0, -13.0), zone=zs); p.drop("OLB", (11.5, -6.0), zone=zs); p.drop("MIKE", (13.0, 0.0), zone=zs)
+    p.drop("SS", (11.5, 6.0), zone=zs); p.drop("DB", (12.0, 13.0), zone=zs)
+    p.drop("LCB", (18.5, -16.0), zone=(7.0, 11.0)); p.drop("RCB", (18.5, 16.0), zone=(7.0, 11.0))
+    p.drop("FS", (21.0, 0.0), zone=(7.0, 12.0))
+    return p
+
+
+p = rush3_play()
+fld = p.draw(lateral=(-22, 22), window=(-7.5, 27.0), title=False)
+clean(fld.ax); ruler(fld, p)
+say(fld, p, 24.7, -11.0, "five underneath at 11–13 yards:\nevery window at the sticks is filled", fontsize=6.5)
+say(fld, p, 24.7, 12.0, "three deep at 18–21 yards:\nnothing gets over the top", fontsize=6.5)
+point_to(fld, p, (-4.8, 10.5), (-1.9, 2.5), "three rushers, five blockers: C and LG\ndouble the nose, RG looks for work")
+point_to(fld, p, (-4.6, -13.5), (3.0, -5.3), "checkdown: open,\nabout 10 yards short")
+plt.show()
+```
+
+The logic is the sticks defense taken to its limit. On third-and-12 the offense needs a completion past
+12 yards, and eight defenders can put a body in every window at that depth and still keep three deep. The
+quarterback is offered the checkdown and little else.
+
+The price is **time**. Three rushers against five blockers will rarely get home quickly: the offense has
+two spare linemen to double-team the best rusher, and the quarterback can hold the ball for four seconds
+or more. Given that long, receivers can run a second route, and a quarterback who can move will find the
+gaps in the rush and scramble through them. That is why rush-three calls often come with the next section's
+idea attached, a defender assigned to the quarterback, and why defenses mix them with pressure: a quarterback
+who sees three rushers on one third-and-long can't assume he'll get time on the next.
+
+How rare is it, and does it work? Across 2023–2025 defenses rushed three or fewer on
+`{python} pct(DEF.loc['11+', 'rush3'])` of third-and-11-or-more dropbacks and `{python} pct(DEF.loc['7–10', 'rush3'])`
+at 7 to 10. On third-and-7 or longer, offenses converted `{python} pct(RO.loc['3 or fewer', 'conv'])` against
+three or fewer rushers, `{python} pct(RO.loc['4', 'conv'])` against four and `{python} pct(RO.loc['5+', 'conv'])`
+against five or more.[^rush3] Sack rates run the way you'd expect:
+`{python} pct(RO.loc['3 or fewer', 'sack'], 1)` with three rushers, `{python} pct(RO.loc['5+', 'sack'], 1)` with
+five or more.
+
+Read those conversion rates carefully, because they seem to say the blitz is the *worst* call on
+third-and-long. Most of that is the distance hiding inside the average. Three-man rushes come mostly on the
+very longest downs, which are the hardest to convert whatever the defense does, and blitzes mostly at 7 to
+10, which are easier. Hold the distance still and the gap nearly closes: on third-and-7 to 10 alone,
+offenses converted `{python} pct(RO10.loc['4', 'conv'])` against four rushers and
+`{python} pct(RO10.loc['5+', 'conv'])` against five or more. So the blitz doesn't stop third-and-long more
+often than a four-man rush, on average. It does change *how* the down ends: more sacks, more hurried throws,
+and the occasional receiver left alone. That near-tie is roughly what you'd expect if coordinators are
+mixing their calls well. If one call were clearly better, everyone would call it more, offenses would
+prepare for it, and its edge would shrink. The blitz earns its place by being one option in a mix the
+quarterback can't predict, not by winning every time it is called.
+
+Some defenses lean on it. Brian Flores's 2023 Vikings, the league's heaviest blitzers that season, also
+rushed three or fewer on `{python} pct(R3T[2023]['MIN'])` of their third-and-7-or-longer dropbacks, the most in the
+NFL: a defense that might send seven or three, from the same look. In 2025 the leaders were Jesse Minter's
+Chargers (`{python} pct(R3T[2025]['LAC'])`; Minter is the Ravens' head coach in 2026) and Kelvin Sheppard's
+Lions (`{python} pct(R3T[2025]['DET'])`).
+
+::: {.callout-important title="Why it exists: rush three, drop eight"}
+**What it solves:** on third-and-long the offense needs a completion past the sticks, so the defense puts
+its numbers where the completion has to happen, and accepts a free short throw. **What it gives up:** the
+pass rush. With only three rushing, the quarterback gets time, and time eventually beats any coverage. It
+works best against quarterbacks who don't run and offenses without a receiver who can turn a checkdown into
+twelve yards, and it works only as one call in a mix.
+:::
+
+## The spy
+
+The last family answers a problem that third down's own calls create. Drop eight into coverage, or even
+seven, and the coverage covers everyone *except* the man with the ball. Play man coverage, and it is
+worse: every man defender is running with his receiver, **back turned to the quarterback**, so nobody sees
+him take off. (Zone defenders at least face the quarterback and can come up when he runs.) A quarterback
+who can run looks downfield, sees every receiver covered, sees the rush lanes open, and goes. Scrambles
+were only `{python} pct(SCR_SHARE)` of third-down dropbacks in 2021–2025, but on third-and-7 to 10 they
+converted `{python} pct(SCR_CONV_LONG)` of the time, against `{python} pct(DROP_CONV_LONG)` for dropbacks as a
+whole.[^scramble] Against the quarterbacks who scramble most, that is a weapon a defense has to plan for.
+
+The defense's answer is the **[spy](../../appendices/glossary.qmd#gl-spy)** (or **[QB
+spy](../../appendices/glossary.qmd#gl-qb-spy)**): a defender assigned not to a receiver or a rush lane but to
+the quarterback himself. He stands at linebacker depth, usually 5 to 7 yards off the ball and in front of
+the quarterback, keeps his eyes on him, and mirrors him. If the quarterback throws, the spy has done
+nothing, which is the price. If he runs, the spy meets him.
+
+```{python}
+#| label: fig-spy
+#| fig-cap: "A spy on third-and-6, 2.3 seconds after the snap (simulated, illustrative; faint lines show where each player has been, dashed arrows where the quarterback and the spy go next). The defense plays Cover 1, man coverage on every receiver who goes out, with one deep safety; it rushes four and assigns the Mike linebacker (purple ring) to the quarterback. The back has stayed in to block, so the Will who had him waits. The man defenders have turned and run with their receivers, backs to the quarterback. The ends have rushed in their lanes, pushing the tackles back from the outside so the quarterback can't escape around them. He steps up toward the B gap (between the left guard and tackle), and the spy, who has shuffled with him from 6 yards, is already closing: he meets him (×) about two yards past the line, short of the line to gain. In an ordinary Cover 1 this Mike might have been the robber; using him as a spy costs the defense that help."
+def spy_play():
+    dfn = four_down(lde=-6.4, rde=6.4) + [
+        D("MIKE", "MIKE", 6.0, 0.0, "M"), D("WILL", "WILL", 4.0, -5.5, "W"),
+        D("NB", "NB", 5.0, -9.5, "$"), D("SS", "SS", 6.0, 9.5, "SS"),
+        D("LCB", "CB", 2.0, -15.8, "CB"), D("RCB", "CB", 2.0, 15.8, "CB"), D("FS", "FS", 14.0, 0.0, "FS")]
+    p = Play(spread(rb_w=1.6), dfn, los=40, to_go=6)
+    # routes: outs set a yard and a half past a third-and-6 line (offsets from a 1.5-yard-deep slot)
+    p.route("X", r.go(14)); p.route("Z", r.go(14)); p.route("H", r.out(9.0, 4)); p.route("Y", r.out(9.0, 4))
+    for dk, ok in (("LCB", "X"), ("RCB", "Z"), ("NB", "H"), ("SS", "Y")):
+        p.man(dk, ok)
+    p.drop("FS", (16.0, 0.0))
+    timed(p, "RB", [(0.8, -4.0, 2.6)], "block")                      # six-man protection: the back stays in
+    # the quarterback: drop, hold, then step up toward the left B gap
+    timed(p, "QB", [(0.7, -7.0, 0.0), (1.5, -7.0, 0.0), (2.3, -4.0, -2.4)], "run")
+    # the line: pass sets; the tackles are pushed back by the ends, the guards and center hold the inside
+    timed(p, "LT", [(0.6, -2.0, -4.2), (1.8, -3.3, -4.8), (2.3, -3.6, -5.0)], "block")
+    timed(p, "LG", [(0.6, -1.8, -1.5), (2.3, -2.4, -1.4)], "block")
+    timed(p, "C", [(0.6, -1.8, 0.3), (2.3, -2.2, 0.4)], "block")
+    timed(p, "RG", [(0.6, -1.8, 1.9), (2.3, -2.4, 2.2)], "block")
+    timed(p, "RT", [(0.6, -2.0, 4.2), (1.8, -3.3, 4.8), (2.3, -3.6, 5.0)], "block")
+    # the rush: ends stay outside their tackles (contain), tackles push into the guards
+    timed(p, "LDE", [(0.6, -0.8, -5.8), (1.8, -2.4, -6.2), (2.3, -2.8, -6.4)], "rush")
+    timed(p, "RDE", [(0.6, -0.8, 5.8), (1.8, -2.4, 6.2), (2.3, -2.8, 6.4)], "rush")
+    timed(p, "LDT", [(0.6, -0.6, -0.8), (2.3, -1.1, -0.6)], "rush")
+    timed(p, "RDT", [(0.6, -0.6, 2.3), (2.3, -1.1, 3.0)], "rush")
+    # the spy: shuffles with the quarterback's shoulders, then starts to close
+    timed(p, "MIKE", [(1.5, 6.0, 0.0), (2.0, 5.6, -0.8), (2.3, 4.9, -1.4)], "path")
+    p.highlight("MIKE", color=PURPLE)
+    return p
+
+
+spy = spy_play()
+T_SPY = 2.3
+MEET = (2.1, -3.3)
+fld = snapshot(spy, T_SPY, lateral=(-21, 21), window=(-9.5, 18.5), ruler_fs=6.3)
+ax = fld.ax
+PPs = lambda d, w: fld.xy(*spy.to_abs(d, w))  # noqa: E731
+at = lambda k: tuple(float(v) for v in spy.position(k, T_SPY))  # noqa: E731
+# the next half-second: the quarterback's escape and the spy's angle, and where they meet
+for key, end, col, lw in (("QB", (MEET[0] - 0.5, MEET[1]), style.OFFENSE_DARK, 2.4),
+                          ("MIKE", (MEET[0] + 0.4, MEET[1] + 0.2), PURPLE, 2.2)):
+    x0, y0 = PPs(*at(key)); x1, y1 = PPs(*end)
+    ax.add_patch(FancyArrowPatch((float(x0), float(y0)), (float(x1), float(y1)), arrowstyle="-|>",
+                                 mutation_scale=12, color=col, lw=lw, ls=(0, (3, 2)), shrinkA=8, shrinkB=1,
+                                 zorder=9))
+xm, ym = PPs(*MEET)
+ax.plot([float(xm)], [float(ym)], marker="x", ms=10, mew=2.6, color=style.INK, zorder=12)
+point_to(fld, spy, (12.4, 6.6), at("MIKE"), "the spy (M): eyes on the\nQB, shuffling, now closing")
+point_to(fld, spy, (1.8, -13.5), MEET, "spy meets him here:\n2 yards past the line,\nshort of the sticks", shrink=5)
+point_to(fld, spy, (-7.6, 10.0), at("RDE"), "ends rush in their lanes,\noutside the tackles: contain")
+point_to(fld, spy, (-7.6, -9.5), at("QB"), "quarterback steps up\ntoward the B gap")
+point_to(fld, spy, (11.4, -9.2), at("LCB"), "man defenders run with their\nreceivers, backs to the quarterback")
+plt.show()
+```
+
+Who spies? Someone fast enough to match a running quarterback and big enough to tackle him: usually a
+linebacker, sometimes a safety or nickel back against the fastest quarterbacks, occasionally a defensive
+lineman who "rushes" by stepping up and sitting in the middle. A linebacker assigned to the back can also
+be a *green dog* (some staffs say *hug* or *add-on*), who joins the rush only if the back stays in to
+block ([Linebackers and the Second Level](../05-defensive-fronts-and-run-defense/05-04-linebackers-and-second-level.qmd)).
+The spy comes with a rush plan too: against a running quarterback the rushers play a
+[mush rush](../../appendices/glossary.qmd#gl-mush-rush) (some say *cage rush*), staying square in their
+[rush lanes](../../appendices/glossary.qmd#gl-rush-lane) and pushing the blockers back into the quarterback
+instead of racing around them ([The Pass Rush](../07-pressure/07-01-pass-rush.qmd)). The ends keep
+[contain](../../appendices/glossary.qmd#gl-contain), the pocket shrinks around him but doesn't open, and the
+spy is the last line if he finds a crease anyway.
+
+The trade is the familiar one: the spy is a defender who isn't covering anyone. In Cover 1 he usually
+replaces the robber, so the middle of the field loses its best in-cut defender; in zone he is one fewer
+underneath player. A spy can also be *used*. Offenses run a receiver right at him to make him choose, or
+send the back on a route he has to respect, and a linebacker spying a quarterback who is faster than he is
+can be outrun to the sideline. Like every third-down call, it works best as one of several from the same look.
+
+::: {.callout-note title="Film room: two spies for Lamar Jackson, 2024 and 2025"}
+Lamar Jackson, the most dangerous running quarterback of his era, sees spies as often as anyone, and two
+games a year apart show both sides of the bargain.
+
+**Chiefs 2024, opening night (September 5).** Kansas City moved linebacker Leo Chenal all over its front
+(in the box, on the defensive line and over the slot) and used him to spy Jackson in key moments,
+mirroring him and running him down on scrambles.[^chenal] It didn't
+stop the running: Jackson carried `{python} KC24['car']` times for `{python} KC24['yds']` yards, including
+`{python} KC24['scr']` scrambles, and on third down he ran `{python} KC24['car3']` times for
+`{python} KC24['yds3']` yards and `{python} KC24['conv3']` conversions. The Chiefs won anyway,
+`{python} KC24['hs']`–`{python} KC24['as_']`, in a game decided on its final snap.
+
+**Lions 2025, Week 3 (September 22, *Monday Night Football*).** Detroit's coordinator Kelvin Sheppard,
+who had earlier said publicly that he didn't like using a spy, built a plan around one and made it hard to find. Jackson ran
+`{python} DET25['car']` times for `{python} DET25['yds']` yards, was sacked `{python} DET25['sacks']` times,
+and the Lions won in Baltimore, `{python} DET25['as_']`–`{python} DET25['hs']`. Sheppard gave the credit not
+to the spy but to the disguise around it: "it's because we're making everything look the same," he said,
+"and when you do that, it's impossible to know who's coming, who's the spy, who's in coverage."[^sheppard]
+
+**What to notice:** before a third-and-medium snap against a running quarterback, look for the linebacker
+who sits straight in front of him at 5 or 6 yards and doesn't move with any receiver. After the snap,
+watch him: a spy shuffles with the quarterback's shoulders. A green-dog rusher who comes forward late is
+the same idea, disguised.
+:::
+
+## The third-down dial at a glance
+
+Put the chapter's pieces side by side. The distance sets the menu for both sides; the pre-snap picture
+tells you which item is likely, but only some calls have a reliable tell, because the defense works hard
+to make the rest look alike.
+
+| Distance | Offense's usual tools | Defense's usual calls | What you can see before the snap |
+|---|---|---|---|
+| Short (1–3) | Power run, sneak, quick man-beaters (slant, rub) | Tight man (Cover 1), Cover 0, a packed box | No deep safety, pressed corners, linebackers mugged in the A gaps: Cover 0 or a disguise of it |
+| Medium (4–6) | Option routes, mesh, rubs, matchups, empty | Cover 1 with a robber, mugs and disguise, some pressure | One deep safety, defenders tight on receivers; the robber or a mug shows where help is |
+| Long (7–10) | Sticks routes past the line, six-man protection, hot throws | Blitz and simulated pressure, 2-Man, sticks zone | Dime personnel; defenders walked up to the line (blitz *or* sim: you usually can't tell which); two deep with tight, inside defenders suggests 2-Man |
+| Very long (11+) | Screen, draw, safe completion, a shot | Sticks zone, rush three/drop eight | Six or more defensive backs, soft corners, two or three deep; only three linemen with a hand down hints at rush three |
+| Any distance, running QB | Scramble, designed run, routes at the spy | Spy, mush rush | A linebacker in front of the quarterback at 5–7 yards, lined up on nobody |
+
+## Is third down a skill?
+
+Third down feels like the purest test of a team, and it is a big one. But it is also a small sample: a
+team faces roughly 200 to 230 third downs a season, and every one is a coin weighted by distance. Two
+consequences are worth knowing.
+
+First, **early downs decide a lot of third down.** A team that is on schedule faces third-and-3, not
+third-and-9, and converts more often without being any better *at* third down. How do we know? With a
+**correlation**, a number between 0 and 1 (for this kind of comparison) that measures how well one
+season's figure lines up with the next: 0 means last year tells you nothing about this year, 1 means it
+tells you everything, and anything around 0.2 or 0.3 is a weak link, real but swamped by luck. Across
+2016–2025, a team's success rate on first and second down predicted its third-down conversion rate the
+*next* season (correlation `{python} f"{R_ESR:.2f}"`) nearly as well as its own third-down rate did
+(`{python} f"{R_OFF:.2f}"`).[^stab] Neither is strong, and the early-down number, which comes from about four
+times as many plays, does almost as well.
+
+Second, **defensive third-down numbers are noisy.** A defense's third-down conversion rate allowed
+carried over from one season to the next with a correlation of only `{python} f"{R_DEF:.2f}"`: barely more
+than nothing. A defense
+that "gets off the field" one year often doesn't the next, which is a reason to judge third-down defenses
+on what they do (pressure, coverage, tackling) more than on the conversion rate alone. Offenses are more
+stable, but the gap between the best and worst is still modest: in 2025 the best offense converted
+`{python} pct(T25.max())` of its third downs, the worst `{python} pct(T25.min())`.
+
+None of that makes third down unimportant; it makes it *consequential and noisy at once*, which is
+exactly what you'd expect of a single high-stakes snap. [Expected Points, EPA, and Success
+Rate](../13-analytics-and-data/13-02-expected-points-and-success-rate.qmd) has the tools to measure it.
+
+## Film room: the Patriots' option routes
+
+::: {.callout-note title="Film room: Patriots 2009–2019 — Welker, Edelman and the sticks"}
+The Patriots of the Tom Brady era built much of their third-down offense on slot receivers running option
+routes set just past the sticks ([Passing Game Fundamentals](../04-the-passing-game/04-01-passing-fundamentals.qmd)
+and [The Quick Game](../04-the-passing-game/04-03-quick-game.qmd) introduce the route and Wes Welker). The
+data shows what that meant on third down.
+
+- **Wes Welker, 2009–2012.** Welker was New England's most-targeted receiver on third down in
+  `{python} WEL_TOP` of those 4 seasons and the target on `{python} pct(WEL['share'])` of Brady's
+  third-down throws to a named receiver. Those throws converted `{python} pct(WEL['conv'])` of the time,
+  against `{python} pct(WEL['lg'])` for third-down targets across the league. And the typical Welker target
+  was thrown **exactly to the line to gain**: the median distance between the throw's depth and the sticks
+  was `{python} f"{WEL['rel']:.0f}"` yards. That looks like a contradiction: throws aimed right at the line are
+the chart's weak spot. Welker beat the dip for the two reasons the dip exists. It comes from balls thrown
+*into* a defender sitting at the sticks; the option route against zone finds the gap *between* two of them
+and sits down in it, facing the quarterback. And it comes from defenders who have time to close; Brady
+threw as Welker settled, before anyone could. Caught on the line with nobody in front of him, a receiver
+only has to turn and fall forward.
+- **Julian Edelman, 2013, 2016 and 2019** (the three seasons in which he played all 16 games; he missed 2017 injured):
+  `{python} pct(EDE['share'])` of third-down targets, converting `{python} pct(EDE['conv'])` against a league
+  `{python} pct(EDE['lg'])`.[^pats2]
+
+Why did it work? Because the option route attacks the defense's third-down plan at its core. Against man
+coverage the slot defender has to choose a side, and the receiver breaks the other way; against zone the
+receiver sits down in the gap at the sticks, facing the quarterback. Brady could throw before the break was
+finished, because he and his receiver read the same defender. **What to notice** on old Patriots third
+downs: the slot receiver's first few steps are the same every time; the break comes at the sticks; the ball
+is in the air before he turns.
+:::
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it"}
+**Past the sticks?** On every third down for one half, make a prediction before the snap and check it
+after.
+
+- **Say the bucket out loud:** short (1–3), medium (4–6), long (7–10) or very long (11+). Then make the
+  base-rate call: short, run or quick pass; medium, quick man-beater; long, a route past the sticks against
+  pressure; very long, a safe completion or a draw.
+- **Read the offense.** Did the best receiver move to the slot? Is the back still in the backfield (likely
+  to stay in and block a blitzer) or did the offense go empty (five out, and the quarterback has to beat any
+  extra rusher himself)?
+- **Read the package.** How many defensive backs came on? Did a big tackle leave for a pass rusher? How many
+  defenders are within five yards of the line, and how many deep? No deep safety means Cover 0; three or four
+  deep with linemen standing up means the defense may drop eight. Then watch the quarterback point and shout:
+  he is setting the protection's count, and the defense is trying to make that count wrong.
+- **Find a spy.** Against a running quarterback, look for a linebacker or safety sitting in front of him
+  who isn't lined up on any receiver.
+- **Predict the target: past the line, or short of it?** Then, after the play, note where the ball was
+  caught relative to the orange line, and who made the tackle.
+- **For your log:** for each third down, write the bucket, your prediction (past or short), what happened,
+  and the number of rushers. Over a game you'll see the defense's third-down personality (pressure,
+  sticks, or both) and whether the offense's targets live past the line or short of it.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: third-and-3 at midfield"}
+```{python}
+#| label: fig-predict-zero
+#| fig-cap: "Third-and-3 near midfield. The offense is in 11 personnel, 2x2, with the back beside the quarterback. The defense has the Mike (M) and Will (W) standing in the A gaps, the nickel ($) pressed on H, both corners pressed, and both safeties (green rings) walked down to 6 or 7 yards."
+dfn = four_down(ldt=-2.75, rdt=2.75) + [
+    D("MIKE", "MIKE", 1.6, -1.0, "M"), D("WILL", "WILL", 1.6, 1.0, "W"),
+    D("NB", "NB", 0.9, -9.0, "$"), D("SS", "SS", 6.0, 8.6, "SS"), D("FS", "FS", 6.5, -3.0, "FS"),
+    D("LCB", "CB", 0.9, -15.0, "CB"), D("RCB", "CB", 0.9, 15.0, "CB")]
+p = Play(spread(), dfn, los=55, to_go=3)
+p.highlight("FS", "SS")
+fld = p.draw(lateral=(-21, 21), window=(-7.0, 11.0), title=False)
+clean(fld.ax); ruler(fld, p, upto=10)
+plt.show()
+```
+
+**What is the defense likely to do, and what should the offense want to have called?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**A Cover 0 blitz is the likeliest reading: man on every receiver, nobody deep, six or more rushing.**
+Count the deep players: none. Both corners and the nickel are pressed, which usually means man coverage.
+With the two linebackers mugged in the A gaps and both safeties walked down, the defense has up to eight
+possible rushers and no one to protect against a long completion. That only makes sense on a
+short-yardage down, which is where the league calls Cover 0 most (the Cover 0 section has the rates). It
+could still be a disguise: one safety may bail at the snap into a Cover 1, and one of the mugged linebackers
+may drop.
+
+**What the offense wants** is a quick throw that beats tight man coverage before the rush arrives: a slant
+from X or Z against an outside-leverage corner, a rub between H and the back, or a quick out. A run is live
+only if the offense can account for the mugged linebackers, with a blocker for each of them, and against
+this look the quick throw is the better bet. Even the quarterback sneak runs straight into the two
+linebackers standing in its gaps; it becomes a better call once one of them shows he is dropping. What the
+offense should *not* have called is a slow-developing route past the sticks: on third-and-3 it doesn't need
+one, and against six rushers it won't get time.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: third-and-13 from the 20"}
+```{python}
+#| label: fig-predict-drop
+#| fig-cap: "Third-and-13 from the offense's own 20. The defense has four linemen down (E, T, T, E), one linebacker (M) at 7.5 yards, and six defensive backs: the nickel ($) and the dime back (D) 7 yards off the slots, the corners 8 off, and two safeties 15 to 16 yards deep, one on each half of the field."
+dfn = four_down() + [
+    D("MIKE", "MIKE", 7.5, 0.8, "M"),
+    D("NB", "NB", 7.0, -9.5, "$"), D("DB", "DB", 7.0, 9.5, "D"), D("SS", "SS", 15.5, 9.0, "SS"),
+    D("LCB", "CB", 8.0, -15.8, "CB"), D("RCB", "CB", 8.0, 15.8, "CB"), D("FS", "FS", 15.5, -9.0, "FS")]
+p = Play(spread(), dfn, los=30, to_go=13)
+fld = p.draw(lateral=(-21, 21), window=(-7.0, 18.5), title=False)
+clean(fld.ax); ruler(fld, p)
+plt.show()
+```
+
+**How many will rush, where will the coverage sit, and what would you call if you were the offense?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Most likely four rushers, with a two-deep coverage behind them and everything underneath sinking to
+the sticks.** This is the third-and-very-long package: dime personnel, two safeties deep, corners off, and
+only one linebacker. At 11 or more yards, defenses rushed exactly four on about
+`{python} pct(DEF.loc['11+', 'four'])` of charted dropbacks in 2023–2025, so
+the base call is four. Behind it, two safeties high usually means a two-deep zone (Cover 2 or quarters)
+or 2-Man. Either way, expect the underneath defenders to drop to 12 or 13 yards, so that every route that
+converts runs into a defender and every route that's open is short. Two catches: a simulated pressure
+looks exactly like this until the snap (an end drops, the Mike or a defensive back rushes), and an end who
+drops turns it into rush three. The picture tells you the distance-based call, not the exact one.
+
+**The offense's options** are the third-and-long menu. If it wants the first down, the soft spot of a
+two-deep shell is the middle of the field between and under the safeties, 14 to 18 yards deep: a dig or a
+seam, thrown on time. If it wants the possession, the draw and the screen are built for this picture: a
+light box, one linebacker who will drop, rushers chasing upfield. From its own 20, a 9-yard draw that sets
+up a punt from the 29 is a reasonable outcome, and an interception at the 35 is the disaster to avoid.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: third-and-5 against a quarterback who runs"}
+```{python}
+#| label: fig-predict-spy
+#| fig-cap: "Third-and-5 at midfield; the quarterback is one of the league's best runners. The defense presses the corners and walks the nickel ($) and the strong safety (SS) up on the slots, with one deep safety (FS). Four linemen are down, the Will (W) is at about 4 yards over the back, and the Mike (M, green ring) stands 6 yards deep, directly in front of the quarterback, lined up on no one."
+dfn = four_down(lde=-6.4, rde=6.4) + [
+    D("MIKE", "MIKE", 6.2, 0.0, "M"), D("WILL", "WILL", 3.7, -3.2, "W"),
+    D("NB", "NB", 2.0, -8.6, "$"), D("SS", "SS", 2.5, 8.6, "SS"),
+    D("LCB", "CB", 1.2, -15.6, "CB"), D("RCB", "CB", 1.2, 15.6, "CB"), D("FS", "FS", 14.0, 0.0, "FS")]
+p = Play(spread(), dfn, los=60, to_go=5)
+p.highlight("MIKE")
+fld = p.draw(lateral=(-21, 21), window=(-7.0, 16.5), title=False)
+clean(fld.ax); ruler(fld, p, upto=15)
+plt.show()
+```
+
+**What is the Mike's job, what coverage is behind him, and where is the offense's best throw?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The Mike is probably a spy, in Cover 1.** Every receiver has a defender pressed or tight on him (the
+corners on X and Z, the nickel on H, the safety on Y, the Will on the back), one safety is deep, and the
+Mike is lined up on nobody, square to the quarterback at spy depth. Against a quarterback who runs on
+third-and-5, the defense has given up its robber to keep him in the pocket.
+
+**Where to throw:** not right in front of the spy. His eyes are on the quarterback, so he sees every throw
+that crosses his face at 5 to 8 yards, and spies rob those throws all the time. The good throws are the
+ones he can't get to:
+
+- **Behind him and in front of the free safety:** a dig or an over route at 10 to 14 yards. In Cover 1 with
+  no robber, that is the space the defense emptied, and the spy can't turn and run back to it while
+  watching the quarterback.
+- **Away from leverage, outside:** an out or option-out by a slot receiver whose defender is aligned inside
+  him, toward the sideline the spy can't reach.
+- **Make the spy choose:** send the back on a route right at him, or a receiver across his face, so that
+  covering the route means leaving the quarterback.
+
+And the quarterback still has his legs: a spy who is slower than him has to be right about the angle.
+:::
+:::
+
+## Takeaways
+
+- **Third down decides drives**, about three points of expected value on one snap, and the league converts
+  about two in five, every year. The distance is the whole story: short third downs are converted most of
+  the time, very long ones rarely.
+- **The distance is information, so both sides specialise.** Defenses add defensive backs and pass rushers
+  as the distance grows; offenses set their routes by the line to gain, put their best receiver where he can
+  win, count the protection, and keep a third-down back.
+- **Aim a yard or two past the sticks.** Third-down throws aimed there convert most often; throws short of
+  the line rarely do, except on third-and-short, in four-down territory, or when the yards after the catch
+  are the plan. Option routes, rubs and mesh exist to win that yard against man coverage, which costs the
+  defense flags as well as catches.
+- **The defense picks a point on a dial:** Cover 0 and tight man on short yardage, pressure (real and
+  simulated) and 2-Man on third-and-7 to 10, sticks defense and rush three/drop eight on very long, and a spy
+  when the quarterback can run. Each call gives something up, none wins on average once the distance is held
+  still, and the best defenses show the same look for all of them.
+- **Third-and-long is often about the possession, not the down.** Screens and draws rarely convert, but
+  they avoid disasters, shorten punts, and keep the rush honest for the next one.
+- **Third down is consequential and noisy.** Early-down success predicts it nearly as well as past
+  third-down success does, and defensive third-down rates barely carry over year to year.
+
+## Connections
+
+**Builds on:** [Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd)
+(the line to gain, the buckets, EPA and success rate), [Early Downs and Field Zones](10-01-early-downs-and-field-zones.qmd)
+(staying on schedule, and four-down territory),
+[Zone Blitzes, Fire Zones, and Simulated Pressure](../07-pressure/07-03-zone-blitz-and-simulated-pressure.qmd) and
+[Blitzing](../07-pressure/07-02-blitz-and-man-pressure.qmd) (the pressures third down uses most),
+[Man Coverage](../06-pass-coverage/06-02-man-coverage.qmd) (Cover 1 and Cover 0),
+[Passing Game Fundamentals](../04-the-passing-game/04-01-passing-fundamentals.qmd) and
+[Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd) (option routes and man-beaters), and
+[Gap Schemes](../03-the-run-game/03-03-gap-and-power-runs.qmd) (the draw).
+
+**Sets up:** [Red Zone, Goal Line, Two-Point Plays, and Short Yardage](10-03-red-zone-goal-line-and-short-yardage.qmd),
+where third-and-1 becomes the sneak and the field shrinks; [The Clock, the Two-Minute Drill, and Fourth
+Down](10-04-clock-and-game-management.qmd), where a failed third down becomes a fourth-down decision; and
+[Win Probability and Decision Analysis](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd),
+which models it. [The Game Plan](../08-the-chess-match/08-03-game-planning-week.qmd) shows where
+the third-down plan is built.
+
+**Case studies:** [Case Study: Belichick and Game-Plan Football](../12-case-studies/12-02-belichick-patriots-game-plan.qmd)
+(the option-route offense and the man-pressure defense that both lived on third down) and
+[Case Study: Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd)
+(simulated pressure from a two-high shell, the modern third-down defense).
+
+::: {.callout-note title="Go deeper"}
+- Chris B. Brown, *The Essential Smart Football* (2012) and *The Art of Smart Football* (2015): short
+  essays on passing concepts, constraint theory (the first book) and the pass defenses built to stop them.
+- Ben Baldwin's and Seth Walder's analytics writing (and the nflverse data used here) on early-down
+  efficiency, third-down variance and why "third-down defense" is less stable than it looks.
+- Cody Alexander's MatchQuarters newsletter for modern third-down pressure packages and sim pressures,
+  drawn from a coach's point of view.
+- Ted Nguyen's film breakdowns for how specific NFL defenses spy and pressure mobile
+  quarterbacks.
+:::
+
+[^swing]: Course calculation from nflverse play-by-play, 2021–2025 regular seasons, every third-down run and pass (kneel-downs and spikes excluded): average EPA of plays that reached the line to gain or scored, against those that didn't. Plays wiped out by penalties are not included. The swing is larger in the middle of the field and smaller near either goal line.
+
+[^conv]: Course calculation from nflverse play-by-play, regular seasons 2016–2025, every third-down run and pass (kneel-downs and spikes excluded); a conversion is a play that gained the line to gain or on which the offense scored (`third_down_converted`, or a touchdown by the offense; a turnover returned for a touchdown is a failure). First downs by penalty are not counted, which is why published rates that include them run slightly higher. The highest season was 2020.
+
+[^buckets]: Same data and definitions as the season rates, 2021–2025 regular seasons. Dropbacks are nflverse `qb_dropback` plays: pass attempts, sacks and scrambles. Pass shares are the share of third-down snaps at each distance that were dropbacks.
+
+[^sticksdata]: Course calculation from nflverse play-by-play, 2021–2025 regular seasons: third-down pass attempts with a recorded `air_yards` (sacks and scrambles excluded; throwaways usually have no charted depth). "At it" means air yards equal to the yards to go. Air yards are measured to where the ball was caught or would have been, not to where the receiver was tackled.
+
+[^defdata]: Course calculation from nflverse `load_participation()` (FTN charting), 2023–2025 regular seasons, third-down dropbacks; man share among plays charted `MAN_COVERAGE` or `ZONE_COVERAGE`. The charters' man/zone split shifts from season to season, so treat the levels as rough and the pattern by distance as the finding.
+
+[^defdata2]: Same data as the man-coverage shares. Defensive backs counted from `defense_personnel` (CB, S, FS, SS and DB entries); "dime or more" is six or more. Blitz is five or more `number_of_pass_rushers`; Cover 0 is a share of plays with a charted `defense_coverage_type`. Early downs are first- and second-down dropbacks in the same seasons.
+
+[^nascar]: Jenny Vrentas, "Steve Spagnuolo: The Man With Four Aces Up His Sleeve," *Sports Illustrated* (Dec. 27, 2016): https://www.si.com/nfl/2016/12/27/nfl-new-york-giants-steve-spagnuolo-defensive-coordinator (the 2007 "Four Aces" package of four pass rushers). The "NASCAR" name for the Giants' four-defensive-end package on third-and-long: Bleacher Report, "5 Scheme Adjustments the New York Giants Should Consider in 2012" (2012): https://bleacherreport.com/articles/1177469-5-scheme-adjustments-the-new-york-giants-should-consider-in-2012 ; Justin Tuck after Super Bowl XLVI: "We came up with NASCAR; we call it our speed package" (to ESPN, quoted by Jayski, Feb. 7, 2012: https://www.jayski.com/2012/02/07/nascar-propels-giants-to-super-bowl-victory/). The SI piece names no players for the 2007 package, so neither does the text; [Dynasties and Counterpunches](../11-history/11-04-dynasties-and-counterpunches.qmd) has the 2007 ends.
+
+[^pats]: Course calculation from nflverse play-by-play, 2018–2019 regular seasons: third-down pass attempts by New England with a named receiver (sacks and scrambles excluded). White led the Patriots in third-down targets in both seasons.
+
+[^kc]: Course calculation from nflverse `load_participation()`, regular seasons: share of dropbacks with five or more `number_of_pass_rushers`, by down; Kansas City's third-down rank among 32 defenses. 2020 for comparison: `{python} pct(KC20_E)` early, `{python} pct(KC20_3)` on third down (rank `{python} KC20_RK`). Cover 0 share of charted third-down dropbacks, 2025: Kansas City first (rank `{python} KC25_RANK`). Third-down conversion rate allowed from play-by-play (runs and passes, conversions as defined above). Spagnuolo as Chiefs defensive coordinator since 2019 and in 2026: this book's fact sheet of 2026 staffs. The 2024 Chiefs' 15–2 record: Pro Football Reference, https://www.pro-football-reference.com/teams/kan/2024.htm
+
+[^mia]: Course calculation from nflverse `load_participation()`: Cover 0 as a share of third-down dropbacks with a charted `defense_coverage_type`, by defense, regular seasons. 2020–2022 coverage labels come from NGS and 2023 onward from FTN, so seasons on either side of the break are not directly comparable; within-season ranks are. Miami 2021 rank: `{python} MIA21_RANK`. Flores's career (Patriots scouting staff 2004–2007 and coaching staff 2008–2018, Dolphins head coach 2019–2021, Vikings defensive coordinator from 2023): "Brian Flores," Wikipedia, https://en.wikipedia.org/wiki/Brian_Flores ; his 2026 status, this book's fact sheet of 2026 staffs.
+
+[^eisenberg]: John Eisenberg, "The Breakdown: Eisenberg's Five Thoughts on the Loss to Miami," BaltimoreRavens.com (Nov. 12, 2021): https://www.baltimoreravens.com/news/the-breakdown-eisenberg-s-five-thoughts-on-the-loss-to-miami ("The Dolphins succeeded in pressuring Jackson with a heavy diet of blitzes and a Cover Zero scheme"; "overwhelmed by relentless blitzes"). Score, records and the rush and coverage counts: course calculation from nflverse play-by-play and participation (NGS charting) for game `2021_10_BAL_MIA`; other counts circulated after the game (for example "31 of 50 dropbacks") use different definitions of a dropback and of all-out pressure. Eisenberg also gives Baltimore's third downs as "two of 14," as the course count does. Records going in (Ravens 6–2, Dolphins 2–7) and the 22–10 final: Pro Football Reference, https://www.pro-football-reference.com/boxscores/202111110mia.htm ; BaltimoreRavens.com game page, https://www.baltimoreravens.com/game-day/2021/reg-week10/ravens-at-dolphins .
+
+[^rush3]: Course calculation from nflverse `load_participation()` (FTN charting) and play-by-play, 2023–2025 regular seasons, third-and-7-or-longer dropbacks by `number_of_pass_rushers`; conversion as defined above; sack rate is sacks per dropback. Team rates are shares of each defense's third-and-7-plus dropbacks with three or fewer rushers. Minter was the Chargers' defensive coordinator in 2024–2025 and Sheppard the Lions' in 2025 (and 2026); Minter's 2026 job and Sheppard's 2026 status: this book's fact sheet of 2026 staffs.
+
+[^chenal]: Charles Goldman, "Chiefs' third-year linebacker sent a message to the rest of the NFL with his dominant Week 1 performance," *A to Z Sports* (Sept. 9, 2024): https://atozsports.com/nfl/chiefs-leo-chenal-sent-message-rest-of-the-nfl-dominant-week-1-performance/ (Chenal "lined up in five different positions in the box, two different positions on the defensive line, and as an overhang defender in the slot"; he kept Jackson from beating the Chiefs with his legs "in key moments"). Arrowhead Pride's film review of his role is at https://www.arrowheadpride.com/2024/9/14/24243203/chiefs-roster-leo-chenal-honored-expanding-role-defense . Jackson's carries, yards and scrambles, the third-down runs and the score: course calculation from nflverse play-by-play, game `2024_01_BAL_KC` (designed runs and scrambles; kneel-downs excluded).
+
+[^sheppard]: John Maakaron, "Detroit Lions DC reveals when QB spy folder built," *Sports Illustrated* (All Lions, Sept. 25, 2025): https://www.si.com/nfl/lions/onsi/news/detroit-lions-dc-reveals-when-qb-spy-folder-built (reporting Sheppard's earlier public displeasure with spies, and his answer: "I wouldn't believe much that I ever say about schematic things in public"; also "I've had that QB spy folder built for three years"; "It's not because of a spy guys, it's because we're making everything look the same"). Score, sacks and Jackson's rushing: course calculation from nflverse play-by-play, game `2025_03_DET_BAL`.
+
+[^stab]: Course calculation from nflverse play-by-play, regular seasons 2016–2025: team-season third-down conversion rate (runs and passes) and first- and second-down success rate, correlated with the same team's third-down conversion rate the following season (288 team-season pairs). The defensive correlation uses third-down conversion rate allowed.
+
+[^pats2]: Course calculation from nflverse play-by-play, regular seasons: New England third-down pass attempts with a named receiver (sacks and scrambles excluded); league rate is all teams' third-down targeted attempts in the same seasons. Receiver names are missing from about four in ten 2007–2008 nflverse pass plays, so Welker's 2007–2008 seasons are left out. Median "throw depth minus yards to go" uses `air_yards`. Edelman's 16-game seasons: Pro Football Reference, https://www.pro-football-reference.com/players/E/EdelJu00.htm . He missed the 2017 season with a torn ACL: "Julian Edelman," Wikipedia, https://en.wikipedia.org/wiki/Julian_Edelman . The comparison is not adjusted for distance; Welker's and Edelman's targets came at slightly shorter average distances than the league's.
+
+[^empty]: Course calculation from nflverse `load_participation()` joined to play-by-play, 2020–2022 regular seasons: share of dropbacks with `offense_formation` charted `EMPTY`, third down against first and second down. The formation labels in this data come from NGS charting through 2022; from 2023 the field records only shotgun, under center or pistol, so later seasons can't be counted the same way.
+
+[^flags]: Course calculation from nflverse play-by-play, 2021–2025 regular seasons: every third-down snap, including plays wiped out by a penalty (kneel-downs and spikes excluded), on which a penalty against the defense gave the offense a first down (`first_down_penalty`). The man/zone comparison joins 2023–2025 third-down dropbacks and penalty snaps to FTN's `defense_man_zone_type` and counts flags for defensive pass interference, defensive holding and illegal contact, accepted or not. Enforcement (illegal contact and defensive holding, five yards and an automatic first down; defensive pass interference, a first down at the spot of the foul, Rule 8, Section 5): NFL, *2026 Official Playing Rules*, https://operations.nfl.com/the-rules/nfl-rulebook/ , as set out in [Contact Rules and Penalties as Strategy](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd).
+
+[^twoman]: Course calculation from nflverse `load_participation()` (FTN charting), 2023–2025 regular seasons: share of dropbacks with a charted `defense_coverage_type` of `2_MAN`, third-and-4 to 6 and third-and-7 to 10 against first and second down.
+
+[^c0long]: Course calculation from nflverse `load_participation()`: Cover 0 as a share of third-and-7-or-longer dropbacks with a charted `defense_coverage_type`, by defense, regular seasons 2021 (NGS labels) and 2025 (FTN labels); rank among 32 defenses within the season. Both teams also played Cover 0 more often on short third downs than on long ones.
+
+[^scramble]: Course calculation from nflverse play-by-play, 2021–2025 regular seasons: third-down dropbacks with `qb_scramble`, and the conversion rate of scrambles and of all dropbacks on third-and-7 to 10 (conversion as defined above).

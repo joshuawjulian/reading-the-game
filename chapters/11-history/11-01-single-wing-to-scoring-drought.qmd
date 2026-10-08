@@ -1,0 +1,1838 @@
+---
+title: "From the Single Wing to the 1970s Scoring Drought (1906–1977)"
+subtitle: "Seventy years of action and reaction: how the forward pass went from a gamble to a weapon, how the defense answered every new offense, and why by 1977 almost nobody could score."
+description: "The first half of football's arms race, told as action and reaction: the forward pass legalized in 1906 and hedged with penalties; Pop Warner's single wing and its direct snap; the T-formation's 73–0 arrival in 1940; platoon football and the specialist; Paul Brown's playbooks, film study and messenger guards; Steve Owen's umbrella defense and Tom Landry's 4-3 and Flex; Lombardi's power sweep; Sid Gillman's vertical passing; the AFL as a passing laboratory and the 1966–70 merger; Red Hickey's 1960 shotgun; and the 1970s scoring drought, with the 1972 and 1974 rule changes that failed to end it."
+glossary:
+  "Single wing": "A direct-snap formation that dominated football from the 1910s into the 1940s: an unbalanced line, a tailback four to five yards deep who took the snap through the air and could run, pass or hand off, a fullback beside him, a blocking back near the line and a wingback just outside the end. The ancestor of the shotgun and the wildcat."
+  "Platoon football": "Using separate groups of players for offense and defense (later also for special teams and for particular situations), which became possible once the rules allowed free substitution: permanently in the NFL from 1950. Before it, the same eleven men played both ways."
+  "Umbrella defense": "Steve Owen's New York Giants defense of 1950: a 6-1-4 alignment (six linemen, one linebacker, four defensive backs) whose two ends could drop into pass coverage after the snap, so against a pass it became a 4-1-6. Built to stop Paul Brown's Cleveland Browns; one of the ancestors of the 4-3."
+  "Flex defense": "Tom Landry's Dallas Cowboys version of the 4-3, from the mid-1960s: two of the four defensive linemen line up a yard or so off the ball, read the blocks, then fill an assigned gap, so that every gap has an owner. Built to stop 'run to daylight' running games like Vince Lombardi's."
+  "AFL": {def: "The American Football League (1960–1969), the rival league that played a more wide-open passing game, introduced the two-point conversion and won two of the four AFL–NFL Super Bowls before merging with the NFL (agreement 1966, complete 1970). Its ten teams became the core of today's AFC.", aliases: ["American Football League"]}
+  "Chuck rule": "Any of the rules limiting how a defender may hit or shove (chuck) a receiver who is running his route. From 1974, only once after the receiver was 3 yards past the line; from 1977, only once in all; since 1978, only within 5 yards of the line (the Mel Blount rule)."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared helpers)"
+#| output: false
+import os
+import shutil
+import textwrap
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, Rectangle, RegularPolygon
+
+from gridiron import Play, Player, Field, style
+from gridiron.formations import LINE_D, OFF_BALL, OL_SPLIT, TE_W
+
+style.apply()
+
+UC = -1.9                      # quarterback under center (drawn a little off the ball)
+BACK_RING = style.THIRD        # aqua ring: the ball carrier or the back to watch
+KEY_RING = style.DEFENSE       # orange ring: the defender to watch
+THREAT = "#0f7a55"             # darker aqua for "the back could go here" arrows (safe for text)
+
+
+def P(key, pos, d, w, label=None):
+    """Offensive player at (d, w): d = yards from the ball (negative = backfield), w = yards to the offense's right."""
+    return Player(key, pos, "off", d, w, label=key if label is None else label)
+
+
+def D(key, pos, d, w, label=None):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def OL(key, w, label=""):
+    """An offensive lineman on the line; only the center gets a letter."""
+    return Player(key, "OL", "off", LINE_D, w, label=label)
+
+
+def line5(split=OL_SPLIT):
+    return [OL("LT", -2 * split), OL("LG", -split), OL("C", 0.0, "C"), OL("RG", split), OL("RT", 2 * split)]
+
+
+def check_legal(players):
+    """Seven offensive players on the line, and only the two at its ends may be receivers."""
+    off = [q for q in players if q.side == "off"]
+    on = sorted([q for q in off if q.d > -1.0], key=lambda q: q.w)
+    assert len(on) == 7, [q.key for q in on]
+    for q in on[1:-1]:
+        assert q.pos == "OL", f"covered receiver {q.key}"
+    assert len(off) == 11, len(off)
+    return players
+
+
+def hide_yard_numbers(ax):
+    """Drop the faint painted field numbers (they sit where wide players stand in zoomed plates)."""
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() is not None and abs(t.get_alpha() - 0.55) < 1e-6:
+            t.remove()
+
+
+def XY(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def draw_play(p, lateral, window, width_in=6.5):
+    """Draw a play edge to edge at `width_in` (Play.draw's own figure leaves wide empty margins)."""
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w))
+    fig.subplots_adjust(left=0.004, right=0.996, top=0.996, bottom=0.004)
+    fld = p.draw(ax=ax, lateral=lateral, window=window, title=False)
+    hide_yard_numbers(ax)
+    return fld
+
+
+def label(fld, p, text, at, target=None, ha="center", fs=7.2, color=style.INK, va="center"):
+    """A short boxed label at (d, w); with `target`, a thin leader line to that spot."""
+    x, y = XY(fld, p, *at)
+    box = dict(boxstyle="round,pad=0.22", fc=style.SURFACE, ec=style.BASELINE, lw=0.6)
+    if target is None:
+        fld.ax.text(x, y, text, fontsize=fs, ha=ha, va=va, color=color, zorder=12, bbox=box)
+    else:
+        tx, ty = XY(fld, p, *target)
+        fld.ax.annotate(text, xy=(tx, ty), xytext=(x, y), fontsize=fs, ha=ha, va=va, color=color, zorder=12,
+                        bbox=box, arrowprops=dict(arrowstyle="-", color=style.INK_2, lw=0.7, shrinkA=0, shrinkB=7))
+
+
+def dashed_arrow(fld, p, pts, color=THREAT, lw=1.6, z=6, head=10):
+    """A dashed arrow through absolute (d, w) points: an option, a fake, or the flight of a direct snap."""
+    xs, ys = XY(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    fld.ax.plot(xs, ys, color=color, lw=lw, ls=(0, (3, 2)), zorder=z)
+    fld.ax.add_patch(FancyArrowPatch((xs[-2] + 0.7 * (xs[-1] - xs[-2]), ys[-2] + 0.7 * (ys[-1] - ys[-2])),
+                                     (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=head, color=color,
+                                     lw=lw, zorder=z))
+
+
+def gap_mark(fld, p, w, text, d=-0.15, color=style.DEFENSE_DARK):
+    """A small gap letter sitting on the line of scrimmage between two blockers."""
+    x, y = XY(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=6.6, ha="center", va="center", color=color, fontweight="bold", zorder=9,
+                bbox=dict(boxstyle="round,pad=0.12", fc=style.SURFACE, ec=color, lw=0.6))
+
+
+# --- frame strips (PDF) and video (web), cropped to the part of the field that matters -------------
+MARK_R = 0.62
+
+
+def pdf_build():
+    return os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+
+def tracking(play):
+    df = play.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    return df
+
+
+def panel(ax, play, df, t, lateral, window, rings=(), mark_r=MARK_R):
+    """One moment of a simulated play: markers, trails, optional rings (key, color)."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    ylo, yhi = sorted((play.ball_y - lateral[0], play.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=play.los, window=window, numbers=False, hashes=False,
+                lateral=(ylo, yhi), to_go=play.to_go)
+    cur = df[df["frameId"] == fid]
+    shown = cur[cur["x"].between(play.los + window[0] + 0.8, play.los + window[1] - 0.8)
+                & cur["y"].between(ylo + 0.8, yhi - 0.8)]
+    ids = set(shown["_id"])
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(ids) & (df["side"] != "ball")]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=0.9, alpha=0.4, zorder=3)
+    ppy = fld.pts_per_yard()
+    for _, r in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(r["x"], r["y"]))
+        if r["side"] == "ball":
+            ax.add_patch(Ellipse((x + 0.75, y + 0.55), 0.6, 0.36, fc=style.BALL, ec="white", lw=0.5, zorder=11))
+            continue
+        lab = str(r.get("label", "") or "")
+        if r["side"] == "off":
+            ax.add_patch(Circle((x, y), mark_r, fc=style.OFFENSE, ec="white", lw=0.6, zorder=8))
+            tc = "white"
+        else:
+            ax.add_patch(RegularPolygon((x, y), 4, radius=mark_r * 1.3, orientation=np.pi / 4,
+                                        fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0, zorder=8))
+            tc = style.INK
+        fs = max(4.0, min(8.0, ppy * (mark_r / MARK_R) * (0.85 if len(lab) <= 1 else 0.62)))
+        ax.text(x, y, lab, ha="center", va="center", fontsize=fs, color=tc, fontweight="bold", zorder=10)
+    for key, col in rings:
+        r = cur[cur["displayName"] == key].iloc[0]
+        x, y = fld.xy(r["x"], r["y"])
+        ax.add_patch(Circle((float(x), float(y)), 1.7 * mark_r, fc="none", ec=col, lw=1.7, zorder=9))
+    return fld
+
+
+def strip(play, times, lateral, window, notes=None, rings=(), ncols=2, width_in=6.5, mark_r=MARK_R, extra=None):
+    """Numbered frame strip with a fixed window and a note under each frame.
+    `extra(fld, i)`, if given, draws on frame i (0-based) after the players."""
+    df = tracking(play)
+    nrows = int(np.ceil(len(times) / ncols))
+    pw = width_in / ncols
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False,
+                             figsize=(width_in, nrows * (pw * span_d / span_w + (0.62 if notes else 0.25))))
+    for ax in axes.flat[len(times):]:
+        ax.axis("off")
+    for i, (ax, t) in enumerate(zip(axes.flat, times)):
+        fld = panel(ax, play, df, t, lateral, window, rings, mark_r)
+        if extra is not None:
+            extra(fld, i)
+        ax.set_title(f"{i + 1}.  " + ("snap" if abs(t) < 1e-6 else f"{t:+.1f} s"),
+                     fontsize=8.5, color=style.INK_2, loc="left")
+        if notes:
+            ax.text(0.5, -0.03, notes[i], transform=ax.transAxes, ha="center", va="top", fontsize=7.2,
+                    color=style.INK)
+    fig.tight_layout(h_pad=1.4 if notes else 0.6, w_pad=0.6)
+    return fig
+
+
+def video(play, times, lateral, window, notes=None, rings=(), width_in=5.2, mark_r=MARK_R, extra=None):
+    """Web version of the strip: the same panel at every frame, with the strip's notes as captions."""
+    from matplotlib import animation
+    from IPython.display import HTML, display
+    df = tracking(play)
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w + 0.4))
+    tmap = df.groupby("frameId")["time"].first()
+
+    def update(fid):
+        ax.clear()
+        t = float(tmap[fid])
+        panel(ax, play, df, t, lateral, window, rings, mark_r)
+        txt = "snap" if abs(t) < 0.05 else f"{t:+.1f} s"
+        if notes:
+            cur = [n for tt, n in zip(times, notes) if tt <= t + 1e-6]
+            txt += ("   " + cur[-1].replace("\n", " ")) if cur else ""
+        ax.set_title(txt, fontsize=8.5, color=style.INK, loc="left")
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=sorted(df["frameId"].unique()), interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def animation_or_strip(play, times, **kw):
+    """Video on the website; a numbered, captioned frame strip in the PDF."""
+    if pdf_build():
+        strip(play, times, **kw)
+        plt.show()
+    else:
+        kw.pop("ncols", None)
+        video(play, times, **kw)
+```
+
+Watch an NFL game today and sooner or later a running back walks up behind the center, five
+yards deep, with the quarterback split out wide like a receiver. The center snaps the ball through
+the air straight to the back, an extra lineman stands on one side of the line, and a second back is
+already sprinting across the formation. The broadcaster calls it the *wildcat* and treats it as a
+gimmick. A fan from 1935 would call it Saturday: it is the single wing, the formation football was
+built on. Now jump to 1977. NFL teams scored 17.2 points a game that season, the fewest since 1942,
+and not one receiver in the league reached 1,000 yards. How did football get from the single wing to
+the T-formation to the pro passing games of the 1960s, and then, with all that passing knowledge,
+grind to a near-halt? This chapter is the first half of that story, told the way it happened: every
+offensive idea, the defense's answer, and the rules that tilted the board.
+
+**You'll be able to…**
+
+- Explain why the forward pass, legal since 1906, took decades to become a real weapon, and name the
+  rules that made it risky.
+- Recognize the single wing and the T-formation, and say why the T replaced the single wing within a
+  decade of the Chicago Bears' 73–0 win in 1940.
+- Describe what Paul Brown and platoon football changed about how teams are organized, coached and
+  play-called, and why that model is still the default.
+- Trace today's 4-3 to its ancestors (Steve Owen's umbrella defense, Tom Landry's 4-3 and his Flex)
+  and say which offense each was built to stop: Brown's passing, Lombardi's sweep.
+- Explain the AFL as a passing laboratory (Sid Gillman, Hank Stram), the 1960 shotgun, and the merger.
+- Read the points-per-game record from 1932 to 1977 and explain why scoring fell in the 1970s (and not
+  earlier), and why the rule changes of 1972, 1974 and 1977 didn't fix it when 1978's did.
+
+## Reading this part: action and reaction
+
+Every chapter so far has met a scheme in its present form and given it a short history sidebar. This
+part of the book connects those sidebars into one story, and the story has a shape: **an offense finds
+an advantage, the defense builds an answer, and when the defense gets too far ahead, the rule-makers
+step in.** The single wing was football's answer to a game with almost no passing. The T answered the
+single wing's slowness. Platoons and Paul Brown made the T a specialist's offense. The umbrella and
+the 4-3 answered Brown's passes; the Flex answered Lombardi's runs. The AFL (the American Football
+League, a rival league of the 1960s) went looking for points in the passing game, and by the 1970s the defenses had caught up with everyone. Hold on to that rhythm
+and the dates take care of themselves.
+
+```{python}
+#| label: fig-timeline
+#| fig-cap: "Seventy years of action and reaction, 1906–1977. Offensive ideas are on the left (blue), the defense's answers in the middle (orange), and the rule changes and leagues that reset the board on the right (gray). The rows are in order but not to scale. Years are seasons, so the Super Bowls played in January carry the previous year's date. Every entry is told in this chapter; 1978 opens the next."
+ROWS = [
+    ("era", "Before 1940: the pass is legal, but the running game rules"),
+    ("1906", "", "", "Forward pass legalized in college football, hedged with risky rules"),
+    ("1907", "Pop Warner's single wing at Carlisle", "", ""),
+    ("1912", "", "", "End zone, four downs, six-point touchdown"),
+    ("1913", "Notre Dame's passing upsets Army", "", ""),
+    ("1920", "", "", "The league that becomes the NFL (1922) is founded"),
+    ("1930", "Bears coach Ralph Jones adds a man in motion to the T", "", ""),
+    ("1933", "", "", "NFL: pass from anywhere behind the line; hash marks; posts on the goal line"),
+    ("era", "1940–1959: the T, the platoons and the 4-3"),
+    ("1940", "Bears 73, Washington 0: the modern T arrives", "", ""),
+    ("1943", "", "", "NFL allows free substitution (wartime)"),
+    ("1946", "Paul Brown's Cleveland Browns", "", "The AAFC, a rival pro league, begins (to 1949)"),
+    ("1947", "", "Greasy Neale's five-man Eagle defense", ""),
+    ("1950", "Browns win the NFL title in their first season", "Owen's umbrella beats the Browns twice", "Free substitution permanent: platoon football"),
+    ("1954", "", "Bill George stands up: the middle linebacker", ""),
+    ("1956", "", "Landry's 4-3 Giants win the title", ""),
+    ("1959", "Lombardi to Green Bay: the power sweep", "", ""),
+    ("era", "1960–1969: the AFL decade"),
+    ("1960", "Hickey's 49ers unveil the shotgun", "", "The AFL kicks off with eight teams"),
+    ("1961", "", "The Bears shut down the shotgun, 31–0", ""),
+    ("1963", "Gillman's Chargers win the AFL title, 51–10", "", ""),
+    ("1965", "", "Landry's Flex defense in Dallas (about 1964–66)", ""),
+    ("1966", "", "", "AFL–NFL merger agreement (June 8)"),
+    ("1969", "AFL wins Super Bowls III and IV (1968–69 seasons); Stram's moving pocket", "", ""),
+    ("era", "1970–1977: the scoring drought"),
+    ("1970", "", "", "Merger complete: AFC and NFC"),
+    ("1972", "", "Dolphins' No-Name Defense: 17–0", "Hash marks moved toward the middle"),
+    ("1974", "", "Steel Curtain wins its first Super Bowl; the 3-4 arrives", "Goalposts to the end line; one chuck after 3 yards"),
+    ("1977", "", "", "Head slap banned; one contact only; scoring falls to 17.2"),
+    ("era", "1978: the rules that finally worked (next chapter)"),
+]
+COLS = [(0.105, style.OFFENSE_DARK, "Offense"), (0.405, style.DEFENSE_DARK, "Defense"),
+        (0.705, style.INK_2, "Rules and leagues")]
+WRAP, LINE_H, PAD_H = 33, 0.128, 0.07    # characters per line, inches per text line, inches between rows
+
+layout, total = [], 0.32
+for row in ROWS:
+    if row[0] == "era":
+        layout.append((total, 1, row)); total += LINE_H + 0.16
+        continue
+    cells = [textwrap.wrap(c, WRAP) if c else [] for c in row[1:]]
+    n = max(len(c) for c in cells)
+    layout.append((total, n, (row[0], cells))); total += n * LINE_H + PAD_H
+H = total + 0.05
+fig = plt.figure(figsize=(6.6, H))
+ax = fig.add_axes([0, 0, 1, 1])
+ax.set_xlim(0, 1); ax.set_ylim(H, 0); ax.axis("off")
+for x, col, name in COLS:
+    ax.text(x, 0.12, name, fontsize=8.5, fontweight="bold", color=col, va="center")
+ax.plot([0.012, 0.99], [0.25, 0.25], color=style.BASELINE, lw=0.8)
+for y, n, row in layout:
+    if n == 1 and isinstance(row, tuple) and row[0] == "era":
+        ax.add_patch(Rectangle((0.0, y), 1.0, LINE_H + 0.08, fc=style.GRID, ec="none", alpha=0.55))
+        ax.text(0.012, y + (LINE_H + 0.08) / 2, row[1], fontsize=7.6, style="italic", fontweight="bold",
+                color=style.INK, va="center")
+        continue
+    year, cells = row
+    ax.text(0.012, y + 0.07, year, fontsize=7.6, fontweight="bold", color=style.INK, va="center")
+    for (x, col, _), lines in zip(COLS, cells):
+        if not lines:
+            continue
+        ax.plot([x - 0.014], [y + 0.07], marker="o", ms=4.2, color=col)
+        for i, ln in enumerate(lines):
+            ax.text(x, y + 0.07 + i * LINE_H, ln, fontsize=7.0, color=style.INK, va="center")
+plt.show()
+```
+
+## 1906: a pass nobody wanted to throw
+
+Football in 1905 was a shoving match. The ball was snapped, and the offense's whole team crashed into
+the defense in a mass, with ball carriers pushed and pulled forward by their own teammates. That
+season, by the count usually cited, 19 players died nationwide, and President Theodore Roosevelt, a fan
+who wanted the game saved rather than banned, pressed the colleges to reform it. Among the changes the
+rules committee adopted on April 6, 1906, was one meant to spread the players out: **the forward pass
+became legal.**[^pass1906]
+
+It was legal, but nobody wanted to throw it, and the reason was the rulebook. The early rules made a
+pass a gamble with lopsided odds. A pass that hit the ground untouched could cost the offense the ball
+(from 1907, a 15-yard penalty instead), it had to cross the line of scrimmage at least five yards to
+either side of the center, and a pass caught in the end zone was not a touchdown but a touchback. Some
+early versions also limited how far downfield a pass could be caught. Think about that as a coach: a
+run that fails costs you a down; a pass that fails can cost you the ball. Most coaches ran.
+
+The rules eased slowly. In 1912 the colleges added the 10-yard end zone, a fourth down and the
+six-point touchdown, and dropped the limit on how far a pass could travel. A year later a small
+Catholic school from Indiana, Notre Dame, beat Army at West Point by throwing the ball around, with Gus
+Dorais passing to an end named Knute Rockne; the two had practiced it on a beach the summer before,
+while working as lifeguards. Newspapers loved it. Coaches mostly didn't change.[^early]
+
+The professional league that became the NFL was founded in 1920 and took its rules from the colleges,
+and for its first dozen years it played the same cautious, running game. Two rule changes in 1933 and
+1934 finally made the pass a normal play. The trigger was a controversial touchdown in the 1932 playoff
+game, played indoors on a shortened field because of a blizzard: Chicago's Bronko Nagurski faked a run,
+backed up a step and threw a short touchdown pass, and Portsmouth argued that he hadn't been the
+required five yards behind the line. For 1933 the NFL broke with the college rulebook and **allowed a
+forward pass from anywhere behind the line of scrimmage**. The same off-season it added [hash
+marks](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd) (lines in the field from which every
+play starts, so the ball was no longer spotted beside the sideline) and moved the goalposts up to the
+goal line to encourage field goals. And from 1934, **a second incomplete pass in the same set of downs no longer cost
+five yards**.[^nfl1933] Meanwhile the ball itself got slimmer through the 1920s and '30s, easier to grip
+and spiral.
+
+You can see the effect in the scoring. In 1932 an NFL team scored 8.2 points a game; by 1948 it was
+23.2, close to three times as many (the points chart later in this chapter shows the whole curve). The
+pass was not the only cause, since the T-formation and free substitution arrived in the same years
+(both are coming up), and the season-by-season passing numbers for the 1930s are too patchy to split the
+credit. But the direction is clear: by the peak years of the 1950s and '60s, NFL teams threw on about
+half their plays.[^passshare] Offenses needed a player who could throw.
+
+## The single wing: power and deception from a direct snap
+
+For the first decades of the forward pass, the formation that ran football was the [**single
+wing**](../../appendices/glossary.qmd#gl-single-wing). It is usually credited to Glenn "Pop" Warner at
+the Carlisle Indian Industrial School around 1907, where Jim Thorpe played tailback for him; Warner
+called it the Carlisle formation, and the name *single wing* came later from the one "wing" back
+lined up outside the end.[^singlewing]
+
+```{python}
+#| label: fig-single-wing
+#| fig-cap: "The single wing (strength to the offense's right; an illustrative alignment, since depths varied by team). The line is unbalanced: four men to the right of the center (both guards, a tackle and the end) and only two (a tackle and the end) to its left, so the play side has more blockers than a balanced line. This is the guard-over version; many teams moved a tackle over instead. Seven men are on the line, and the two at its ends (E) are eligible. There is no quarterback under center: the center snaps the ball through the air (dashed brown) to the tailback (T, aqua ring) about five yards deep, who can run, pass or hand off. The fullback (F) stands beside him, the blocking back (B), called the quarterback in its day, just behind the line, and the wingback (W) a yard off the line outside the right end."
+def single_wing():
+    return check_legal([
+        P("WE", "TE", LINE_D, -3.2, "E"), OL("WT", -1.6), OL("C", 0.0, "C"), OL("WG", 1.6), OL("SG", 3.2),
+        OL("ST", 4.8), P("SE", "TE", LINE_D, 6.4, "E"),
+        P("QB", "TB", -5.0, 0.6, "T"), P("FB", "FB", -4.4, 2.8, "F"), P("BB", "HB", -2.1, 4.0, "B"),
+        P("WB", "HB", -1.6, 8.3, "W")])
+
+
+sw = Play(single_wing(), None, los=40, to_go=None)
+sw.highlight("QB", color=BACK_RING)
+fld = draw_play(sw, lateral=(-16.0, 18.0), window=(-10.5, 5.8))
+(x0, y0), (x1, y1) = XY(fld, sw, 0.0, 0.0), XY(fld, sw, -4.2, 0.55)
+fld.ax.add_patch(FancyArrowPatch((x0, y0), (x1, y1), arrowstyle="-|>", mutation_scale=9, color=style.BALL,
+                                 lw=1.3, ls=(0, (2, 2)), zorder=5, connectionstyle="arc3,rad=0.25"))
+label(fld, sw, "unbalanced line: four men to the right\nof the center, two to the left", (3.7, -5.4))
+label(fld, sw, "wingback (W): a yard off\nthe line, outside the end", (3.7, 11.6), target=(-1.6, 8.3))
+label(fld, sw, "tailback (T): takes the snap about\n5 yards deep; runs, passes or hands off",
+      (-8.6, -6.6), target=(-5.0, 0.6))
+label(fld, sw, "direct snap: the ball\nflies back to him", (-2.8, -8.2), target=(-2.4, 0.35))
+label(fld, sw, "fullback (F): fakes,\nspins or runs", (-8.6, 8.4), target=(-4.4, 2.8))
+label(fld, sw, "blocking back (B):\nthe lead blocker", (-4.4, 12.4), target=(-2.1, 4.0))
+plt.show()
+```
+
+Read it from the back, the way [Classic Formations](../02-personnel-and-formations/02-03-classic-formations.qmd)
+taught you to read any formation. There's no one under center. The **tailback**, the star, stands
+four or five yards deep and takes a **direct snap**, a long toss between the center's legs. Beside him is
+the **fullback**, a power runner and faker. Up near the line is the **blocking back**, who was called
+the quarterback but almost never threw: his job was to lead the play and call the signals. And just
+outside the end is the **wingback**, a runner on reverses and a receiver on passes. The line is
+**unbalanced**: one lineman from the weak side moves over to the strong side, so four players stand to
+the right of the center and only two, a tackle and an end, to its left. In the picture it's a guard
+(both guards, a tackle and the end on the right); many teams moved a tackle over instead, which made the
+strong side guard, tackle, tackle, end. Either way the point was the same.
+
+### Why it existed
+
+The single wing was built for a game in which the run was everything and the pass was an occasional
+surprise, and it solved that game's problems well.
+
+**More blockers than the defense had defenders at the point of attack.** Look at the right side of the
+line in the picture: both guards, a tackle and the end, the wingback and the blocking back, plus the
+fullback, all on one side. The signature play, the off-tackle power, sent nearly all of them at one spot,
+and the formation was built so that the key defender there could be double-teamed.
+
+**A runner who could also throw.** Because the tailback caught the snap standing up, five yards deep,
+every run started as a possible pass, and every pass as a possible run. The great tailbacks were
+*triple-threat* players: they could run, pass and punt, which in the low-scoring game of the era was
+as valuable as anything else they did.
+
+**Deception from the backfield.** With the ball snapped to either deep back, the backs could spin,
+fake and hand off behind the line. The single wing's *spinner* plays (the fullback takes the snap,
+turns his back to the defense and either keeps it or hands to a back circling behind him) and its
+reverses to the wingback were built to make the defense guess.
+
+A note on the letters in the next three pictures. They show the defenses of the 1930s and '40s, which
+used the era's names: **E** end, **T** tackle, **G** guard, **L** linebacker, **H** halfback (a
+defensive back), **S** safety. Defenders are always orange squares and offensive players blue circles,
+so a blue **T** is the single wing's tailback and an orange **T** is a defensive tackle. From the
+Lombardi section on, the 4-3 letters of [Part 5](../05-defensive-fronts-and-run-defense/05-02-even-fronts.qmd)
+take over: **S**, **M** and **W** are the Sam, Mike and Will linebackers, and the safeties are **FS** and
+**SS**.
+
+```{python}
+#| label: fig-single-wing-power
+#| fig-cap: "The single wing's bread-and-butter play, the off-tackle power to the strong side, against a six-man front of the era (six linemen, two linebackers L, two defensive halfbacks H and a safety; an illustrative reconstruction; the far-side halfback and the safety are beyond the top and left of the picture). (1) Count before the snap: right of the ball the offense has seven blockers (shaded) against five defenders. (2) The snap has flown back to the tailback (T, aqua ring). The right end and the wingback double-team the defensive tackle (orange T), the blocking back (B) kicks out the defensive end (E), and the inside guard (G, dark ring), the one next to the center, pulls behind the line to lead. (3) The fullback (F) and the guard lead through the hole onto the linebacker and the halfback. (4) The tailback follows his blockers off the tackle's outside hip."
+def era_six_man():
+    """A six-man front of the 1930s, shifted toward the single wing's strong (right) side."""
+    return [D("DE_L", "DE", 1.3, -5.0, "E"), D("DT_L", "DT", 1.3, -2.4, "T"),
+            D("DG_L", "DT", 1.3, 0.3, "G"), D("DG_R", "DT", 1.3, 3.0, "G"),
+            D("DT_R", "DT", 1.3, 5.6, "T"), D("DE_R", "DE", 1.3, 9.0, "E"),
+            D("LB_L", "LB", 4.0, -0.6, "L"), D("LB_R", "LB", 4.0, 5.0, "L"),
+            D("HB_L", "DB", 8.0, -11.5, "H"), D("HB_R", "DB", 7.5, 11.6, "H"), D("S", "S", 13.5, 1.5, "S")]
+
+
+sw_pw = [OL("WG", 1.6, "G") if q.key == "WG" else q for q in single_wing()]
+pw = Play(sw_pw, era_six_man(), los=40, to_go=None)
+# the defense reacts first (blocks aim at where these men end up)
+pw.path("DT_R", [(2.2, 4.6)], absolute=True, delay=0.15, speed=1.6)     # driven inside by the double team
+pw.path("DE_R", [(0.8, 9.9)], absolute=True, delay=0.1, speed=2.5)      # steps upfield, gets kicked out
+pw.path("LB_R", [(3.2, 6.9)], absolute=True, delay=0.45, speed=3.0)     # fills the hole
+pw.path("LB_L", [(3.2, 1.6)], absolute=True, delay=0.45, speed=3.0)
+pw.path("HB_R", [(6.0, 10.6)], absolute=True, delay=0.6, speed=4.0)
+pw.path("S", [(10.0, 6.5)], absolute=True, delay=0.6, speed=4.5)
+# the blocks
+pw.block("SE", pts=[(2.6, -0.5)], speed=2.2)                  # end: down on the tackle
+pw.block("WB", pts=[(2.2, -2.6)], speed=2.6)                  # wingback: the other half of the double team
+pw.block("ST", target="DG_R", speed=2.0)
+pw.block("C", target="DG_L", speed=2.0)
+pw.block("WT", target="DT_L", speed=2.0)
+pw.block("SG", target="LB_L", speed=3.0)
+pw.block("BB", target="DE_R", speed=4.0)                      # blocking back: the kick-out
+pw.block("FB", pts=[(2.4, 2.4), (6.4, 4.6)], speed=5.5, delay=0.2)    # fullback: lead through the hole
+pw.pull("WG", [(-1.2, 0.4), (-1.5, 3.6), (0.9, 5.6), (5.2, 8.8)], speed=5.2)  # inside guard pulls and leads
+pw.run("QB", [(-4.6, 2.2), (-2.8, 5.4), (0.2, 7.5), (3.0, 8.4), (7.0, 8.6)], absolute=True, delay=0.45,
+       speed=7.0)
+
+
+def count_panel(fld, i):
+    """Frame 1 only: shade the strong side and count blockers against defenders."""
+    if i != 0:
+        return
+    (xa, ya), (xb, yb) = XY(fld, pw, -5.9, 0.9), XY(fld, pw, 8.6, 13.1)
+    fld.ax.add_patch(Rectangle((min(xa, xb), min(ya, yb)), abs(xb - xa), abs(yb - ya), fc=style.OFFENSE,
+                               alpha=0.07, ec=style.OFFENSE, lw=0.6, ls=(0, (3, 2)), zorder=0.6))
+    label(fld, pw, "right of the ball:\n7 blockers, 5 defenders", (6.6, 5.6), fs=6.8)
+
+
+animation_or_strip(pw, [0.0, 0.6, 1.4, 2.6], lateral=(-6.0, 13.5), window=(-6.3, 9.3),
+                   rings=[("QB", BACK_RING), ("WG", style.OFFENSE_DARK)], mark_r=0.58, extra=count_panel,
+                   notes=["count: seven blockers\nto five defenders",
+                          "double team, kick-out;\nthe inside guard (G) pulls",
+                          "fullback and guard lead\nthrough the hole",
+                          "the tailback follows\nhis blockers"])
+```
+
+### What it gave up
+
+Everything in the single wing was slow. The snap traveled five yards through the air before anything
+could happen, the tailback started from a standstill, and the play took a long time to reach the line.
+The defense could see who had the ball; it couldn't always see what he would do with it, but it knew
+where to look. And the formation demanded one extraordinary athlete: a tailback who ran, passed, punted
+and often played defense too. A team without one had no offense.
+
+The defenses of the era matched it man for man. Six or seven linemen stood shoulder to shoulder, with
+one or two linebackers behind them and three defensive backs, as in the picture: a run defense with a
+little pass insurance.
+
+## 1940: 73–0 and the T's takeover
+
+The T-formation was older than the single wing. What was new in 1940 was a version of it that worked.
+[Classic Formations](../02-personnel-and-formations/02-03-classic-formations.qmd#the-ancestor-the-t-formation)
+drew the [T-formation](../02-personnel-and-formations/02-03-classic-formations.qmd) and explained its
+logic: the quarterback's hands under the center, an instant snap, backs who hit the line at full
+speed, and a ball handler who can fake to one back and give to another with his back to the defense.
+Here is how it took over.
+
+```{python}
+#| label: fig-sw-vs-t
+#| fig-cap: "The two formations side by side, at the same scale (illustrative alignments). Left, the single wing: an unbalanced line, the ball snapped through the air to a tailback (T, aqua ring) about five yards deep, and three backs stacked to the strong side. Right, the T: a balanced line, the quarterback (Q, aqua ring) with his hands under the center, and three backs in a row about four and a half yards behind him. The T's ball is in the quarterback's hands the instant it moves, and the backs, all the same depth, can hit either side of the line."
+def t_formation():
+    return check_legal(line5() + [
+        P("LE", "TE", LINE_D, -6.2, "E"), P("RE", "TE", LINE_D, 6.2, "E"),
+        P("QB", "QB", UC, 0.0, "Q"), P("LH", "HB", -4.6, -3.0, "H"), P("FB", "FB", -4.6, 0.0, "F"),
+        P("RH", "HB", -4.6, 3.0, "H")])
+
+
+LAT, WIN = (-10.5, 13.5), (-9.2, 2.2)
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 6.6 / 2 * (WIN[1] - WIN[0]) / (LAT[1] - LAT[0]) + 0.35))
+for ax, (form, name) in zip(axes, [(single_wing(), "Single wing: direct snap"),
+                                   (t_formation(), "T-formation: under center")]):
+    pl = Play(form, None, los=40, to_go=None)
+    pl.highlight("QB", color=BACK_RING)
+    fl = pl.draw(ax=ax, lateral=LAT, window=WIN, title=False)
+    hide_yard_numbers(ax)
+    ax.set_title(name, fontsize=9, color=style.INK, loc="left", fontweight="bold")
+    if form[0].key == "WE":
+        (x0, y0), (x1, y1) = XY(fl, pl, 0.0, 0.0), XY(fl, pl, -4.2, 0.55)
+        ax.add_patch(FancyArrowPatch((x0, y0), (x1, y1), arrowstyle="-|>", mutation_scale=8, color=style.BALL,
+                                     lw=1.2, ls=(0, (2, 2)), zorder=5, connectionstyle="arc3,rad=0.25"))
+        label(fl, pl, "the snap flies\n5 yards", (-7.2, -6.0), target=(-2.6, 0.35), fs=6.6)
+        label(fl, pl, "unbalanced:\n4 right, 2 left", (-7.4, 9.6), fs=6.6)
+    else:
+        label(fl, pl, "hand-to-hand snap:\nthe ball is out at once", (-7.4, -5.6), fs=6.6)
+        label(fl, pl, "balanced line:\nthe same both sides", (-7.4, 9.0), fs=6.6)
+fig.subplots_adjust(left=0.005, right=0.995, top=0.9, bottom=0.01, wspace=0.04)
+plt.show()
+```
+
+The difference is all in the first second. The single wing's tailback has to catch a five-yard toss
+before he can do anything; the T's quarterback has the ball the instant the center moves it, and he can
+hand it to a back who is already moving toward the line.
+
+The Chicago Bears' coach and owner, George Halas, had stuck with a version of the T through the
+single-wing years, and his coach of 1930–32, Ralph Jones, is usually credited with adding a back in
+[motion](../01-foundations/01-05-the-pre-snap-phase.qmd) before the snap and spreading the ends and
+the backs to give it room. Clark Shaughnessy, a bookish, obsessive coach who worked with Halas as a
+consultant, refined it further. In 1940 Shaughnessy installed his version at Stanford,
+which had gone 1–7–1 the year before; Stanford went undefeated and won the Rose Bowl. In Chicago,
+Halas had found the quarterback the system needed: Sid Luckman, a single-wing tailback at Columbia,
+whom the Bears turned into a T quarterback who could take the snap, turn, fake, and drop back to
+throw.[^tform40]
+
+::: {.callout-note title="Film room: Chicago Bears, December 8, 1940"}
+Three weeks before the 1940 NFL Championship Game, Washington had beaten the Bears 7–3, and its owner,
+George Preston Marshall, told reporters the Bears were "crybabies and quitters when the going got
+tough." Halas pinned the articles up for his players. Shaughnessy, meanwhile, studied the game film and
+saw that Washington's linebackers shifted with the Bears' man in motion, so he drew up plays that went
+back the other way. On the Bears' second play from scrimmage, fullback Bill Osmanski ran 68 yards for a
+touchdown. The final was **73–0**, still the most lopsided result in NFL history. The Bears scored
+11 touchdowns, ten different players scored, and Chicago intercepted 8 passes. Asked whether it would
+have been different if his receiver had caught a sure touchdown pass Washington dropped early in the
+game, Washington's quarterback Sammy Baugh is supposed to have said: "Sure. The final score would have
+been 73–7."[^tform40game]
+
+**What to notice** (in the NFL Films highlights): how fast the backs reach the line after the snap,
+and how often the play goes away from where the motion man went.
+:::
+
+```{python}
+#| label: fig-t-counter
+#| fig-cap: "The man-in-motion T and the counter that punished defenses for following the motion (an illustrative play in the style of the 1940 Bears, against a typical six-man front of the period). (1) Before the snap, the right halfback (H) starts in motion toward the sideline. (2) By the snap the linebackers (L) and the safety (S) have slid a full gap toward him. (3) The quarterback (Q) turns, the fullback (F) fakes a dive to the right, and the ball goes to the left halfback (aqua ring), who has taken a jab step right and now cuts back left. (4) The linebackers, still flowing toward the motion and the fake, are on the wrong side of the hole."
+def era_six_man_balanced():
+    return [D("DE_L", "DE", 1.0, -7.4, "E"), D("DT_L", "DT", 1.0, -3.8, "T"), D("DG_L", "DT", 1.2, -1.25, "G"),
+            D("DG_R", "DT", 1.2, 1.25, "G"), D("DT_R", "DT", 1.0, 3.8, "T"), D("DE_R", "DE", 1.0, 7.4, "E"),
+            D("LB_L", "LB", 3.8, -2.4, "L"), D("LB_R", "LB", 3.8, 2.4, "L"),
+            D("HB_L", "DB", 8.0, -12.0, "H"), D("HB_R", "DB", 8.0, 12.0, "H"), D("S", "S", 13.0, 0.0, "S")]
+
+
+tc = Play(t_formation(), era_six_man_balanced(), los=40, to_go=None)
+tc.motion("RH", to=(-4.6, 12.5), speed=5.5)
+tc.motion("LB_L", to=(3.8, 1.0), speed=2.2)                # the linebackers slide a full gap with the motion
+tc.motion("LB_R", to=(3.8, 5.8), speed=2.2)
+tc.motion("S", to=(13.0, 3.5), speed=2.4)
+tc.motion("HB_R", to=(8.0, 14.0), speed=1.5)
+# after the snap the defense chases the fake
+tc.path("LB_L", [(2.6, 2.0)], absolute=True, delay=0.35, speed=3.0)
+tc.path("LB_R", [(2.6, 5.0)], absolute=True, delay=0.35, speed=3.0)
+tc.path("HB_L", [(6.5, -8.0)], absolute=True, delay=0.7, speed=4.0)
+tc.path("S", [(9.5, -1.0)], absolute=True, delay=0.8, speed=4.5)
+tc.path("QB", [(-2.7, -0.9)], absolute=True, speed=3.0)
+tc.path("FB", [(-3.0, 1.2), (-0.6, 2.0)], absolute=True, speed=5.5)          # the fake
+tc.block("LT", target="DT_L", speed=2.0)
+tc.block("LG", target="DG_L", speed=2.0)
+tc.block("C", pts=[(1.2, 1.0)], speed=2.0)
+tc.block("RG", target="DG_R", speed=2.0)
+tc.block("RT", target="DT_R", speed=2.0)
+tc.block("LE", target="DE_L", speed=2.0)
+tc.handoff("LH", t=0.7)
+tc.run("LH", [(-4.3, -2.0), (-2.8, -2.0), (-0.5, -2.4), (3.5, -2.9), (9.0, -4.2)],
+       absolute=True, speed=5.5, delay=0.1)
+animation_or_strip(tc, [-1.7, 0.0, 0.7, 1.8], lateral=(-15.0, 16.2), window=(-6.5, 14.8),
+                   rings=[("LH", BACK_RING)], mark_r=0.85,
+                   notes=["the right halfback starts\nin motion",
+                          "snap: the linebackers and\nsafety have slid with him",
+                          "the fullback fakes right; the\nhandoff goes back left",
+                          "the counter hits where the\nlinebackers just left"])
+```
+
+The rout settled the argument. Within a decade almost every college and pro team had switched to the
+T, and the Pittsburgh Steelers, the NFL's last single-wing team, gave it up after the 1952
+season.[^steelers]
+
+::: {.callout-caution title="Common misconception"}
+**"Halas and Shaughnessy invented the T-formation."** They didn't, and they never claimed to. A tight T
+with the quarterback under center was one of football's oldest formations, and the Bears had used one
+all along. What Jones, Halas and Shaughnessy built was the *modern* T: man-in-motion, wider spacing,
+quick-hitting plays designed to make a defense commit, and a quarterback trained to fake and throw. The
+lesson repeats through this whole part of the book: formations are rarely invented; they're
+*re-equipped* for a new problem.
+:::
+
+### Why the T won
+
+The T's advantages were speed and deception, and both came from the snap. The single wing's tailback
+needed a second just to receive the ball; the T's quarterback had it instantly, and his backs could be
+at the line in the time it took a single-wing snap to arrive. But the deepest reason was the
+quarterback. In the single wing, the man who threw also had to run, block and often punt. In the T, one
+player did nothing but handle the ball and throw it, from a few yards behind his line, *facing* his
+receivers after a short drop. That made him a specialist, and specialists improve faster than
+generalists. Every modern quarterback descends from Luckman more than from any single-wing tailback.
+
+### What the T gave up, and what football did about it
+
+The T as the Bears ran it had two tight ends and three backs: lots of runners and almost no
+width. Over the next decade coaches pulled its players outward into the [pro
+set](../02-personnel-and-formations/02-03-classic-formations.qmd) of two backs, a tight end and two
+wide receivers (Classic Formations has the family tree, including Shaughnessy's 1949 Rams flanking Elroy
+Hirsch wide[^hirsch]). The other thing the T needed was a different kind of roster, and that required a change
+in the rules.
+
+## Platoon football: the specialist arrives
+
+Until the 1940s the rules made substitution hard: a player who left the game generally couldn't come
+back in the same quarter, so the same eleven men played offense *and* defense. The star tailback was
+also a defensive back. The quarterback tackled. Linemen had to be big enough to block and quick enough
+to chase.
+
+Free substitution changed all of that. The colleges allowed it in 1941, and the NFL in 1943, both
+partly because the war had thinned rosters. In 1945 Michigan's Fritz Crisler, facing a much stronger
+Army team, used it to send in separate units for offense and defense, and the idea spread. The NFL made
+unlimited substitution permanent in 1950. The colleges went the other way for a while: in 1953 they
+went back to limited substitution, mostly over cost, because fielding two full units had pushed dozens
+of small schools to drop football altogether, and they didn't restore free substitution until 1965.
+That gap is part of why the pros pulled ahead in specialization.[^platoon]
+
+The two-way player didn't vanish overnight. In 1960 injuries pushed the Philadelphia Eagles to use
+Chuck Bednarik, a 12-year veteran, on both sides of the line again, at center and linebacker. In that
+season's championship game he played 58 of the 60 minutes and made the game-saving tackle, wrestling
+Green Bay's Jim Taylor to the ground as time ran out. He is remembered as one of the last of the NFL's
+two-way stars.[^bednarik]
+
+That is [**platoon football**](../../appendices/glossary.qmd#gl-platoon-football): separate groups of
+players for offense and defense, and eventually for kicking plays and particular situations.
+
+### Why it mattered
+
+Platooning sounds like a roster rule. It was really a revolution in what a player could be.
+
+- **Bodies could specialize.** An offensive lineman no longer needed to chase a halfback; he could get
+  bigger and stronger and learn to pass block. A defensive back no longer needed to run the ball; he
+  could be the fastest man on the field and learn to cover.
+- **Skills could specialize.** A T quarterback could spend his whole practice throwing. A defensive
+  end could spend his rushing. The pass-catching end became a receiver who ran routes for a living.
+- **Coaching could specialize.** Two units meant two sets of schemes, and soon two sets of coaches:
+  the ancestors of today's [offensive and defensive
+  coordinators](../01-foundations/01-04-what-a-play-really-is.qmd).
+
+Everything after this point in the chapter is an argument between specialists.
+
+::: {.callout-note title="Madden vs. real life"}
+In *Madden* you never think about who plays defense when your offense is on the field: there are 53
+players and the game substitutes for you. For football's first half-century that roster didn't exist.
+NFL roster limits ran from about 20 players in the early 1930s to the low and mid-30s in the '40s, and
+the best players stayed on the field for both halves of every possession.[^rosters] The
+whole modern idea of *personnel groupings* (Part 2) depends on free substitution. Before 1943 there were
+no groupings to choose between: to borrow the phrase in a different sense, a team's "11 personnel" was
+simply its eleven best players, and they were the defense too.
+:::
+
+## Paul Brown: football becomes a profession
+
+The coach who did the most with those specialists was Paul Brown. He had built winners at Massillon
+(Ohio) High School and at Ohio State, where his 1942 team won the national championship, and in 1946 he
+became head coach of a new professional team named after him, the Cleveland Browns of the
+All-America Football Conference (AAFC), a rival league. The Browns won all four AAFC championships
+(1946–49). When the AAFC folded and the Browns joined the NFL in 1950, the established league assumed
+they would be humbled. In their first NFL game, against the two-time defending champion Philadelphia
+Eagles, the Browns won 35–10. They won the NFL title that season and again in 1954 and 1955, and they
+played in the championship game in each of their first ten seasons (AAFC and NFL) with Otto Graham at
+quarterback.[^brown]
+
+Brown's innovations matter more than his trophies, because almost all of them are still standard:
+
+- **A full-time, year-round coaching staff**, at a time when many assistants were part-timers.
+- **The playbook as a textbook.** Players got detailed books of formations and plays, attended
+  classroom sessions, and took written tests on them. Brown also gave them intelligence tests.
+- **Film study.** Brown is credited with being the first coach to use game film to scout opponents,
+  breaking down what the other team did before playing it.
+- **Measurable athletes.** He timed players over 40 yards, a distance he adopted at Ohio State in
+  1941, by the usual account because it was about how far a player ran on a punt cover (his son Mike
+  remembers it as simply the longest sprint a player usually had to make). The 40-yard dash is still the most
+  famous number at the NFL Combine.
+- **The draw play**, which Brown dated to an accident in 1946: Otto Graham, about to be sacked,
+  handed the ball to his fullback, Marion Motley, who ran through a defense that had dropped back for
+  a pass. (A [draw play](../03-the-run-game/03-03-gap-and-power-runs.qmd) is a run disguised as a pass:
+  the linemen show pass protection, then the ball goes to a back.)
+- **Integration.** In 1946 Brown signed Motley and guard Bill Willis, two of the first Black players
+  in modern pro football.
+
+### The coach calls the plays
+
+The innovation that changed the game most directly was who called the plays. Before Brown, the
+quarterback called them in the huddle. Brown called them from the sideline, and to get his calls in,
+he rotated two guards on every play: each **messenger guard** came in with the call and the other went
+out. Guards were the natural men to shuttle. Two guards of similar size and skill could swap every play
+without changing what the offense could do, whereas swapping a back or a receiver would have changed
+the personnel on the field, and the quarterback had to stay in to run the play. One of them, from 1953 to 1959, was a smart, undersized lineman named Chuck Noll, who, Brown
+said, soon could have called the plays himself; Noll later coached the 1970s Steelers. In 1956 Brown
+went further and tested a radio receiver in his quarterback's helmet. The Detroit Lions spotted the
+transmitter during a preseason game, and Commissioner Bert Bell banned the device after a handful of
+games. The NFL legalized helmet radios in 1994.[^radio]
+
+A coach choosing every play from the sideline is so normal now (see [What a Play Really
+Is](../01-foundations/01-04-what-a-play-really-is.qmd)) that it's easy to miss how radical it was. It
+moved the brain of the offense from the field to the staff, and it made the game plan, built from
+film during the week, the center of football. Every coordinator with a laminated [call
+sheet](../01-foundations/01-04-what-a-play-really-is.qmd) works in a system Paul Brown designed.
+
+::: {.callout-note title="Film room: Cleveland Browns vs. Philadelphia Eagles, 1950"}
+The Browns' first NFL game, on September 16, 1950, was the AAFC champion against the NFL champion,
+and Otto Graham passed for 346 yards and three touchdowns in a 35–10 win. The Eagles' coach, Greasy
+Neale, whose five-man [Eagle defense](../05-defensive-fronts-and-run-defense/05-03-odd-and-hybrid-fronts.qmd)
+had won the previous two NFL titles, grumbled that the Browns were like a basketball team, all they did
+was throw. When the teams met again on December 3, in rain in Cleveland, Brown answered him: the
+Browns won 13–7 **without a single official pass attempt**. (The two passes Graham threw were both
+called back by penalties.) No NFL team since has played a whole game without attempting a
+pass.[^eagles50]
+
+**What to notice:** the point Brown was making. A team whose opponent can only stop one thing doesn't
+have to do only one thing. The pass had become a weapon because it was no longer the *only* weapon.
+:::
+
+## The defense answers: Steve Owen's umbrella
+
+First, what had the defense done about the T? Through the 1940s, most teams' answer was more men on the
+line and more men deep. The most successful version was Greasy Neale's **Eagle defense** in
+Philadelphia, a 5-2-4 from 1947: five linemen, with a *middle guard* head-up on the center, two
+linebackers behind them, and four defensive backs instead of the three of the single-wing era, the
+extra one for the T's passes. The Eagles won the 1948 and 1949 titles with it.
+[Odd and Hybrid Fronts](../05-defensive-fronts-and-run-defense/05-03-odd-and-hybrid-fronts.qmd) follows
+the five-man line from there to the 3-4. Its soft spot was the middle: with no linebacker over the
+center, a quick pass over the middle guard's head had room.[^eagle47] Keep that in mind; it comes back
+in a few pages.
+
+Brown's passing game created a problem defenses of 1950 had never had to solve. Most NFL teams still
+lined up with five or six linemen and only three or four defensive backs, and the Browns sent out
+receivers like Dante Lavelli and Mac Speedie, plus a flanker, plus backs who ran routes. There were
+more receivers than defenders who could cover them.
+
+The first team to solve it was the New York Giants. Their head coach, Steve Owen, a heavyset Oklahoman
+who had been coaching the Giants since 1930 and had won the NFL title in 1934 and 1938, built a defense
+for the 1950 Browns that looked like a run defense and played like a pass defense. Owen called it a
+6-1-4, and in his own words, on many plays it became "a 4-1-6 in reality." The secret was the two
+defensive ends: they lined up on the line of scrimmage like linemen, and at the snap they could drop
+back into pass coverage. The four defensive backs behind them, spread in an arc like the ribs of an
+umbrella, gave the defense its name: the [**umbrella
+defense**](../../appendices/glossary.qmd#gl-umbrella-defense). One of those defensive backs, a young
+Texan named Tom Landry, explained it to the others and taught it on the field.[^owen]
+
+```{python}
+#| label: fig-umbrella
+#| fig-cap: "Owen's umbrella against a Browns-style pass (an illustrative reconstruction: the Browns' formation and routes varied). (1) Before the snap the Giants show a 6-1-4: six men on the line, one linebacker (M) and four defensive backs (two halfbacks H, two safeties S) in an arc, the umbrella. The two ends (E, orange rings) stand at the ends of the line. (2–3) At the snap the ends drop into the short outside zones (the flats), the linebacker drops to the middle, and the halfbacks and safeties retreat, the halfbacks staying shallower and wider so the arc keeps its umbrella shape. (4) Against the pass it is now a 4-1-6: four rushers and seven defenders in coverage, more than the five receivers the offense can send. Against a run, those same two ends are the defense's edge (contain) players, which is the umbrella's trade: an end who drops on a run has left the edge open. Offense: Q quarterback, F fullback, H halfback, X and Y split ends, Z flanker."
+def browns_t():
+    return check_legal(line5() + [
+        P("QB", "QB", UC, 0.0, "Q"), P("FB", "FB", -4.6, 0.0, "F"), P("HB", "HB", -4.6, 2.4, "H"),
+        P("X", "WR", LINE_D, -12.0), P("Y", "TE", LINE_D, 9.6, "Y"), P("Z", "WR", OFF_BALL, 14.5)])
+
+
+def umbrella_def():
+    return [D("dLE", "DE", 1.0, -6.4, "E"), D("dLT", "DT", 1.0, -3.4, "T"), D("dLG", "DT", 1.0, -1.0, "G"),
+            D("dRG", "DT", 1.0, 1.0, "G"), D("dRT", "DT", 1.0, 3.4, "T"), D("dRE", "DE", 1.0, 6.4, "E"),
+            D("M", "MIKE", 4.0, 0.0, "M"),
+            D("LH", "DB", 7.0, -12.5, "H"), D("RH", "DB", 7.0, 13.5, "H"),
+            D("LS", "S", 11.5, -5.0, "S"), D("RS", "S", 11.5, 5.5, "S")]
+
+
+um = Play(browns_t(), umbrella_def(), los=35, to_go=None)
+um.dropback(5.0)
+um.route("X", [(0, 0), (12.0, 0), (10.8, -1.5)])        # curl
+um.route("Y", [(0, 0), (11.0, 0), (11.0, 5.0)])         # sideline out
+um.route("Z", [(0, 0), (15.0, -0.5)])                   # go
+um.route("HB", [(0, 0), (-0.6, 3.5), (1.5, 8.0)], side=1)  # swing to the flat
+um.block("FB", pts=[(0.6, -1.5)], speed=2.0)
+um.drop("dLE", (6.5, -11.0), delay=0.1)
+um.drop("dRE", (6.0, 12.4), delay=0.3)
+um.drop("M", (8.5, 0.5), delay=0.15)
+um.drop("LH", (13.5, -13.6), delay=0.1)
+um.drop("RH", (13.6, 12.0), delay=0.1)
+um.drop("LS", (16.8, -5.0), delay=0.1)
+um.drop("RS", (16.8, 5.5), delay=0.1)
+for k in ("dLT", "dLG", "dRG", "dRT"):            # four rush and meet the blockers
+    um.path(k, [(-0.1, um.players[k].w)], absolute=True, speed=1.5)
+for k in ("LT", "LG", "C", "RG", "RT"):
+    um.block(k, pts=[(-1.4, 0.0)], speed=1.2)
+animation_or_strip(um, [0.0, 0.7, 1.4, 2.2], lateral=(-15.0, 17.0), window=(-8.5, 19.5),
+                   rings=[("dLE", KEY_RING), ("dRE", KEY_RING)], mark_r=0.9, width_in=5.6,
+                   notes=["snap: a 6-1-4, six men\non the line",
+                          "the two ends turn and drop",
+                          "the ends reach the flats;\nthe umbrella opens",
+                          "a 4-1-6: four rush,\nseven cover"])
+```
+
+It worked. On October 1, 1950, the Giants beat the Browns 6–0, the first time Cleveland had ever been
+shut out, and they beat them again, 17–13, later in the season. Cleveland lost only those two games
+and then beat the Giants 8–3 in a playoff on the way to the title, but the umbrella had shown what
+mattered: **a defense that can change its shape after the snap can show one thing and play another.**
+That's the seed of every disguise in [Part 6](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd).
+
+The trade, as always, was real. An umbrella end who dropped into coverage on a run play was out of
+position, and on a pass the defense rushed only four men instead of the six the era was used to. Against a team with a dangerous runner who
+could hit a draw (Brown had Motley), dropping the ends could be expensive.
+
+### From the umbrella to the 4-3
+
+The 4-3 came from two different parents, each of which gave up a lineman.
+
+The first parent is the umbrella. Its dropping ends were really linebackers who started on the line.
+Stand them up for good and the 6-1-4 becomes four linemen, three linebackers (the two ends and the one
+linebacker) and four defensive backs.
+
+The second parent is the five-man front of the Eagle family. Its weak spot, you'll remember, was the
+middle. In 1954 the Bears' middle guard, Bill George, kept getting beaten by quick passes thrown over
+his head, so he started standing up and backing off the line at the snap. Do that in a 5-2-4 and it
+becomes four linemen, three linebackers (the two and George) and four defensive backs. George is
+usually named as the first true middle linebacker, though the Hall of Fame itself says no one can be
+sure which middle guard first dropped back.[^george]
+
+```{python}
+#| label: fig-43-parents
+#| fig-cap: "Two roads to the 4-3 (a schematic, not to scale; each row is a level of the defense: linemen, linebackers, defensive backs). Left, Owen's 6-1-4 umbrella: stand its two ends up (orange rings) and they become outside linebackers. Right, the 5-2-4 Eagle-style front: stand the middle guard up (orange ring) and he becomes the middle linebacker. Both arrive at the same place, in the middle: four linemen, three linebackers, four defensive backs."
+def tier(ax, x0, rows, moved=(), title=""):
+    """rows: counts per level (DL, LB, DB); moved: (row, index) pairs to ring."""
+    ys = [0.0, -1.0, -2.0]
+    for r, (n, y) in enumerate(zip(rows, ys)):
+        xs = [x0 + (i - (n - 1) / 2) * 0.55 for i in range(n)]
+        for i, x in enumerate(xs):
+            ax.add_patch(RegularPolygon((x, y), 4, radius=0.2, orientation=np.pi / 4, fc=style.DEFENSE_TINT,
+                                        ec=style.DEFENSE, lw=1.0, zorder=3))
+            if (r, i) in moved:
+                ax.add_patch(Circle((x, y), 0.27, fc="none", ec=style.DEFENSE, lw=1.6, zorder=4))
+    ax.text(x0, 0.75, title, ha="center", va="center", fontsize=8.6, fontweight="bold", color=style.INK)
+    ax.text(x0, -2.75, "-".join(str(n) for n in rows), ha="center", va="center", fontsize=8.0, color=style.INK_2)
+
+
+fig, ax = plt.subplots(figsize=(6.6, 2.1))
+ax.set_xlim(-0.2, 12.2); ax.set_ylim(-3.1, 1.1); ax.set_aspect("equal"); ax.axis("off")
+tier(ax, 1.85, (6, 1, 4), moved={(0, 0), (0, 5)}, title="Umbrella (1950)")
+tier(ax, 6.0, (4, 3, 4), title="4-3 (Landry, 1956)")
+tier(ax, 10.15, (5, 2, 4), moved={(0, 2)}, title="Eagle-style 5-2-4")
+for xa, xb, txt in [(3.75, 4.85, "ends\nstand up"), (8.65, 7.15, "middle guard\nstands up")]:
+    ax.add_patch(FancyArrowPatch((xa, -1.0), (xb, -1.0), arrowstyle="-|>", mutation_scale=11,
+                                 color=style.INK_2, lw=1.2))
+    ax.text((xa + xb) / 2, -0.45, txt, ha="center", va="center", fontsize=6.8, color=style.INK_2)
+plt.show()
+```
+
+Landry took both moves at once: the umbrella's idea of ends who could play off the line became his
+outside linebackers, and George's stand-up middle guard became his middle linebacker. Four linemen,
+three linebackers and four defensive backs: the [4-3](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd).
+Landry, by then the Giants' defensive coach, made it the Giants' base defense in 1956, built around a
+rookie middle linebacker from West Virginia, Sam Huff. The Giants won the 1956 championship, much of
+the league copied the defense the following season, and Huff became so famous that CBS made a
+television documentary about him, *The Violent World of Sam
+Huff* (1960, an episode of Walter Cronkite's *The Twentieth Century*). The
+4-3 would be the NFL's standard defense for the next two decades.[^landry43] [A First Look at
+Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) and [Even
+Fronts](../05-defensive-fronts-and-run-defense/05-02-even-fronts.qmd) cover how it lines up today.
+
+Why did the 4-3 win? Because it was the first defense balanced for *both* threats. Four linemen are
+enough to rush a passer; three linebackers can stop a run or drop into coverage; four defensive backs
+can cover the receivers that platoon football had produced. It was the defense equivalent of the pro
+set: good at everything, great at nothing in particular.
+
+## Lombardi's sweep and Landry's Flex
+
+### The offense: run to daylight
+
+Vince Lombardi arrived in Green Bay in 1959 as a 45-year-old assistant who had never been a head coach
+in the NFL. (He had been the Giants' offensive coach, across the hall from Landry, in the 1950s.) His
+Packers won five NFL championships in seven seasons, 1961–67, including the first two Super Bowls, and
+the play everyone associated with them was the **power sweep**. [Gap and Power
+Runs](../03-the-run-game/03-03-gap-and-power-runs.qmd) draws it block by block; here is the version
+that matters for the history.
+
+```{python}
+#| label: fig-power-sweep
+#| fig-cap: "Lombardi's power sweep to the right from split backs (an illustrative reconstruction against a 1960s 4-3; landmarks varied). Both guards (G, dark rings) pull: the right guard to the first defender outside (here the cornerback), the left guard turning up inside for the pursuit (the Mike). The fullback (F) blocks the defensive end, the tight end (Y) takes the Sam linebacker (S), and the flanker (Z) blocks the strong safety. The halfback (H, aqua ring) takes the handoff, presses the edge about a yard outside the tight end and reads the block on the Sam there: if the Sam is driven outside, he cuts inside it; if the Sam fights inside, he runs around it. That choice is 'running to daylight.'"
+def pro_set_red():
+    """Split backs set wide apart (Lombardi's 'Red'), tight end and flanker to the right."""
+    return check_legal(line5() + [
+        P("QB", "QB", UC, 0.0, "Q"), P("HB", "HB", -5.0, -2.8, "H"), P("FB", "FB", -5.0, 2.8, "F"),
+        P("Y", "TE", LINE_D, TE_W, "Y"), P("X", "WR", LINE_D, -14.0), P("Z", "WR", OFF_BALL, 11.0)])
+
+
+def base43_60s(fix=None):
+    d = [D("WDE", "DE", 1.0, -4.0, "E"), D("WDT", "DT", 1.0, -0.8, "T"), D("SDT", "DT", 1.0, 2.4, "T"),
+         D("SDE", "DE", 1.0, 4.2, "E"), D("SAM", "SAM", 3.6, 6.4, "S"), D("MIKE", "MIKE", 4.3, 0.6, "M"),
+         D("WILL", "WILL", 4.3, -3.2, "W"), D("LCB", "CB", 7.0, -14.0, "C"), D("RCB", "CB", 7.0, 11.0, "C"),
+         D("FS", "FS", 12.0, -6.0, "FS"), D("SS", "SS", 11.0, 7.5, "SS")]
+    fix = fix or {}
+    return [q.moved(**fix[q.key]) if q.key in fix else q for q in d]
+
+
+sweep_off = [OL(q.key, q.w, "G") if q.key in ("LG", "RG") else q for q in pro_set_red()]
+sweep = Play(sweep_off, base43_60s(), los=35, to_go=None)
+sweep.path("MIKE", [(3.4, 4.0)], absolute=True, delay=0.4, speed=3.5)
+sweep.block("Y", target="SAM")
+sweep.block("RT", target="SDT")
+sweep.block("C", target="WDT")
+sweep.block("LT", pts=[(0.9, 0.5)])
+sweep.block("FB", target="SDE", speed=4.0)
+sweep.pull("RG", [(-0.6, 0.6), (-0.7, 5.9), (2.2, 8.4), (6.0, 9.4)], speed=5.0)     # onside guard: the corner
+sweep.pull("LG", [(-1.5, 1.2), (-1.6, 6.6), (1.6, 7.2), (3.8, 5.3)], speed=5.0)     # offside guard: up inside
+sweep.block("Z", target="SS", speed=3.0)
+sweep.path("QB", [(-2.7, -1.1), (-3.2, -1.6)], absolute=True, speed=3.0)
+sweep.handoff("HB", t=0.8)
+sweep.run("HB", [(-5.1, -0.6), (-6.0, 2.4), (-4.0, 5.3), (-0.6, 6.4)], absolute=True, speed=6.2)
+sweep.highlight("HB", color=BACK_RING)
+sweep.highlight("LG", "RG", color=style.OFFENSE_DARK)
+fld = draw_play(sweep, lateral=(-16.5, 19.0), window=(-8.0, 15.5))
+dashed_arrow(fld, sweep, [(-0.6, 6.4), (2.8, 6.0), (6.4, 5.4)])
+dashed_arrow(fld, sweep, [(-0.6, 6.4), (2.6, 8.6), (6.2, 11.8)])
+label(fld, sweep, "daylight: inside\nthe Sam", (8.6, 3.6), color=THREAT)
+label(fld, sweep, "or outside\nhim", (8.9, 14.6), color=THREAT)
+label(fld, sweep, "right guard: kicks out\nor logs the corner", (13.0, 13.4), target=(5.3, 9.3))
+label(fld, sweep, "left guard: turns up\ninside, on the Mike", (9.0, -9.0), target=(3.7, 4.4))
+label(fld, sweep, "the halfback reads\nthe Sam's block here", (-6.4, 11.4), target=(-0.6, 6.4))
+label(fld, sweep, "split backs, set wide", (-6.6, -7.0))
+plt.show()
+```
+
+The sweep's genius was that it didn't need to fool anyone. Lombardi drilled it until every block was
+automatic, and the runner was given a lane, not a hole. A *hole* is a fixed spot the play is designed
+to hit ("between the guard and the tackle"), and the back runs there whatever happens. A *lane* is
+wherever the defense isn't once the blocks are made: the blockers take defenders the way they want to
+go, and the back finds the opening the blocks create. Lombardi's own phrase for it, and the title of his
+1963 book, was *run to daylight*. The defense knew the sweep was coming, and the Packers ran it anyway.
+
+Underneath the sweep was a blocking idea that defenses found maddening, which coaches of the era called
+*option blocking* (not to be confused with the [option
+offense](../03-the-run-game/03-04-option-football.qmd), where the *quarterback* reads a defender). Here
+the blocker has the choice. Say the tight end's job is the Sam linebacker. If the Sam steps outside,
+the tight end doesn't fight to move him back in; he rides him farther outside, and the runner cuts
+inside. If the Sam steps inside, the tight end seals him there, and the runner goes around. Block the man
+where he goes, not to a spot, and let the runner read the result. The pulling guards read the same
+block: the right guard logs the cornerback inside or kicks him out, depending on which side of him he
+can reach, and the left guard turns up through whichever seam the tight end's block has opened. A
+defense built on linemen charging hard into the backfield, each guessing his own way, helped option
+blocking. The harder a lineman charged, the easier he was to push past the hole, and the daylight
+appeared behind him.
+
+### The answer: the Flex
+
+Tom Landry left the Giants to become the first head coach of the expansion Dallas Cowboys in 1960. His
+problem, as the Cowboys grew into contenders, was Green Bay. His answer, developed in the mid-1960s
+(sources date its first use anywhere from 1964 to 1966), was the [**Flex
+defense**](../../appendices/glossary.qmd#gl-flex-defense).[^flex]
+
+```{python}
+#| label: fig-flex
+#| fig-cap: "Landry's Flex against the same split-backs formation (illustrative; which two linemen flexed changed with the formation and with what Dallas expected the offense to do; zoomed on the box, so the wide receivers are out of the picture). Two of the four defensive linemen (orange rings) line up about a yard off the ball, where they can read the blocks before they move; the other two stay on the line and charge into their gaps. The shaded lanes are the gaps between blockers (A next to the center, then B, C and D outward), and each lane has one defender standing in it: the ends (E) in the C gaps, the tackles (T) and the Mike (M) in the A and B gaps, the Will (W) in the weak-side B gap and the Sam (S) outside the tight end. A runner looking for daylight finds a defender already in every lane. Offense: Q quarterback, H halfback, F fullback, Y tight end."
+flex_fix = {"SDE": dict(d=2.2, w=4.2), "WDT": dict(d=2.2, w=-0.9), "SDT": dict(w=2.4), "WDE": dict(w=-4.0),
+            "SAM": dict(d=3.4, w=5.7), "MIKE": dict(d=4.6, w=0.8), "WILL": dict(d=4.6, w=-2.4)}
+box_off = [q for q in pro_set_red() if q.key not in ("X", "Z")]               # zoomed on the box
+box_def = [q for q in base43_60s(flex_fix) if q.key not in ("LCB", "RCB", "FS", "SS")]
+fx = Play(box_off, box_def, los=35, to_go=None)
+fx.highlight("SDE", "WDT", color=KEY_RING)
+fld = draw_play(fx, lateral=(-10.5, 10.5), window=(-6.6, 10.6))
+LANES = [("C", -4.8, -3.2), ("B", -3.2, -1.6), ("A", -1.6, 0.0), ("A", 0.0, 1.6), ("B", 1.6, 3.2),
+         ("C", 3.2, TE_W), ("D", TE_W, TE_W + 1.6)]
+for i, (g, w0, w1) in enumerate(LANES):
+    (xa, ya), (xb, yb) = XY(fld, fx, 0.15, w0), XY(fld, fx, 5.7, w1)
+    fld.ax.add_patch(Rectangle((min(xa, xb), min(ya, yb)), abs(xb - xa), abs(yb - ya),
+                               fc=style.DEFENSE, alpha=0.06 if i % 2 else 0.13, ec="none", zorder=0.6))
+    x, y = XY(fld, fx, 6.35, (w0 + w1) / 2)
+    fld.ax.text(x, y, g, fontsize=8.5, ha="center", va="center", color=style.DEFENSE_DARK, fontweight="bold",
+                zorder=9)
+label(fld, fx, "seven lanes (gaps), seven owners", (8.0, 0.0))
+label(fld, fx, "flexed: a yard off the ball,\nreads the blocks, then fills", (8.5, -6.4), target=(2.2, -0.9))
+label(fld, fx, "flexed end: reads the\ntackle and tight end", (8.5, 6.6), target=(2.2, 4.2))
+label(fld, fx, "on the ball: charges\ninto his assigned gap", (-3.8, -7.4), target=(1.0, -4.0))
+plt.show()
+```
+
+In the Flex, two of the four defensive linemen line up about a yard off the ball while the other two
+stay on the line. The flexed linemen are in no hurry to charge: they read the blocks in front of them,
+then step into the gap they're assigned. The linemen on the line attack their gaps. Linebackers fill the
+rest. The result is a defense in which **every gap has an owner who is already standing in it** before
+the runner arrives, which is exactly what run-to-daylight blocking can't handle: there is no daylight to
+run to.
+
+Why does a single yard matter so much? Think about it from the blocker's side. Option blocking works on
+a defender who is already moving: you take his momentum and add to it. A flexed lineman isn't moving.
+The yard of space means the blocker has to travel to reach him, which takes a moment, and in that moment
+the defender sees where the block is coming from. And because he hasn't committed to a direction, there
+is no momentum for the blocker to use. A blocker trying to push a flexed defender "the way he wants to
+go" finds that he doesn't want to go anywhere until he knows where the ball is.
+
+But the two linemen on the ball do charge, so why weren't *they* option-blocked? Because their charge
+is into an assigned gap, not a free-lance guess at where the play is going. A tackle who knows he owns
+the A gap gets there and holds it; if he is pushed past it, the flexed man behind him is reading that
+very block and steps into the space he left. The on-ball men, in other words, are there to occupy
+blockers and keep their own gaps, and the flexed men clean up behind them. Landry built it partly around
+the quickness of his great defensive tackle, Bob Lilly, who could play on the ball and get into his gap
+before a blocker touched him.
+
+Why flex only two, and not all four? Because somebody still has to take on the blockers at the snap and
+threaten the quarterback. A line with all four men standing a yard off the ball reading would give the
+offense a free first step everywhere and no pass rush at all. Which two flexed changed with the
+offense's formation and with where Dallas expected the run.
+
+The Flex was Landry's style in one picture: precise, rule-bound, analytical. Players learned exactly
+which step to take with which foot, which some of them hated. Its price was the pass rush *from the
+Flex itself*: linemen standing back reading blocks aren't rushing the quarterback. So Dallas used it as
+a run-down defense, almost always on first down but mostly only in running situations on second and
+third, and on clear passing downs the linemen lined up on the ball and rushed. They could rush, too: the
+Cowboys' defense of the 1970s, nicknamed the **Doomsday Defense**, had Harvey Martin, credited
+unofficially with 23 sacks in 1977.[^flexrush] Dallas reached two straight NFL Championship Games
+against Green Bay, and later won Super Bowls after the 1971 and 1977 seasons with the Flex behind them.
+You have met its descendant: the idea that every defender owns a gap is the core of [gap
+integrity and run fits](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd).
+
+::: {.callout-note title="Film room: Green Bay Packers vs. Dallas Cowboys, December 31, 1967"}
+The 1967 NFL Championship Game, the "Ice Bowl," was played in Green Bay in a temperature of about
+−13°F. It was Lombardi's offense against Landry's Flex for the second year in a row (Green Bay had won
+the 1966 title game 34–27). Trailing 17–14 late in the fourth quarter, the Packers drove the length of
+the field. The play that got them to the goal line was built to beat the Flex. On a call the Packers
+named 54-Give, which Lombardi called the "sucker" play, left guard Gale Gillingham pulled to his right as
+if it were the sweep. Bob Lilly, taught to read the guard in front of him and follow him, did exactly
+that, and fullback Chuck Mercein ran straight through the space Lilly had left, from the Dallas 11 to
+the 3. Then, with seconds left and the ball inside the 1-yard line, Bart Starr conferred with Lombardi
+and kept the ball on a quarterback sneak: he followed guard Jerry Kramer's block (a double-team with
+center Ken Bowman) on Dallas tackle Jethro Pugh and scored with 13 seconds left. Green Bay won 21–17
+and went on to win Super Bowl II.[^icebowl]
+
+**What to notice** (NFL Films' footage is everywhere): Mercein's run. A defense that reads and follows
+blocks can be led away by a block that lies, which is the counterpunch to every read-and-react
+defense: an *influence* or "sucker" play. You'll also notice how rarely either team breaks a long run;
+the frozen field explains as much of that as the Flex does.
+:::
+
+## Sid Gillman and the vertical passing game
+
+While Lombardi and Landry argued about the run, Sid Gillman was building the passing game you watch
+today. As a young man in Minneapolis, Gillman worked in his family's movie theater and cut the football
+clips out of the newsreels so he could study them at home on a projector. He became the coach most
+associated with film study, and he used it to take passing apart. He coached the Los Angeles Rams
+(1955–59) and then the Chargers of the new AFL (1960–69), who won the 1963 AFL championship 51–10 over
+Boston.[^gillman]
+
+Gillman's idea, in one sentence: **use all of the field, deep and wide, so that the defense can't
+protect all of it.** Defenses of the 1950s and early '60s were happy to let an offense throw short in
+front of them, and for a good reason: a short completion was a few yards and a tackle. To score that way
+an offense had to string together a long series of plays without an incompletion on a key down, a
+penalty or an interception (and interceptions were far more common then than now), so the defense's
+first job was to stop the long ball and wait for the drive to die. Gillman threw deep first, with fast
+receivers like Lance Alworth, to push the safeties back, and then attacked the room that left
+underneath: intermediate routes, and backs released into the flats. As Al Davis, who coached under him,
+put it, people thought of the passing game as vertical, the length of the field, "but Sid also thought
+of it as horizontal."
+
+The mechanism under the slogan was timing. Gillman tied each route to the quarterback's drop: on a
+five-step drop, the first receiver's route was built to break just as the quarterback finished his
+last step, so the ball could leave before the receiver turned around, and the next receiver's route came
+open a beat later for the next read.[^gillmantiming] A defense can't cover a throw that arrives before
+it has seen the receiver's break. That idea, routes and drops on one clock, is what Don Coryell and Bill
+Walsh inherited.
+
+He was building it, mostly, against man-to-man coverage. Much of the era's pass defense, and especially
+the AFL's, was man-to-man with a free safety behind it; the AFL is where the *bump-and-run*, a cornerback
+pressing his receiver and jamming him at the line, took hold in the 1960s, with Oakland's Willie Brown
+its best-known practitioner. Beating man coverage is about getting one receiver open against one
+defender, and the whole-field spacing gave Gillman's receivers room to do it. Remember that when you
+reach the 1970s: the defenses' answer to the passing decade was to stop playing man and play zones as a
+team.
+
+```{python}
+#| label: fig-gillman
+#| fig-cap: "Gillman's principle with his AFL Chargers: stretch the defense deep and wide at once (an illustrative pass from split backs against a 1960s 4-3 with two safeties deep, not a specific Chargers play). The flanker's go route (Z) runs at the deep safety (SS) and drives him back; the split end's comeback (X) and the tight end's dig (Y) settle in the intermediate band the safeties have just left (the dashed squares show where the safeties finish); the halfback and fullback release to the flats, so the linebackers have someone short to worry about on both sides. Three depths and the full width, on every pass: the defense can't be everywhere."
+gl = Play(pro_set_red(), base43_60s({"FS": dict(d=12.0, w=-8.0)}), los=30, to_go=None)
+gl.dropback(7.0)
+gl.route("Z", [(0, 0), (6.0, 0.4), (27.0, 1.6)])
+gl.route("X", [(0, 0), (16.0, 0), (14.0, 2.8)])
+gl.route("Y", [(0, 0), (13.0, 0), (13.0, -8.4)])
+gl.route("HB", [(0, 0), (2.0, 3.4), (8.0, 9.7)], side=-1)
+gl.route("FB", [(0, 0), (2.0, 3.0), (8.0, 6.7)], side=1)
+gl.drop("SS", (21.0, 9.5), delay=0.2)
+gl.drop("FS", (20.0, -7.5), delay=0.2)
+gl.drop("RCB", (17.0, 14.0), delay=0.2)
+gl.drop("LCB", (12.0, -15.0), delay=0.2)
+gl.drop("MIKE", (9.0, 0.5), delay=0.3)
+gl.drop("SAM", (8.0, 7.5), delay=0.3)
+gl.drop("WILL", (8.0, -6.5), delay=0.3)
+fld = draw_play(gl, lateral=(-24.5, 19.5), window=(-9.5, 31.0), width_in=5.7)
+for (lo, hi, name) in [(18.0, 30.0, "deep"), (9.5, 17.5, "intermediate"), (-1.0, 6.5, "short")]:
+    (xa, ya), (xb, yb) = XY(fld, gl, lo, -24.5), XY(fld, gl, hi, 19.5)
+    fld.ax.add_patch(Rectangle((min(xa, xb), min(ya, yb)), abs(xb - xa), abs(yb - ya), fc=style.OFFENSE,
+                               alpha=0.05, ec="none", zorder=0.5))
+    label(fld, gl, name, ((lo + hi) / 2, -21.0), fs=7.0, color=style.OFFENSE_DARK)
+label(fld, gl, "the go route pushes\nthe safety deep", (27.0, 4.2), target=(21.0, 9.5))
+label(fld, gl, "the flats: backs\non both sides", (-6.6, -15.6), target=(2.4, -12.0))
+for key, (d, w) in {"FS": (20.0, -7.5), "SS": (21.0, 9.5)}.items():      # where the safeties finish
+    x, y = XY(fld, gl, d, w)
+    fld.ax.add_patch(RegularPolygon((x, y), 4, radius=1.05, orientation=np.pi / 4, fc=style.DEFENSE_TINT,
+                                    ec=style.DEFENSE, lw=0.9, ls=(0, (2, 1.5)), alpha=0.75, zorder=7))
+    fld.ax.text(x, y, key, fontsize=7.0, ha="center", va="center", color=style.INK_2, fontweight="bold", zorder=8)
+plt.show()
+```
+
+Gillman's coaching descendants are a who's who of the next chapter: Al Davis (whose Raiders threw deep
+for thirty years), Chuck Noll, Bill Walsh (who coached under Davis in Oakland) and Dick Vermeil, and Don
+Coryell studied him closely. When you meet [Air Coryell](../11-history/11-02-the-1978-liberation.qmd)
+and the [West Coast offense](../12-case-studies/12-01-walsh-49ers-west-coast.qmd), you are meeting
+Gillman's grandchildren. The [vertical and horizontal
+stretches](../04-the-passing-game/04-01-passing-fundamentals.qmd) of Part 4 are his vocabulary.
+
+::: {.callout-note title="Film room: San Diego Chargers, 1963 AFL Championship Game"}
+On January 5, 1964, Gillman's Chargers beat the Boston Patriots 51–10 in San Diego. The star was
+halfback Keith Lincoln, who ran for 206 yards on 13 carries and led the team with 123 receiving yards,
+the kind of two-way threat out of the backfield that Gillman's spread-the-field passing game created
+room for.[^chargers63]
+
+**What to notice:** how wide the Chargers' receivers and backs spread the Patriots, and how many of the
+big plays come from backs running routes against linebackers.
+:::
+
+## The AFL: a passing laboratory
+
+In August 1959 a young Texan named Lamar Hunt, who had been refused an NFL expansion team, founded
+a league of his own. The [**AFL**](../../appendices/glossary.qmd#gl-afl) ([**American Football
+League**](../../appendices/glossary.qmd#gl-american-football-league)) began play in 1960 with eight
+teams, and it needed fans, so it needed points.
+
+The AFL was looser in almost every way. It added the **two-point conversion** (the NFL would not adopt
+it until 1994), put players' names on their jerseys (a habit the NFL later copied), and shared its
+television money equally, including, from 1965, a five-year NBC contract worth \$36 million that kept
+the league alive. Because it
+was scrambling for talent, it took players the NFL had overlooked: quarterbacks cut by NFL teams,
+small-college stars, and many players from historically Black colleges that NFL scouts had largely
+ignored.[^afl]
+
+Why call it a *passing* laboratory? Because its best offenses built their identity on throwing deep to
+wide receivers. Gillman's Chargers, the
+plate above, were the model: Alworth deep, the tight end and the backs underneath, every throw timed to
+the drop. Al Davis took the same idea to Oakland in 1963 and made the deep ball the Raiders' trademark
+for decades: stretch the field vertically and use every eligible receiver.[^davis] Quarterbacks like John Hadl,
+Len Dawson and Daryle Lamonica threw deep and often. The points chart below shows the result: in each of
+its first five seasons AFL teams outscored NFL teams, by close to three points a game in 1960 and 1961,
+and by about one point a game in 1962–64. And the AFL's defenses answered in kind, with the
+bump-and-run corners you met above. The arms race of the next decade was rehearsed here.
+
+### Hank Stram's Chiefs
+
+The most inventive AFL coach after Gillman was Hank Stram, who led the Dallas Texans and then the Kansas
+City Chiefs from 1960 to 1974 and won three AFL titles (1962, 1966 and 1969). Stram's contributions to
+the passing game and to everything around it:
+
+- **The moving pocket.** The protection shifted with a quarterback who set up somewhere other than
+  straight behind the center, so the rushers had a moving target and the quarterback got a clear
+  throwing lane. Part 4's [bootlegs and sprint-outs](../04-the-passing-game/04-05-play-action-boots-screens.qmd)
+  are its heirs.
+- **New formations.** He is credited with being the first pro coach to use both the I-formation and the
+  two-tight-end offense.
+- **The triple stack on defense.** Linebackers hid directly behind defensive linemen, so the offense
+  couldn't tell which gap each would attack.
+- **Talent from where others weren't looking.** He drafted heavily from historically Black colleges:
+  defensive tackle Buck Buchanan (Grambling) and linebacker Willie Lanier (Morgan State) are both in the
+  Hall of Fame.
+
+In Super Bowl IV Stram wore a microphone for NFL Films, usually described as a first for a pro coach, and
+it caught him gleefully telling his team to keep "matriculating the ball down the field," and the Chiefs
+beat Minnesota 23–7.[^stram]
+
+### The merger
+
+The two leagues spent the early 1960s bidding against each other for players, and when the Jets signed
+Alabama quarterback Joe Namath on January 2, 1965, for a reported \$427,000, the NFL owners decided the
+war was too expensive. The leagues announced a merger on June 8, 1966: a common draft, a championship
+game between them (the first, in January 1967, became known as Super Bowl I), and a single league from
+1970. The NFL's champions won the first two Super Bowls easily. Then the AFL won the next two: Namath's
+Jets beat the Baltimore Colts 16–7 in Super Bowl III, and Stram's Chiefs beat the Vikings in Super Bowl
+IV. When the merger took effect in 1970, the AFL's ten teams (eight originals plus two later additions,
+Miami in 1966 and Cincinnati in 1968) and three NFL teams (the Colts, Browns and Steelers) formed the
+American Football Conference.
+
+The AFL's lasting gift was proof. Wide-open passing offenses could win championships, not just
+entertain, and the merged league inherited the coaches, quarterbacks and ideas to play that way. That
+makes what happened next all the stranger.
+
+### Meanwhile in the NFL: the 1960 shotgun
+
+The NFL had its own experiment. On November 27, 1960, San Francisco's coach, Red Hickey, lined his
+quarterback up about seven yards behind the center, a long direct snap away, with the backs and
+receivers spread around him. It was "really just a new version of an old formation," the single wing's
+direct snap with a passer instead of a runner, and Hickey called it the *shotgun*. As a heavy underdog
+the 49ers upset the Colts 30–22. In 1961 Hickey rotated three quarterbacks (John Brodie, Billy Kilmer
+and Bobby Waters) through it and started 4–1, including 49–0 over Detroit and 35–0 over the Rams. On
+October 22, 1961, the Bears found an answer, beat San Francisco 31–0, and Hickey shelved the
+formation.[^shotgun] (What the Bears did is the second Predict-the-play drill below; try it before you
+look it up.) The shotgun returned in Dallas in 1975 as a passing-down weapon, and [Formation
+Rules](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd) tells the rest; today's
+NFL offenses spend most of their snaps in it.
+
+## The 1970s scoring drought
+
+Now the chart. It shows how many points the average NFL team scored per game, every season from 1932
+to 1977, with the AFL's teams drawn separately for the 1960s.
+
+```{python}
+#| label: fig-ppg
+#| fig-cap: "Points per team per game, regular season, 1932–1977. NFL (blue) and, for its ten seasons, the AFL (orange). Scoring nearly tripled between 1932 and 1948 as the passing rules loosened and the T arrived, held near 21–22 through the 1950s and '60s, and then fell through the 1970s (shaded) to 17.2 in 1977, the lowest since 1942, despite rule changes in 1972, 1974 and 1977 (marked) meant to raise it. Computed from every game's final score (AAFC games of 1946–49 excluded; course calculation, see the note)."
+URL = "https://raw.githubusercontent.com/fivethirtyeight/nfl-elo-game/master/data/nfl_games.csv"
+AFL_TEAMS = {"BUF", "DEN", "KC", "LAC", "OAK", "NE", "NYJ", "TEN", "MIA", "CIN"}     # franchise codes, 1960-69
+AAFC_TEAMS = {"BBA", "BDA", "CLE", "CRA", "LDA", "MSA", "NAA", "SF", "BCL"}         # 1946-49 only
+FALLBACK = {  # the same calculation, stored in case the source file can't be fetched
+    "NFL": [8.21, 9.69, 10.75, 10.92, 11.89, 12.95, 13.49, 15.38, 15.06, 16.47, 15.86, 19.45, 18.01, 18.49,
+            18.90, 21.95, 23.24, 22.49, 22.94, 21.94, 22.28, 21.51, 21.89, 20.84, 20.38, 19.79, 22.59, 21.33,
+            21.56, 21.51, 22.31, 21.98, 22.04, 23.06, 21.72, 21.85, 20.50, 20.90, 19.26, 19.36, 20.25, 19.45,
+            18.18, 20.59, 19.15, 17.18],
+    "AFL": [24.16, 24.46, 23.12, 23.14, 23.24, 21.46, 22.52, 22.67, 22.16, 21.15]}
+
+
+def league_ppg():
+    from gridiron.data import CACHE
+    path = CACHE / "fivethirtyeight_nfl_games.csv"
+    try:
+        if not path.exists():
+            CACHE.mkdir(parents=True, exist_ok=True)
+            pd.read_csv(URL).to_csv(path, index=False)
+        g = pd.read_csv(path)
+        g = g[(g["playoff"] == 0) & g["season"].between(1932, 1977)].copy()
+        g["league"] = "NFL"
+        g.loc[g["season"].between(1960, 1969) & g["team1"].isin(AFL_TEAMS), "league"] = "AFL"
+        g.loc[g["season"].between(1946, 1949) & g["team1"].isin(AAFC_TEAMS), "league"] = "AAFC"
+        g["pts"] = g["score1"] + g["score2"]
+        out = g.groupby(["league", "season"]).agg(pts=("pts", "sum"), games=("pts", "size"))
+        out["ppg"] = out["pts"] / (2 * out["games"])
+        return out["ppg"].unstack(0)
+    except Exception:
+        nfl = pd.Series(FALLBACK["NFL"], index=range(1932, 1978))
+        afl = pd.Series(FALLBACK["AFL"], index=range(1960, 1970))
+        return pd.DataFrame({"NFL": nfl, "AFL": afl})
+
+
+ppg = league_ppg()
+fig, ax = plt.subplots(figsize=(6.6, 3.5))
+ax.axvspan(1969.5, 1977.5, color=style.DEFENSE, alpha=0.08, lw=0)
+ax.text(1973.5, 26.3, "the scoring\ndrought", ha="center", va="top", fontsize=7.4, color=style.DEFENSE_DARK,
+        style="italic")
+nfl = ppg["NFL"].dropna()
+afl = ppg["AFL"].dropna()
+ax.plot(nfl.index, nfl.values, color=style.OFFENSE, lw=2.0, marker="o", ms=2.6, label="NFL")
+ax.plot(afl.index, afl.values, color=style.DEFENSE, lw=2.0, marker="o", ms=2.6, label="AFL (1960–69)")
+ax.set_xlim(1930.5, 1978.5)
+ax.set_ylim(6, 27)
+ax.set_ylabel("points per team per game")
+ax.set_xticks(range(1935, 1980, 5))
+
+
+def note(x, y, text, xt, yt, ha="center"):
+    ax.annotate(text, xy=(x, y), xytext=(xt, yt), fontsize=7.0, color=style.INK, ha=ha, va="center",
+                arrowprops=dict(arrowstyle="-", color=style.INK_2, lw=0.6, shrinkA=2, shrinkB=3))
+
+
+note(1932, nfl[1932], "1932: 8.2", 1934.0, 7.2, ha="left")
+note(1933, nfl[1933], "1933: pass from anywhere\nbehind the line; hash marks", 1937.0, 9.0, ha="left")
+note(1940, nfl[1940], "1940: the T arrives", 1941.5, 12.6, ha="left")
+note(1948, nfl[1948], "1948: 23.2", 1944.5, 25.3, ha="center")
+note(1960, afl[1960], "AFL outscores the NFL\nin its early seasons", 1955.5, 25.6, ha="center")
+note(1972, nfl[1972], "1972: hashes\nmoved in", 1966.0, 16.4, ha="center")
+note(1974, nfl[1974], "1974: rule\npackage", 1971.6, 14.6, ha="center")
+note(1977, nfl[1977], "1977: head slap banned,\none contact; 17.2", 1973.4, 10.4, ha="center")
+ax.legend(loc="upper left", fontsize=7.6)
+ax.set_yticks(range(8, 27, 4))
+ax.set_title("Points per team per game, 1932–1977", fontsize=10)
+plt.show()
+```
+
+Read the curve in three pieces. From 1932 to 1948, scoring nearly tripled: the 1933 passing rule, the
+end of the incompletion penalty, the T, and platoon football all pushed the same way. Through the 1950s
+and '60s it held steady, around 21 or 22 points a game in the NFL and a little more in the AFL, with
+offense and defense trading innovations. Then, after the merger, it fell: 19.3 in 1970, 18.2 in 1974,
+and 17.2 in 1977, the lowest since 1942. In 1977 no receiver in the NFL gained 1,000
+yards.[^ppg] The book calls this the **1970s scoring drought**. (Older writing sometimes borrows
+baseball's term "dead-ball era"; it's the same decade.)
+
+The passing numbers tell the same story from the other side. In 1977 NFL teams threw just 25 passes a
+game, against 29.4 in 1954; only 42 percent of their plays were passes, and they ran 37.4 times a game,
+a modern-era record. A pass gained 6.5 yards per attempt, down from about 7.4 in
+1956–65, and from 1970 through 1977 more than five of every hundred passes were intercepted.[^passrate]
+Throwing had become both less rewarding and riskier, so teams did less of it.
+
+### Why the defense got ahead
+
+No single cause, but five that reinforced each other.
+
+**1. Receivers could be hit all the way down the field.** Until 1974 a defender could chuck a receiver
+(hit or shove him with his hands) anywhere on the field, as often as he liked, until the ball was
+thrown. A receiver who has to fight through a linebacker at 5 yards, a safety at 12 and a cornerback all
+the way can't run his route on time, and a timing passing game depends on routes run on time.
+
+**2. Pass blockers couldn't use their hands.** Offensive linemen of the era had to keep their hands close
+to their chests while pass blocking, and couldn't extend their arms to push a rusher away, while
+defensive linemen could use their hands freely, including the *head slap*, a swat to the side of a
+blocker's helmet (legal until 1977). Pass protection was a fight with one side's hands tied.
+
+**3. The great four-man lines.** The 4-3 had matured, and the decade's best teams were built on their
+defensive lines: the Steelers' "Steel Curtain," the Vikings' "Purple People Eaters," Dallas's Doomsday,
+and early in the decade the Rams' "Fearsome Foursome" (Deacon Jones, its most famous member, was traded
+after the 1971 season). Four rushers who could win without help let seven defenders cover.[^lines]
+
+**4. Zone coverage grew up.** Defenses had learned to play zones as a team. The best-known version was
+the two-deep shell Bud Carson had begun developing as Georgia Tech's head coach and brought to
+Pittsburgh in 1972 ([Cover 2](../06-pass-coverage/06-04-cover-2-and-tampa-2.qmd)): corners jamming
+receivers at the line, safeties over the top, and, in Pittsburgh, a middle linebacker (Jack Lambert,
+from 1974) who ran deep down the middle, the ancestor of Tampa 2. The 1976 Steelers allowed 28 points in
+their last nine games, with five shutouts.[^steelers76] Zones that are combined with unlimited chucking
+are close to airtight.
+
+**5. Offenses played it safe.** When passing is that hard, the sensible strategy is to run, punt and win
+the field-position battle, and many coaches did. The game turned into a contest of whose defense would
+blink first.
+
+### Why then? What changed around 1970
+
+Notice something odd about that list. Causes 1 and 2 are *old* rules. Defenders had been allowed to
+chuck receivers downfield, and blockers had been forbidden to extend their arms, all through the 1950s
+and '60s, when the NFL scored 21 or 22 points a game and the AFL more. Rules that didn't change can't by
+themselves explain a fall. What they can explain is why the fall, once it started, was so hard to
+reverse. So what was new?
+
+- **Zones met the chuck rule.** Against man coverage, a receiver had one defender to beat, and the man
+  hitting him was the man covering him. In a team zone, the receiver runs *through* several defenders'
+  areas, and under the old rules each of them could hit him on the way. The rule was the same; its value
+  to the defense multiplied as defenses moved from man toward zone. That shift is the late-1960s and
+  early-'70s story of cause 4 (Carson's Cover 2 reached the NFL in 1972), and it was the defenses'
+  answer to the Gillman-style passing that had beaten man coverage in the 1960s.
+- **The defensive talent caught up.** The AFL's early scoring edge probably owed something to thin
+  defenses in a new league. By 1969 its scoring had fallen back to the NFL's level (the orange line on the chart), and
+  after the common draft (from 1967) and the merger, every team drew from the same talent pool. The great
+  four-man lines of cause 3 were built in exactly those years.
+- **Coaches took the hint.** Once the first two changes made passing riskier, the safe, run-first
+  strategy of cause 5 won games (the 1972 Dolphins went 17–0 with it), and winning strategies get copied.
+
+The constants (the chuck rule and the blockers' hands) were the fuel; the new zones and the new
+defensive talent were the spark. That's why the cure, when it came, had to change the constants.
+
+New defenses kept coming, too. In 1972 Miami's Bill Arnsparger moved a linebacker around his front in
+the package that became the [53 defense](../11-history/11-02-the-1978-liberation.qmd), and in 1974 the
+New England Patriots and Houston Oilers began using the 3-4 as a base defense, a story [Odd and Hybrid
+Fronts](../05-defensive-fronts-and-run-defense/05-03-odd-and-hybrid-fronts.qmd) tells in full.
+
+::: {.callout-note title="Film room: Miami Dolphins, 1972"}
+The only team in NFL history to finish a full season unbeaten and untied, the 1972 Dolphins went 17–0
+and beat Washington 14–7 in Super Bowl VII. They did it in the most 1970s way imaginable: with a
+dominant running game (Larry Csonka and Mercury Morris both ran for 1,000 yards, a first for two
+teammates) and a defense so lacking in stars that it was called the "No-Name Defense." Their starting
+quarterback, Bob Griese, broke his leg in the fifth game, and 38-year-old Earl Morrall started most of
+the rest of the season.[^dolphins]
+
+**What to notice:** how few passes Miami threw and how rarely it needed to. When defenses rule, the
+team that never turns the ball over and never gives up a big play wins. And watch any 1970s
+Steelers highlight for the other half of the era: how far downfield defensive backs are still allowed
+to hit receivers, and how quickly quarterbacks give up and throw short. That's what the rule-makers
+were trying to change.
+:::
+
+### The fixes that failed
+
+The league saw the problem early and tried to fix it, three times.
+
+**1972: the hash marks.** The NFL had first painted hash marks in 1933, 10 yards in from each sideline,
+and moved them to 20 yards in 1945. In 1972 it moved them in again, to 23 yards, 1 foot, 9 inches
+from each sideline, the width of the goalposts. A ball spotted on a hash used to leave the offense a
+cramped short side and a vast wide side; now the field was almost symmetrical.
+
+```{python}
+#| label: fig-hashes
+#| fig-cap: "The 1972 hash-mark change, with the ball on the left hash in both panels (to scale; the field is 53⅓ yards wide). Left, 1945–1971: the hashes were 20 yards in from each sideline, so a play from the hash left 20 yards to the short (boundary) side and 33⅓ yards to the wide (field) side. Right, from 1972: the hashes moved to 23 yards, 1 foot, 9 inches (about 23.6 yards) from each sideline, just 18½ feet apart, leaving about 23.6 yards to the short side and 29.75 to the wide side. More room to the short side meant more room for running plays and quick throws in either direction."
+W = 160 / 3
+
+
+def hash_panel(ax, hash_in, title):
+    ax.set_xlim(-1.5, W + 1.5)
+    ax.set_ylim(-5.5, 13.0)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.add_patch(Rectangle((0, 0), W, 10, fc=style.TURF, ec=style.BASELINE, lw=1.0))
+    for yl in (0, 5, 10):
+        ax.plot([0, W], [yl, yl], color=style.BASELINE, lw=0.8 if yl != 5 else 0.5)
+    for x in (hash_in, W - hash_in):
+        for yy in np.arange(1, 10, 1):
+            if yy % 5:
+                ax.plot([x, x], [yy - 0.25, yy + 0.25], color=style.INK, lw=1.3)
+    ax.add_patch(Ellipse((hash_in, 5.0), 1.3, 0.8, fc=style.BALL, ec="white", lw=0.6, zorder=5))
+    for x0, x1, y, txt in [(0, hash_in, -1.6, f"{hash_in:.1f} yd"), (hash_in, W, -1.6, f"{W - hash_in:.1f} yd")]:
+        ax.annotate("", xy=(x0, y), xytext=(x1, y), arrowprops=dict(arrowstyle="<->", color=style.INK_2, lw=0.9))
+        ax.text((x0 + x1) / 2, y - 1.5, txt, ha="center", va="center", fontsize=7.6, color=style.INK)
+    ax.text(hash_in, 11.1, "ball on the hash", ha="center", va="center", fontsize=7.0, color=style.INK_2)
+    ax.text(0.0, 12.9, title, ha="left", va="bottom", fontsize=9.0, fontweight="bold", color=style.INK)
+    ax.text(hash_in / 2, 5.0, "short\nside", ha="center", va="center", fontsize=7.0, color=style.INK_2,
+            style="italic")
+    ax.text((hash_in + W) / 2 + 3.0, 5.0, "wide side", ha="center", va="center", fontsize=7.0,
+            color=style.INK_2, style="italic")
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 1.95))
+hash_panel(axes[0], 20.0, "1945–1971")
+hash_panel(axes[1], 70.75 / 3, "From 1972")
+fig.subplots_adjust(left=0.01, right=0.99, top=0.93, bottom=0.02, wspace=0.08)
+plt.show()
+```
+
+It helped the run more than the pass, and the reason is the sideline. Before 1972, a ball on the hash
+left only 20 yards to the short side, and a defense could treat that sideline as an extra defender: a
+sweep or an option run that way ran out of room fast, so in practice the offense ran to the wide side
+and the defense knew it. With the ball nearly in the middle, a run could go either way with room to
+spare, and the defense had to honor both. A pass, which travels over the defense rather than around it,
+gained much less: the long throw to the wide side got a few yards shorter, and that was about it. In 1973
+Buffalo's O. J. Simpson ran for 2,003 yards, the first **2,000-yard rushing season** in NFL history.
+Scoring barely moved.[^hash72]
+
+**1974: the package.** With a rival league (the short-lived World Football League) advertising a more
+exciting game, the NFL's competition committee passed its biggest set of changes in decades, aimed, in
+its own words, at making long touchdown drives more achievable:[^rules74]
+
+- **The goalposts moved from the goal line to the back of the end zone**, ten yards farther away, so a
+  drive that stalled at the 20 was no longer an easy field goal. That sounds like a way to cut scoring,
+  and at first it was. The idea was that fewer cheap field-goal tries would mean more fourth-down
+  attempts and more drives played out for touchdowns (the same logic, half a century early, as the go-for-it argument in [The Clock, the Two-Minute
+  Drill, and Fourth Down](../10-situational-football/10-04-clock-and-game-management.qmd)),
+  and more room in the end zone for passes now that the posts weren't standing in it.
+- **Kickoffs moved back from the 40 to the 35**, so more of them could be returned.
+- **A missed field goal went back to the line of scrimmage** (or to the 20 if the kick came from inside
+  it), so a long attempt was no longer free.
+- **Offensive holding dropped from 15 yards to 10**, and receivers lined up wide could no longer be cut
+  at the knees.
+- **The first chuck rule**: once a receiver was 3 yards past the line of scrimmage, a defender could
+  contact him only once.
+
+That last item introduces this chapter's last term. A [**chuck
+rule**](../../appendices/glossary.qmd#gl-chuck-rule) is any rule limiting how a defender may hit or
+shove a receiver running his route. The 1974 version was sometimes called the "Isaac Curtis rule," after
+the fast, slender Cincinnati receiver whom Miami's defense had knocked down as often as it could in a
+1973 playoff game; the Bengals' owner, Paul Brown, sat on the rules committee and lobbied for the
+change. In 1977 the
+league tightened it so that a defender could contact a receiver only once in all, and banned the head
+slap.[^rules77]
+
+Look at the chart again and you'll see that 1974, the package's first season, is itself a dip, from
+19.4 to 18.2. The goalposts explain it. Field-goal attempts fell from more than 860 in 1973 to 553 in
+1974.[^fg74] If about three in five of those lost kicks would have gone in, that is something like 180
+field goals, or roughly 1.5 points per team per game, more than the whole 1974 drop. The touchdowns the
+committee hoped would replace them came a year later: scoring rose to 20.6 in 1975. Then it fell again,
+to 19.2 in 1976 and 17.2 in 1977.
+
+### Why the fixes failed
+
+Look at what the 1972 and 1974 changes touched: where the ball was spotted, where the goalposts stood,
+how kicks were returned, how far a penalty walked off. Each was sensible. None changed the basic
+arithmetic of a pass play. Under the 1974 rule a defender could still jam a receiver as he left the line
+and hit him again once he crossed 3 yards; an offensive lineman still couldn't extend his arms to protect
+his quarterback. As long as the receiver couldn't get open on time and the quarterback couldn't stand
+in the pocket long enough to wait for him, the passing game that the AFL had proved could win stayed
+too risky to build an offense around. The rules had nibbled at the edges of the defense's advantage
+without touching its center.
+
+The 1977 rule looks, at first, like the real fix: one contact and no more, plus no head slap. Why did
+scoring hit bottom that very season? Because *where* the contact came was still up to the defender. He
+could spend it at the line, or he could save it for the moment that hurt most: 15 yards downfield, just
+as the receiver planted to make his break. One well-timed hit there wrecks a timed route as surely as
+five scattered ones. And the other half of the problem was untouched: banning the head slap took one
+weapon from the rushers, but the blockers still couldn't extend their arms.
+
+The changes that finally worked, in 1978, went straight at both halves. Contact with receivers was
+allowed only within 5 yards of the line (the [Mel Blount rule](../11-history/11-02-the-1978-liberation.qmd)),
+so past that point a receiver could run his route untouched and arrive on time; and pass blockers were
+allowed to extend their arms and open their hands. That's the next chapter, and the scoring chart turns
+upward from there.
+
+::: {.callout-important title="Why it exists: the rules are the third player"}
+This chapter's history has three actors, not two. Offenses innovate, defenses answer, and the rules
+decide which side the board tilts toward. The 1906 pass rules held the forward pass back for a
+generation; the 1933 and 1934 changes released it; free substitution made the T a specialist's offense;
+and the drought of the 1970s ended only when the league changed the rules of contact. Whenever you read
+about a scheme "taking over" the NFL, ask what rule made it possible. You'll ask it again in [Contact
+Rules and Penalties as
+Strategy](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd).
+:::
+
+## What survives
+
+Not one of this chapter's formations is a base offense in today's NFL, and almost all of their ideas
+are still on the field.
+
+- **The single wing's direct snap** became the shotgun, now the formation of most NFL snaps, and lives
+  on in its purest form in the [wildcat](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)
+  and in every [direct snap](../03-the-run-game/03-05-perimeter-and-misdirection.qmd) to a running back
+  on the goal line. Its spinners and reverses are the ancestors of today's jet sweeps and misdirection.
+- **The T's under-center quarterback** never left: it is the base of play-action, and under-center
+  snaps rose to about a third of NFL plays in 2025.
+- **Paul Brown's organization** (staffs, playbooks, film, sideline play-calling) is simply how football
+  is run.
+- **The umbrella's idea**, showing one structure and playing another after the snap, is the heart of
+  modern disguise and simulated pressure.
+- **The 4-3** remains one of the two families of base front, and **the Flex's gap ownership** is how
+  every defense now teaches run fits.
+- **Gillman's** deep-and-wide passing is the grammar of every passing concept in Part 4.
+- **The AFL's** two-point conversion arrived in the NFL in 1994, and its spirit, that you win by
+  scoring, won the argument in 1978.
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it: spot the ancestor"}
+Pick one quarter of a game and hunt for the old ideas hiding in modern plays.
+
+- **A direct snap to a running back.** A back alone behind the center, the quarterback split wide or
+  gone, maybe an extra lineman on one side: that's the single wing, now called the wildcat. Note
+  which side the extra blocker is on and whether the play went there.
+- **Someone running across the formation at the snap.** A jet or fly motion is the single wing's
+  wingback on a reverse, or the T's man in motion. Watch whether the ball goes with him or the other
+  way, like the 1940 Bears' counter.
+- **A [buck sweep](../03-the-run-game/03-05-perimeter-and-misdirection.qmd) or a toss with two guards pulling.** That's Lombardi's sweep (and the Wing-T's cousin
+  of it). Watch the back: does he cut inside or outside the last block? That's running to daylight.
+- **A defensive end who drops into coverage.** When an edge player who lined up on the line turns and
+  runs to the flat, you've seen Owen's umbrella move, seventy-five years later.
+- **The quarterback under center with two backs behind him.** It's the T's descendant, and in 2025 it
+  usually meant a run or a play-action pass.
+- **Log it.** Write down each ancestor you spot and what happened on the play. One wildcat, one jet
+  motion counter and one dropping end is a good quarter's hunting.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: spot the ancestor"}
+Third-and-1 near midfield, 2025. The offense breaks the huddle into this:
+
+```{python}
+#| label: fig-predict-wildcat
+#| fig-cap: "Drill 1: a direct-snap look. The running back (R, aqua ring) stands about five yards behind the center; the quarterback (Q) is split wide to the right, off the line. The line is unbalanced: the left tackle (dark ring) has lined up outside the right tackle, beside the tight end (Y). Before the snap, a second back (H) starts in motion from the left (arrow). It is third-and-1. Defense: E = end, T = tackle, S/M/W = linebackers, C = cornerbacks, FS/SS = safeties."
+wc_off = check_legal([
+    OL("LG", -OL_SPLIT), OL("C", 0.0, "C"), OL("RG", OL_SPLIT), OL("RT", 2 * OL_SPLIT), OL("LT", 3 * OL_SPLIT),
+    P("Y", "TE", LINE_D, 4 * OL_SPLIT + 1.0, "Y"), P("X", "WR", LINE_D, -12.0),
+    P("RB", "RB", -5.0, 0.0, "R"), P("H", "RB", -5.0, -4.5, "H"), P("QB", "QB", OFF_BALL, 13.0, "Q"),
+    P("Z", "WR", OFF_BALL, -7.5, "Z")])
+wc_def = base43_60s({"WDE": dict(w=-3.2), "WDT": dict(w=-0.9), "SDT": dict(w=3.0), "SDE": dict(w=5.9),
+                     "SAM": dict(d=3.6, w=8.6), "MIKE": dict(d=4.4, w=1.6), "WILL": dict(d=4.4, w=-2.6),
+                     "LCB": dict(w=-12.0), "RCB": dict(w=13.0, d=6.5), "FS": dict(d=11.5, w=-1.0),
+                     "SS": dict(d=7.5, w=-7.5)})
+q1 = Play(wc_off, wc_def, los=50, to_go=None)
+q1.motion("H", to=(-4.5, -1.7))
+q1.highlight("RB", color=BACK_RING)
+q1.highlight("LT", color=style.OFFENSE_DARK)
+fld = draw_play(q1, lateral=(-16.5, 17.5), window=(-8.0, 14.0))
+plt.show()
+```
+
+**What old formation is this, and where do you expect the ball to go?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**It's the single wing in modern clothes**, the look broadcasters call the wildcat. Every piece has an
+ancestor: the direct snap to a runner five yards deep (the single-wing tailback), the unbalanced line
+with an extra lineman on one side (the single wing's four-men-to-one-side line), and a second back
+crossing the formation at the snap (the wingback's reverse, or the 1940 T's man in motion).
+
+**The likeliest play is a run to the strong side, the right.** On third-and-1 the offense wants a yard.
+To the right of the center it has three linemen and a tight end, a blocker for each of the four
+defenders on that side (counting the Mike, who is nearly over the center), with the motion man arriving
+as a fifth: the single wing's off-tackle power, with more blockers than defenders at the point of attack.
+
+Look at the defense, too. The unbalanced line moved the offense's strength to the right after the
+huddle, and this defense hasn't moved with it: the strong safety is still over on the left, across from
+Z. That is the modern reason the look works. An unbalanced line forces the defense to re-declare its
+strength before the snap, and a defense that doesn't shift is outnumbered.
+
+**The counter-threat is the motion man.** If the defense slides right to stop the power, the ball can go
+to H on his sweep, or the runner can fake to him and keep it, exactly the spinner-and-reverse logic that
+kept 1930s defenses honest. And because the quarterback split wide is still an eligible receiver, one
+defender has to cover him, which takes a man out of the box. What makes the modern version a gimmick
+rather than a base offense is the pass: few running backs can throw well enough to make the defense
+respect it, which is why the single wing's triple-threat tailback mattered so much.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: October 22, 1961"}
+San Francisco's shotgun has carried the 49ers to a 4–1 start, including shutouts of 49–0 and 35–0. The 49ers line up in it against the
+Bears: quarterback about seven yards deep, receivers spread. The Bears' middle linebacker, Bill George,
+has walked up from his usual spot.
+
+```{python}
+#| label: fig-predict-shotgun
+#| fig-cap: "Drill 2: the 1961 shotgun (an illustrative alignment) against the Bears' 4-3, with middle linebacker Bill George (M, orange ring) walked up onto the line, head-up on the center. The quarterback (Q) is about seven yards deep; one back (F) stands beside him; the other backs and ends are spread. Defense: E = end, T = tackle, S/W = outside linebackers, C = cornerbacks, FS/SS = safeties."
+sg_off = check_legal(line5() + [
+    P("QB", "QB", -7.0, 0.0, "Q"), P("FB", "FB", -5.5, 2.2, "F"), P("X", "WR", LINE_D, -14.0),
+    P("H", "HB", OFF_BALL, -7.5, "H"), P("Y", "TE", LINE_D, 6.5, "Y"), P("Z", "WR", OFF_BALL, 13.5)])
+sg_def = base43_60s({"MIKE": dict(d=1.0, w=0.0), "WDT": dict(w=-2.2), "SDT": dict(w=2.4), "WDE": dict(w=-4.4),
+                     "SDE": dict(w=4.6), "SAM": dict(d=4.6, w=6.2), "WILL": dict(d=4.6, w=-5.6),
+                     "LCB": dict(w=-14.0), "RCB": dict(w=13.5), "FS": dict(d=12.5, w=-7.0),
+                     "SS": dict(d=10.0, w=7.5)})
+q2 = Play(sg_off, sg_def, los=40, to_go=None)
+q2.highlight("MIKE", color=KEY_RING)
+fld = draw_play(q2, lateral=(-17.5, 17.5), window=(-9.5, 15.0))
+plt.show()
+```
+
+**What is the Bears' plan, and why does it work against this formation in particular?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Rush the center.** In the shotgun the center has the hardest job on the field: he must look between
+his legs, throw a seven-yard snap accurately, and only then lift his head to block. A defender lined up
+directly over him gets a head start every time. With George on the center, either the center loses the
+one-on-one, or a guard has to help, and then someone else is free.
+
+**Why it works here:** the 1961 shotgun had almost no running threat to punish an aggressive rush. A
+quarterback seven yards deep with a single back beside him can't hand off quickly or threaten a quick
+dive, so the defense could commit to the pass rush. With pressure up the middle arriving before
+receivers spread across a wide field could get open, the 49ers had nowhere to go: the Bears won 31–0,
+and Hickey retired the formation. The modern shotgun survives because offenses solved both problems:
+quarterbacks set up about five yards deep, not seven, and there is a real run game (and the RPO) from
+it, so a defense that sends everyone at the center pays for it.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: third-and-8, 1977"}
+Third-and-8 at the offense's own 35, third quarter, 1977. The offense is in split backs with a tight end
+and two wide receivers; the defense is a two-deep 4-3 with both cornerbacks squeezed up tight on the
+receivers.
+
+```{python}
+#| label: fig-predict-1977
+#| fig-cap: "Drill 3: third-and-8 in 1977. Offense: split backs (H and F), tight end Y, receivers X and Z. Defense: a 4-3 with two deep safeties (FS, SS) about 12 yards deep and both cornerbacks (C, orange rings) pressed tight on the receivers at the line, from an outside shade, so they can jam them inside toward the safeties."
+q3_def = base43_60s({"LCB": dict(d=1.2, w=-14.9), "RCB": dict(d=1.2, w=13.4), "FS": dict(d=12.5, w=-9.5),
+                     "SS": dict(d=12.5, w=9.5)})
+q3_off = pro_set_red()
+q3_off = [q.moved(w=12.5) if q.key == "Z" else q for q in q3_off]
+q3 = Play(q3_off, q3_def, los=45, to_go=8)
+q3.highlight("LCB", "RCB", color=KEY_RING)
+fld = draw_play(q3, lateral=(-17.5, 17.5), window=(-8.0, 16.0))
+plt.show()
+```
+
+**What are the defense's advantages under the 1977 rules, and what is the offense's most sensible
+call?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The defense's advantages are the rulebook's.** Those pressed corners can jam the receivers at the line,
+and under the 1977 rule they get one legal contact on each, used right where it hurts the timing most.
+Seven defenders are in coverage behind them in a two-deep zone, the safeties over the top. Up front,
+four rushers can use their hands freely (the head slap is gone in 1977, but blockers still can't extend
+their arms), so the quarterback doesn't have long.
+
+**The offense's sensible call is something short and safe**: a quick pass to a back or the tight end
+underneath the zone, or a draw that punishes the four rushers for charging, and then a punt if it comes
+up short.
+
+If you've read [Cover 2 and Tampa 2](../06-pass-coverage/06-04-cover-2-and-tampa-2.qmd), your first
+instinct may have been the classic Cover 2 beaters: smash (a corner route over the squatting cornerback)
+or the hole shot down the sideline between the corner and the safety. In 1977 both die before they
+start. The corner route needs the receiver to get off the line clean and break on time, and here he is
+jammed at the snap by a corner who is spending his one legal contact right where it hurts. The hole shot needs the quarterback to hold the
+ball while a deep route develops, behind blockers who can't extend their arms. A 15-yard throw against this defense in 1977 asks a jammed receiver to get open in time
+behind a protection that can't hold up. That's the drought in one snap: on third-and-8, the most
+rational play was to *try* for a first down without risking an interception, and punt. A year later,
+with contact limited to 5 yards and blockers allowed to extend their arms, the same third-and-8 became
+a throwing down again.
+:::
+:::
+
+## Takeaways
+
+- **Football's history is action, reaction and rules.** Offenses innovate, defenses answer, and the
+  rule-makers tilt the board. The forward pass, legal from 1906, didn't matter until the rules stopped
+  punishing it (1933–34).
+- **The single wing was built for power and deception from a direct snap; the T beat it with speed and a
+  specialist passer.** The 1940 Bears' 73–0 made the switch, and platoon football (permanent in the NFL
+  from 1950) made the specialist possible.
+- **Paul Brown turned football into a profession**: full-time staffs, playbooks, film, measurable
+  athletes, and plays called from the sideline. Every modern staff runs on his model.
+- **The 4-3 was the defense's answer to the pro passing game, and it had two parents.** Owen's umbrella
+  showed a 6-1-4 and played a 4-1-6 (its ends became outside linebackers); Bill George stood up the
+  five-man front's middle guard (the middle linebacker); Landry combined them in 1956, then built the Flex
+  in the 1960s to take away Lombardi's daylight by giving every gap an owner.
+- **Gillman and the AFL proved the passing game could win**, using the whole field, deep and wide, and
+  the merged league inherited their ideas.
+- **The 1970s drought came from old rules meeting new defenses.** Defenders could hit receivers
+  downfield and pass blockers couldn't extend their arms, as they always had; what was new was team zone
+  coverage (which let several defenders each take a shot at a receiver) and defensive talent spread
+  across one merged league. The 1972 hash marks, the 1974 package and even 1977's one-contact rule left
+  the arithmetic of a pass play alone, so scoring fell to 17.2 in 1977. Only 1978's five-yard limit and
+  open-handed pass blocking changed it.
+
+## Connections
+
+**Builds on:** [Classic Formations](../02-personnel-and-formations/02-03-classic-formations.qmd) (the T,
+the pro set and their family tree), [Cover 2 and Tampa 2](../06-pass-coverage/06-04-cover-2-and-tampa-2.qmd)
+(Bud Carson's 1970s Steelers and the first contact rules), [A First Look at
+Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) (the 4-3 and 3-4), and [Gap
+and Power Runs](../03-the-run-game/03-03-gap-and-power-runs.qmd) (the Packers sweep, block by block).
+
+**Sets up:** [1978 and the Passing Revolution](../11-history/11-02-the-1978-liberation.qmd), the rules
+that ended the drought and the offenses (Air Coryell, the West Coast offense) and defenses (nickel and
+dime, the 46, the 53) that followed; [The College
+Laboratory](../11-history/11-03-the-college-laboratory.qmd), where the Wing-T, the wishbone and
+eventually the spread came from; and [Bill Walsh's 49ers and the West Coast
+Offense](../12-case-studies/12-01-walsh-49ers-west-coast.qmd), Gillman's most famous grandchild. Today's
+versions of these ideas are in [Spread and Modern Formations](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd)
+(the wildcat and the shotgun), [Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd)
+(gap ownership) and [Contact Rules and Penalties as
+Strategy](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd)
+(today's chuck rule).
+
+::: {.callout-note title="Go deeper"}
+- Tim Layden, *Blood, Sweat and Chalk* (2010): the best single book on where football's schemes came
+  from, with chapters on the single wing, the T, the 4-3 and the Flex built from interviews.
+- Paul Brown with Jack Clary, *PB: The Paul Brown Story* (1979): Brown in his own words, including the
+  messenger guards and the radio helmet.
+- Vince Lombardi with W. C. Heinz, *Run to Daylight!* (1963): one week inside the 1962 Packers.
+- Steve Owen, *My Kind of Football* (1952): the umbrella defense explained by the man who built it.
+- Chris B. Brown, *The Art of Smart Football* (2015) and <https://smartfootball.com>: essays tracing
+  modern schemes to these roots.
+- Pro Football Reference's league-average pages (<https://www.pro-football-reference.com/years/NFL/>)
+  for the season-by-season scoring and passing numbers behind this chapter's chart.
+:::
+
+[^pass1906]: "Forward pass," Wikipedia: https://en.wikipedia.org/wiki/Forward_pass (legalized at the rules committee's meeting of April 6, 1906; the first legal pass is usually credited to Bradbury Robinson of Saint Louis University on September 5, 1906, a claim the article now calls "debunked," naming Bates College's Stephen Cobb, September 22, 1906, instead); "History of American football," Wikipedia: https://en.wikipedia.org/wiki/History_of_American_football (19 deaths in 1905; Roosevelt pressed for reform and never threatened an outright ban). The early restrictions: "The Early History of Football's Forward Pass," *Smithsonian Magazine*: https://www.smithsonianmag.com/history/the-early-history-of-footballs-forward-pass-78015237 (no pass across the line within five yards of the center; an untouched pass that hit the ground went to the defense); "From Turnover to Touchback: The Punitive Era of the Early Forward Pass," *Pigskin Dispatch*: https://pigskindispatch.com/from-turnover-to-touchback-the-punitive-era-of-the-early-forward-pass/ (historian Timothy Brown: incompletions were turnovers in 1906 and became a 15-yard penalty in 1907; a pass caught in the end zone was a touchback). Sources differ on exactly which restriction applied in which year (the 20-yard limit on a pass's length appears in some 1906 accounts and is restated in 1910), which is why the text gives the rules without dating each one.
+
+[^early]: "History of American football," Wikipedia: https://en.wikipedia.org/wiki/History_of_American_football (1912: 10-yard end zone, a fourth down, six-point touchdown); "Forward pass," Wikipedia (Dorais and Rockne practiced the pass as lifeguards at Cedar Point the summer before Notre Dame's 1913 win over Army); "1913 Notre Dame football team," Wikipedia: https://en.wikipedia.org/wiki/1913_Notre_Dame_Fighting_Irish_football_team (35–13 at West Point). The 1912 removal of the 20-yard limit on a pass's length, and the end-zone pass: Pigskin Dispatch, "From Turnover to Touchback" (cited in the 1906 note), and Smithsonian, "The Early History of Football's Forward Pass" (same note).
+
+[^nfl1933]: "1932 NFL Playoff Game," Wikipedia: https://en.wikipedia.org/wiki/1932_NFL_Playoff_Game (played indoors at Chicago Stadium; Nagurski's disputed touchdown pass); "1933 NFL season," Wikipedia: https://en.wikipedia.org/wiki/1933_NFL_season (forward pass legal anywhere behind the line, the "Bronko Nagurski rule"; hash marks 10 yards in from the sidelines; goalposts moved to the goal lines "to increase the number of field goals and decrease the number of tie games"); "1934 NFL season," Wikipedia: https://en.wikipedia.org/wiki/1934_NFL_season ("Incomplete passes no longer result in a five-yard penalty"); "Modern history of American football," Wikipedia: https://en.wikipedia.org/wiki/Modern_history_of_American_football (the 1934 committee removed the five-yard loss for a second incomplete pass in a series of downs, and the loss of possession for an incompletion in the end zone). On the slimmer ball: "Forward pass," Wikipedia (narrower balls from the 1920s onward made spiral throws easier).
+
+[^singlewing]: "Single-wing formation," Wikipedia: https://en.wikipedia.org/wiki/Single-wing_formation (Warner's "Carlisle formation" at Carlisle by 1907; unbalanced line with two linemen on one side of the center and four on the other, made by "moving the off-side guard or tackle to the strong side"; "designed to place double-team blocks at the point of attack"; tailback, fullback, blocking back called the quarterback, and wingback; the spinner and buck-lateral series; the name from the wing back's shape). Thorpe at Carlisle: "Jim Thorpe," Pro Football Hall of Fame: https://www.profootballhof.com/players/jim-thorpe/ .
+
+[^tform40]: "Ralph Jones," Wikipedia: https://en.wikipedia.org/wiki/Ralph_Jones (Bears head coach 1930–1932; credited with modernizing the T); "Clark Shaughnessy," Wikipedia: https://en.wikipedia.org/wiki/Clark_Shaughnessy ; "1940 Stanford Indians football team," Wikipedia: https://en.wikipedia.org/wiki/1940_Stanford_Indians_football_team (1–7–1 in 1939; unbeaten in 1940 with a Rose Bowl win); "Sid Luckman," Pro Football Hall of Fame: https://www.profootballhof.com/players/sid-luckman/ . The Jones article says he "spaced out the offensive line" and "refined the T formation by introducing wide ends and a halfback in motion." Accounts differ on how much of the man-in-motion T is Jones's and how much Shaughnessy's.
+
+[^tform40game]: "1940 NFL Championship Game," Wikipedia: https://en.wikipedia.org/wiki/1940_NFL_Championship_Game (December 8, 1940, Griffith Stadium; Washington had won the regular-season game 7–3 three weeks earlier; Marshall's "crybabies and quitters" remark; Osmanski's 68-yard run on the Bears' second play from scrimmage; 11 touchdowns by ten different players; 8 Bears interceptions; Shaughnessy's counters to Washington's linebacker shifts; Baugh's "73–7" reply, about Charlie Malone's dropped pass).
+
+[^steelers]: "1952 Pittsburgh Steelers season," Wikipedia: https://en.wikipedia.org/wiki/1952_Pittsburgh_Steelers_season (the last season the Steelers used the single wing, the last NFL team to do so as its primary offense).
+
+[^rosters]: "A brief history of roster sizes in the NFL," *Hogs Haven* (SB Nation), May 4, 2020: https://www.hogshaven.com/2020/5/4/21245563/a-brief-history-of-roster-sizes-in-the-nfl (about 20 in the early 1930s; 24 in 1935; 25 in 1936–37; 30 in 1938–39; 28 in 1943–44; 33 in 1945–46; 35, then 34, in 1947), consistent with contemporary newspaper reports of a 22-man limit in 1933–34 collected by the Professional Football Researchers Association: https://profootballresearchers.com/forum/viewtopic.php?p=4798 .
+
+[^hirsch]: Britannica, "Elroy Hirsch": https://www.britannica.com/biography/Elroy-Hirsch (joined the Rams in 1949; Shaughnessy moved him to end). Flankers predate Hirsch (Don Hutson's Packers, and Shaughnessy-advised players such as the Bears' Ray McLean and Washington's Wilbur Moore): "Von Miller will wear his Rams jersey number. Who was Elroy 'Crazy Legs' Hirsch?", Yahoo Sports: https://sports.yahoo.com/von-miller-wear-rams-jersey-030318984.html ; Hirsch is the one usually named as the first permanent one.
+
+[^platoon]: "Two-platoon system," Wikipedia: https://en.wikipedia.org/wiki/Two-platoon_system (college free substitution in 1941; NFL in 1943; Fritz Crisler's Michigan against Army in 1945; the NFL's permanent unlimited substitution in 1950; the colleges' return to one-platoon rules in 1953 and to free substitution by 1965). The NFL's in-between years: Pro Football Hall of Fame, "General history chronology, 1940 to 1959": https://www.profootballhof.com/football-history/general-history-chronology-1940-to-1959/ (free substitution adopted April 7, 1943, and renewed for 1944 and 1945; withdrawn in 1946, with substitutions limited to no more than three men at a time; free substitution adopted for one year in 1949; "unlimited free substitution was restored" on January 20, 1950).
+
+[^brown]: "Paul Brown," Wikipedia: https://en.wikipedia.org/wiki/Paul_Brown (Massillon; Ohio State's 1942 national title; four AAFC titles 1946–49; 35–10 over the Eagles in the Browns' first NFL game; the 1950, 1954 and 1955 NFL titles; full-time assistants; playbooks and tests; first to use film to scout opponents; intelligence tests; the 40-yard dash at Ohio State in 1941; the draw play's 1946 origin; Motley and Willis in 1946); "Paul Brown," Pro Football Hall of Fame: https://www.profootballhof.com/players/paul-brown/ ; "Otto Graham," Pro Football Hall of Fame: https://www.profootballhof.com/players/otto-graham/ (ten seasons, ten championship games). The punt-cover rationale is the usual account (Wikipedia's article gives it); Mike Brown doubts "the punt part" and says his father chose 40 yards "because he thought that was the longest anyone had to run on a football field for the most part": Geoff Hobson, "A fast look at the 40," Bengals.com (2017): https://bengals.com/news/a-fast-look-at-the-40-18598225 .
+
+[^radio]: "Chuck Noll," Wikipedia: https://en.wikipedia.org/wiki/Chuck_Noll (Browns 1953–1959; one of Brown's "messenger guards," who Brown said soon "could have called the plays himself"); "Ratterman's radio helmet," Pro Football Hall of Fame: https://www.profootballhof.com/news/ratterman-s-radio-helmet (1956; spotted by the Lions in a preseason game; banned by Commissioner Bert Bell); the 1994 adoption of helmet radios is from the same history.
+
+[^eagles50]: "Top moments No. 25: Browns defeat Eagles in 1950 without throwing a single pass," Cleveland Browns: https://www.clevelandbrowns.com/news/top-moments-no-25-browns-defeat-eagles-in-1950-without-throwing-a-single-pass (September 16 opener, 35–10; Graham 346 yards and three touchdowns; Neale's basketball remark in several wordings; the December 3 rematch, 13–7, with no official pass attempt, and "no other NFL team in 71 years since has completed a game with zero pass attempts"); "1950 Cleveland Browns season," Wikipedia: https://en.wikipedia.org/wiki/1950_Cleveland_Browns_season (two passes thrown, both called back on penalties; no team since has failed to attempt a pass); "1950 Philadelphia Eagles season," Wikipedia: https://en.wikipedia.org/wiki/1950_Philadelphia_Eagles_season .
+
+[^owen]: "Steve Owen (American football)," Wikipedia: https://en.wikipedia.org/wiki/Steve_Owen_(American_football) (Giants head coach from 1930 to 1953; titles in 1934 and 1938; the umbrella defense against the 1950 Browns; the Giants won 6–0 and 17–13 before losing the playoff); "4–3 defense," Wikipedia: https://en.wikipedia.org/wiki/4%E2%80%933_defense (quoting Owen, *My Kind of Football*, 1952, p. 183: a "6–1–4 basic formation" that on many plays was "4–1–6 in reality"; Landry explained and taught it); "1950 New York Giants season," Wikipedia: https://en.wikipedia.org/wiki/1950_New_York_Giants_season (6–0 on October 1, the Browns' first shutout; the 8–3 playoff loss); "1950 Cleveland Browns season," Wikipedia (the American Conference playoff, December 17, 1950, at Cleveland Stadium: two Lou Groza field goals and a safety to a Giants field goal, 8–3).
+
+[^george]: "Bill George," Pro Football Hall of Fame: https://www.profootballhof.com/players/bill-george/ ("no one can swear" which middle guard first dropped off the line, but George is the most popular choice; he began doing it in 1954); "Bill George (linebacker)," Wikipedia: https://en.wikipedia.org/wiki/Bill_George_(linebacker) .
+
+[^landry43]: "Tom Landry," Pro Football Hall of Fame: https://www.profootballhof.com/players/tom-landry/ (Giants player-coach 1954–55 and defensive coach 1956–59; Cowboys head coach from 1960); "4–3 defense," Wikipedia (Landry the first to make the 4–3 a base defense, in 1956; the league converted the next season); "Sam Huff," Wikipedia: https://en.wikipedia.org/wiki/Sam_Huff (the rookie middle linebacker of 1956; *The Violent World of Sam Huff*, a CBS special broadcast in October 1960 as an episode of the Cronkite-hosted *The Twentieth Century*).
+
+[^flex]: "4–3 defense," Wikipedia: https://en.wikipedia.org/wiki/4%E2%80%933_defense (the Flex developed to counter option blocking, in which linemen take defenders whichever way they go and "the running back would then patiently run to daylight"; two linemen flexed off the line to read; built to use Bob Lilly's quickness); Paul Zimmerman, "Ten Most Revolutionary Defensive Players," *Sports Illustrated*, Nov. 21, 2006: https://www.si.com/uncategorized/2006/11/21/21ten-most-revolutionary-defensive-players (Lilly "spearheaded" the Flex); "Is there any way to explain football's most confusing… defense?", *D Magazine*, August 1987: https://www.dmagazine.com/publications/d-magazine/1987/august/is-there-any-wayto-explain-footballs-most-confusing-convoluted-intellectually-taxing-perhaps-no-longer-so-great-defense/ (two linemen set back about a yard, varying with the offense's formation; players taught exact steps). Sources give its first use as 1964, 1965 or 1966 and the flex distance as anything from two feet to a yard; the Pro Football Hall of Fame's Landry biography says only "the 1960s," and the most specific account (Pro Football Researchers forum, citing *D Magazine*) has it used occasionally in 1964 and regularly from 1965.
+
+[^icebowl]: "1967 NFL Championship Game," Wikipedia: https://en.wikipedia.org/wiki/1967_NFL_Championship_Game (December 31, 1967, Lambeau Field; −13°F at kickoff, about −15°F at game time by another figure in the same article; third-and-goal at the two-foot line with 16 seconds left and no timeouts; Starr's sneak behind Kramer and Bowman's double-team of Jethro Pugh, scoring with 13 seconds remaining; Packers 21–17; earlier on the final drive, "54-Give, a play that Lombardi frankly called the 'sucker' play," on which Gale Gillingham "pulled to his right like it was a typical sweep," Bob Lilly "instantly followed him," and Chuck Mercein "shot through the hole to the 3-yard line" from the Dallas 11; the play is also described in Jerry Kramer's *Instant Replay*, 1968); "1966 NFL Championship Game," Wikipedia: https://en.wikipedia.org/wiki/1966_NFL_Championship_Game (Green Bay 34, Dallas 27).
+
+[^gillman]: "Sid Gillman," Wikipedia: https://en.wikipedia.org/wiki/Sid_Gillman (cut football clips from newsreels at his family's theater; Rams 1955–59; Chargers 1960–69; 1963 AFL title, 51–10 over Boston; Al Davis: "It had been thought of as vertical, the length of the field, but Sid also thought of it as horizontal"; coaching descendants Davis, Noll, Walsh and Vermeil, with Coryell studying his methods); "Sid Gillman," Pro Football Hall of Fame: https://www.profootballhof.com/players/sid-gillman/ .
+
+[^chargers63]: "1963 American Football League Championship Game," Wikipedia: https://en.wikipedia.org/wiki/1963_American_Football_League_Championship_Game (January 5, 1964, Balboa Stadium, San Diego; Chargers 51, Patriots 10; Lincoln "rushed for 206 yards on 13 carries, led the team with 123 yards in receiving").
+
+[^afl]: "American Football League," Wikipedia: https://en.wikipedia.org/wiki/American_Football_League (founded August 1959 by Lamar Hunt and others; eight teams in 1960; the two-point conversion, adopted by the NFL in 1994; names on jerseys and the scoreboard clock as official time; equal sharing of the ABC television money; the NBC contract of January 1964, \$36 million, from 1965; Namath's signing on January 2, 1965, for \$427,000; merger announced June 8, 1966; the AFC formed in 1970 from the ten AFL teams plus the Colts, Browns and Steelers; Super Bowl III 16–7). The 1960–64 scoring gap is the course calculation in the points note.
+
+[^stram]: "Hank Stram," Wikipedia: https://en.wikipedia.org/wiki/Hank_Stram (Texans/Chiefs 1960–1974; AFL titles 1962, 1966, 1969; the moving pocket and triple-stack defense; first pro coach to use the I-formation and two tight ends; recruited heavily from historically Black colleges; "In the Super Bowl, Stram became the first professional football coach to wear a microphone": "Just keep matriculatin' the ball down the field, boys"); "Super Bowl IV," Wikipedia: https://en.wikipedia.org/wiki/Super_Bowl_IV (Chiefs 23, Vikings 7, January 11, 1970). Buchanan (Grambling) and Lanier (Morgan State): Pro Football Hall of Fame player pages.
+
+[^shotgun]: Pro Football Hall of Fame, "The Shotgun Formation": https://www.profootballhof.com/news/the-shotgun-formation (first used November 27, 1960, 30–22 over the Colts; "really just a new version of an old formation"; Brodie, Kilmer and Waters rotated in 1961; a 4–1 start including 49–0 over Detroit and 35–0 over the Rams; on October 22, 1961, the Bears won 31–0 after Bill George "moved up to the line of scrimmage" and the Bears penetrated "by attacking the center"; Hickey then retired the formation; Landry's Cowboys later revived it). The seven-yard depth is from the same history of the formation as told in [Formation Rules](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd).
+
+[^ppg]: Course calculation from FiveThirtyEight's file of every NFL game's final score since 1920 (`nfl_games.csv`, https://github.com/fivethirtyeight/nfl-elo-game), regular-season games only: total points ÷ (2 × games) per season. AFL teams in 1960–69 are separated by franchise; AAFC games of 1946–49 are excluded. The 1977 value (17.2, the lowest since 1942) and the absence of a 1,000-yard receiver match "1977 NFL season," Wikipedia: https://en.wikipedia.org/wiki/1977_NFL_season . Cross-check any single season against Pro Football Reference's league averages.
+
+[^hash72]: The hash-mark history (20 yards from 1945; 70 feet 9 inches from 1972) is sourced in [The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd); "1972 NFL season," Wikipedia: https://en.wikipedia.org/wiki/1972_NFL_season . Simpson's 2,003 yards in 1973: "O. J. Simpson," Pro Football Hall of Fame: https://www.profootballhof.com/players/o-j-simpson/ .
+
+[^rules74]: "1974 NFL season," Wikipedia: https://en.wikipedia.org/wiki/1974_NFL_season (goalposts to the end line; kickoffs from the 35; missed field goals returned to the line of scrimmage or the 20, "whichever is farther from" the defense's goal line; holding from 15 to 10 yards; no blocks below the waist on receivers aligned two or more yards outside the tackles; one contact after the receiver is 3 yards past the line; the competition committee's aim of making long touchdown drives more achievable, and the WFL's influence).
+
+[^rules77]: "1977 NFL season," Wikipedia: https://en.wikipedia.org/wiki/1977_NFL_season (head slap outlawed; "Defenders are only permitted to make contact with receivers once"; 17.2 points per team per game). The "Isaac Curtis rule" nickname for 1974, the 1973 playoff against Miami and Paul Brown's lobbying: "Bump and run coverage," Wikipedia: https://en.wikipedia.org/wiki/Bump_and_run_coverage (which words the 1974 limit slightly differently from the 1974 season article; this chapter follows the season article); Christopher L. Gasper, "How wide receivers have evolved in the NFL," *Boston Globe*, Sept. 4, 2013: https://www.bostonglobe.com/sports/2013/09/04/how-wide-receivers-have-evolved-nfl/akAnTGNJaS7OrVnjAbbN6J/story.html . The pre-1978 limits on pass blockers' hands: "1978 NFL season," Wikipedia: https://en.wikipedia.org/wiki/1978_NFL_season (the 1978 change permitted "extended arms and open hands").
+
+[^dolphins]: "1972 Miami Dolphins season," Wikipedia: https://en.wikipedia.org/wiki/1972_Miami_Dolphins_season (17–0; Super Bowl VII, 14–7 over Washington; Csonka and Morris "the first teammates to each rush for 1,000 yards"; Griese hurt in week 5 against San Diego; Morrall, "a 38-year-old who spent much of his career backing up stars," started the rest of the regular season; the "No-Name Defense"). Griese's injury, a broken right leg and dislocated ankle: "When the reserves saved the day," *Sports Illustrated*, Sept. 15, 1997: https://vault.si.com/vault/1997/09/15/when-the-reserves-saved-the-day .
+
+[^steelers76]: "1976 Pittsburgh Steelers season," Wikipedia: https://en.wikipedia.org/wiki/1976_Pittsburgh_Steelers_season (1–4 start; nine straight wins allowing 28 points in total, five shutouts).
+
+[^passrate]: Chase Stuart, "The Ebb and Flow of the NFL Passing Game Since 1932," *Football Perspective* (Sept. 6, 2013): https://www.footballperspective.com/the-ebb-and-flow-of-the-nfl-passing-game-since-1932/ (at the 1950s–'60s peaks "the league average pass to run ratio barely topped fifty-percent"; in 1977 "teams averaged just 25 passes per game (versus 29.4 in 1954...)," a pass ratio that "dipped as low as 42% in 1977," "a modern record 37.4 runs per team game," 6.5 yards per attempt against 7.4 for NFL teams in 1956–65, and 5.3 interceptions per 100 passes in 1970–77). Stuart's figures come from Pro Football Reference's league totals.
+
+[^bednarik]: "Chuck Bednarik," Pro Football Hall of Fame: https://www.profootballhof.com/players/chuck-bednarik/ ("played on both the offensive and defensive units long after the two-way player had largely faded from the scene"; in 1960 "injuries forced the Eagles to ask their 12-year veteran to again play both sides of the line"; the "58-minute performance" and the game-saving tackle of Jim Taylor in the 1960 championship game); "Chuck Bednarik," Wikipedia: https://en.wikipedia.org/wiki/Chuck_Bednarik (center and, after Bob Pellegrini's injury, linebacker in 1960; cites *Sports Illustrated*'s "Chuck Bednarik, the last of the 60-minute men"). The college reversal of 1953: "Two-platoon system," Wikipedia (cited in the platoon note): the cost of two-platoon squads had led some 50 small schools to drop football; Crisler, chairing the rules meeting: "We were gravely concerned about those schools who have had to abandon football"; free substitution returned with the 1965 season.
+
+[^eagle47]: Neale's switch "from a 5-3-3 to the 5-2-4 for the 1947 season": Tony Fitts, "A History of the Eagles Defensive Backs," *Philadelphia Inquirer* (Sept. 9, 2009): https://www.inquirer.com/philly/sports/20090909_A_History_of_the_Eagles_Defensive_Backs.html ; "5–2 defense," Wikipedia: https://en.wikipedia.org/wiki/5%E2%80%932_defense ; Neale's 1948 and 1949 titles: "Earle 'Greasy' Neale," Pro Football Hall of Fame: https://www.profootballhof.com/players/earle-greasy-neale/ . The 5-2 Eagle's lack of a middle linebacker left it "vulnerable to passes over the middle," and teams responded by pulling their middle guards back: "4–3 defense," Wikipedia: https://en.wikipedia.org/wiki/4%E2%80%933_defense .
+
+[^flexrush]: How Dallas used the Flex by down (almost always on first down; on second and third down mainly in running situations; a strong four-man rush when not in it): Pro Football Researchers Association forum, "So, now it was Doomsday that changed the game?": https://profootballresearchers.com/forum/viewtopic.php?p=49616 (researchers' accounts from film, not official records). Harvey Martin "unofficially led the NFL last year with 23 quarterback traps": "NFC East," *Sports Illustrated* (Sept. 4, 1978): https://vault.si.com/vault/1978/09/04/nfc-east . Sacks became an official NFL statistic only in 1982, which is why the figure is unofficial.
+
+[^gillmantiming]: Chris B. Brown, "Al Davis' Strategic Legacy," *Grantland* (Oct. 19, 2011): https://grantland.com/features/al-davis-strategic-legacy/ (Gillman "preached meticulous practice to sync the precise timing between quarterback and receiver," matching the receiver's route to the quarterback's dropback so the ball came out before the receiver turned, with the next receiver coming open a split second later). Bump-and-run "originated in the American Football League in the 1960s," with Oakland's Willie Brown "generally historically credited with popularizing" it: "Bump and run coverage," Wikipedia: https://en.wikipedia.org/wiki/Bump_and_run_coverage . "Much of the era's pass defense was man-to-man" is this book's summary, not a measured share.
+
+[^davis]: Chris B. Brown, "Al Davis' Strategic Legacy," *Grantland* (cited in the timing note): Davis's "vertical game" was "built on stretching the defense vertically while using all available receivers"; Davis became the Raiders' head coach in 1963: "Al Davis," Pro Football Hall of Fame: https://www.profootballhof.com/players/al-davis/ . Miami (1966) and Cincinnati (1968) as the AFL's later additions: "American Football League," Wikipedia (cited in the AFL note).
+
+[^lines]: Deacon Jones's last Rams season was 1971; he was traded to San Diego on January 29, 1972: "Deacon Jones," Wikipedia: https://en.wikipedia.org/wiki/Deacon_Jones . Bud Carson began developing Cover 2 at Georgia Tech, joined the Steelers as defensive backs coach in 1972 and became defensive coordinator in 1973: "Bud Carson," Wikipedia: https://en.wikipedia.org/wiki/Bud_Carson ; Lambert as the middle linebacker who dropped into coverage, from 1974: see [Cover 2 and Tampa 2](../06-pass-coverage/06-04-cover-2-and-tampa-2.qmd) and "Tampa 2," Wikipedia: https://en.wikipedia.org/wiki/Tampa_2 . The first common AFL–NFL draft was held in March 1967: "AFL–NFL merger," Wikipedia: https://en.wikipedia.org/wiki/AFL%E2%80%93NFL_merger .
+
+[^fg74]: Addy Bink, "NFL goalposts used to look very different: What changed, and why they moved," ABC27 / Nexstar: https://www.abc27.com/news/nfl-goalposts-used-to-look-very-different-what-changed-and-why-they-moved/ (citing the Pro Football Hall of Fame: "more than 860 field goals were attempted" in 1973, "That dropped to 553 in the next season"; the posts moved "in an effort to force offenses to play for touchdowns instead of field goals"; Paul Brown, quoted by *Sports Illustrated*: "Moving the posts also opened up the end zone for more pass plays"). The "three in five" success rate and the 1.5-points estimate are the course's back-of-envelope arithmetic: about 300 fewer attempts × 0.6 × 3 points ÷ 364 team-games (26 teams × 14 games).
+
+[^passshare]: Chase Stuart, "The Ebb and Flow of the NFL Passing Game Since 1932," *Football Perspective* (Sept. 6, 2013): https://www.footballperspective.com/the-ebb-and-flow-of-the-nfl-passing-game-since-1932/ (at its 1950s and '60s peaks "the league average pass to run ratio barely topped fifty-percent"). League-wide passing totals for the 1930s are incomplete, which is why the text doesn't split the 1932–48 rise among its causes.

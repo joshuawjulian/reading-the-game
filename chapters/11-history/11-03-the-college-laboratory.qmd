@@ -1,0 +1,1909 @@
+---
+title: "The College Laboratory: Wing-T, Wishbone, Air Raid, Spread Option, and the RPO"
+subtitle: "Why so much of Sunday's playbook was invented on Saturday, and what the NFL kept"
+description: "How college football became the sport's research lab: the talent gaps, wide hash marks, three-yard ineligible rule, tempo and roster churn that push college coaches to invent; the offensive lineages from the split-T, veer, wishbone and flexbone through the Wing-T, BYU's passing game, the Air Raid, the spread offense, the spread option, the pistol, tempo and the RPO; the defensive answers (the 3-3-5 stack, pattern-matching quarters, tite and mint fronts, three-high safety defenses); when and how each idea crossed into the NFL, with the data on shotgun football; and a side-by-side table of the college and NFL rules that make Saturday and Sunday look different."
+glossary:
+  "Spread offense": "An offensive philosophy, grown mostly in college football, that lines up in the shotgun with three or four receivers spread across the field to pull defenders out of the box, then attacks the space that leaves with quick passes, option reads or both. A spread formation is the picture; a spread offense is the whole system built on it."
+  "Spread option": "A spread offense whose run game is built on option reads from the shotgun or pistol (the zone read and its relatives), so the quarterback's running threat gives the offense an extra man; popularized by Rich Rodriguez and Urban Meyer in the 2000s."
+  "3-3-5 stack": "A college defense with three down linemen, three linebackers stacked directly behind them and five defensive backs, two of them hybrid safety-linebackers who align outside the box; built to put speed on the field against spread offenses and to hide which of the stacked players will rush."
+  "Three-high safety defense": "A defense that shows three safeties deep before the snap, usually from a 3-3-5, so that eight players can drop into coverage against the pass or one of the safeties can come down after the snap to fill against the run; made famous by Iowa State in 2017 against the Big 12's passing offenses."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared helpers for this chapter's diagrams)"
+#| output: false
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, RegularPolygon, Rectangle
+from matplotlib.lines import Line2D
+import gridiron.field as gfield
+from gridiron import Play, Player, Field, offense, technique, style
+from gridiron.field import FIELD_WIDTH
+
+GREEN = "#0f7a55"           # darker step of the aqua highlight, for text on the light field
+PURPLE = style.SERIES[6]    # a ring colour that is neither offense blue nor defense orange
+OL = ("LT", "LG", "C", "RG", "RT")
+
+
+def O(key, pos, d, w, label):
+    return Player(key, pos, "off", d, w, label=label)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line5():
+    """Five offensive linemen, unlabelled (in this chapter 'C' and 'CB' always mean a cornerback)."""
+    return [q.moved(label="") for q in offense("gun_2x2") if q.key in OL]
+
+
+def spread10(rb_w=-2.4, qb_d=-5.0, rb_d=-5.4):
+    """Shotgun, four receivers (10 personnel): X and Z on the line, the slots H and F a step off it.
+    The back is offset 2.4 yards and a little deeper, so his marker never touches the quarterback's."""
+    return line5() + [O("QB", "QB", qb_d, 0.0, "Q"), O("RB", "RB", rb_d, rb_w, "R"),
+                      O("X", "WR", -0.7, -16.0, "X"), O("H", "WR", -1.5, -9.0, "H"),
+                      O("F", "WR", -1.5, 9.0, "F"), O("Z", "WR", -0.7, 16.0, "Z")]
+
+
+def check_legal(players):
+    """Seven offensive players on the line, and only the two at its ends may be eligible receivers."""
+    off = [q for q in players if q.side == "off"]
+    on = sorted([q for q in off if q.d > -1.0], key=lambda q: q.w)
+    assert len(on) == 7, [q.key for q in on]
+    for q in on[1:-1]:
+        assert q.key in OL, f"{q.key} is covered up but not a lineman"
+
+
+def go_to(p, key, end, kind="block", delay=0.0, speed=None, via=()):
+    """Move `key` through absolute (d, w) points `via` to `end`, as a block, path, run, route or rush."""
+    start = np.array(p._cur(key))
+    pts = [tuple(np.array(q) - start) for q in (*via, end)]
+    if kind == "block":
+        return p.block(key, pts=pts, delay=delay, speed=speed)
+    if kind == "route":
+        return p.route(key, pts, delay=delay, speed=speed, frame="field")
+    return {"path": p.path, "run": p.run, "pull": p.pull, "rush": p.rush}[kind](key, pts, delay=delay, speed=speed)
+
+
+def _P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def branch(fld, p, pts, color=style.THIRD, label=None, label_at=None, lw=2.0, fontsize=7.5,
+           dash=(0, (3, 2.2)), end="arrow"):
+    """A dashed 'option' path through absolute (d, w) points, with an arrowhead (or block tee)."""
+    xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    if end == "arrow":
+        fld.ax.plot(xs[:-1], ys[:-1], color=color, lw=lw, ls=dash, zorder=6, solid_capstyle="round")
+        fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>",
+                                         mutation_scale=11, color=color, lw=lw, zorder=6))
+    else:
+        fld.ax.plot(xs, ys, color=color, lw=lw, ls=dash, zorder=6)
+    if label:
+        x, y = _P(fld, p, *(label_at or pts[-1]))
+        fld.ax.text(x, y, label, fontsize=fontsize, color=color, fontweight="bold", ha="center",
+                    va="center", zorder=9,
+                    bbox=dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec=color, lw=0.8))
+
+
+def pitch_arc(fld, p, a, b, color=style.BALL, rad=0.25):
+    """A pitch or a throw: a dashed brown arc from (d, w) a to (d, w) b."""
+    (x0, y0), (x1, y1) = _P(fld, p, *a), _P(fld, p, *b)
+    fld.ax.add_patch(FancyArrowPatch((float(x0), float(y0)), (float(x1), float(y1)), arrowstyle="-|>",
+                                     mutation_scale=10, color=color, lw=1.5, ls=(0, (2, 2)), zorder=7,
+                                     connectionstyle=f"arc3,rad={rad}"))
+
+
+def read_line(fld, p, a, b, color=GREEN, num=None, at=0.5):
+    """The quarterback's eyes: a thin dashed green line between two (d, w) spots, optionally numbered."""
+    (x0, y0), (x1, y1) = _P(fld, p, *a), _P(fld, p, *b)
+    fld.ax.plot([x0, x1], [y0, y1], color=color, lw=1.0, ls=(0, (2, 2)), alpha=0.85, zorder=4)
+    if num:
+        fld.ax.text(x0 + at * (x1 - x0), y0 + at * (y1 - y0), num, fontsize=7, color="white", ha="center",
+                    va="center", fontweight="bold", zorder=9,
+                    bbox=dict(boxstyle="circle,pad=0.18", fc=color, ec="none"))
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.5, ha="center", weight="normal"):
+    """A short on-field label at (d, w)."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=9, fontweight=weight,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=7, shrink=7):
+    """A label with a thin leader line to the player or spot it names."""
+    (xt, yt), (xp, yp) = _P(fld, p, *text_at), _P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha="center", va="center", zorder=9,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=shrink),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.9))
+
+
+def box_shade(fld, p, d0, d1, w0, w1, color=GREEN, alpha=0.07):
+    """Shade a rectangle of the field (the 'box') between depths d0-d1 and widths w0-w1."""
+    (x0, y0), (x1, y1) = _P(fld, p, d0, w0), _P(fld, p, d1, w1)
+    fld.ax.add_patch(Rectangle((min(x0, x1), min(y0, y1)), abs(x1 - x0), abs(y1 - y0), fc=color, alpha=alpha,
+                               ec=color, lw=0.8, ls=(0, (3, 2)), zorder=1))
+
+
+def clean(ax, numbers=True, hashes=True):
+    """Drop hash ticks and/or painted yard numbers (box-sized windows), clip everything to the window."""
+    for ln in list(ax.lines):
+        xs, ys = ln.get_data()
+        if hashes and len(xs) == 2 and ln.get_linewidth() == 0.5 and np.hypot(xs[1] - xs[0], ys[1] - ys[0]) < 1.0:
+            ln.remove()
+    for t in list(ax.texts):
+        if numbers and t.get_text().isdigit() and t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, width_in=5.8, ax=None, numbers=True, hashes=True, **kw):
+    """Play.draw, sized for the page, cleaned for a box-sized window."""
+    fld = p.draw(width_in=width_in, ax=ax, **kw)
+    clean(fld.ax, numbers=numbers, hashes=hashes)
+    return fld
+
+
+def panel_title(ax, text, size=9):
+    ax.set_title(text, fontsize=size, loc="left", color=style.INK, fontweight="bold")
+
+
+class hashes_at:
+    """Temporarily draw gridiron Fields with college hash marks (60 feet, 20 yards, in from each sideline).
+    gridiron.field reads HASH_NEAR / HASH_FAR when it draws, so we swap them and put them back."""
+
+    def __init__(self, from_sideline=20.0):
+        self.near, self.far = from_sideline, FIELD_WIDTH - from_sideline
+
+    def __enter__(self):
+        self.saved = (gfield.HASH_NEAR, gfield.HASH_FAR)
+        gfield.HASH_NEAR, gfield.HASH_FAR = self.near, self.far
+        return self
+
+    def __exit__(self, *exc):
+        gfield.HASH_NEAR, gfield.HASH_FAR = self.saved
+        return False
+
+
+def pdf_build():
+    return os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+
+# ---------------------------------------------------------------- frame strips and videos (as in 03-04)
+MARK_R = 0.72
+
+
+def tracking(play):
+    df = play.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    return df
+
+
+def carrier(play, t):
+    """Who holds the ball at time t (QB until the first handoff, pitch or catch)."""
+    holder = "QB"
+    for kind, to, te in sorted(play.ball_events, key=lambda e: e[2]):
+        if t >= te + (0.35 if kind in ("pitch", "pass") else 0.0):
+            holder = to
+    return holder
+
+
+def panel(ax, play, df, t, lateral, window, rings=()):
+    """One moment of a simulated play: markers, trails, the ball, rings (and a ring on the ball carrier)."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    ylo, yhi = sorted((play.ball_y - lateral[0], play.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=play.los, window=window, numbers=False, hashes=False,
+                lateral=(ylo, yhi), to_go=play.to_go)
+    cur = df[df["frameId"] == fid]
+    shown = cur[cur["x"].between(play.los + window[0] + 0.4, play.los + window[1] - 0.4)
+                & cur["y"].between(ylo + 0.4, yhi - 0.4)]
+    ids = set(shown["_id"])
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(ids) & (df["side"] != "ball")
+                & df["x"].between(play.los + window[0], play.los + window[1])]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=0.9, alpha=0.4, zorder=3)
+    ppy = fld.pts_per_yard()
+    for _, r in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(r["x"], r["y"]))
+        if r["side"] == "ball":
+            ax.add_patch(Ellipse((x, y + 0.5), 0.75, 0.45, fc=style.BALL, ec="white", lw=0.5, zorder=11))
+            continue
+        lab = str(r.get("label", "") or "")
+        if r["side"] == "off":
+            ax.add_patch(Circle((x, y), MARK_R, fc=style.OFFENSE, ec="white", lw=0.6, zorder=8))
+            tc = "white"
+        else:
+            ax.add_patch(RegularPolygon((x, y), 4, radius=MARK_R * 1.3, orientation=np.pi / 4,
+                                        fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0, zorder=8))
+            tc = style.INK
+        fs = max(4.0, min(8.0, ppy * (0.8 if len(lab) <= 1 else 0.6)))
+        ax.text(x, y, lab, ha="center", va="center", fontsize=fs, color=tc, fontweight="bold", zorder=10)
+    for key, col in list(rings) + [(carrier(play, t), style.THIRD)]:
+        rr = cur[cur["displayName"] == key]
+        if len(rr):
+            x, y = fld.xy(rr["x"].iloc[0], rr["y"].iloc[0])
+            ax.add_patch(Circle((float(x), float(y)), 1.25, fc="none", ec=col, lw=1.9, zorder=7))
+    return fld
+
+
+def strip(plays, times, lateral, window, notes=None, rows=None, rings=(), width_in=6.5, ncols=None):
+    """Frame strip: one row per play (an option's branches), or one play wrapped over rows."""
+    dfs = [tracking(p) for p in plays]
+    if len(plays) > 1:
+        cells = [(i, t) for i in range(len(plays)) for t in times]
+        ncols = len(times)
+    else:
+        cells = [(0, t) for t in times]
+        ncols = ncols or min(3, len(times))
+    nrows = int(np.ceil(len(cells) / ncols))
+    pw = width_in / ncols
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False,
+                             figsize=(width_in, nrows * (pw * span_d / span_w + (0.55 if notes else 0.25))))
+    for ax in axes.flat[len(cells):]:
+        ax.axis("off")
+    for k, (ax, (i, t)) in enumerate(zip(axes.flat, cells)):
+        panel(ax, plays[i], dfs[i], t, lateral, window, rings)
+        head = f"{k % len(times) + 1 if len(plays) > 1 else k + 1}.  " + ("snap" if abs(t) < 1e-6 else f"{t:+.1f} s")
+        if rows and k % ncols == 0:
+            head = rows[i] + "   " + head
+        ax.set_title(head, fontsize=8, color=style.INK_2 if not (rows and k % ncols == 0) else style.INK,
+                     loc="left", fontweight="bold" if rows and k % ncols == 0 else "normal")
+        if notes:
+            ax.text(0.5, -0.03, notes[k], transform=ax.transAxes, ha="center", va="top",
+                    fontsize=7.2, color=style.INK)
+    fig.tight_layout(h_pad=1.4 if notes else 0.6, w_pad=0.5)
+    return fig
+
+
+def video(plays, times, lateral, window, notes=None, rows=None, rings=(), width_in=6.4):
+    """Web version: the same panels drawn at every tenth of a second, side by side for branches."""
+    import shutil
+    from matplotlib import animation
+    from IPython.display import HTML, display
+    dfs = [tracking(p) for p in plays]
+    t0 = min(float(df["time"].min()) for df in dfs)
+    t1 = max(float(df["time"].max()) for df in dfs)
+    grid = np.round(np.arange(t0, t1 + 1e-9, 0.1), 2)
+    n = len(plays)
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    pw = (width_in if n == 1 else width_in / n) * (0.85 if n == 1 else 1.0)
+    fig, axes = plt.subplots(1, n, squeeze=False, figsize=(pw * n, pw * span_d / span_w + 0.6))
+    axes = axes.flat
+
+    def update(t):
+        for i, ax in enumerate(axes):
+            ax.clear()
+            panel(ax, plays[i], dfs[i], t, lateral, window, rings)
+            txt = "snap" if abs(t) < 0.05 else f"{t:+.1f} s"
+            if notes:
+                per = len(times)
+                mine = notes[i * per:(i + 1) * per] if n > 1 else notes
+                cur = [m for tt, m in zip(times, mine) if tt <= t + 1e-6]
+                txt += ("\n" + cur[-1].replace("\n", " ")) if cur else ""
+            head = (rows[i] + ": ") if rows else ""
+            ax.set_title(head + txt, fontsize=7.5, color=style.INK, loc="left")
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=list(grid), interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def option_animation(plays, times, lateral, window, notes=None, rows=None, rings=(), **kw):
+    """Video on the website; a numbered, captioned frame strip in the PDF."""
+    if pdf_build():
+        strip(plays, times, lateral, window, notes=notes, rows=rows, rings=rings, **kw)
+        plt.show()
+    else:
+        video(plays, times, lateral, window, notes=notes, rows=rows, rings=rings)
+```
+
+Saturday night, third-and-6. The offense snaps the ball eleven seconds after the last play ended. Four
+receivers stand spread across a field whose hash marks seem to sit almost on the sideline; the ball is on
+the left one, and the whole offense seems to have drifted to the wide side of the field. The quarterback,
+five yards behind the center, puts the ball in his running back's belly, watches a defensive end, pulls the
+ball, takes two steps, and flips it to a slot receiver bowing backward toward the sideline. Twelve yards.
+The next afternoon you watch an NFL team run almost the same play: same read, same flip, same receiver.
+The NFL version is a little quicker, the line looks a little different, and the announcer calls it "a
+college concept." He is right, and he could have said the same thing about half the plays in the game.
+Where did they come from, why does college football keep inventing them, and why do some make the jump
+to Sunday while others never do?
+
+**You'll be able to:**
+
+- Explain the four forces that make college football the sport's laboratory: talent gaps across hundreds of
+  programs, wide hash marks, rules that tolerate the run-pass blur, and roster churn and tempo.
+- Trace the main offensive lineages (split-T and veer, wishbone and flexbone, Wing-T, BYU's passing game, the
+  Air Raid, the spread offense, the spread option, the pistol, tempo and the RPO) and point to their DNA in an
+  NFL play.
+- Trace the defensive answers (the 3-3-5 stack, pattern-matching quarters, tite and mint fronts, and the
+  three-high safety defense) and say which problem each was built to solve.
+- Say when and how each idea crossed into the NFL, and why some never did.
+- Read a college broadcast with the rulebook differences in mind (hash width, one foot in bounds, three yards
+  downfield, a 15-yard pass-interference cap, the college clock, overtime, targeting and more), and predict
+  how each one changes what the teams do.
+
+::: {.callout-note title="You'll need"}
+- **[1978 and the Passing Revolution](11-02-the-1978-liberation.qmd)**: the NFL side of the story up to 2000,
+  from the Mel Blount rule and Air Coryell to the West Coast offense and the run-and-shoot. This chapter tells
+  the college side of the same decades and carries it forward.
+- **[Option Football](../03-the-run-game/03-04-option-football.qmd)**: the read key, give and keep, the zone
+  read, the triple option's dive, keep and pitch, and the count (#1 dive key, #2 pitch key, #3 alley, #4
+  deep). This chapter traces where those plays came from rather than re-teaching them.
+- **[Run-Pass Options](../04-the-passing-game/04-06-rpos.qmd)**: the conflict defender, pre- and post-snap
+  RPOs, the bubble RPO, and the one-yard ineligible-downfield rule that makes NFL RPOs look different from
+  college ones.
+- **[Quarters and Match Coverage](../06-pass-coverage/06-05-quarters-and-match.qmd)**: two deep safeties who
+  read the receivers and fit the run from depth; the read safety; pattern matching; Cover 6.
+:::
+
+**How to read the diagrams.** The offense always moves up the page, and *left* and *right* mean the
+offense's left and right.
+
+- **Offense** (blue circles): Q quarterback, R running back; X and Z wide receivers on the line, H and F slot
+  receivers a step off it, Y a tight end. In the option backfields, F, FB or B is the fullback and H or A a
+  halfback or A-back. The linemen are blank circles.
+- **Defense** (orange squares): numbers are technique alignments from
+  [Run-Game Language](../03-the-run-game/03-01-run-game-language.qmd) (1 = on the center's shoulder; 2i and
+  4i = the inside shoulder of the guard and the tackle; 3 and 5 = the outside shoulder of the guard and the
+  tackle; 7 = a tight end's inside shoulder). N is a nose tackle; S, M and W the Sam, Mike and Will linebackers; CB a cornerback,
+  NB a nickel back; SS and FS the strong and free safeties, and LS and RS the left and right safeties of a
+  three-safety shell; SP and BA the 3-3-5's two hybrid safeties (the *spur* and *bandit*).
+- **Lines**: a short bar is a block, a thick dark arrow a ball carrier, a dashed arrow one of a play's possible
+  *branches*, a dashed brown arc a pitch or a throw, and a thin dashed green line runs from the quarterback to
+  the defender he is reading. Orange rings mark defenders to watch.
+
+## Why college invents and the NFL borrows
+
+Watch enough football and a pattern appears. Almost every offensive idea that changed the NFL in the last
+thirty years, the shotgun spread run game, the zone read, the pistol, the RPO, the spread no-huddle, the Air
+Raid's handful of pass concepts, arrived from college (the NFL had flirted with the no-huddle in the K-Gun
+era; college made it an identity), often a decade or more after it was born there. The
+traffic runs the other way much less often. That isn't because college coaches are smarter. It is because
+college football is a different *environment*, and four features of that environment reward invention.
+
+### 1. More teams, and bigger talent gaps
+
+The NFL has 32 teams drawing from one talent pool, with a draft and a salary cap built to keep them roughly
+equal ([1978 and the Passing Revolution](11-02-the-1978-liberation.qmd) tells how the cap arrived). College
+football has more than 130 teams in its top division alone, the Football Bowl Subdivision (FBS), and hundreds
+more below it, and no mechanism at all to keep them equal.[^fbs] Every year a few programs sign most of the
+best high-school players, and everyone else has to play them.
+
+That gap is the mother of invention. A coach who can't recruit the bigger, faster players has two choices:
+lose, or change the problem. Almost every lineage in this chapter starts with a coach in the second group:
+Bill Yeoman at Houston with an offensive line that couldn't block, LaVell Edwards at BYU with no chance of
+out-recruiting the Southwest's powers, Hal Mumme and Mike Leach at tiny Iowa Wesleyan, Rich Rodriguez at
+Glenville State, a Division II school in West Virginia. Their inventions all do the same thing in different
+ways: they **change the arithmetic** so that the defense's better players have more to defend than they
+have bodies, or have to make a decision they aren't trained for.
+
+The NFL has talent gaps too, but small ones. When the other team's players are as good as yours, a gimmick
+that exploits a mismatch is worth less, and a scheme that gets your quarterback hit is worth much less.
+
+### 2. A wider field
+
+College hash marks are 40 feet apart, 60 feet in from each sideline; NFL hash marks are 18 feet 6 inches
+apart, the width of the goal posts. The field is the same size. What changes is where the ball can
+start, and that changes everything about spacing. With the ball on a college hash, the short (boundary) side
+is 20 yards wide and the wide (field) side 33. Before 1993 the college hashes sat even wider, a third of the
+way across (53 feet 4 inches from each sideline, the high-school spot), so the wishbone and veer offenses of
+this chapter played with a boundary under 18 yards wide.[^hash] [The Game in Fifteen Minutes](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd)
+drew the same four-receiver formation on both fields.
+
+A wide field is a gift to a **horizontal** offense, one that stretches a defense from sideline to sideline.
+With 33 yards to the field side, a defense that wants to cover four receivers spread across it has to send
+defenders a long way from the ball, out of the [**box**](../../appendices/glossary.qmd#gl-box) (the area near
+the ball where runs are defended). With 20 yards to the boundary, the offense can put a single receiver into
+the short side and dare a cornerback to cover him alone, with no room to help. Option and spread offenses
+were made for that geometry. The NFL's narrow hashes put the ball near the middle almost every snap, which
+makes the field more symmetrical and takes away some of the leverage.
+
+### 3. Rules that tolerate the run-pass blur
+
+College rules have been friendlier to offenses that mix run and pass on the same snap. The biggest
+difference is the **ineligible downfield** rule from
+[Run-Pass Options](../04-the-passing-game/04-06-rpos.qmd#the-one-yard-rule-why-nfl-rpos-look-different):
+in college an offensive lineman may be up to **three yards** past the line when a pass that crosses it is
+thrown, and the rule doesn't apply at all to passes caught behind the line; in the NFL, the limit is **one
+yard** on any forward pass.[^ineligible] Three yards is room to run-block for a beat and still throw. It is
+the reason college RPOs can be "run first, throw later," and the reason the college game grew so many plays
+that are a run and a pass at once. Other college rules nudge the same way: one foot in bounds makes a
+sideline catch easier, and a defensive pass interference foul costs at most 15 yards, which changes the
+math of a deep throw (the rules section near the end puts them all side by side).
+
+### 4. Roster churn, practice limits and tempo
+
+A college roster turns over every four or five years, and the best players leave sooner. NCAA rules cap the
+hours a team can make players practice in season.[^hours] A system that has to be taught to a new quarterback
+every two or three years, in limited hours, rewards **simplicity**: a small number of plays repeated until
+they are automatic, which is exactly what the Air Raid and the spread option were. Simplicity, in turn, makes
+**tempo** possible. A team that runs twelve concepts can call them with one word or one hand signal and snap
+the ball before the defense has substituted or even lined up. College football's clock (for decades it
+stopped after every first down) gave fast teams more snaps to use it on.
+
+### The filter: what the NFL keeps
+
+Those same four forces explain what *doesn't* cross. The NFL is a filter, and an idea has to survive four
+tests to get through it.
+
+- **The quarterback test.** NFL quarterbacks are the most expensive players in the sport, and every hit is
+  a risk the team can't insure. Ideas that hit the quarterback on most snaps (the triple option, the
+  wishbone) stop at the border; ideas that hit him occasionally (the zone read) cross as a change-up.
+- **The talent test.** NFL defenders are fast enough, and evenly enough spread across the league, that a
+  scheme built on a mismatch has to work against the *best* defense on the schedule, not the average one.
+- **The rules test.** The one-yard rule, two feet in bounds and the spot-foul DPI all change how an idea
+  plays on Sunday. Some ideas cross in modified form (the RPO, with quicker throws); some don't.
+- **The people test.** Ideas reach the NFL most easily inside players. A quarterback who ran the zone read
+  for four years arrives knowing how; a coach who designed it has to convince an NFL building to change.
+
+The rest of the chapter follows the ideas through that filter. Here is the map.
+
+```{python}
+#| label: fig-lab-timeline
+#| fig-cap: "Seventy years of borrowing: notice the long lags and how many diamonds bunch between 2012 and 2019. Each row is one college invention: the dot is roughly its college debut, the diamond when the idea became mainstream in the NFL, the label on the line the lag. Blue rows are offense, orange defense. Rows with no diamond never crossed as a system, or crossed only inside the people who learned them (BYU). Dates are approximate; several ideas, the RPO above all, have more than one claimed inventor."
+ROWS = [  # idea, who, college debut, NFL arrival (None = not as a system), side, NFL note
+    ("Split-T option", "Faurot, Missouri", 1941, None, "off", "never as a system"),
+    ("Wing-T", "Nelson, Maine and Delaware", 1950, 2017, "off", "jet-motion era: Rams, 49ers"),
+    ("Veer, triple option", "Yeoman, Houston", 1965, 2012, "off", "option reads: the 2012 wave"),
+    ("Wishbone", "Bellard, Texas", 1968, None, "off", "never"),
+    ("BYU passing game", "Edwards, BYU", 1972, None, "off", "carried by its QBs and coaches"),
+    ("Air Raid", "Mumme and Leach", 1989, 2019, "off", "Kingsbury's Cardinals"),
+    ("Zone read", "Rodriguez", 1991, 2012, "off", "Griffin, Kaepernick, Wilson"),
+    ("3-3-5 stack", "Dunn, Memphis", 1991, None, "def", "college only"),
+    ("Match quarters", "Saban, Michigan State", 1995, 2018, "def", "the two-high boom"),
+    ("Pistol", "Ault, Nevada", 2005, 2012, "off", "Washington, 49ers"),
+    ("RPO", "many claimants", 2005, 2017, "off", "Eagles, Super Bowl LII"),
+    ("Up-tempo spread", "Kelly, Oregon", 2007, 2013, "off", "spread-run tempo: Kelly's Eagles"),
+    ("Three-high safeties", "Heacock, Iowa State", 2017, None, "def", "college first"),
+]
+style.apply()
+fig, ax = plt.subplots(figsize=(6.8, 4.5))
+n = len(ROWS)
+for i, (idea, who, cy, ny, side, note) in enumerate(ROWS):
+    y = n - 1 - i
+    col = style.OFFENSE if side == "off" else style.DEFENSE
+    ax.scatter([cy], [y], s=34, color=col, zorder=4)
+    if ny is not None:
+        ax.plot([cy, ny], [y, y], color=col, lw=2.2, alpha=0.45, zorder=2, solid_capstyle="round")
+        ax.scatter([ny], [y], s=34, marker="D", facecolor=style.SURFACE, edgecolor=col, lw=1.6, zorder=4)
+        ax.text((cy + ny) / 2, y + 0.17, f"{ny - cy} years", fontsize=6.6, color=style.INK_2, ha="center",
+                va="bottom")
+        ax.text(ny + 2.4, y, note, fontsize=6.6, color=style.INK_2, va="center", ha="left")
+    else:
+        ax.text(cy + 2.4, y, note, fontsize=6.6, color=style.MUTED, va="center", ha="left", style="italic")
+ax.set_yticks(range(n))
+ax.set_yticklabels([f"{r[0]}  ({r[1]})" for r in ROWS][::-1], fontsize=7.2)
+ax.set_xlim(1936, 2046)
+ax.set_ylim(-0.7, n - 0.3)
+ax.set_xticks(range(1940, 2030, 10))
+ax.tick_params(axis="x", labelsize=7.5)
+ax.grid(axis="y", visible=False)
+ax.spines["left"].set_visible(False)
+ax.tick_params(axis="y", length=0)
+h = [Line2D([], [], marker="o", ls="", color=style.INK_2, ms=5.5, label="college debut"),
+     Line2D([], [], marker="D", ls="", markerfacecolor=style.SURFACE, markeredgecolor=style.INK_2, ms=5,
+            label="NFL mainstream")]
+ax.legend(handles=h, loc="upper center", bbox_to_anchor=(0.45, -0.07), ncol=2, fontsize=7.2, frameon=False)
+fig.tight_layout()
+plt.show()
+```
+
+Two things jump out. First, the lag. Ideas that crossed took a decade or two: the zone read about twenty
+years, the Air Raid thirty, the Wing-T's motion game closer to seventy. Second, the timing of the crossings
+is bunched. Almost everything arrived between 2012 and 2019, as the first generation of NFL players who had
+spent their whole careers in shotgun spread offenses reached the league and as NFL coaches ran out of
+reasons to resist (the shotgun data near the end of the chapter shows what those reasons were). First, the
+ideas, in roughly the order they were born.
+
+## The option line: split-T, veer, wishbone, flexbone
+
+[Option Football](../03-the-run-game/03-04-option-football.qmd) taught how the option *works*: leave a
+defender unblocked, read him, and give the ball to whoever he isn't playing. The history of that idea is a
+history of college coaches finding new backfields from which to run it.
+
+It begins in **1941** with Don Faurot at Missouri, who widened the T-formation's line splits and built the
+**split-T**, a series of dives, quarterback keeps and pitches that worked like a modern option. Bud
+Wilkinson took it to Oklahoma, and Oklahoma's split-T teams won 47 straight games in the 1950s
+([03-04](../03-the-run-game/03-04-option-football.qmd#where-option-came-from-briefly) has the details). The
+split-T never became an NFL offense, but it fixed the pattern for the next seventy years: option football is
+what you run when the other team's linemen are bigger than yours.
+
+**The veer (Houston, 1965).** Bill Yeoman's Houston teams of the mid-1960s couldn't block the defensive
+tackles, so Yeoman stopped trying: the play-side tackle released inside and the quarterback read the first
+defender outside him, giving to a diving halfback or keeping. That is the
+[**veer**](../../appendices/glossary.qmd#gl-veer), and with the other halfback trailing as a pitch man it is
+the [**triple option**](../../appendices/glossary.qmd#gl-triple-option). It made Houston one of the
+highest-scoring teams in the country: in 1968 the Cougars beat Tulsa 100–6.[^houston]
+
+**The wishbone (Texas, 1968).** Two years later, Texas offensive coordinator Emory Bellard moved the
+split-T's fullback up close behind the quarterback and set the two halfbacks deeper and wider behind him:
+the [**wishbone**](../../appendices/glossary.qmd#gl-wishbone) of [Classic
+Formations](../02-personnel-and-formations/02-03-classic-formations.qmd#the-wishbone). Darrell Royal's Longhorns
+won 30 straight games with it; Oklahoma and Alabama copied it; and through the 1970s it was the most feared
+offense in college football.[^bellard]
+
+The wishbone's genius was that **every back had a job on every play, to either side**: dive, lead or pitch.
+The defense had to assign someone to each of three runners on both sides of the formation, with every
+assignment perfect, and do it without knowing which way the play was going until the snap. In 1971
+Oklahoma's wishbone averaged 472.4 rushing yards a game, still the major-college record.[^ou71] Here is the play to one side.
+
+```{python}
+#| label: fig-wishbone-triple
+#| fig-cap: "The wishbone triple option to the split-end side (the offense's left). Notice that every play-side defender is either blocked or read. The left tackle releases inside to the Mike, leaving the 5-technique unblocked as the dive key (#1); the Will, on the line outside him, is the pitch key (#2). The fullback (F) dives; the near halfback arcs around #2 to block the safety in the alley (#3); the split end (X) blocks the cornerback (#4). The far halfback sprints behind the quarterback to become the pitch man, about four yards outside him and a yard deeper, so #2 can't cover both. The quarterback rides the dive reading #1, then, if he keeps, runs at #2."
+def wishbone_off():
+    off = line5() + [O("QB", "QB", -1.9, 0.0, "Q"), O("FB", "FB", -3.6, 0.0, "F"),
+                     O("LH", "RB", -5.2, -2.6, "H"), O("RH", "RB", -5.2, 2.6, "H"),
+                     O("Y", "TE", -0.7, 4.8, "Y"), O("X", "WR", -0.7, -15.0, "X")]
+    check_legal(off)
+    return off
+
+
+def wishbone_def():
+    return [D("BE", "DE", 1.0, technique("5", -1), "5"), D("BT", "DT", 1.0, technique("2i", -1), "2i"),
+            D("RT_", "DT", 1.0, technique("1", 1), "1"), D("RE", "DE", 1.0, technique("5", 1), "5"),
+            D("WILL", "WILL", 1.0, -7.8, "W"), D("SAM", "SAM", 1.0, 6.4, "S"), D("MIKE", "MIKE", 4.5, -0.8, "M"),
+            D("SS", "SS", 7.5, -10.0, "SS"), D("FS", "FS", 12.5, 1.5, "FS"),
+            D("LCB", "CB", 6.5, -15.0, "CB"), D("RCB", "CB", 7.0, 10.0, "CB")]
+
+
+p = Play(wishbone_off(), wishbone_def(), los=35, to_go=None)
+go_to(p, "LT", (3.4, -1.3), via=[(0.0, -2.9)])           # veer release to the Mike
+go_to(p, "LG", (0.5, -1.1))                               # on the 2i
+go_to(p, "C", (0.4, 0.5))                                 # back on the 1
+go_to(p, "RG", (2.8, 1.6), via=[(0.2, 1.7)])              # climb for backside pursuit
+go_to(p, "RT", (0.4, 3.7))
+go_to(p, "Y", (0.6, 5.7))
+go_to(p, "LH", (6.3, -10.0), via=[(-3.6, -6.4), (-0.6, -10.2)])   # arc around #2 to #3
+go_to(p, "X", (5.4, -14.8))
+go_to(p, "RH", (-2.8, -10.2), "path", via=[(-5.6, 0.4), (-4.6, -6.0)])   # the pitch man: 4 wide, 1 deep
+p.highlight("BE", color=style.DEFENSE); p.highlight("WILL", color=style.DEFENSE)
+f = draw(p, lateral=(-19.0, 11.5), window=(-6.8, 15.2), title=False, width_in=6.4)
+read_line(f, p, (-2.4, -1.2), (1.0, -4.0))
+read_line(f, p, (-2.4, -1.2), (1.0, -7.8))
+branch(f, p, [(-3.6, 0.0), (-2.4, -1.6), (4.6, -2.4)], color=style.OFFENSE_DARK, label="dive",
+       label_at=(6.5, -2.7), fontsize=7)
+branch(f, p, [(-2.4, -1.2), (-1.5, -5.2), (-0.4, -6.4), (5.2, -6.6)], color=GREEN, label="keep",
+       label_at=(6.5, -6.6), fontsize=7)
+pitch_arc(f, p, (-1.6, -5.4), (-2.8, -9.6))
+branch(f, p, [(-2.8, -10.2), (-0.6, -11.6), (4.6, -12.6)], color=style.OFFENSE_DARK, label="pitch",
+       label_at=(2.4, -14.0), fontsize=7)
+for num, (d, w) in {"1": (2.8, -4.2), "2": (2.8, -8.0), "3": (9.5, -10.0), "4": (8.4, -15.2)}.items():
+    say(f, p, d, w, num, color=style.DEFENSE_DARK, fontsize=8.5, weight="bold")
+say(f, p, 11.9, -5.6, "1 = dive key (first read)\n2 = pitch key (second read)\n3 = alley: the lead halfback\n"
+    "4 = deep: the split end", color=style.DEFENSE_DARK, fontsize=6.8)
+point_to(f, p, (-5.0, 6.6), (-5.4, 2.0), "pitch man starts\non the far side", fontsize=6.6)
+point_to(f, p, (-5.4, -13.8), (-3.4, -6.6), "lead halfback arcs\naround #2 to #3", fontsize=6.6)
+panel_title(f.ax, "The wishbone triple option", size=10)
+plt.show()
+```
+
+Why did it fade? The same forces that made it, in reverse. **Defenses got faster** through the 1970s and
+1980s, and fast defenders who play their assignments shrink the margins the triple option lives on. **The
+best high-school quarterbacks wanted to pass**, because passers were what the NFL drafted, and the
+programs that could recruit them stopped needing a talent equalizer. And **it was hard to come from behind
+with** an offense that threw a dozen times a game. Oklahoma won its last national title with the wishbone in
+1985; by the 1990s the formation survived mostly at the service academies (Army, Navy and Air Force).[^bonedecline]
+
+**The flexbone (late 1970s and 1980s).** The wishbone's last descendant fixed its biggest weakness, width.
+By standing the two halfbacks just off the line as slotbacks (A-backs), the
+[**flexbone**](../../appendices/glossary.qmd#gl-flexbone) spread the defense like a passing formation while
+keeping three runners near the ball; one A-back's pre-snap motion became the pitch. Its invention is
+disputed. The name is usually traced to Fisher DeBerry's Air Force teams of the 1980s (the wishbone, he is
+said to have remarked, needed to be more flexible), and Ken Hatfield, DeBerry's predecessor there, ran a
+version at Arkansas later in the decade. Paul Johnson, Georgia Southern's offensive coordinator from 1985, is
+the coach most credited with building it into a full system, and the formation itself is the double-slot set
+of the run-and-shoot (more on that offense below) with the option added. Johnson's Navy and Georgia Tech teams are its modern face
+([02-03](../02-personnel-and-formations/02-03-classic-formations.qmd#the-flexbone)).[^flexbone]
+
+Put the four option backfields side by side and the idea's survival strategy is plain: the *three threats*
+never change; only where the threats start does.
+
+```{python}
+#| label: fig-triple-backfields
+#| fig-cap: "One idea, four backfields: the three threats never change, only where they start. Offense only, plus the read keys (#1 dive, #2 pitch), option to the offense's left. In the three under-center panels the inside runner (thick dark arrow) hits just inside #1, the quarterback (green) keeps outside him, and the pitch man (thin arrow, brown arc) stays about four yards outside and a yard deeper than the quarterback: the backside halfback (veer), the far halfback (wishbone), the backside A-back in motion (flexbone). In the spread option the give goes away from the read, and the third threat is a bubble screen: the pitch has become a pass."
+def keys():
+    return [D("K1", "DE", 1.0, -4.0, "1"), D("K2", "OLB", 1.0, -7.8, "2")]
+
+
+def bf_split():
+    off = line5() + [O("QB", "QB", -1.9, 0.0, "Q"), O("LH", "RB", -4.6, -2.2, "H"), O("RH", "RB", -4.6, 2.2, "H")]
+    return off, [((-4.6, -2.2), [(-3.0, -2.4), (2.6, -2.7)], "run"),
+                 ((-4.6, 2.2), [(-5.0, 0.0), (-4.2, -5.6), (-2.6, -9.6)], "path")], (-2.5, -1.3)
+
+
+def bf_bone():
+    off = line5() + [O("QB", "QB", -1.9, 0.0, "Q"), O("FB", "FB", -3.6, 0.0, "F"),
+                     O("LH", "RB", -5.2, -2.6, "H"), O("RH", "RB", -5.2, 2.6, "H")]
+    return off, [((-3.6, 0.0), [(-2.4, -1.6), (2.6, -2.5)], "run"),
+                 ((-5.2, 2.6), [(-5.6, 0.2), (-4.4, -5.8), (-2.8, -9.8)], "path"),
+                 ((-5.2, -2.6), [(-3.4, -6.2), (-0.6, -10.4), (3.2, -10.6)], "path")], (-2.4, -1.2)
+
+
+def bf_flex():
+    off = line5() + [O("QB", "QB", -1.9, 0.0, "Q"), O("FB", "FB", -4.6, 0.0, "B"),
+                     O("LA", "RB", -1.6, -5.2, "A"), O("RA", "RB", -1.6, 5.2, "A")]
+    return off, [((-4.6, 0.0), [(-2.6, -1.6), (2.6, -2.5)], "run"),
+                 ((-1.6, 5.2), [(-3.6, 1.6), (-4.4, -2.0), (-3.8, -6.4), (-2.6, -9.6)], "path"),
+                 ((-1.6, -5.2), [(-0.8, -8.6), (0.4, -10.6), (3.2, -10.6)], "path")], (-2.4, -1.2)
+
+
+def bf_spread():
+    off = line5() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -2.6, "R"), O("H", "WR", -1.5, -9.0, "H")]
+    return off, [((-5.0, -2.6), [(-3.7, -1.4), (-3.2, 0.6), (2.6, 1.8)], "run"),
+                 ((-1.5, -9.0), [(-2.9, -10.2), (-2.8, -12.8)], "path")], (-5.0, 0.0)
+
+
+PANELS = [("Split-back veer (Houston, 1965)", bf_split, (-1.6, -5.0), (-2.7, -9.0)),
+          ("Wishbone (Texas, 1968)", bf_bone, (-1.6, -5.2), (-2.9, -9.2)),
+          ("Flexbone (1980s)", bf_flex, (-0.9, -4.4), (-2.8, -9.2)),
+          ("Spread option (2000s)", bf_spread, (-2.4, -4.2), (-2.8, -12.0))]
+fig, axes = plt.subplots(2, 2, figsize=(6.6, 5.0))
+for ax, (title, fn, toss_from, toss_to) in zip(axes.flat, PANELS):
+    off, paths, mesh = fn()
+    dfn = keys() if fn is not bf_spread else [D("K1", "DE", 1.0, -4.0, "1"), D("K2", "NB", 3.0, -6.8, "2")]
+    p = Play(off, dfn, los=35, to_go=None)
+    f = draw(p, ax=ax, lateral=(-14.6, 7.2), window=(-6.6, 4.8), title=False)
+    for start, pts, kind in paths:
+        full = [start] + pts
+        if kind == "run":
+            branch(f, p, full, color=style.OFFENSE_DARK, lw=2.2, dash="-")
+        else:
+            branch(f, p, full, color=style.OFFENSE, lw=1.4, dash="-")
+    qb = p.players["QB"]
+    if fn is bf_spread:
+        branch(f, p, [(-5.0, 0.0), (-4.4, -1.4), (-2.6, -4.4), (0.4, -6.0), (3.4, -6.2)], color=GREEN, lw=1.8)
+    else:
+        branch(f, p, [(qb.d, 0.0), mesh, (-1.0, -4.2), (0.6, -6.0), (3.4, -6.2)], color=GREEN, lw=1.8)
+    pitch_arc(f, p, toss_from, toss_to)
+    ax.set_title(title, fontsize=8.6, loc="left", color=style.INK, fontweight="bold")
+fig.tight_layout(h_pad=0.8, w_pad=0.6)
+plt.show()
+```
+
+What crossed into the NFL from this line was never a formation. It was the **idea** in the last panel: a
+quarterback who reads one defender instead of blocking him, run from the shotgun, with a third threat that
+can be a throw. That idea needed thirty more years and two more inventions, the spread offense and the zone
+read, before it could reach Sunday.
+
+::: {.callout-note title="Film room: Oklahoma 1971"}
+The 1971 Sooners, coached by Chuck Fairbanks with Barry Switzer as offensive coordinator, are the wishbone
+at its peak: quarterback Jack Mildren, halfback Greg Pruitt and the 472-yard rushing average. Their most
+famous game is the one they lost, 35–31 to Nebraska in Norman on Thanksgiving Day, the "Game of the
+Century" between the top two teams in the country.[^gotc]
+
+**What to notice** on the replays that circulate online: count the defenders Nebraska puts on each side of
+the ball, and watch how often a Nebraska defender who did his one job perfectly still ended up tackling a man
+without the ball. Then watch the pitch man's spacing on the long runs: four or five yards outside the
+quarterback and a yard deeper, so the pitch key can never take both.
+:::
+
+## The Wing-T and BYU: misdirection and the passing equalizer
+
+Not every college lineage was an option. Two others, one running and one passing, fed the NFL more
+quietly.
+
+**The Wing-T (Maine and Delaware, about 1950).** Dave Nelson crossed the T-formation with the single wing's
+wingback to make the [**Wing-T**](../../appendices/glossary.qmd#gl-wing-t), and his successor at Delaware,
+Tubby Raymond, ran it for 36 seasons.[^wingt] Its logic, taught in [Perimeter Runs and
+Misdirection](../03-the-run-game/03-05-perimeter-and-misdirection.qmd#the-wing-t-an-order-of-football), is
+**series football**: several plays that start with the same backfield action and end differently, so a
+defense that flows to the first thing it sees is punished. The
+[buck sweep](../../appendices/glossary.qmd#gl-buck-sweep), the trap, the counter and the waggle (the
+quarterback fakes the sweep and rolls out the other way to pass) all start the same way. The Wing-T itself
+never became an NFL offense, but its *logic* did, twice: through high-school coaches such as Gus Malzahn, who
+ran its series from the shotgun at Auburn (below), and through the NFL's jet-motion era of the late 2010s.
+Sean McVay's Rams and Kyle Shanahan's 49ers ran what is, in effect, a Wing-T series with a receiver in the wingback's
+role: the jet sweep one way, then the same motion with a handoff the other way, then the same motion with
+a bootleg pass off it. The defense that flows to the motion is punished, which is the Wing-T's whole
+idea ([03-05](../03-the-run-game/03-05-perimeter-and-misdirection.qmd) has the film rooms). That is why the
+timeline gives the Wing-T an NFL diamond in 2017, while admitting it is the idea, not the formation, that
+crossed.
+
+**BYU (1972 to 2000).** LaVell Edwards took over a Brigham Young program in Provo, Utah, that had no hope of
+out-recruiting the big programs, and decided to throw. Through the 1970s and 1980s BYU passed when almost
+nobody else in college football did, spreading the ball to backs and tight ends with timing routes and
+crossing patterns, and produced a line of record-setting quarterbacks: Gifford Nielsen, Marc Wilson, Jim
+McMahon, Steve Young, Robbie Bosco and Ty Detmer, who won the Heisman Trophy in 1990. In 1984 BYU went 13–0 and
+won the national title.[^byu]
+
+BYU's passing game didn't cross into the NFL as a system. It crossed in **people**, which is the first
+example of a pattern this chapter keeps finding. McMahon won a Super Bowl with the 1985 Bears and Young two
+MVP awards with the 49ers; Mike Holmgren, BYU's quarterbacks coach in the early 1980s, went to San Francisco
+and later built the Packers' West Coast offense; Andy Reid played offensive line for Edwards; and Norm Chow,
+Edwards's assistant for 27 years and his play-caller from 1982, became one of college football's most
+celebrated offensive coordinators at USC and, briefly, the Tennessee Titans'.[^byupeople] And BYU's spacing and
+crossing routes became the raw material of the next lineage.
+
+**The run-and-shoot (Portland State, 1975 to 1980).** The NFL side of this offense is in
+[11-02](11-02-the-1978-liberation.qmd); its roots are a textbook small-school story. Glenn "Tiger" Ellison
+designed it as a high-school coach in Middletown, Ohio, and Mouse Davis, after 15 seasons coaching high
+school in Oregon, refined it as Portland State's head coach, where June Jones and then Neil Lomax set
+passing records. Davis carried it to the USFL's Houston Gamblers in 1984 and the
+Detroit Lions in 1988.[^mouse]
+
+::: {.callout-important title="Why it exists"}
+Every lineage so far answers the same problem: **the other team has better players.** The option answers it
+by reading a defender instead of blocking him (one fewer man to beat), the Wing-T by making the defense guess
+wrong about where the ball is going (defenders who flow the wrong way don't count), and BYU's passing game by
+spreading the ball to five receivers so a bigger, slower defense has to cover all of them. Each trade is
+real. The option gives up the passing game and puts the quarterback in harm's way; the Wing-T gives up width
+and demands huge practice time for its fakes; the passing game gives up the clock (every incompletion stops
+it, so a passing team can't sit on a lead) and asks a quarterback to be very good. College coaches could make those trades because their alternative was losing. NFL coaches,
+whose players are evenly matched, usually take the idea and leave the trade.
+:::
+
+## The Air Raid: subtraction as a strategy
+
+Hal Mumme was the head coach at Iowa Wesleyan, an NAIA school (a small-college association outside the
+NCAA's divisions) in Mount Pleasant, Iowa, when he hired a
+law-school graduate turned coach named Mike Leach as his offensive coordinator in 1989. Their plan, borrowed openly from
+BYU and then pushed much further, was to throw on almost every down from four- and five-receiver sets, with
+very wide line splits, and to run **very few plays** practised an enormous number of times. Leach gave it
+its name, helped by an old air-raid siren that a fan sounded after touchdowns (accounts differ on whether
+that began at Iowa Wesleyan or at their next stop). The pair took it to
+Valdosta State (1992–1996) and then to Kentucky, where in 1998 quarterback Tim Couch became a consensus
+All-American and, the next spring, the first pick in the NFL draft.[^airraid]
+
+[Offensive Systems](../04-the-passing-game/04-08-offensive-systems-and-languages.qmd#the-air-raid-a-few-plays-a-thousand-reps)
+explains the Air Raid's *language* (one-word calls, a slim playbook) and
+[Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd) draws its signature concepts:
+[mesh](../../appendices/glossary.qmd#gl-mesh), the [shallow cross](../04-the-passing-game/04-04-dropback-concepts.qmd#shallow-cross-the-air-raids-bread-and-butter),
+[Y-cross](../../appendices/glossary.qmd#gl-y-cross) and
+[four verticals](../../appendices/glossary.qmd#gl-four-verticals). What matters for this chapter is
+**why a small menu was a weapon**:
+
+- **Repetition beats variety** when your players are worse. A quarterback who has read the same mesh concept
+  against every coverage ten thousand times throws it before the defender has finished deciding.
+- **A small menu travels.** It can be taught quickly to a new quarterback every two or three years, and it
+  fits on a wristband or in a hand signal, which makes the no-huddle easy.
+- **Spreading five receivers shrinks the box**, so even a pass-first team can run the ball against a light
+  front (more on that arithmetic in the next section).
+
+Leach became Texas Tech's head coach in 2000 and spent a decade there, then Washington State and Mississippi
+State, until his death in December 2022. His tree became the Air Raid's distribution network: Dana
+Holgorsen, Sonny Dykes, Kliff Kingsbury and Lincoln Riley among many others.[^leachtree] Riley's Oklahoma
+and USC offenses produced three Heisman-winning quarterbacks who went first in the NFL draft: Baker Mayfield
+(2017 Heisman), Kyler Murray (2018) and Caleb Williams (2022).[^riley]
+
+::: {.callout-note title="Film room: Texas Tech vs. Texas, November 1, 2008"}
+Leach's best team, quarterback Graham Harrell and receiver Michael Crabtree, beat top-ranked Texas 39–33 in
+Lubbock when Crabtree caught a pass near the sideline, kept his feet and scored with one second left.[^tt2008]
+
+**What to notice:** count the plays. Texas Tech's offense ran a handful of concepts all night from
+spread formations with very wide line splits. Wide splits widen the gaps between the defensive linemen too,
+which makes stunts harder to run, forces the defense to show where its pressure is coming from, and opens
+clear throwing windows for a quarterback on a quick three- or five-step drop. And watch where the ball went:
+short and quick to the sideline, again and again, to receivers who caught it and ran, until the defense
+crept up and the vertical route behind them came open.
+:::
+
+The Air Raid's route into the NFL ran through its quarterbacks and coaches. Patrick Mahomes played for
+Kingsbury at Texas Tech;
+Kingsbury became the Cardinals' head coach in 2019, hired straight from college with no NFL coaching
+experience to bring the Air Raid with him,[^kingsbury] and later Washington's offensive coordinator with Jayden Daniels (04-08 has that film room). Mesh, the shallow
+cross and four verticals are now in every NFL playbook. What the NFL left at the border was the *pure*
+system: the very wide line splits that NFL pass rushers would knife through, the near-total absence of a
+power run game, and the refusal to go under center.
+
+## The spread offense: a philosophy, not a formation
+
+By the late 1990s these lineages were converging on one idea, and it's worth naming exactly, because the
+word gets used loosely. A [**spread offense**](../../appendices/glossary.qmd#gl-spread-offense) lines up in
+the shotgun with three or four receivers spread across the field so that the defense must send defenders
+out of the box to cover them, then attacks the space that leaves, with quick passes, with option reads, or
+with both. [Spread and Modern Formations](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd#formation-not-philosophy)
+drew the distinction: a *spread formation* is a picture every NFL team uses; a *spread offense* is the whole
+system built on that picture.
+
+The core of the philosophy is arithmetic, the [hat math](../03-the-run-game/03-01-run-game-language.qmd) of
+the run game (count blockers against defenders; the side with more wins) applied to the whole field.
+
+```{python}
+#| label: fig-spread-math
+#| fig-cap: "Why spread out to run? Count the shaded box in each panel. Left, a 1970s-style I-formation (21 personnel; FB the fullback) against a 4-3 with the strong safety down: eight in the box against seven blockers, and the quarterback, who just hands off, blocks nobody, so one defender is always free. Right, a four-receiver spread (10 personnel) against nickel: the receivers have pulled five defenders wide, two of them apex defenders (NB and SS, ringed) halfway between the box and the slots. Six in the box against five linemen, and the quarterback's read makes it six against six. If an apex defender steps in to make it seven, the slot outside him is uncovered. (Wide receivers and cornerbacks are outside both pictures.)"
+fig, axes = plt.subplots(1, 2, figsize=(6.8, 4.6))
+# left: I-formation vs 8-man box
+off_i = line5() + [O("QB", "QB", -1.9, 0.0, "Q"), O("FB", "FB", -4.5, 0.0, "FB"), O("RB", "RB", -7.0, 0.0, "R"),
+                   O("Y", "TE", -0.7, 4.8, "Y"), O("X", "WR", -0.7, -15.0, "X"), O("Z", "WR", -1.5, 15.0, "Z")]
+check_legal(off_i)
+dfn_i = [D("SDE", "DE", 1.0, technique("7", 1), "7"), D("SDT", "DT", 1.0, technique("3", 1), "3"),
+         D("WDT", "DT", 1.0, technique("1", -1), "1"), D("WDE", "DE", 1.0, technique("5", -1), "5"),
+         D("SAM", "SAM", 4.0, 6.4, "S"), D("MIKE", "MIKE", 4.5, 0.8, "M"), D("WILL", "WILL", 4.5, -3.0, "W"),
+         D("SS", "SS", 6.0, 3.6, "SS"), D("FS", "FS", 12.5, 0.0, "FS"),
+         D("LCB", "CB", 7.0, -15.0, "CB"), D("RCB", "CB", 7.0, 15.0, "CB")]
+p = Play(off_i, dfn_i, los=35, to_go=None)
+f = draw(p, ax=axes[0], lateral=(-12.5, 12.5), window=(-8.6, 14.0), title=False)
+box_shade(f, p, -0.2, 7.2, -6.2, 8.4)
+say(f, p, 9.4, -9.0, "8 in the box\nv 7 blockers", color=GREEN, fontsize=7.2, weight="bold")
+say(f, p, -5.0, -6.6, "Q hands off:\nblocks nobody", fontsize=6.6)
+panel_title(axes[0], "1970s: I-formation v eight in the box", size=8.6)
+# right: spread vs nickel
+dfn_s = [D("BE", "DE", 1.0, technique("5", -1), "5"), D("BT", "DT", 1.0, technique("3", -1), "3"),
+         D("PT", "DT", 1.0, technique("1", 1), "1"), D("PE", "DE", 1.0, technique("5", 1), "5"),
+         D("WILL", "WILL", 4.5, -2.4, "W"), D("MIKE", "MIKE", 4.5, 2.0, "M"),
+         D("NB", "NB", 4.5, -6.6, "NB"), D("SS", "SS", 4.5, 6.6, "SS"),
+         D("LCB", "CB", 6.5, -16.0, "CB"), D("RCB", "CB", 6.5, 16.0, "CB"), D("FS", "FS", 12.5, 0.0, "FS")]
+p = Play(spread10(), dfn_s, los=35, to_go=None)
+check_legal(spread10())
+p.highlight("NB", color=style.DEFENSE); p.highlight("SS", color=style.DEFENSE)
+f = draw(p, ax=axes[1], lateral=(-12.5, 12.5), window=(-8.6, 14.0), title=False)
+box_shade(f, p, -0.2, 7.2, -4.6, 4.6)
+say(f, p, 9.4, -9.0, "6 in the box\nv 5 blockers\n+ the QB's read", color=GREEN, fontsize=7.2, weight="bold")
+say(f, p, -5.4, 7.6, "apex defenders:\nbox or slot?", color=style.DEFENSE_DARK, fontsize=6.6)
+panel_title(axes[1], "2000s: four wide v six in the box", size=8.6)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+That is the whole idea in one picture. **Spreading out is a way to run the ball**, not only a way to throw
+it: four receivers take five defenders out of the box, and a defense that brings one back in leaves a
+receiver alone. The spread then needs one more thing to finish the job, because six defenders against five
+blockers is still one free man. Two answers emerged, and they split the spread into two families:
+
+- **Spread to pass** (the Air Raid, and Joe Tiller's Purdue offense with Drew Brees, which Tiller himself
+  called "basketball on grass"):[^tiller] accept the free man and throw quickly to whoever the defense left
+  alone.
+- **Spread to run** (Rich Rodriguez, Urban Meyer and their heirs): make the quarterback a runner, so the
+  read takes care of the free man. That is the spread option, next.
+
+The NFL had plenty of the first family of its own (Air Coryell, the K-Gun, later the 2007 Patriots). What it
+imported from college was mostly the second, the spread *run* game, as the shotgun data near the end of the
+chapter shows.
+
+::: {.callout-caution title="Common misconception"}
+"The spread is a passing offense." Some spread offenses are, but the most influential ones were run-first.
+Rich Rodriguez's West Virginia, Urban Meyer's Florida and Gus Malzahn's Auburn won with the run game, using
+the spread to empty the box and the quarterback's legs to win the numbers.
+:::
+
+## The spread option: Rodriguez, Meyer and the quarterback's legs
+
+The [**spread option**](../../appendices/glossary.qmd#gl-spread-option) is a spread offense whose run game is
+built on option reads from the shotgun. Its origin story is one of the best in football, and
+[03-04](../03-the-run-game/03-04-option-football.qmd#where-option-came-from-briefly) tells it: at Glenville
+State in 1991, Rich Rodriguez's quarterback fumbled a zone-play handoff in practice, picked the ball up, saw
+the backside end crashing down on the running back, and ran where the end had been.[^rr] Rodriguez saw the
+mistake was a play. The [zone read](../../appendices/glossary.qmd#gl-zone-read) married the option's read
+to the most common run in football, inside zone, and to the shotgun, where the quarterback could see the
+read key and the receivers at once.
+
+Rodriguez took it to Tulane and Clemson as an offensive coordinator, then to West Virginia as head coach
+(2001–2007), where quarterback Pat White and running back Steve Slaton made it the most dangerous running
+offense in the country. Urban Meyer, at Bowling Green, Utah and Florida, built his own spread option on the
+same principles, with bigger quarterbacks who could run between the tackles: Alex Smith, whose unbeaten 2004
+Utah team won the Fiesta Bowl before Smith went first in the 2005 draft, and Tim Tebow, the 2007 Heisman
+winner, whose Florida teams won national titles in the 2006 and 2008 seasons.[^meyer]
+
+What made the spread option more than the zone read was what Rodriguez *attached* to it. With four receivers
+spread out, the defense's apex defenders (the ones ringed in @fig-spread-math) are stuck between the box and
+the slots. Rodriguez's quarterbacks read **two** defenders on the same side: the end, to give or keep, and
+then the apex defender, to keep or throw a bubble screen to the slot. It is the triple option's logic with
+the pitch replaced by a pass.
+
+::: {.callout-note title="Film room: West Virginia, Sugar Bowl, January 2, 2006"}
+Rodriguez's West Virginia, with a freshman quarterback, Pat White, and a freshman running back, Steve
+Slaton, beat Georgia 38–35 in the Sugar Bowl, played that year in Atlanta while New Orleans recovered from
+Hurricane Katrina. Slaton ran for 204 yards, a Sugar Bowl record.[^sugar]
+
+**What to notice:** on the zone reads, find the backside end first, then the apex defender over the slot.
+Georgia's defense, built to beat the power-running teams of the SEC (the Southeastern Conference), had fast, big defenders, and it still spent the night
+a step late, because every snap asked two of them to make a decision they usually didn't get to practise.
+:::
+
+```{python}
+#| label: fig-rodriguez
+#| fig-cap: "The zone read with the bubble attached, as Rodriguez's West Virginia teams ran it: two reads (numbered green lines), three possible ball carriers. The line zones right and leaves the left end unblocked. Read 1: if the end stays wide, R takes the handoff at the mesh, crossing in front of Q (dark dashed arrow). If the end crashes, Q pulls the ball and makes read 2, the apex nickel: if the nickel widens with H's bubble, Q keeps (green arrow) into the space both defenders left; if the nickel comes up at Q, he throws the bubble (brown arc) to H behind X's block. The triple option from the shotgun, with a pass as the third option."
+def zrb_defense():
+    return [D("BE", "DE", 1.0, technique("5", -1), "5"), D("BT", "DT", 1.0, technique("3", -1), "3"),
+            D("PT", "DT", 1.0, technique("1", 1), "1"), D("PE", "DE", 1.0, technique("5", 1), "5"),
+            D("WILL", "WILL", 4.5, -2.4, "W"), D("MIKE", "MIKE", 4.5, 2.0, "M"),
+            D("NB", "NB", 4.5, -7.0, "NB"), D("SS", "SS", 4.5, 7.0, "SS"),
+            D("LCB", "CB", 6.5, -16.0, "CB"), D("RCB", "CB", 6.5, 16.0, "CB"), D("FS", "FS", 12.5, 0.0, "FS")]
+
+
+p = Play(spread10(), zrb_defense(), los=35, to_go=None)
+go_to(p, "LT", (0.45, -2.75), via=[(-0.3, -3.0)])
+go_to(p, "LG", (3.0, -1.6), via=[(-0.3, -1.4), (0.6, -1.5)])
+go_to(p, "C", (0.5, 0.45))
+go_to(p, "RG", (3.1, 2.0), via=[(-0.3, 1.9), (0.7, 2.0)])
+go_to(p, "RT", (0.55, 3.75))
+go_to(p, "X", (5.0, -15.8))
+go_to(p, "H", (-2.2, -14.8), "route", via=[(-3.0, -10.6)])        # the bubble: bow back, then widen
+p.highlight("BE", color=style.DEFENSE); p.highlight("NB", color=style.DEFENSE)
+f = draw(p, lateral=(-17.6, 9.6), window=(-7.6, 10.4), title=False, width_in=5.5)
+# the two reads, numbered in order
+read_line(f, p, (-5.0, 0.0), (1.0, -4.3), num="1", at=0.45)
+read_line(f, p, (-5.0, 0.0), (4.5, -7.0), num="2", at=0.78)
+# give: the back starts from his own spot, crosses in front of the quarterback (the mesh) and runs inside zone
+branch(f, p, [(-5.4, -2.4), (-3.8, -0.4), (-2.4, 1.1), (0.6, 1.2), (4.6, 0.5)], color=style.OFFENSE_DARK,
+       label="give if the\nend stays", label_at=(7.6, 0.6), fontsize=6.8)
+# keep: the quarterback pulls and runs outside the crashing end, inside the widening nickel
+branch(f, p, [(-5.0, 0.0), (-4.2, -2.2), (-2.4, -4.9), (0.4, -6.0), (3.2, -5.6), (6.8, -4.6)], color=GREEN,
+       label="keep if the\nnickel widens", label_at=(8.8, -6.6), fontsize=6.8)
+pitch_arc(f, p, (-4.3, -2.0), (-2.5, -13.4), rad=0.16)
+say(f, p, -5.8, -13.4, "throw the bubble if\nthe nickel takes Q", color=style.BALL, fontsize=6.8, weight="bold")
+point_to(f, p, (-6.4, 3.6), (-4.4, -1.3), "mesh: Q rides the\nball in R's belly", fontsize=6.4, shrink=2)
+point_to(f, p, (8.0, -12.6), (4.6, -7.2), "read 2: the\napex nickel", color=style.DEFENSE_DARK, fontsize=6.6)
+point_to(f, p, (2.6, -12.4), (0.7, -4.6), "read 1:\nthe end", color=style.DEFENSE_DARK, fontsize=6.6)
+panel_title(f.ax, "Zone read with the bubble attached", size=10)
+plt.show()
+```
+
+Here are the two branches that come out after the end crashes, in motion.
+
+```{python}
+#| label: fig-rodriguez-anim
+#| fig-cap: "The zone read with the bubble attached, two branches after the end crashes (simulated, BDB-format tracking; orange rings mark the two read defenders, the green ring follows the ball; only the left side of the field is shown). Watch the nickel in frame 2: he decides the play. Top row: he widens with the bubble, so the quarterback keeps into the space both defenders left. Bottom row: he steps up at the quarterback, so the ball goes out to H behind X's block. Two defenders on that side, three threats."
+def zrb_play(nickel_widens):
+    p = Play(spread10(), zrb_defense(), los=35, to_go=None)
+    # defense first (blocks aim at where they end up)
+    go_to(p, "BT", (1.3, -2.0), "path", speed=0.8)
+    go_to(p, "PT", (1.4, 0.9), "path", speed=0.8)
+    go_to(p, "PE", (1.4, 4.4), "path", speed=0.8)
+    go_to(p, "WILL", (3.4, -0.6), "path", speed=2.6, delay=0.3)
+    go_to(p, "MIKE", (3.6, 2.6), "path", speed=2.6, delay=0.3)
+    go_to(p, "BE", (-1.2, -2.2), "path", speed=4.0, delay=0.15)          # the crash
+    go_to(p, "BE", (-1.6, -0.6), "path", speed=2.5)
+    go_to(p, "LCB", (5.0, -15.6), "path", speed=1.5, delay=0.2)
+    go_to(p, "FS", (10.5, -3.0), "path", speed=2.5, delay=0.4)
+    if nickel_widens:
+        go_to(p, "NB", (1.0, -12.2), "path", speed=5.5, delay=0.2)
+    else:
+        go_to(p, "NB", (-1.8, -5.0), "path", speed=4.6, delay=0.2)
+    # offense: inside zone right
+    go_to(p, "LT", (0.45, -2.75), speed=1.6)
+    go_to(p, "LG", (2.2, -1.0), speed=2.6, via=[(-0.3, -1.4), (0.6, -1.5)])
+    go_to(p, "C", (0.5, 0.45), speed=1.6)
+    go_to(p, "RG", (2.3, 2.1), speed=2.6, via=[(-0.3, 1.9), (0.7, 2.0)])
+    go_to(p, "RT", (0.55, 3.75), speed=1.6)
+    go_to(p, "X", (4.0, -15.6), speed=3.0)
+    go_to(p, "H", (-2.4, -12.2), "route", via=[(-2.9, -10.4)], speed=5.5)
+    go_to(p, "RB", (-3.9, 0.7), "run", speed=3.5, delay=0.25, via=[(-4.3, -0.4)])   # the mesh (a fake)
+    go_to(p, "RB", (2.6, 2.6), "path", speed=6.0, via=[(-1.2, 2.3)])
+    go_to(p, "QB", (-5.2, 0.0), "path", speed=0.5)
+    if nickel_widens:
+        go_to(p, "QB", (6.0, -6.8), "run", speed=6.8, delay=0.2, via=[(-4.9, -1.0), (-3.6, -3.6), (-1.0, -5.8)])
+        go_to(p, "H", (-1.4, -13.2), "path", speed=3.0)
+    else:
+        go_to(p, "QB", (-3.4, -3.8), "run", speed=5.5, delay=0.2, via=[(-4.9, -1.0)])
+        p.pass_to("H", t=1.45)
+        go_to(p, "H", (5.0, -11.6), "run", speed=6.5, delay=0.15, via=[(-1.8, -12.4)])
+    return p
+
+
+TIMES_ZRB = [0.9, 1.45, 2.2]
+NOTES_ZRB = ["End crashes on R:\nQ pulls the ball", "Nickel widens with H:\nQ keeps", "Q runs where the end\nand the nickel were",
+             "End crashes on R:\nQ pulls the ball", "Nickel steps up at Q:\nthe ball goes out", "H runs behind\nX's block"]
+option_animation([zrb_play(True), zrb_play(False)], TIMES_ZRB, lateral=(-17.6, 3.0), window=(-7.0, 7.0),
+                 notes=NOTES_ZRB, rows=["Nickel widens: keep", "Nickel attacks: throw"],
+                 rings=(("BE", style.DEFENSE), ("NB", style.DEFENSE)))
+```
+
+## Pistol, tempo and the RPO: the 2000s laboratory
+
+Three more inventions finished the modern college offense, and each one came from a coach looking for an
+edge the others didn't have.
+
+**The pistol (Nevada, 2005).** Chris Ault put his quarterback about four yards behind the center, between
+under-center and shotgun depth, with the running back directly behind him. The
+[pistol](../../appendices/glossary.qmd#gl-pistol) ([02-02](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd#pistol))
+kept the shotgun's view for the quarterback's read while letting the back run downhill to either side, so
+the defense couldn't tell the play's direction from his alignment. In 2009 Nevada had three 1,000-yard
+rushers, one of them the quarterback, Colin Kaepernick.[^ault]
+
+**Tempo (Oregon, Auburn and many others).** Chip Kelly, Oregon's offensive coordinator from 2007 and head
+coach from 2009 to 2012, ran the spread option at a pace college football had never seen: plays signalled
+from the sideline with picture boards (big posters whose pictures code the play), the ball snapped as soon as
+the officials allowed. Kelly went 46–7 as
+Oregon's head coach.[^kelly] Gus Malzahn, a former Arkansas high-school coach who had learned offense from
+the Delaware Wing-T book, combined tempo, the shotgun and Wing-T misdirection; as Auburn's offensive
+coordinator he won the 2010 national title with quarterback Cam Newton (the play we now call the
+[inverted veer](../../appendices/glossary.qmd#gl-inverted-veer) was one of their signatures), and as head
+coach he won the 2013 Iron Bowl on the "Kick Six."[^malzahn] [In-Game Adjustments and
+Tempo](../08-the-chess-match/08-04-in-game-adjustments-and-tempo.qmd) explains what tempo does to a defense:
+it freezes the defense's personnel and its calls, and wears it down.
+
+Why did tempo work so much better on Saturday? Partly the clock, which (as the first section said) stopped
+after every first down until 2023, handing a fast team even more snaps. Partly the roster: a college team's backups are much
+weaker than its starters, so a defense that can't substitute, or has to play its second string because the
+first is exhausted, loses more than an NFL defense would. And partly the menu: tempo needs the small,
+signal-sized playbook the spread already had.
+
+Defenses fought back with the only tool they had left, the rulebook. In October 2012 Nick Saban, whose
+Alabama defenses were built to substitute by situation, complained about no-huddle offenses and asked, "Is
+this what we want football to be?"[^saban2012] In 2014 the NCAA's rules committee proposed making offenses
+wait until 10 seconds had run off the play clock before snapping, so defenses could substitute; after an
+outcry from coaches, the proposal was tabled before it could be voted on.[^tensec] The offense had won the
+argument. The best evidence came from the critic himself. Saban's Alabama, the most
+dominant defensive program of the 2010s, lost games to up-tempo spread teams (including Malzahn's Auburn on
+the Kick Six and Ohio State's spread offense in the playoff that ended the 2014 season), and Saban answered
+by hiring offensive coordinators who brought spread and up-tempo ideas, starting with Lane Kiffin in 2014. By
+2020 his national champions were an up-tempo, RPO-heavy spread offense that set a school scoring
+record.[^saban]
+
+**The RPO (everyone, 2000s–2010s).** Put a quick throw on a running play and you have the
+[RPO](../../appendices/glossary.qmd#gl-rpo). [Run-Pass Options](../04-the-passing-game/04-06-rpos.qmd#where-rpos-came-from)
+tells its tangled origin story (Air Raid tags, Rodriguez's bubbles, Meyer's accidental discovery at Utah,
+Brett Favre's claim to have done it on his own) and why no single inventor can be named. The laboratory
+conditions explain why it was college that made it routine: the three-yard rule from the first section let
+linemen run-block while the quarterback decided, and a bubble or now screen thrown behind the line wasn't
+covered by it at all. Art Briles's Baylor teams took the RPO to an
+extreme, with receivers split almost to the sideline and the quarterback, Robert Griffin III in 2011, reading
+defenders on the run and the throw on the same snap.[^briles]
+
+## The defense strikes back
+
+Every offensive idea in this chapter created a problem for defenses, and college defenses, facing a spread
+offense almost every week, solved those problems first. Four answers matter.
+
+### The 3-3-5 stack: speed and mystery
+
+The first answer was simply to match the offense's speed with defensive backs.
+The [**3-3-5 stack**](../../appendices/glossary.qmd#gl-3-3-5-stack) has three down linemen, three linebackers
+stacked directly behind them, and five defensive backs, two of whom are hybrids, safeties who play like
+linebackers, aligned outside the box over the slots. Joe Lee Dunn is usually credited with its first modern
+version, at Memphis in 1991, born of the familiar college reason: he didn't have enough big defensive linemen,
+so he swapped one for a defensive back.[^stack] (Be careful with the name.
+[Odd and Hybrid Fronts](../05-defensive-fronts-and-run-defense/05-03-odd-and-hybrid-fronts.qmd#three-meanings)
+explains that NFL coaches use "[3-3-5](../../appendices/glossary.qmd#gl-3-3-5)" for something else: a
+five-man line in nickel, not this stack.)
+
+```{python}
+#| label: fig-335-stack
+#| fig-cap: "The 3-3-5 stack against a four-receiver spread: same picture, different five rushers. Both panels start from one alignment: a nose and two 5-techniques, three linebackers stacked behind them, two hybrid safeties (SP, BA) over the slots, one deep free safety (cornerbacks out of the picture). Left: the line slants right while the Mike and Will blitz the gaps it vacated. Right: the line slants left, the Sam and bandit come from the right, and the Mike rotates toward the pressure to wall off the slot: three under, three deep. A protection set for the first picture is wrong for the second."
+def stack_def():
+    return [D("LE", "DE", 1.0, technique("5", -1), "5"), D("N", "NT", 1.0, 0.0, "N"),
+            D("RE", "DE", 1.0, technique("5", 1), "5"),
+            D("WILL", "WILL", 4.6, technique("5", -1), "W"), D("MIKE", "MIKE", 4.6, 0.0, "M"),
+            D("SAM", "SAM", 4.6, technique("5", 1), "S"),
+            D("SP", "DB", 5.0, -7.2, "SP"), D("BA", "DB", 5.0, 7.2, "BA"),
+            D("FS", "FS", 12.5, 0.0, "FS"), D("LCB", "CB", 7.0, -16.0, "CB"), D("RCB", "CB", 7.0, 16.0, "CB")]
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.8, 4.2))
+for ax, version in zip(axes, ("A", "B")):
+    p = Play(spread10(), stack_def(), los=35, to_go=None)
+    if version == "A":
+        go_to(p, "LE", (-1.2, -2.4), "rush", speed=4.0)           # slant inside, through the B gap
+        go_to(p, "N", (-0.8, 1.0), "rush", speed=4.0)             # slant to the right A gap
+        go_to(p, "RE", (-1.2, 4.6), "rush", speed=4.0)            # contain rush
+        go_to(p, "MIKE", (-1.9, -0.8), "rush", speed=5.0, via=[(1.0, -0.6)])   # left A gap
+        go_to(p, "WILL", (-2.0, -4.4), "rush", speed=5.0, via=[(1.0, -4.3)])   # left C gap
+        go_to(p, "SAM", (8.6, 3.6), "path", speed=4.0)
+        go_to(p, "SP", (8.2, -6.6), "path", speed=4.0)
+        go_to(p, "BA", (8.6, 8.6), "path", speed=4.0)
+        p.highlight("MIKE", color=style.DEFENSE); p.highlight("WILL", color=style.DEFENSE)
+        title = "Pressure 1: Mike and Will"
+    else:
+        go_to(p, "LE", (-1.2, -4.8), "rush", speed=4.0)
+        go_to(p, "N", (-0.8, -1.0), "rush", speed=4.0)
+        go_to(p, "RE", (-1.2, 2.4), "rush", speed=4.0)
+        go_to(p, "SAM", (-1.9, 4.0), "rush", speed=5.0, via=[(1.0, 4.4)])
+        go_to(p, "BA", (-2.0, 5.6), "rush", speed=5.5, via=[(1.2, 6.8)])
+        go_to(p, "MIKE", (7.5, 5.5), "path", speed=4.0)          # rotates to the pressure side: walls F
+        go_to(p, "WILL", (7.8, -1.0), "path", speed=4.0)         # the middle hook
+        go_to(p, "SP", (8.0, -8.5), "path", speed=4.0)           # weak curl/flat
+        p.highlight("SAM", color=style.DEFENSE); p.highlight("BA", color=style.DEFENSE)
+        title = "Pressure 2: Sam and bandit"
+    f = draw(p, ax=ax, lateral=(-11.5, 11.5), window=(-6.8, 14.4), title=False)
+    panel_title(ax, title, size=8.8)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+The stack's weapons are **speed** (an extra defensive back against an extra receiver) and **mystery**:
+with eight potential rushers and only three hands in the dirt, a protection scheme that counts the
+defenders on the line before the snap counts only three. (The hybrid safeties' names are a dialect:
+*spur* and *bandit* are the names West Virginia's stack made familiar; other staffs say *star*, *rover*,
+*viper*, or simply strong and weak safety, so expect a broadcast to use any of them.) Its price is size. Three linemen against five offensive linemen can be
+pushed around, which is why the stack thrived in conferences full of spread passing offenses and struggled
+against teams that lined up with tight ends and ran straight at it: double-team a down lineman, climb to a
+stacked linebacker who has no one in front of him, and the light front has nothing left. West Virginia, under Rodriguez's
+defensive coordinator Jeff Casteel, paired the stack with the spread option, so the Mountaineers practised
+against the offense they defended.[^casteel]
+The NFL never adopted it as a base defense; NFL offensive lines are too good to give away a lineman every
+down.
+
+### Quarters and pattern matching: the college two-high
+
+The second answer was in the secondary. Against spread offenses that ran option and play-action from the same
+looks on wide college hashes, a defense that put a safety in the box got beaten deep, and one that kept
+two safeties deep got run over. [**Quarters**](../../appendices/glossary.qmd#gl-quarters) with
+[pattern matching](../../appendices/glossary.qmd#gl-pattern-matching) let it do both: two safeties 10 to 12
+yards deep who read the receivers in front of them, carry the vertical routes and fit the run from depth
+when it shows. [Quarters and Match Coverage](../06-pass-coverage/06-05-quarters-and-match.qmd#a-short-history-from-cleveland-to-east-lansing-and-iowa-city)
+tells this history in full: Nick Saban's pattern-match rules, developed as Bill Belichick's coordinator in
+Cleveland and refined at Michigan State, LSU and Alabama; Mark Dantonio and Pat Narduzzi's Michigan State;
+Iowa's long-running split-field quarters; Gary Patterson's
+[4-2-5](../../appendices/glossary.qmd#gl-4-2-5) at TCU.
+
+This is the one lineage that made a round trip. Its roots were in an NFL building (Cleveland in the early
+1990s), it matured on college fields against the spread, and when NFL offenses went spread in the late 2010s,
+NFL defenses went back to the college quarters coaches for the answer. NFL Next Gen Stats measured
+split-safety coverage on 32.9% of dropbacks in 2018 and 42.0% in 2025, the highest since tracking began.[^ngs]
+
+### Tite and mint: walling off the middle
+
+The third answer was a front built for the spread's favourite run. With five or six defenders in the box,
+a defense can't afford to let inside zone's double teams climb to the linebackers. The
+[**tite front**](../../appendices/glossary.qmd#gl-tite-front) puts a nose on the center and two 4i-techniques
+on the tackles' inside shoulders, so every interior lineman is covered and nobody climbs cleanly
+([05-03](../05-defensive-fronts-and-run-defense/05-03-odd-and-hybrid-fronts.qmd#the-tite-front-walling-off-the-middle)
+draws it). Kirby Smart's Georgia calls the same picture the
+[mint front](../../appendices/glossary.qmd#gl-mint-front), and Georgia's defenses won national titles in the
+2021 and 2022 seasons with it as a base.[^georgia] It is also a case of parallel evolution rather than
+borrowing: Vic Fangio's NFL defenses were running their own tite against the same spread run games, and the
+two traditions met in the middle.
+
+### Three-high: Iowa State's answer to the Air Raid
+
+The newest answer came from the conference where the Air Raid lived. By 2017 the Big 12 (Texas, Oklahoma and
+their neighbours on the Plains) was a league of spread
+passing offenses, and Iowa State, under head coach Matt Campbell and defensive coordinator Jon Heacock, was
+losing shootouts. After a 44–41 overtime loss to Iowa in the third game of 2017, Heacock and Campbell used
+the bye week to throw out the playbook, and against Texas they lined up in a 3-3-5 with **three safeties
+deep**. In the very next game Iowa State, a 31-point underdog with a walk-on backup quarterback, went to
+Norman and beat third-ranked Oklahoma, Baker Mayfield's team, 38–31.[^isu]
+
+A [**three-high safety defense**](../../appendices/glossary.qmd#gl-three-high-safety-defense) shows three
+safeties deep before the snap, usually from a 3-3-5. It is built on one bet: **make the offense run the ball
+against a light box, and fill the box late.**
+
+```{python}
+#| label: fig-three-high
+#| fig-cap: "The three-high safety defense: one pre-snap picture, two answers. Before the snap: two 4i-techniques and a nose, the Mike behind them (four in the box), the Will and Sam at apex spots halfway to the slots, two cornerbacks, and three safeties (LS, FS, RS) 9 to 12 yards deep (receiver splits drawn a little tight to fit the page). Left, against a pass: eight drop (five deep, three under) and three rush, so four vertical routes run into five deep defenders and the quarterback settles for the check-down. Right, against inside zone: the receivers block the corners and the apex players, the Will squeezes, and the middle safety (ringed) flies down after the snap, so the box ends up with one more defender than it showed."
+def three_high_def():
+    return [D("LE", "DE", 1.0, technique("4i", -1), "4i"), D("N", "NT", 1.0, 0.0, "N"),
+            D("RE", "DE", 1.0, technique("4i", 1), "4i"),
+            D("WILL", "WILL", 4.5, -5.8, "W"), D("MIKE", "MIKE", 4.6, 0.0, "M"), D("SAM", "SAM", 4.5, 5.8, "S"),
+            D("LCB", "CB", 7.0, -16.0, "CB"), D("RCB", "CB", 7.0, 16.0, "CB"),
+            D("LS", "SS", 9.5, -9.5, "LS"), D("FS", "FS", 12.0, 0.0, "FS"), D("RS", "SS", 9.5, 9.5, "RS")]
+
+
+def tight(players):
+    """Narrow the spread for a half-page panel: wideouts and corners at 13 yards, slots at 8 (Air Raid splits vary)."""
+    W = {"X": -13.0, "Z": 13.0, "H": -8.0, "F": 8.0, "LCB": -13.0, "RCB": 13.0, "LS": -8.6, "RS": 8.6,
+         "WILL": -5.2, "SAM": 5.2}
+    return [q.moved(w=W[q.key]) if q.key in W else q for q in players]
+
+
+fig, axes = plt.subplots(1, 2, figsize=(6.8, 5.2))
+# against the pass
+p = Play(tight(spread10()), tight(three_high_def()), los=35, to_go=None)
+for k in ("X", "Z"):
+    p.route(k, [(0, 0), (17.0, 0.4)])
+for k in ("H", "F"):
+    p.route(k, [(0, 0), (16.5, -0.6)])
+p.route("RB", [(0, 0), (-0.4, 3.0), (1.5, 6.0)], side=-1)
+p.dropback(2.0)
+for k, end in [("LE", (-1.6, -3.4)), ("N", (-1.2, 0.6)), ("RE", (-1.6, 3.4))]:
+    go_to(p, k, end, "rush")
+for k, end in [("LCB", (15.5, -13.4)), ("RCB", (15.5, 13.4)), ("LS", (15.0, -7.6)), ("RS", (15.0, 7.6)),
+               ("FS", (16.0, 0.0)), ("WILL", (7.5, -6.6)), ("MIKE", (7.0, 0.0)), ("SAM", (7.5, 6.6))]:
+    go_to(p, k, end, "path")
+f = draw(p, ax=axes[0], lateral=(-15.0, 15.0), window=(-9.4, 19.6), title=False, numbers=True)
+rb_end = (p.players["RB"].d + 1.5, p.players["RB"].w - 6.0)
+pitch_arc(f, p, (-7.0, 0.0), rb_end, rad=0.2)
+say(f, p, rb_end[0] - 3.4, rb_end[1] + 1.0, "check-down", color=style.BALL, fontsize=6.6, weight="bold")
+say(f, p, 17.9, -3.8, "5 deep", color=style.DEFENSE_DARK, fontsize=7, weight="bold")
+say(f, p, 10.4, -3.4, "3 under", color=style.DEFENSE_DARK, fontsize=7, weight="bold")
+panel_title(axes[0], "Pass: eight drop", size=8.8)
+# against the run
+p = Play(tight(spread10()), tight(three_high_def()), los=35, to_go=None)
+go_to(p, "LT", (0.6, -2.6), via=[(-0.3, -3.0)])
+go_to(p, "LG", (0.6, -0.9), via=[(-0.3, -1.4)])
+go_to(p, "C", (0.6, 0.3))
+go_to(p, "RG", (0.6, 1.9), via=[(-0.3, 1.9)])
+go_to(p, "RT", (2.6, 2.2), via=[(0.3, 3.4)])
+go_to(p, "WILL", (3.4, -3.8), "path")                   # backside apex squeezes
+go_to(p, "SAM", (3.9, 4.6), "path")                     # playside apex fits
+go_to(p, "X", (5.4, -12.6), delay=0.1)                  # stalk the corners
+go_to(p, "Z", (5.4, 12.6), delay=0.1)
+go_to(p, "H", (3.0, -5.0), delay=0.1)                   # slots block the apex players
+go_to(p, "F", (3.6, 5.6), delay=0.1)
+go_to(p, "RB", (2.6, 1.4), "run", via=[(-4.3, -0.6), (-1.2, 1.2)])
+go_to(p, "FS", (3.4, 1.2), "path")
+go_to(p, "MIKE", (3.1, 2.5), "path")
+p.highlight("FS", color=style.DEFENSE)
+f = draw(p, ax=axes[1], lateral=(-15.0, 15.0), window=(-9.4, 19.6), title=False, numbers=True)
+point_to(f, p, (16.4, 6.4), (8.0, 0.7), "the 'flyover':\nthe middle safety\nfills the run", color=style.DEFENSE_DARK,
+         fontsize=6.6)
+panel_title(axes[1], "Run: a safety flies down", size=8.8)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+Why does that work against the Air Raid in particular? Because the Air Raid's whole menu is built to find
+the hole in a two-high or one-high shell: the seam against Cover 3, the deep middle against Cover 2, the
+crossers underneath against man. Against five deep defenders and three underneath, there is no deep hole, and
+the offense's best answer, running the ball against a light box, is something many pure passing offenses
+were least prepared to do. The cost is the run defense if the safety is late: count four in the box and two
+apex players who may or may not get there, against five linemen and a running back with a head start. Iowa
+State's version spread through the Big 12 and beyond (Kansas's offensive coordinator called Iowa State "the
+originators"), and three-safety looks became a regular part of college defense.[^isu2] NFL defenses have
+mostly borrowed the *personnel* (a third safety on the field, the [big
+nickel](../../appendices/glossary.qmd#gl-big-nickel) of [A First Look at
+Defense](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd)) and the habit of disguising the
+shell before the snap ([06-06](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)), rather than
+the full college package. The likely reason is the same filter as always: the bet only pays if a safety
+arrives on time against NFL backs running behind NFL linemen, and a three-man rush gives an NFL quarterback
+all day to find the soft spot underneath. The margins that make three-high work against a Big 12 Air Raid are
+too thin on Sunday.
+
+## Crossing over: how the ideas reached Sunday
+
+Now set the lineages against the NFL's filter. The table puts each idea next to its route into the league
+and what changed on the way.
+
+| College idea | Where it peaked | How it reached the NFL | What the NFL kept | What it left behind |
+|:---|:---|:---|:---|:---|
+| Triple option (veer, wishbone, flexbone) | Houston, Texas, Oklahoma, 1965–1985; the academies since | It didn't, as a system | The idea of reading a defender | The hits on the quarterback, the three-back backfield |
+| Wing-T | Delaware, 1950s–1990s; Malzahn's Auburn | Coaches' clinics; the jet-motion era (Rams, 49ers, late 2010s) | Series football, jet motion, buck sweep, the bootleg | The full under-center Wing-T backfield |
+| BYU passing | BYU, 1972–2000 | People: McMahon, Young, Holmgren, Reid | Spacing and crossing routes | — (it was an ancestor) |
+| Air Raid | Kentucky, Texas Tech, Oklahoma (Riley), 1997–2020 | Quarterbacks (Mahomes, Mayfield, Murray, Williams), then coaches (Kingsbury, 2019) | Mesh, shallow cross, Y-cross, four verticals; no-huddle | Very wide line splits, the near-absence of a run game |
+| Spread option and zone read | West Virginia, Utah, Florida, 2001–2010 | Quarterbacks (Griffin, Kaepernick, Wilson, Newton, 2012; Jackson, 2018) | The zone read and its relatives as a package | A run game built *entirely* on the quarterback |
+| Pistol | Nevada, 2005–2012 | Washington and San Francisco, 2012; Baltimore, 2019 | The formation, especially for running quarterbacks | — |
+| Tempo | Oregon, Auburn, Baylor, 2009–2015 | Chip Kelly's Eagles, 2013 | No-huddle as an information tool | Tempo as a whole-game identity (it faded; see 08-04) |
+| RPO | Everywhere, 2005–2015 | Reid's Chiefs and Pederson's Eagles, 2016–2018 | Quick-throw RPOs | Slower RPOs that need three yards for the linemen |
+| Match quarters | Michigan State, Iowa, TCU, Alabama, 1995–2015 | Coaches (Fangio's tree, Staley), late 2010s | Two-high, split-field match coverage | — (it came home) |
+| 3-3-5 stack, three-high | Memphis, West Virginia, Iowa State | Mostly hasn't | A third safety in nickel personnel; disguise | Three down linemen as a base |
+
+: Ten college ideas through the NFL's filter. "Peaked" is approximate; the text and notes give dates and sources. {#tbl-crossing}
+
+Three patterns run through @tbl-crossing.
+
+**Players carry ideas better than coaches.** The ideas that crossed fastest arrived inside quarterbacks:
+the zone read with Griffin, Kaepernick and Wilson in 2012, the Air Raid with Mahomes (a starter from 2018), the
+designed quarterback run game with Lamar Jackson. College *head coaches* who tried to bring whole systems with
+them had a much harder time. Steve Spurrier (Washington, 2002–2003), Nick Saban (Miami, 2005–2006), Chip Kelly
+(Philadelphia, 2013–2015, then San Francisco), Urban Meyer (Jacksonville, 2021) and Matt Rhule (Carolina,
+2020–2022) all left the NFL with losing or near-.500 records, none lasting more than four seasons, while ideas from their
+college offenses and defenses stayed behind.[^coaches] The NFL takes the play and sends back the coach.
+
+**The NFL adapts what it keeps.** The RPO crossed, but as a *quick-throw* RPO, because the one-yard rule
+won't let linemen run-block while the quarterback waits. The zone read crossed, but as a few plays a game,
+because the quarterback test is harsh. The Air Raid crossed, but inside offenses that also go under center,
+use tight ends and run power. Every idea arrives a little smaller.
+
+**The crossing has a rhythm.** Ideas arrive in waves when a generation of players makes them unavoidable,
+and then the NFL's defenses answer and the wave recedes. The zone read surged in 2012 and receded by 2014
+([Dynasties and Counterpunches](11-04-dynasties-and-counterpunches.qmd) tells that story), though only the
+quarterback *keep* receded: the shotgun handoff it had made respectable stayed, which is why the run line in
+the chart below keeps climbing after 2014. The shotgun spread
+rose for twenty years and has just started to give ground to the under-center game
+([The Modern Era](11-05-the-modern-era.qmd)). Here is that long wave in data.
+
+```{python}
+#| label: fig-shotgun-imports
+#| fig-cap: "The spread's long arrival: the share of NFL plays snapped from the shotgun, 1999–2025 (regular season), shown separately for passes (dropbacks, scrambles included) and runs, with some of the college imports of the text marked. The passing game moved to the shotgun first; the run game followed only once offenses learned to run from it, with zone reads, the pistol and RPOs. Shotgun runs went from about 2% of runs in 1999 to half of them in 2023, before the under-center revival of 2024–2025. The pistol is counted as shotgun in this data. Data: nflverse play-by-play via nflreadpy (the `shotgun` flag)."
+from gridiron.data import pbp
+
+style.apply()
+cols = ["season", "season_type", "play_type", "shotgun", "down", "qb_scramble"]
+sg = pbp(list(range(1999, 2026)), columns=cols)
+sg = sg[(sg["season_type"] == "REG") & sg["play_type"].isin(["pass", "run"]) & sg["down"].notna()].copy()
+sg["kind"] = np.where((sg["play_type"] == "pass") | (sg["qb_scramble"] == 1), "pass", "run")
+rate = sg.groupby(["season", "kind"])["shotgun"].mean().unstack() * 100
+SG_ALL = sg.groupby("season")["shotgun"].mean() * 100
+
+fig, ax = plt.subplots(figsize=(6.8, 3.9))
+ax.plot(rate.index, rate["pass"], color=style.SERIES[0], lw=2.2, marker="o", ms=3)
+ax.plot(rate.index, rate["run"], color=style.SERIES[1], lw=2.2, marker="o", ms=3)
+ax.text(2025.4, rate.loc[2025, "pass"], "passes", color=style.SERIES[0], fontsize=8, va="center")
+ax.text(2025.4, rate.loc[2025, "run"], "runs", color=style.SERIES[1], fontsize=8, va="center")
+EVENTS = [  # season, series, label, label position (x, y), vertical alignment
+    (2008, "run", "Wildcat (Dolphins,\nfrom Arkansas)", (2006.6, 13.5), "bottom"),
+    (2012, "run", "read-option wave:\nGriffin, Kaepernick,\nWilson, Newton", (2014.4, 3.0), "bottom"),
+    (2013, "pass", "Kelly's Eagles\n(Oregon tempo)", (2009.2, 86.0), "bottom"),
+    (2018, "run", "RPO boom (2016-18):\nReid's Chiefs, the\nEagles' Super Bowl LII", (2021.8, 14.0), "bottom"),
+    (2018, "pass", "Mahomes (Texas Tech)\nis NFL MVP", (2016.0, 93.0), "bottom"),
+    (2023, "run", "peak: half of\nall runs", (2021.6, 60.0), "bottom"),
+]
+for yr, ser, txt, xy, va in EVENTS:
+    ax.annotate(txt, (yr, rate.loc[yr, ser]), xytext=xy, fontsize=6.8, color=style.INK_2, ha="center",
+                va=va, arrowprops=dict(arrowstyle="-", color=style.MUTED, lw=0.7, shrinkB=3))
+ax.set_ylim(0, 105)
+ax.set_xlim(1998.5, 2028.5)
+ax.set_xticks(list(range(2000, 2026, 5)))
+ax.set_ylabel("% of plays from the shotgun", fontsize=8)
+ax.tick_params(labelsize=7.5)
+ax.grid(axis="x", visible=False)
+fig.tight_layout()
+plt.show()
+```
+
+Read @fig-shotgun-imports as two stories. The **passing** line is the spread formation arriving: from about
+`{python} f"{rate.loc[1999, 'pass']:.0f}"`% of dropbacks in 1999 to `{python} f"{rate.loc[2009, 'pass']:.0f}"`%
+in 2009, as offenses learned what college coaches had learned, that a quarterback who starts five yards deep
+sees the defense better and gets the ball out faster. That shift needed no college import at all; the 2007
+Patriots, the most famous spread passing offense of its era, were run by NFL lifers. The **running** line is
+the college story. In 2011, only `{python} f"{rate.loc[2011, 'run']:.0f}"`% of NFL runs came from the
+shotgun: the NFL used the gun to pass and went under center to run. That was a reasoned choice, and it
+answers the question the timeline left open. [Formation Rules](../02-personnel-and-formations/02-02-formation-rules-and-vocabulary.qmd#shotgun)
+listed what the shotgun costs a run game: the back beside the quarterback takes the handoff moving sideways
+rather than downhill, a five-yard snap can be fumbled, and play-action is less convincing when the
+quarterback never turns his back. For a quarterback who never kept the ball, those costs bought nothing. The
+zone read changed the arithmetic: once the quarterback's read made a shotgun run plus-one, the costs were
+worth paying. Then the read-option wave and Chip
+Kelly's Eagles arrived, and shotgun runs jumped to `{python} f"{rate.loc[2013, 'run']:.0f}"`% in 2013. The
+spread run game, the zone read, the pistol and then the RPO, had crossed. By 2023 the shotgun accounted for
+`{python} f"{rate.loc[2023, 'run']:.0f}"`% of runs and `{python} f"{SG_ALL.loc[2023]:.0f}"`% of all plays.
+In 2025 both lines fell back (to `{python} f"{SG_ALL.loc[2025]:.0f}"`% of all plays), as NFL offenses went
+back under center to run and play-action, the latest counterpunch, told in [The Modern Era](11-05-the-modern-era.qmd).
+Two cautions: the play-by-play's `shotgun` flag comes from the official gamebook descriptions, which
+probably recorded it less consistently in the early seasons, and it can't tell a spread-option shotgun run
+from a plain shotgun handoff.[^data]
+
+The borrowing hasn't stopped. Pre-snap motion, the Wing-T's oldest tool, was on 63.9% of NFL plays in 2025
+by PFF's count, up from 37.6% in 2014,[^motion] and [The Modern Era](11-05-the-modern-era.qmd) follows what
+is crossing now.
+
+::: {.callout-note title="Film room: Washington at New Orleans, September 9, 2012"}
+Robert Griffin III's first NFL game, a 40–32 win over the Saints, is this chapter's opening scene played for
+real. Washington's attack "borrowed liberally from concepts Griffin used at Baylor," NFL.com reported that
+week, and Mike Shanahan described how it worked: "we had running plays called and all of a sudden they gave
+us certain looks to take the running game away, and we threw a couple of bubbles early."[^was2012]
+
+**What to notice:** take one of those snaps apart and every piece has a college birthplace. The quarterback
+four yards deep with the back behind him is Ault's pistol (Nevada, 2005); the unblocked backside end he reads
+is Rodriguez's zone read (Glenville State, 1991); the bubble attached to it is West Virginia's third option;
+and putting run and throw on one call is Baylor's packaged play. Then notice what Sunday changed: the bubble
+comes out on the quarterback's first look, before any lineman can drift a yard downfield. The run side of
+that offense is in [Option Football](../03-the-run-game/03-04-option-football.qmd) and the packaged plays in
+[Run-Pass Options](../04-the-passing-game/04-06-rpos.qmd).
+:::
+
+## Saturday versus Sunday: the rules that shape each game
+
+You can't watch a college game well without the rulebook differences, because many of the strategies in
+this chapter exist *because* of them. Here they are side by side, current for the 2026 seasons. (The full
+reference version lives in [Appendix E](../../appendices/appendix-e-rules-timeline-trees.qmd).)
+
+| Rule | NFL (2026) | College (2026) | What it changes on the field |
+|:---|:---|:---|:---|
+| Hash marks | 70 ft 9 in from each sideline; 18 ft 6 in apart | 60 ft from each sideline; 40 ft apart | College has a true wide side and short side on most snaps; formations and play calls are built around it |
+| Catch at the sideline | Two feet (or another body part) in bounds | One foot (or any body part) in bounds | Sideline throws are easier to complete in college |
+| Ineligible linemen downfield on a pass | No more than 1 yard, on any forward pass | No more than 3 yards, and only on passes that cross the neutral zone | College RPOs can run-block longer and throw deeper (Drill 3) |
+| Defensive pass interference | Spot foul, automatic first down | 15 yards from the previous spot (or the spot, if shorter), automatic first down | A deep NFL throw into tight coverage can "win" 40 yards on a flag; in college the flag is capped |
+| Offensive pass interference | 10 yards | 10 yards (15 until 2025) | Cut for 2026, matching the NFL |
+| Clock after a first down | Keeps running | Stops only in the last two minutes of each half (stopped all game until 2023) | Pre-2023 college games had many more snaps; tempo offenses profited |
+| Two-minute warning | Yes | Yes, since 2024 (the "two-minute timeout") | Late-half clock strategy now looks similar |
+| Ball carrier down | When touched by an opponent while on the ground | As soon as a knee or other body part touches the ground, touched or not | No "get up and keep running" in college |
+| Overtime | One 10-minute period in the regular season (15 in the playoffs); both teams get the ball; then sudden death | Alternating possessions from the 25; a two-point try is required after a touchdown from the second overtime; alternating two-point plays from the third | College overtime is a series of short-field possessions; strategy becomes two-point math |
+| Targeting / hits to the head | 15 yards; ejection only for flagrant hits (use-of-helmet rule since 2018) | 15 yards and automatic ejection; for 2026, a first offense no longer carries a suspension into the next game | College defenders must change their tackling target or lose a starter |
+| Kickoffs | The "dynamic kickoff" (since 2024), built to be returned | Traditional kickoff; a fair catch inside the 25 is a touchback at the 25 | Many college kickoffs end in a fair catch or a touchback |
+| Fair-catch kick | Allowed for decades (rarely used) | New for 2026 | A free 3-point try after a fair catch near midfield, now in both games |
+| Motion | One player, not moving forward at the snap | The same | Differences you see in motion are usage, not law |
+| Helmet communication | Quarterback and one defender (green dot) since 1994 and 2008 | One player per side (FBS), since 2024 | College offenses used sideline signals and picture boards for decades, which is part of why tempo grew there |
+
+: The college and NFL rules that most change strategy, as of the 2026 seasons. Sources in the notes below the table's discussion. {#tbl-rules}
+
+Most rows explain themselves; four deserve a sentence on *why*.
+
+**The hash marks** are the one you can see from your couch. Offenses put their strength into the wide field,
+defenses set their coverage by field and boundary rather than by formation (hence split-field quarters,
+06-06), and college kickers sometimes waste a down centering the ball before a field goal.[^hashrule]
+
+**The three-yard rule, the one-foot catch and the capped DPI** all favour offenses that throw in rhythm off
+the run and to the sideline; Drill 3 below puts the first two on one play.[^ncaarules] The NFL's spot-foul DPI
+pushes the other way, making a deep throw into tight coverage a reasonable gamble
+([Contact Rules and Penalties](../09-special-teams-and-the-rules-that-shape-strategy/09-03-contact-rules-and-penalties.qmd)
+measures it).
+
+**The clock and the headsets** are where college has moved toward the NFL. The 2023 clock change took away
+roughly seven or eight snaps a game, and the two-minute timeout followed for 2024;[^clock] helmet radios
+arrived in 2024 too, one player per side, cut off at 15 seconds as in the NFL.[^helmet] Before that, an
+offense that already signalled every play from the sideline lost nothing by going fast, one more reason
+tempo grew up on Saturday.
+
+**Overtime, targeting and kickoffs** change the late game. College overtime since 2021 is a series of
+possessions from the 25 that turns into alternating two-point plays from the third overtime[^ot] (the NFL's
+version is in [Clock and Game Management](../10-situational-football/10-04-clock-and-game-management.qmd)). A
+targeting foul ejects the player; for 2026, in a one-year trial, a first foul no longer carries into the next
+game.[^targeting] And while the NFL rebuilt its kickoff in 2024 to bring the return back
+([Kickoffs and Returns](../09-special-teams-and-the-rules-that-shape-strategy/09-02-kickoffs-and-returns.qmd)),
+college has let a fair catch inside the 25 come out to the 25 since 2018,[^kickoff] and for 2026 adopted the
+[fair-catch kick](../../appendices/glossary.qmd#gl-fair-catch-kick), the old NFL rule that allows a free field
+goal try from the spot of a fair catch.[^fck]
+
+::: {.callout-note title="Madden vs. real life"}
+In a video game, every college team has roughly the same playbook menus. Real college football is closer to a
+hundred different sports: on one Saturday a service academy runs the flexbone triple option, an Air Raid team
+throws 60 times from five-receiver sets, and an SEC power lines up under center with two tight ends. NFL teams,
+drawing from one talent pool under one set of rules, are far more alike. That variety is the laboratory, and
+it makes a college game the best place to *see* a concept in its purest form.
+:::
+
+::: {.callout-tip title="Watch for it"}
+**Saturday versus Sunday.** Watch one college game and one NFL game on the same weekend, and list three
+structural differences you can see. Some places to look:
+
+*Before the snap*
+
+- **Where is the ball?** In college it usually sits on a hash 20 yards from one sideline. Do the receivers go
+  to the wide field or the short side? Does the defense line up by field and boundary, or by formation?
+- **How fast is the next snap?** Time a few series from whistle to snap. College tempo teams snap in 10 to 15
+  seconds; how many NFL teams do?
+- **Who is in the backfield?** Count the snaps under center, and the option looks (a back beside the
+  quarterback, an unblocked end).
+- **How many safeties are deep?** Look for three safeties back, and for three-down-lineman fronts with
+  stacked linebackers.
+
+*After the snap*
+
+- **On a run with a throw attached**, watch the linemen: in college they may be two or three yards downfield
+  when the ball is thrown; in the NFL the throw comes out before they can get there.
+- **On a sideline catch**, count the feet. One in college, two in the NFL.
+- **On a long pass-interference flag**, where does the ball go? Fifteen yards in college; the spot of the foul
+  in the NFL.
+- **On a runner who slips**, watch the whistle: a college ball carrier is down the moment a knee touches,
+  touched or not, so there is no getting up to keep running.
+- **On a targeting flag**, check who leaves: in college the player is ejected, and a defense without its best
+  safety for the rest of the game plays differently.
+- **In college overtime**, from the second overtime on, watch the two-point plays: the playbook shrinks to
+  each offense's best short-yardage call.
+
+For your prediction log ([01-06](../01-foundations/01-06-how-to-watch-a-broadcast.qmd)): on every college
+option or RPO look, write who the quarterback is reading, and how many defenders are in the box against how
+many blockers.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play"}
+**Drill 1: count the Saturday box.** First-and-10 at midfield in a Big 12 game. The ball is on the left hash.
+The offense lines up in a four-receiver spread with the running back beside the quarterback. The defense
+shows three down linemen, a Mike linebacker over the ball, the Will cheated in toward the box on the short
+side, the Sam out over the slot on the wide side, and three safeties deep. Count the box against the
+blockers. Is the offense more likely to run or pass, what kind of play, and what is the defense counting on?
+
+```{python}
+#| label: fig-drill-1
+#| fig-cap: "Drill 1: a four-receiver spread (10 personnel) against three-high, on a college field with the ball on the left hash (hash marks drawn at college width). The shaded strip is the box."
+off = spread10()
+ball_y = FIELD_WIDTH - 20.0          # the offense's left hash on a college field
+OFF_W = {"X": -13.0, "H": -7.4, "Z": 20.0}
+off = [q.moved(w=OFF_W[q.key]) if q.key in OFF_W else q for q in off]
+DEF_AT = {"LCB": (7.0, -13.0), "RCB": (7.0, 20.0), "WILL": (4.5, -3.6), "SAM": (4.5, 8.2),
+          "LS": (8.0, -6.5), "FS": (13.0, 2.0), "RS": (11.6, 11.0)}   # shaded to the field, by field and boundary
+dfn = [q.moved(d=DEF_AT[q.key][0], w=DEF_AT[q.key][1]) if q.key in DEF_AT else q for q in three_high_def()]
+check_legal(off)
+with hashes_at(20.0):
+    p = Play(off, dfn, los=60, ball_y=ball_y, to_go=10, title="Drill 1: 1st and 10, ball on the left hash")
+    f = p.draw(lateral="full", window=(-7.0, 15.0), width_in=6.0)
+clean(f.ax, numbers=True, hashes=False)
+box_shade(f, p, -0.2, 7.0, -4.4, 4.4)
+say(f, p, 12.0, -13.5, "short side:\n20 yards", fontsize=6.8)
+say(f, p, 12.0, 25.0, "wide side: 33 yards", fontsize=6.8)
+point_to(f, p, (-5.2, 17.6), (-3.0, 13.33), "college hash", fontsize=6.6, shrink=1)
+plt.show()
+```
+:::
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Count it: five in the box against five blockers plus a read.** Three linemen, the Mike and the cheated-in
+Will are in the box; the Sam is out over the wide-side slot. The offense has five linemen, and on a zone read
+the quarterback reads one box defender instead of blocking him, so five linemen take the other four with one
+to spare: **the offense is plus-one.** **Expect a run, most likely a read** (a zone read, or an RPO that
+reads the Will), because the defense has invited it.
+
+**What the defense is counting on** is the three safeties: on a run, one of them, usually the middle one,
+comes down after the snap to fill, so the box gains a defender by the time the back gets there
+(@fig-three-high). That's the bet of the three-high: give the offense a light box, take away everything deep,
+and tackle the run late. If the safety is a step slow, the run is a big gain; if he's on time, the offense
+has run into a six-man box it didn't see, and the plus-one is gone.
+
+**Bonus: why you knew it was college.** The ball is 20 yards from the left sideline, not 23.6: college hash
+marks. The offense put a receiver out on the numbers of a 33-yard wide side; the defense set its
+safeties by field and boundary (the short-side safety tighter, the middle one shaded to the wide side, the
+wide-side safety wider); and the three-safety shell is a college look.
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 2: the wishbone count.** A wishbone team runs the triple option to its split-end side (the
+offense's left). On the first four snaps, the defense's left end (the 5-technique) has squeezed down hard on
+the fullback every time, and the outside linebacker standing on the line outside him has run straight at
+the pitch man every time. Before the next snap, name #1, #2, #3 and #4, and predict who will carry the ball.
+
+```{python}
+#| label: fig-drill-2
+#| fig-cap: "Drill 2: wishbone, triple option to the left. The two defenders who have been doing the same thing every snap are ringed; the prompt says what each has done."
+p = Play(wishbone_off(), wishbone_def(), los=35, to_go=None, title="Drill 2: who carries it?")
+p.highlight("BE", color=style.DEFENSE); p.highlight("WILL", color=style.DEFENSE)
+f = draw(p, lateral=(-19.0, 11.5), window=(-6.6, 13.6), width_in=4.6)
+plt.show()
+```
+:::
+
+::: {.callout-tip title="Answer" collapse="true"}
+**#1 is the 5-technique** (the dive key), **#2 the Will** standing on the line outside him (the pitch key),
+**#3 the strong safety** in the alley (the lead halfback's block), and **#4 the cornerback** (the split end's
+block). Use the quarterback's two reads in order:
+
+1. **#1 squeezes the dive**, so the quarterback pulls the ball. The fullback carries out his fake and takes
+   #1 with him.
+2. **#2 widens to take the pitch man**, so the quarterback keeps and turns up inside him.
+
+**The quarterback carries it**, up the seam between #1 (who is tackling a fullback with no ball) and #2 (who
+is covering a halfback with no ball), with #3 and #4 blocked outside. A defense that does the same thing every
+snap has stopped playing option defense, which is why wishbone teams ran the triple until a defender changed
+his mind, and why defensive coaches, as [03-04](../03-the-run-game/03-04-option-football.qmd#how-defenses-answer-the-option)
+showed, learned to mix up who took whom.
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 3: one play, two rulebooks.** An offense runs an RPO: the line run-blocks inside zone, the
+outside receiver on the right runs a go route to clear the cornerback, and the quarterback pulls the ball and
+throws to the slot receiver on a seam-corner (a seam route that bends toward the sideline). He catches it 17
+yards downfield, right at the sideline, with one foot down before stepping out. At the moment of the throw,
+the right guard, who came off a double team toward a linebacker, is 2½ yards past the line of scrimmage,
+still not touching anyone. What is the ruling in a college game? In an NFL game?
+
+```{python}
+#| label: fig-drill-3
+#| fig-cap: "Drill 3: the RPO at the moment of the throw (the defensive linemen are drawn engaged at the line). The dashed lines mark 1 and 3 yards past the line of scrimmage; the right guard's block ends between them. F catches the seam-corner at the right sideline."
+dfn = [q.moved(d=0.3) if q.key in ("BE", "BT", "PT", "PE") else q.moved(w=17.4) if q.key == "RCB" else q
+       for q in zrb_defense()]
+p = Play(spread10(), dfn, los=35, to_go=None, title="Drill 3: legal on Saturday? On Sunday?")
+go_to(p, "LT", (0.45, -2.75), via=[(-0.3, -3.0)])
+go_to(p, "LG", (0.5, -1.2), via=[(-0.3, -1.4)])
+go_to(p, "C", (0.5, 0.45))
+go_to(p, "RG", (2.5, 1.6), via=[(-0.3, 1.9), (0.7, 2.0)])
+go_to(p, "RT", (0.55, 3.75))
+p.route("F", [(0, 0), (11.0, -0.4), (18.5, 17.0)])
+p.route("Z", [(0, 0), (19.0, 0.4)])
+go_to(p, "RCB", (17.5, 17.4), "path")
+go_to(p, "RB", (-3.6, 1.4), "path", via=[(-4.4, 0.0)])
+f = draw(p, lateral=(-11.0, 30.5), window=(-6.8, 21.4), width_in=6.2)
+pitch_arc(f, p, (-4.4, 0.6), (16.6, 25.6), rad=0.07)     # the throw, bowed away from the line
+for d, txt in ((1.0, "NFL limit: 1 yard"), (3.0, "college limit: 3 yards")):
+    (x0, y0), (x1, y1) = _P(f, p, d, -11.0), _P(f, p, d, 26.65)
+    f.ax.plot([x0, x1], [y0, y1], color=style.INK_2, lw=0.9, ls=(0, (4, 2)), zorder=2)
+    say(f, p, d + (0.0 if d > 2 else -0.15), 21.0, txt, fontsize=6.6, color=style.INK)
+box_shade(f, p, 1.0, 3.0, -11.0, 26.65, color=style.OFFENSE, alpha=0.05)
+point_to(f, p, (8.0, -1.4), (2.5, 1.6), "RG: 2½ yards\ndownfield", fontsize=6.6, shrink=2)
+point_to(f, p, (11.4, 21.0), (17.0, 26.0), "caught with one\nfoot in bounds", fontsize=6.6, shrink=4)
+say(f, p, 7.0, 28.6, "side-\nline", fontsize=6.4, color=style.INK_2)
+plt.show()
+```
+:::
+
+::: {.callout-tip title="Answer" collapse="true"}
+**College: a legal 17-yard completion.** The guard is inside the three-yard limit, and a pass that crosses the
+neutral zone is exactly what the college rule allows him to be up to three yards beyond. One foot in bounds
+is a catch in college.
+
+**NFL: no gain.** One foot in bounds isn't a catch in the NFL, so the pass is incomplete. There is also a
+flag: the guard is more than a yard downfield when a forward pass is thrown, which is **illegal man
+downfield** ([04-06](../04-the-passing-game/04-06-rpos.qmd#the-one-yard-rule-why-nfl-rpos-look-different)).
+The defense chooses: five yards and replay the down, or decline and take the incompletion. Note the planted
+detail: had the guard still been blocking the man he engaged at the line, the NFL would have let him be
+carried past a yard, but he had left that block to climb and wasn't touching anyone.
+
+That is why NFL RPOs look different, and it closes this chapter's opening scene: the Sunday version of the
+college play was a little quicker, and its line looked a little different, because the throw has to come out
+in about a second, before any lineman can drift a yard. The deep seam a college team runs off the same action
+shows up on Sunday only as play-action, with the linemen pass-blocking.
+:::
+
+## Takeaways
+
+- College football is the sport's laboratory because of its environment: **huge talent gaps** across hundreds
+  of programs, **wide hash marks**, rules like the **three-yard** ineligible limit that tolerate the run-pass
+  blur, and **roster churn and tempo** that reward small, repeatable systems.
+- The offensive lineages share one aim, changing the arithmetic for the team with lesser players: the
+  **option** (split-T, veer, wishbone, flexbone, spread option) reads a defender instead of blocking him; the
+  **Wing-T** makes him guess; **BYU and the Air Raid** spread the ball to five receivers and repeat a few plays
+  endlessly; the **spread offense** empties the box so the run game has numbers.
+- The **spread option** is the triple option rebuilt from the shotgun, with the pitch replaced by a throw;
+  add the three-yard rule and tempo and you have the modern college RPO offense.
+- Defenses answered with **speed and disguise** (the 3-3-5 stack), **two-high match coverage** (quarters, which
+  made a round trip back to the NFL), **fronts that wall off inside zone** (tite and mint) and **three-high
+  safeties** that concede the light-box run and fill it late.
+- The NFL is a filter: ideas that hit the quarterback, rely on a talent gap or need college rules arrive
+  smaller or not at all. **Players carry ideas across better than coaches**, which is why the big crossings
+  (2012's read option, 2017's RPOs, the Air Raid's concepts) came with young quarterbacks.
+
+## Connections
+
+**Builds on:** [1978 and the Passing Revolution](11-02-the-1978-liberation.qmd) (the NFL side of the same
+decades), [Option Football](../03-the-run-game/03-04-option-football.qmd) (the reads behind the option
+lineage), [Run-Pass Options](../04-the-passing-game/04-06-rpos.qmd) (the RPO and the one-yard rule) and
+[Quarters and Match Coverage](../06-pass-coverage/06-05-quarters-and-match.qmd) (the defensive answer that
+made the round trip). The formations are in [Classic Formations](../02-personnel-and-formations/02-03-classic-formations.qmd)
+and [Spread and Modern Formations](../02-personnel-and-formations/02-04-spread-and-modern-formations.qmd), and
+the Air Raid's language and concepts in [Offensive Systems](../04-the-passing-game/04-08-offensive-systems-and-languages.qmd)
+and [Dropback Concepts](../04-the-passing-game/04-04-dropback-concepts.qmd).
+
+**Sets up:**
+
+- [Dynasties and Counterpunches (2000–2016)](11-04-dynasties-and-counterpunches.qmd): the 2012 read-option
+  wave and why it receded, and Chip Kelly's Eagles.
+- [The Modern Era](11-05-the-modern-era.qmd): two-high defenses, the under-center comeback, and the NFL's
+  latest borrowing from Saturday.
+- Case studies: [the Ravens' option run game](../12-case-studies/12-05-ravens-lamar-run-game.qmd) (the spread
+  option's fullest NFL expression), [Andy Reid's Chiefs](../12-case-studies/12-04-reid-chiefs.qmd) (RPOs and
+  an Air Raid quarterback), [the Eagles](../12-case-studies/12-06-eagles-trenches-and-tush-push.qmd) (RPOs and
+  the quarterback run game) and [Fangio's two-high revolution](../12-case-studies/12-08-two-high-to-macdonald.qmd).
+- [Appendix E](../../appendices/appendix-e-rules-timeline-trees.qmd): the rules table and the coaching trees.
+
+**If you want to go deeper:** Chris B. Brown's *The Art of Smart Football* and *The Essential Smart Football*
+(the zone read, the Air Raid and the 3-3-5's birth, among much else); Tim Layden's *Blood, Sweat and Chalk*,
+whose chapters on the wishbone, the veer, BYU, the zone read and the spread are told largely in the coaches'
+own words; S. C. Gwynne's *The Perfect Pass*, on Mumme, Leach and the Air Raid; and Cody Alexander's
+*MatchQuarters* writing on modern college defense, including Iowa State's three-high.
+
+[^fbs]: The FBS had more than 130 member programs in 2025, with the Football Championship Subdivision (FCS),
+    Division II, Division III and NAIA below it: "NCAA Division I Football Bowl Subdivision," Wikipedia:
+    <https://en.wikipedia.org/wiki/NCAA_Division_I_Football_Bowl_Subdivision>.
+
+[^hash]: NFL Football Operations, rulebook field diagram ("The location of the inbounds hash marks is 70' 9"
+    for professional football, 60' for college football"): <https://operations.nfl.com/the-rules/nfl-rulebook/>.
+    College hashes have been 40 feet apart since 1993; before that they matched the high-school standard, "at
+    one-third of the width of the field (53 1/3 feet)," which puts each hash 53 feet 4 inches (17.8 yards) from
+    its sideline: "Hash mark (sports)," Wikipedia: <https://en.wikipedia.org/wiki/Hash_marks>. The modern
+    figures are also cited in 01-01.
+
+[^ineligible]: NCAA Football Rules (2026), Rule 7-3-10 (no originally ineligible receiver more than three
+    yards beyond the neutral zone until a legal forward pass that crosses the neutral zone is thrown), as
+    reproduced by the San Diego County Football Officials Association:
+    <https://www.sdcfoa.org/ncaa/rule-7-snapping-and-passing-the-ball/college-7-3-10>; NFL, *2026 Official
+    Playing Rules*, Rule 8, Section 3, Article 1 ("Ineligible Player Downfield": more than one yard beyond the
+    line before a forward pass is thrown): <https://operations.nfl.com/rules-officiating/2026-nfl-rulebook>. 04-06 quotes both
+    rules in full. A 2015 proposal to cut the college limit to one yard was tabled: SI Wire, "NCAA tables
+    proposed ineligible downfield rule" (Mar. 6, 2015): <https://www.si.com/college/2015/03/06/ncaa-ineligible-downfield-rule>.
+
+[^hours]: NCAA Division I Bylaw 17.1.7.1 limits countable athletically related activities to 20 hours a week
+    and four a day during the playing season, as summarized by Arizona State's compliance office, "Practice
+    Hour Rules": <https://iamasundevil.asu.edu/compliance/coaches-staff/practice-hour-rules>. No repeal of the
+    limits was found in the NCAA's 2025–2026 governance news.
+
+[^houston]: "1968 Houston Cougars football team," Wikipedia:
+    <https://en.wikipedia.org/wiki/1968_Houston_Cougars_football_team> (Houston 100, Tulsa 6, November 23,
+    1968, at the Astrodome). On Yeoman and the veer's invention, see the sources in 03-04.
+
+[^bellard]: "Wishbone formation," Wikipedia: <https://en.wikipedia.org/wiki/Wishbone_formation> (Emory
+    Bellard, 1968; Texas's 30 straight wins; Oklahoma and Alabama adopt it); Texas Longhorns lettermen's
+    history, "1968–1970: 30 straight wins and two national championships": <https://www.texaslsn.org/football-dkr-1968-1970>.
+    Also cited in 02-03.
+
+[^ou71]: Phi Delta Theta museum, "Jack Mildren" (the 1971 Sooners went 11–1, "with the wishbone averaging a
+    remarkable 472.4 yards rushing per game"): <https://museum.phideltatheta.org/famous/jack-mildren/>;
+    "Jack Mildren," Wikipedia: <https://en.wikipedia.org/wiki/Jack_Mildren>. On 472.4 as the standing NCAA
+    team record for rushing yards per game: NFL.com, "Ten unbreakable college football records":
+    <https://www.nfl.com/news/ten-unbreakable-college-football-records-0ap2000000356173>.
+
+[^bonedecline]: Oklahoma's 1985 national champions under Barry Switzer were the last wishbone team to win the
+    title: "Wishbone formation," Wikipedia (as above); "1985 Oklahoma Sooners football team," Wikipedia:
+    <https://en.wikipedia.org/wiki/1985_Oklahoma_Sooners_football_team> (offensive scheme: wishbone). No later
+    national champion ran the wishbone as its base offense (1986–2025 champions checked against "College
+    football national championships in NCAA Division I FBS," Wikipedia:
+    <https://en.wikipedia.org/wiki/College_football_national_championships_in_NCAA_Division_I_FBS>).
+
+[^flexbone]: "Flexbone formation," Wikipedia: <https://en.wikipedia.org/wiki/Flexbone_formation> (Arkansas
+    under Hatfield in the late 1980s; Georgia Southern's version); "Fisher DeBerry," Wikipedia:
+    <https://en.wikipedia.org/wiki/Fisher_DeBerry> (Air Force assistant under Hatfield 1980–1983, head coach
+    1984–2006); "Paul Johnson (American football coach, born 1957)," Wikipedia:
+    <https://en.wikipedia.org/wiki/Paul_Johnson_(American_football_coach,_born_1957)> (Georgia Southern
+    offensive coordinator 1985–1986); Sports Info Solutions, "Army, Navy, and Their Continued Adaptations of
+    the Flexbone" (Dec. 9, 2022), which says the offense "began with Paul Johnson":
+    <https://www.sportsinfosolutions.com/2022/12/09/army-navy-and-their-continued-adaptations-of-the-flexbone/>;
+    Chris B. Brown, "Paul Johnson describes his flexbone offense," Smart Football (Dec. 31, 2008) ("the run &
+    shoot doubleslot formation with some 'shoot passing concepts, and lots of option"):
+    <http://smartfootball.blogspot.com/2008/12/paul-johnson-describes-his-flexbone.html>. The DeBerry remark
+    behind the name comes from coaching-clinic lore (for example "Flexbone history," Flexbone Offense blog,
+    May 2013: <http://flexboneoffense.blogspot.com/2013/05/flexbone-history.html>) and is not verified word
+    for word.
+
+[^gotc]: "1971 Nebraska vs. Oklahoma football game," Wikipedia:
+    <https://en.wikipedia.org/wiki/1971_Nebraska_vs._Oklahoma_football_game> (Nov. 25, 1971, Owen Field,
+    Norman; No. 1 Nebraska 35, No. 2 Oklahoma 31; Fairbanks head coach, Switzer offensive coordinator); Last Word on Sports, "The Game
+    of the Century" (Sept. 14, 2021): <https://lastwordonsports.com/collegefootball/2021/09/14/the-game-of-the-century/>.
+
+[^wingt]: "David M. Nelson," Wikipedia: <https://en.wikipedia.org/wiki/David_M._Nelson> (Maine 1949–1950, where
+    he began developing the Wing-T, and Delaware 1951–1965); "Tubby Raymond," Wikipedia:
+    <https://en.wikipedia.org/wiki/Tubby_Raymond> (Delaware head coach 1966–2001); Harold R. Raymond, *The
+    Delaware Wing-T: An Order of Football* (Prentice Hall, 1986).
+
+[^byu]: "LaVell Edwards," Wikipedia: <https://en.wikipedia.org/wiki/LaVell_Edwards> (BYU head coach 1972–2000;
+    1984 national championship); "1984 BYU Cougars football team," Wikipedia:
+    <https://en.wikipedia.org/wiki/1984_BYU_Cougars_football_team>; "Ty Detmer," Wikipedia:
+    <https://en.wikipedia.org/wiki/Ty_Detmer> (1990 Heisman Trophy). On BYU's passing game as an equalizer, see
+    Tim Layden, *Blood, Sweat and Chalk* (2010), the BYU chapter.
+
+[^mouse]: "Mouse Davis," Wikipedia: <https://en.wikipedia.org/wiki/Mouse_Davis> (15 high-school seasons in
+    Oregon; Portland State head coach 1975–1980; June Jones's 1975 Division II passing record and Neil
+    Lomax's NCAA records; Houston Gamblers offensive coordinator 1984; Detroit Lions offensive coordinator
+    1988–1990; his debt to Ellison's *Run & Shoot Football: Offense of the Future*); "Run and shoot," Wikipedia:
+    <https://en.wikipedia.org/wiki/Run_and_shoot>.
+
+[^byupeople]: "Mike Holmgren," Wikipedia: <https://en.wikipedia.org/wiki/Mike_Holmgren> (BYU quarterbacks
+    coach 1982–1985, then the 49ers from 1986); "Andy Reid," Wikipedia: <https://en.wikipedia.org/wiki/Andy_Reid>
+    (BYU offensive tackle, 1978–1980); "Norm Chow," Wikipedia: <https://en.wikipedia.org/wiki/Norm_Chow> (BYU
+    1973–1999, the principal play-caller from 1982; USC offensive coordinator 2001–2004 and the 2002 Broyles
+    Award; Titans offensive coordinator 2005–2007).
+
+[^airraid]: "Air raid offense," Wikipedia: <https://en.wikipedia.org/wiki/Air_raid_offense> (Iowa Wesleyan,
+    1989; Valdosta State, 1992–1996; Kentucky, 1997–1998; Couch); on the debt to BYU, S. C. Gwynne, *The Perfect
+    Pass* (Scribner, 2016); "Mike Leach (American football coach)," Wikipedia:
+    <https://en.wikipedia.org/wiki/Mike_Leach_(American_football_coach)>; ESPN, "Mike Leach, the Air Raid
+    offense and the return to Kentucky": <https://www.espn.com/college-football/story/_/id/30053200/mike-leach-air-raid-offense-return-kentucky>
+    (a parent's World War II siren at Valdosta State); Leach's own telling puts the siren at Iowa Wesleyan.
+    Leach's law degree (Pepperdine, 1986) is in his Wikipedia article. Couch as a 1998 consensus All-American:
+    College Football Hall of Fame, "Tim Couch": <https://cfbhall.com/inductees/tim-couch-2024>.
+
+[^leachtree]: *Sports Illustrated*, "From His Air Raid Offense to His Eccentric Personality, Mike Leach Was
+    One-of-a-Kind" (Dec. 13, 2022): <https://www.si.com/college/2022/12/13/mike-leach-death-legacy-air-raid-college-football>.
+
+[^riley]: "Lincoln Riley," Wikipedia: <https://en.wikipedia.org/wiki/Lincoln_Riley> (Mayfield, 2017 Heisman,
+    first pick in 2018; Murray, 2018 Heisman, first pick in 2019; Williams, 2022 Heisman at USC, first pick in
+    2024).
+
+[^kingsbury]: "What the Cardinals and the NFL need to know about Kliff Kingsbury," ESPN Cardinals blog
+    (Jan. 9, 2019), on his Air Raid background under Leach and his hiring from the college ranks:
+    <https://www.espn.com/blog/arizona-cardinals/post/_/id/31320/what-the-cardinals-and-the-nfl-need-to-know-about-kliff-kingsbury>.
+
+[^tt2008]: "2008 Texas vs. Texas Tech football game," Wikipedia:
+    <https://en.wikipedia.org/wiki/2008_Texas_vs._Texas_Tech_football_game> (Nov. 1, 2008, Lubbock; Texas
+    No. 1 in every poll, Texas Tech No. 6 AP and No. 7 BCS; touchdown with one second left).
+
+[^tiller]: Barry Popik, "Basketball on Grass," which quotes a 1997 preview in which "new Purdue coach Joe
+    Tiller calls it 'basketball on grass'": <https://barrypopik.com/blog/basketball_on_grass>. The phrase
+    itself is much older.
+
+[^rr]: "Zone read still giving defenses fits," Associated Press (Sept. 25, 2014), via *Sports Illustrated*:
+    <https://www.si.com/college/2014/09/25/ap-fbc-zone-read>. Also cited in 03-04.
+
+[^meyer]: "Urban Meyer," Wikipedia: <https://en.wikipedia.org/wiki/Urban_Meyer> (Bowling Green 2001–2002, Utah
+    2003–2004, Florida 2005–2010; Utah's 12–0 2004 season and Fiesta Bowl; Florida's 2006 and 2008 titles);
+    "Tim Tebow," Wikipedia: <https://en.wikipedia.org/wiki/Tim_Tebow> (2007 Heisman); "Alex Smith," Wikipedia:
+    <https://en.wikipedia.org/wiki/Alex_Smith> (first pick, 2005 draft). On Rodriguez's career, "Rich
+    Rodriguez," Wikipedia: <https://en.wikipedia.org/wiki/Rich_Rodriguez>.
+
+[^sugar]: "2006 Sugar Bowl," Wikipedia: <https://en.wikipedia.org/wiki/2006_Sugar_Bowl> (Jan. 2, 2006,
+    Georgia Dome, Atlanta; West Virginia 38, Georgia 35; Slaton 204 rushing yards, a Sugar Bowl record).
+
+[^ault]: "Chris Ault," Wikipedia: <https://en.wikipedia.org/wiki/Chris_Ault> (the pistol, 2005); Nevada Sports
+    Net, "This week in Pack history: Nevada becomes only NCAA team with three 1,000-yard rushers":
+    <https://nevadasportsnet.com/news/reporters/this-week-in-pack-history-nevada-becomes-only-ncaa-team-with-three-1000-yard-rushers>.
+
+[^kelly]: "Chip Kelly," Wikipedia: <https://en.wikipedia.org/wiki/Chip_Kelly> (Oregon offensive coordinator
+    2007–2008, head coach 2009–2012, 46–7). His NFL tenure is in 08-04.
+
+[^malzahn]: Dennis Dodd, "What's next for Gus Malzahn and what's ahead for Auburn after Tigers fire embattled
+    coach," CBS Sports (Dec. 13, 2020): <https://www.cbssports.com/college-football/news/whats-next-for-gus-malzahn-and-whats-ahead-for-auburn-after-tigers-fire-embattled-coach>;
+    "Gus Malzahn," Wikipedia: <https://en.wikipedia.org/wiki/Gus_Malzahn> (Auburn offensive coordinator
+    2009–2010, head coach 2013–2020); on the Delaware Wing-T as his model, see the sources in 03-05.
+
+[^saban2012]: CBS Sports, "Nick Saban no fan of no-huddle offenses, asks 'Is this what we want football to
+    be?'" (Oct. 2012): <https://www.cbssports.com/college-football/news/nick-saban-no-fan-of-no-huddle-offenses-asks-is-this-what-we-want-football-to-be>.
+
+[^tensec]: ESPN, "NCAA committee tables planned vote on 10-second rule proposal" (Mar. 5, 2014):
+    <https://www.espn.com/college-football/story/_/id/10556971/ncaa-committee-tables-planned-vote-10-second-rule-proposal>.
+
+[^briles]: "Art Briles," Wikipedia: <https://en.wikipedia.org/wiki/Art_Briles>; "Robert Griffin III,"
+    Wikipedia: <https://en.wikipedia.org/wiki/Robert_Griffin_III> (2011 Heisman). On Baylor's wide splits and
+    packaged plays, and Mike Shanahan borrowing them for Griffin in 2012, see the sources in 04-06. On the
+    splits ("while most teams put their wide receivers on the numbers, the Bears line theirs up well outside,
+    sometimes directly on the sideline"): Chris B. Brown, "How Art Briles's potent offense made Baylor a
+    national title contender," Grantland (Oct. 22, 2013):
+    <https://grantland.com/features/chris-brown-how-art-briles-potent-offense-made-baylor-national-title-contender/>.
+
+[^stack]: Chris B. Brown, "The Birth of the 3-3-5 Defense," Grantland (June 6, 2012):
+    <https://grantland.com/features/an-excerpt-essential-smart-football-birth-3-3-5-defense/>. Also cited in
+    05-03.
+
+[^casteel]: Casteel joined Rodriguez's West Virginia staff in 2001, was co-coordinator in 2002 and sole
+    defensive coordinator from 2003 through 2011: *Shepherdstown Chronicle*, "Casteel returns to WVU football
+    staff" (Aug. 14, 2020): <https://www.shepherdstownchronicle.com/sports/2020/08/14/casteel-returns-to-wvu-football-staff/>;
+    CBS Sports, "Why defenses are trying to Stack up with spread offenses dominating throughout college
+    football": <https://www.cbssports.com/college-football/news/why-defenses-are-trying-to-stack-up-with-spread-offenses-dominating-throughout-college-football>.
+
+[^ngs]: NFL.com, "The coverage that turned the Seahawks into Super Bowl winners and is taking the NFL by
+    storm" (Next Gen Stats): <https://www.nfl.com/news/the-coverage-that-turned-the-seahawks-into-super-bowl-winners-and-is-taking-the-nfl-by-storm>.
+    The sources for the Saban, Michigan State, Iowa and TCU history are in 06-05 and 06-06.
+
+[^georgia]: "2021 Georgia Bulldogs football team" and "2022 Georgia Bulldogs football team," Wikipedia:
+    <https://en.wikipedia.org/wiki/2021_Georgia_Bulldogs_football_team>,
+    <https://en.wikipedia.org/wiki/2022_Georgia_Bulldogs_football_team>. On the mint front, see the sources in
+    05-03.
+
+[^isu]: CBS Sports, "Iowa State at Oklahoma score: Cyclones shock No. 3 Sooners in major Power Five upset"
+    (Oct. 7, 2017): <https://www.cbssports.com/college-football/news/iowa-state-at-oklahoma-score-cyclones-shock-no-3-sooners-in-major-power-five-upset>;
+    on the switch after the Iowa loss and the bye week, and the 3-3-5's debut against Texas, "Jon Heacock,"
+    Wikipedia: <https://en.wikipedia.org/wiki/Jon_Heacock>, and The Outside Zone, "How does Matt Campbell's
+    defense keep working?": <https://theoutsidezone.substack.com/p/how-does-matt-campbells-defense-keep>;
+    on the 31-point spread and walk-on Kyle Kempt, The Ringer (Oct. 7, 2017):
+    <https://www.theringer.com/2017/10/07/college-football/iowa-state-cyclones-oklahoma-sooners-upset-week-six-mayfield-kempt-lazard>.
+
+[^isu2]: Lawrence Journal-World, "At Iowa State, KU will face defensive scheme that has caused past issues"
+    (Nov. 1, 2023), quoting Kansas offensive coordinator Andy Kotelnicki:
+    <https://www2.ljworld.com/sports/2023/nov/01/at-iowa-state-ku-will-face-defensive-scheme-that-has-caused-past-issues/>;
+    Cody Alexander, *MatchQuarters*, on Heacock's three-high run fits: <https://www.matchquarters.com/p/iowa-state-heacock-3-high-run-fits>.
+
+[^saban]: The Ringer, on Saban's evolution from the 2012 no-huddle complaint to a spread offense (Jan. 12, 2021):
+    <https://www.theringer.com/2021/1/12/22226338/alabama-national-championship-nick-saban-process-evolution>;
+    Alabama Athletics, "Football Announces Hiring of Lane Kiffin" (Jan. 10, 2014):
+    <https://rolltide.com/news/2014/1/10/Football_Announces_Hiring_of_Lane_Kiffin>; on the 2020 offense breaking
+    the school scoring record set in 2019, *Sports Illustrated* (BamaCentral), "Talk of the Tide: Looking Back on
+    Steve Sarkisian's Time With Alabama": <https://www.si.com/college/alabama/bamacentral/talk-of-the-tide-looking-back-on-steve-sarkisians-time-with-alabama>.
+
+[^coaches]: NFL regular-season head-coaching records, recomputed by this book from nflverse schedules
+    (`load_schedules`, home and away coach fields) and matching Pro Football Reference's coach pages
+    (<https://www.pro-football-reference.com/coaches/>): Spurrier 12–20 (2002–2003); Saban 15–17 (2005–2006);
+    Kelly 26–21 with the Eagles (2013–2015; released before the final game of 2015) and 2–14 with the 49ers
+    (2016); Meyer 2–11 (fired during the 2021 season); Rhule 11–27 (2020–2022, fired during the 2022 season).
+
+[^data]: This book's calculation from nflverse play-by-play (`load_pbp`), regular seasons 1999–2025, plays with
+    `play_type` "pass" or "run" and a down; scrambles counted as passes; `shotgun` is the play-by-play flag
+    (pistol snaps are included). It matches the shotgun shares in this book's fact sheet for 2016–2025. On
+    the Wildcat label: the Dolphins installed it in 2008 with quarterbacks coach David Lee, who had been on
+    Arkansas's staff for its 2007 "Wild Hog" package with Darren McFadden: Tim Graham, "Miami coaches had
+    Wildcat familiarity," ESPN AFC East blog: <https://www.espn.com/blog/afceast/post/_/id/396/miami-coaches-had-wildcat-familiarity>;
+    The Ringer, "The history of the Wildcat" (Aug. 6, 2018):
+    <https://www.theringer.com/2018/08/06/nfl/history-wildcat-miami-dolphins-ronnie-brown-chad-pennington-tony-sparano>.
+
+[^motion]: PFF (Daire Carragher, Feb. 23, 2026), "NFL pre-snap motion usage reaches new highs across the NFL"
+    (shift or motion before the snap: 37.6% in 2014, 63.9% in 2025):
+    <https://www.pff.com/news/nfl-pre-snap-motion-usage-reaches-new-highs-across-the-nfl>.
+
+[^was2012]: Gregg Rosenthal, "Mike Shanahan implements Baylor plays to help RG3," NFL.com (Sept. 2012),
+    quoting Shanahan after Griffin's debut: <https://www.nfl.com/news/mike-shanahan-implements-baylor-plays-to-help-rg3-0ap1000000061442>
+    (also cited in 04-06). The 40–32 result at New Orleans on Sept. 9, 2012 is from nflverse schedules
+    (`load_schedules`). The pistol in Washington's 2012 offense is sourced in 03-04.
+
+[^hashrule]: On centering the ball before college field goals, see 09-01; on field-and-boundary coverage, 06-06.
+
+[^ncaarules]: NCAA Football Rules (2026): Rule 7-3-10 (three yards; see the note above), Rule 2-4-3 (a catch
+    requires touching the ground in bounds "with any part of the body," so one foot is enough):
+    <https://www.sdcfoa.org/ncaa/rule-2-definitions/college-2-4-3>, and Rule 7-3-8 (pass interference:
+    defensive, a spot foul or 15 yards from the previous spot, with a first down; offensive, 10 yards from the
+    previous spot for 2026): <https://www.sdcfoa.org/ncaa/rule-7-snapping-and-passing-the-ball/college-7-3-8>. National Football Foundation summary of 2026 rule changes, reported in the *Altoona
+    Mirror* (Aug. 11, 2026): <https://www.altoonamirror.com/sports/psu/2026/08/cfb-nff-rules-targeting-penalty-changing/>;
+    the NFL's spot-foul rule and the college comparison are in 09-03.
+
+[^clock]: NCAA.com, "Fewer clock stoppages on first downs and more 2023 college football rule changes" (Aug. 25,
+    2023): <https://www.ncaa.com/news/football/article/2023-08-25/fewer-clock-stoppages-first-downs-and-more-2023-college-football-rule-changes>
+    (the clock stopped on first downs from 1968 to 2022; the change was expected to cut about seven plays a
+    game); ESPN, "NCAA approves rule change to run clock after first downs" (2023), in which the NCAA's
+    rules editor, Steve Shaw, estimated about eight:
+    <https://www.espn.com/college-football/story/_/id/36255797/ncaa-approves-rule-change-run-clock-first-downs>; CBS Sports, "NCAA approves 2-minute warning in college football games, helmet communications
+    beginning in 2024 season" (Apr. 2024): <https://www.cbssports.com/college-football/news/ncaa-approves-2-minute-warning-in-college-football-games-helmet-communications-beginning-in-2024-season>.
+
+[^ot]: NCAA.com, "New football overtime rules displayed this season" (Oct. 27, 2021):
+    <https://www.ncaa.com/news/football/article/2021-10-27/new-football-overtime-rules-displayed-season>. The NFL
+    regular-season overtime rule of 2025 is summarized in this book's fact sheet and in 10-04.
+
+[^targeting]: NCAA, "Changes to penalty structure for targeting in DI football approved" (Mar. 19, 2026):
+    <https://www.ncaa.org/media-center-changes-to-penalty-structure-for-targeting-in-di-football-approved/>;
+    the NFL's use-of-helmet rule (2018) is in 09-03.
+
+[^kickoff]: The NCAA's 2018 kickoff rule: a fair catch of a kickoff inside the receiving team's 25 is a
+    touchback at the 25. NCAA.com, "Alteration to football kickoff rule approved" (Apr. 13, 2018):
+    <https://www.ncaa.com/news/football/article/2018-04-13/alteration-football-kickoff-rule-approved>. The
+    NCAA's list of 2026 changes (next note) does not touch it.
+
+[^fck]: NCAA, "Changes to penalty structure for targeting in DI football approved" (Mar. 19, 2026), which also
+    lists the fair-catch kick and the 10-yard offensive pass interference penalty for 2026 (as above);
+    Bleacher Report, "NCAA committee proposes rule changes: targeting suspensions, OPI penalties, fair catch kick
+    and more": <https://www.bleacherreport.com/articles/25401192-ncaa-committee-proposes-rule-changes-targeting-suspensions-opi-penalties-fair-catch-kick-more>.
+    The approved rule: after a completed or awarded fair catch, a place kick with a holder (no tee) or a drop
+    kick from the spot of the catch, the defense at least 10 yards away, worth three points.
+
+[^helmet]: NCAA, "Technology rules approved in football" (Apr. 19, 2024):
+    <https://www.ncaa.org/media-center-technology-rules-approved-in-football/> (games involving FBS teams; one
+    player per team, identified by a green dot, cut off at 15 seconds on the play clock or the snap; the same
+    release approved the two-minute timeout). On the NFL's helmet
+    radio, see 01-04.
