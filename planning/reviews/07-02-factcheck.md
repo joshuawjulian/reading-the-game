@@ -1,0 +1,38 @@
+# Fact-check: 07-02 Blitzing: Numbers, Overloads, A-Gap Mugs, and Cover 0
+
+Checked 2026-10-07. Build afterwards: `build_pdfs.py 07-02-blitz-and-man-pressure --html` OK. All 3 `<!-- VERIFY -->` comments resolved and removed. Every footnote is referenced exactly once (one new: `[^dog]`). Computed numbers were re-run in the rtg container from the chapter's own data cell and match the rendered text.
+
+| Claim | Verdict | Source | Change |
+|---|---|---|---|
+| "Red dog" = old term for a linebacker blitz; "dog" still used (VERIFY) | VERIFIED + detail | Wikipedia "Blitz (gridiron football)"; Wikipedia "Don Ettinger" (Giants 1948–50, nicknamed "Red Dog") | Dated to the late 1940s/1950s; Ettinger named as the usual attribution ("usually traced to"); new `[^dog]` |
+| "Blitz" entered football in the 1950s–60s (VERIFY) | CORRECTED / SOFTENED | Wikipedia "Blitz": Chuck Drulis (Cardinals) called it a blitz around 1960; "red dog" persisted about a decade | Now "usually credited to Chuck Drulis ... around 1960, displaced 'red dog' over the following decade"; flagged as folklore more than record |
+| Larry Wilson and the safety blitz in St. Louis | VERIFIED + detail | HOF bio (Class of 1978; "Contrary to popular belief, however, he did not invent the safety blitz ... of the decade"); Wikipedia "Chuck Drulis"; RetroSimba (Wildcat debut, 1961 opener vs Giants) | Added Drulis's "Wildcat" design and the 1961 debut to the history paragraph; HOF quote in `[^wilson]` confirmed verbatim |
+| Rex Ryan book: title, co-author, publisher (VERIFY) | CORRECTED | CiNii catalogue record (ISBN 1571673717): *Coaching the 46 Defense*, Jeff Walker and Rex Ryan, Coaches Choice, Champaign IL, c. 1999; alt. title *Coaching Football's 46 Defense* | Title now *Coaching the 46 Defense* (Coaches Choice, 1999; also catalogued under the old title) |
+| Brown, *The Art of Smart Football* (2011) | CORRECTED | Published 2015 (consistent with fact-checks of 01-xx/04-xx chapters; Eleven Warriors review Aug 2015) | Year → 2015 |
+| Kirwan, *Take Your Eye Off the Ball* (2010; revised 2015) | VERIFIED | Same as 07-01 log | none |
+| Buddy Ryan Bears DC 1978–85; 46 named for Doug Plank | VERIFIED | Wikipedia "Buddy Ryan"; Chicago Bears "Plank discusses origin of 46 defense" | none |
+| Blitzes "named after the numbers of the players who ran them" | VERIFIED | Plank (Bears.com): Ryan called players by number; "half the people in that room had something named after them—a blitz, a coverage" | Plank quote added to `[^ryan]` |
+| Ryan feuded openly with Ditka; both carried off after SB XX, Bears 46–10 | VERIFIED | Wikipedia "Buddy Ryan" (first time two coaches were carried off); Wikipedia SB XX | none |
+| 1985 defense "led the league in nearly every category" | SOFTENED/CORRECTED | Wikipedia "Buddy Ryan": fewest yards, points and first downs, most turnovers | Replaced with the four specific categories |
+| Jim Johnson Eagles DC "from 1999 until he died in 2009" | CORRECTED | Wikipedia: DC 1999–2008; leave May 2009, resigned July 24, died July 28, 2009 | "until melanoma forced him to step aside in 2009 (he died that July)"; footnote updated |
+| Spagnuolo, Harbaugh, Rivera, McDermott, Frazier on Johnson's staff | VERIFIED | ESPN (McDermott recalls Johnson days) names all five | none |
+| SB XLII: Giants beat 18–0 Patriots 17–14, mostly four-man rush, blitzed about a third of the time | VERIFIED | Patriots.com Feb 6, 2008 (Spagnuolo: "only about a third of the time"; 5 sacks); NFL.com "Spagnuolo's schemes worked to perfection" (four-man rush on most of 54 pass plays) | none |
+| Spagnuolo KC DC since 2019, still in 2026; top five in Cover 0 rate 2019–25 | VERIFIED | FACTS-current (2026 staffs); 06-02 fact-check (recomputed ranks) | none |
+| Rex Ryan Ravens DC 2005–08, Jets HC 2009–14 | VERIFIED | Wikipedia "Rex Ryan" | none |
+| Zimmer Bengals DC 2008–13, then Vikings HC; double A-gap written with Guenther | VERIFIED | Bengals.com "Riding the double A" | none |
+| Double A-gap roots in Johnson's Eagles ("often traced") | VERIFIED (upgraded to first-party) | Bengals.com: Guenther, "The Eagles were very similar to us..."; Zimmer saw the Eagles run it, and they "looked at the tape and put together the rules" | Prose: "Guenther himself has pointed to Johnson's Eagles as the model"; quote added to `[^zimmer]` |
+| Flores: Patriots assistant, Dolphins HC 2019–21, Dolphins led Cover 0 rate 2020–21, Vikings DC 2023 and still in 2026 | VERIFIED | Wikipedia; 06-02 `[^zeroleaders]` (recomputed); FACTS-current | none |
+| Vikings led NFL in blitz rate 2023, 2024, 2025 (51/39/46%); EPA ranks 15th/3rd/2nd | VERIFIED (recomputed) | nflverse FTN + pbp: MIN first each season (next: NYG 47%, TB 37%, ATL 35%) | none |
+| Fangio's Eagles blitzed 19%/19% in 2024/25, "near the bottom", EPA ranks 2nd/7th | VERIFIED (recomputed) | blitz-rate ranks 28th and 31st; Fangio Eagles DC 2024–26 (FACTS) | none |
+| Blitz rate 25% (2022–25), 20% in 2022, 77% of blitzes are five-man, 6% six-plus; r = +0.01; carry-over 0.55 / −0.10; sack 8.0% vs 6.1%, 20+ yd 9.0% vs 7.8%, SD 1.71 vs 1.54 | VERIFIED (recomputed) | nflverse via chapter code | none |
+| Median time to throw 2.5 / 2.2 / 2.0 s (4/6/7 rushers); "needs about two and a half seconds" | VERIFIED (median), clarified | Recomputed; 07-01 says "a little under three seconds on average" (mean) | Added "typically" so the median-based figure doesn't read as contradicting 07-01's mean |
+| Man share with blitz vs no blitz; Cover 0 50% six-plus / 23% four-or-fewer | VERIFIED (computed inline; within-season caveat per FACTS) | nflverse participation | none |
+| SB LVIII: Feb 11, 2024, Las Vegas, Chiefs 25–22 OT; Hardman winning TD after SF FG | VERIFIED | FACTS-current §1; Wikipedia | none |
+| SB LVIII late 6+ man rushes: 7 dropbacks, 6 Cover 0; Jennings 10-yd TD (11:27 Q4); Aiyuk 11 yds on OT 3rd-and-2; McCaffrey 24 yds; OT 3rd-and-4 at 7:29 incomplete, C. Jones hit | VERIFIED (recomputed play by play) | nflverse pbp `2023_22_SF_KC` descriptions | none |
+| Vikings 2024: Wk 1 at NYG 28–6, 2 of 49 dropbacks blitzed, 5 sacks, 2 INT; Wk 3 vs HOU 34–7, 54%, 5 sacks, 2 INT; WC vs LAR 27–9, 66% | VERIFIED (recomputed) | nflverse; AP (score, Glendale, wildfires) | none |
+| AP: Stafford "was excellent in identifying the many blitzes" | CORRECTED (source) | Quote not found in the cited AP article. Rams.com (Wyatt Miller, Jan 15, 2025): 14/18, 178 yds, 2 TD vs blitz; NGS blitz rate 69%, highest any QB faced in a game that season | Prose ("Stafford recognised the pressures and got the ball out fast") kept; `[^wc]` now cites AP for score/venue and Rams.com for the blitz performance, notes NGS 69% vs FTN 66% |
+| Football-technical claims (blitz math table, hug rule, half-slide man side as thin side, inside-out rule, Cover 0 inside leverage, mug mechanics, "cat" as nickel code word, bear covering C and both guards) | VERIFIED (general) | Standard coaching usage; consistent with 04-02, 05-02, 06-02 and 07-01 (already fact-checked) | none |
+
+**Counts:** VERIFIED 22 (incl. 8 recomputed data claims) · CORRECTED 4 (Rex Ryan book title, *Art of Smart Football* year, Johnson tenure, Stafford quote source) · SOFTENED 2 (the "blitz"/red-dog coinage, presented as usual attribution; the 1985 Bears "nearly every category" replaced with the four specific categories) · REMOVED 0.
+
+**Remaining uncertainty:** the red dog/Ettinger and Drulis "blitz" coinage rest on Wikipedia and a fan-history site; presented as "usually credited/traced" and "folklore more than record". The Football Coaching Podcast link in `[^zimmer]` was not fetched; the Bengals.com piece now carries the Johnson-roots claim on its own.
