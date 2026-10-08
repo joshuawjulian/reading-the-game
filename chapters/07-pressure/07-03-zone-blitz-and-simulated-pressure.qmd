@@ -1,0 +1,1549 @@
+---
+title: "Zone Blitzes, Fire Zones, and Simulated Pressure"
+subtitle: "How a defense brings pressure without paying for it in coverage: rush the man the protection didn't count, drop the man it did, and make four rushers look like six."
+description: "The zone blitz from the ground up: why man-coverage blitzes are expensive, how dropping a lineman and rushing a linebacker or defensive back keeps zone coverage behind the pressure, the fire zone (five rushers, three under, three deep) and where its holes are, simulated pressure (the creeper: four rushers from unexpected places, seven in coverage), how both defeat protection rules (Mike identification, slide direction, hot throws), the disputed origin story (Bill Arnsparger's Dolphins, Dick LeBeau's Bengals and the 'Blitzburgh' Steelers of Dom Capers), the modern sim-pressure defenses of Mike Macdonald and Brian Flores, what charting data says simulated pressure buys, and the pressure tells to add to your pre-snap checklist."
+glossary:
+  "Zone blitz": "A pressure that sends a defender the offense does not expect to rush (a linebacker or defensive back) and drops one it does expect to rush (usually a defensive lineman) into a short zone, so the defense pressures the quarterback while still playing zone coverage behind the rush."
+  "Fire zone": {def: "The most common zone blitz: five rushers, with three defenders deep (each guarding a third of the field) and three underneath (a seam-flat defender on each side and one in the middle), usually with a defensive lineman as one of the three underneath.", aliases: ["3-under 3-deep pressure"]}
+  "Simulated pressure": {def: "A four-man rush built to look like a blitz: one or more players the protection expects to rush drop into coverage, and one or more it expects to cover rush instead, so the defense gets a blitz's confusion with seven players still in coverage.", aliases: ["Sim pressure", "Creeper"]}
+  "Dropper (DL in coverage)": "A defensive lineman, or an edge rusher who normally rushes, who drops into a short zone at the snap as part of a zone blitz or simulated pressure, usually into the window where the quarterback's hot throw is meant to go."
+  "Pressure look": "A pre-snap alignment that shows more possible rushers than the offense can comfortably block (linebackers walked up into the A gaps, a safety or nickel back creeping toward the line), whether or not they will rush. Its job is to force the offense's protection and hot-throw decisions before the snap."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import os
+import logging
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, FancyBboxPatch, RegularPolygon, Patch
+from matplotlib.lines import Line2D
+
+from gridiron import Play, Player, Field, style, draw_marker, show_animation, routes as r
+from gridiron.play import MARKER_R
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+style.apply()
+PDF = os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+GREEN = "#0f7a55"          # darker step of the aqua highlight, for text on the light field
+RED = style.SERIES[7]      # free rushers and holes
+PURPLE = style.SERIES[6]   # droppers: a ring colour that is neither offense blue nor defense orange
+DD, OD = style.DEFENSE_DARK, style.OFFENSE_DARK
+SPLIT = 1.6                # center-to-guard and guard-to-tackle spacing, as in the rest of the book
+
+
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=key if label is None else label)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line(labels=True):
+    """The five offensive linemen. labels=False keeps only the C (wide figures overprint LT/LG/RG/RT)."""
+    keys = ["LT", "LG", "C", "RG", "RT"]
+    return [O(k, k, -0.7, (i - 2) * SPLIT, k if (labels or k == "C") else "") for i, k in enumerate(keys)]
+
+
+def spread(labels=False, rb_w=-1.6):
+    """11 personnel, shotgun 2x2: X and Z on the line outside, H (slot) and Y (tight end flexed as a
+    slot) a step off it, the back beside the quarterback. Seven on the line: five linemen, X and Z."""
+    return line(labels) + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, rb_w, "R"),
+                           O("X", "WR", -0.7, -15.0), O("H", "WR", -1.5, -9.0),
+                           O("Y", "TE", -1.5, 9.0), O("Z", "WR", -0.7, 15.0)]
+
+
+def nickel(**moves):
+    """A 4-2-5 nickel against the 2x2: ends outside the tackles, a 1-technique on the center's left
+    shoulder, a 3-technique outside the right guard, Mike and Will at 4.5 yards, the nickel ($) over H,
+    corners 7 off, one deep safety (FS) and the strong safety (SS) at 8 over Y. `moves` = {key: (d, w)}."""
+    dfn = [D("LDE", "DE", 1.0, -5.5, "E"), D("LDT", "DT", 1.0, -0.7, "T"), D("RDT", "DT", 1.0, 2.35, "T"),
+           D("RDE", "DE", 1.0, 5.5, "E"), D("WILL", "WILL", 4.5, -2.4, "W"), D("MIKE", "MIKE", 4.5, 1.6, "M"),
+           D("NB", "NB", 5.0, -8.5, "$"), D("LCB", "CB", 7.0, -15.5, "CB"), D("RCB", "CB", 7.0, 15.5, "CB"),
+           D("FS", "FS", 13.0, 0.0, "FS"), D("SS", "SS", 8.0, 8.0, "SS")]
+    return [p.moved(d=moves[p.key][0], w=moves[p.key][1]) if p.key in moves else p for p in dfn]
+
+
+def to(p, key, end, kind="path", via=(), delay=0.0, speed=None):
+    """Move `key` through absolute (d, w) points `via` to `end` as a block, rush, drop-style path or run."""
+    start = np.array(p._cur(key))
+    pts = [tuple(np.array(q) - start) for q in (*via, end)]
+    if kind == "block":
+        return p.block(key, pts=pts, delay=delay, speed=speed)
+    if kind == "rush":
+        return p.rush(key, pts=pts, delay=delay, speed=speed)
+    if kind == "route":
+        return p.route(key, pts, frame="field", delay=delay, speed=speed)
+    return {"path": p.path, "run": p.run}[kind](key, pts, delay=delay, speed=speed)
+
+
+def drop_to(p, key, end, via=(), delay=0.0, speed=None):
+    """A zone drop through absolute (d, w) points (gridiron's .drop goes in a straight line only)."""
+    start = p._cur(key)
+    path = [tuple(start)] + [tuple(map(float, q)) for q in (*via, end)]
+    return p._add("drop", key, path, speed, delay)
+
+
+def timed(p, key, way, kind="path"):
+    """Script a player: `way` = [(t, d, w), ...] absolute spots reached at time t (s after the snap).
+    Standing still between two times is allowed."""
+    cur = np.array(p._cur(key), dtype=float)
+    tc, wait = 0.0, 0.0
+    for t, d, w in way:
+        nxt = np.array([d, w], dtype=float)
+        dist = float(np.hypot(*(nxt - cur)))
+        if dist < 1e-3:
+            wait += t - tc
+        else:
+            p._add(kind, key, [tuple(cur), tuple(nxt)], speed=dist / (t - tc), delay=wait)
+            wait = 0.0
+            cur = nxt
+        tc = t
+    return p
+
+
+def _P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.0, ha="center", weight="normal", box=True):
+    """A short on-field label at (d, w)."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=12, fontweight=weight,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.92) if box else None)
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=6.8, shrink=7, ha="center"):
+    """A label with a thin leader line to the player or spot it names."""
+    (xt, yt), (xp, yp) = _P(fld, p, *text_at), _P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha=ha, va="center", zorder=12,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=shrink),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.92))
+
+
+def dashed(fld, p, pts, color=RED, lw=1.8, dash=(0, (3, 1.8)), z=6):
+    """A dashed arrow through absolute (d, w) points: a free rusher's path."""
+    xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    xs, ys = np.asarray(xs, float), np.asarray(ys, float)
+    fld.ax.plot(xs, ys, color=color, lw=lw, ls=dash, zorder=z)
+    fld.ax.add_patch(FancyArrowPatch((xs[-2] + 0.6 * (xs[-1] - xs[-2]), ys[-2] + 0.6 * (ys[-1] - ys[-2])),
+                                     (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=11, color=color,
+                                     lw=lw, zorder=z))
+
+
+def hole(fld, p, center, size, text=None, fontsize=6.6, text_at=None):
+    """A red, hatched patch: a soft spot the coverage cannot reach in time."""
+    cx, cy = _P(fld, p, *center)
+    fld.ax.add_patch(Ellipse((float(cx), float(cy)), size[1], size[0], fc=RED, alpha=0.30, ec="none", zorder=2.2))
+    fld.ax.add_patch(Ellipse((float(cx), float(cy)), size[1], size[0], fc="none", ec=RED, lw=1.1,
+                             ls=(0, (2, 1.5)), zorder=2.3))
+    if text:
+        tx, ty = _P(fld, p, *(text_at or center))
+        fld.ax.text(float(tx), float(ty), text, fontsize=fontsize, color=RED, ha="center", va="center",
+                    zorder=12, fontweight="bold",
+                    bbox=dict(boxstyle="round,pad=0.15", fc=style.SURFACE, ec="none", alpha=0.85))
+
+
+def zone_patch(fld, p, center, size, color=style.DEFENSE, alpha=0.10):
+    cx, cy = _P(fld, p, *center)
+    fld.ax.add_patch(Ellipse((float(cx), float(cy)), size[1], size[0], fc=color, alpha=alpha, ec=color, lw=0.8,
+                             ls=(0, (3, 2)), zorder=2))
+
+
+def no_numbers(ax):
+    """Remove the painted yard-line numbers (they sit where wide receivers and safeties stand)."""
+    for t in list(ax.texts):
+        if t.get_alpha() == 0.55:
+            t.remove()
+
+
+def clean(ax):
+    """Box-zoomed diagrams: drop hash ticks and yard numbers, clip text to the window."""
+    for ln in list(ax.lines):
+        xs, ys = ln.get_data()
+        if len(xs) == 2 and ln.get_linewidth() == 0.5 and np.hypot(xs[1] - xs[0], ys[1] - ys[0]) < 1.0:
+            ln.remove()
+    no_numbers(ax)
+
+
+def ring(fld, p, d, w, color=PURPLE, r=1.2, lw=1.8):
+    x, y = _P(fld, p, d, w)
+    fld.ax.add_patch(Circle((float(x), float(y)), r, fc="none", ec=color, lw=lw, zorder=7.5))
+
+
+def ghost_marker(ax, x, y, label, ppy, color=style.DEFENSE):
+    """A hollow, dashed defender: where he stood before the snap."""
+    ax.add_patch(RegularPolygon((x, y), 4, radius=MARKER_R * 1.25, orientation=np.pi / 4,
+                                facecolor="none", edgecolor=color, lw=1.1, ls=(0, (2, 1.2)), zorder=6))
+    if label:
+        ax.text(x, y, label, ha="center", va="center", color=color, fontweight="bold", zorder=6,
+                fontsize=max(4.0, min(8.0, ppy * 0.7)))
+
+
+# --------------------------------------------------------------- frame strips for print
+def snapshot(play, t, ax=None, ghosts=(), ghost_t=-0.6, lateral=(-21, 21), window=(-8.5, 17.5),
+             width_in=6.5, notes=(), rings=(), holes=(), trail_from=None):
+    """Everyone where he is at time t, with faint trails since `trail_from` (default: the first frame),
+    hollow markers where `ghosts` stood at `ghost_t`, purple rings on `rings` (droppers) and red
+    `holes` [(center, size, text)]."""
+    pos = {k: play.position(k, t) for k in play.players}
+    moved = [pl.moved(d=float(pos[k][0]), w=float(pos[k][1])) for k, pl in play.players.items()]
+    q = Play([m for m in moved if m.side == "off"], [m for m in moved if m.side == "def"],
+             los=play.los, ball_y=play.ball_y, to_go=play.to_go)
+    ringed = {k for k, _ in rings}
+    q.highlights = {k: c for k, c in play.highlights.items() if t > 0 or k not in ringed}
+    fld = q.draw(ax=ax, lateral=lateral, window=window, width_in=width_in, title=False)
+    ax, ppy = fld.ax, fld.pts_per_yard()
+    clean(ax)
+    P = lambda d, w: fld.xy(*play.to_abs(d, w))  # noqa: E731
+    for c, s, txt in holes:
+        hole(fld, play, c, s, txt, fontsize=5.6)
+    start = trail_from if trail_from is not None else play._compile()[1]
+    for k, pl in play.players.items():
+        if pl.side == "off" and pl.pos in ("LT", "LG", "C", "RG", "RT"):
+            continue
+        pts = np.array([play.position(k, tt) for tt in np.linspace(start, t, 30)])
+        if np.ptp(pts[:, 0]) + np.ptp(pts[:, 1]) < 0.3:
+            continue
+        xs, ys = P(pts[:, 0], pts[:, 1])
+        if pl.side == "off":
+            ax.plot(xs, ys, color=style.OFFENSE, lw=0.9, alpha=0.45, zorder=3)
+        else:
+            ax.plot(xs, ys, color=style.DEFENSE, lw=1.1, ls=(0, (3, 2)), zorder=3)
+    if t > ghost_t + 0.05:
+        for k in ghosts:
+            x0, y0 = P(*play.position(k, ghost_t))
+            ghost_marker(ax, float(x0), float(y0), play.players[k].label, ppy)
+    for k, col in (rings if t > 0 else ()):      # a dropper is only a dropper once he drops
+        x0, y0 = P(*play.position(k, t))
+        ax.add_patch(Circle((float(x0), float(y0)), MARKER_R * 1.75, fc="none", ec=col, lw=1.6, zorder=7.5))
+    bx, by = P(*play.ball_position(t))
+    thrown = False
+    for kind, _, t_rel in play.ball_events:
+        if kind == "pass" and t > t_rel:
+            thrown = True
+            sx, sy = P(*play.ball_position(t_rel))
+            ax.add_patch(FancyArrowPatch((float(sx), float(sy)), (float(bx), float(by)), arrowstyle="-|>",
+                                         mutation_scale=8, color=style.BALL, lw=1.3, ls=(0, (2, 1.5)), zorder=9))
+    if thrown or t <= 0:          # in the quarterback's hands the ball would hide his label
+        draw_marker(ax, float(bx), float(by), "ball", "", ppy)
+    for note in notes:              # (text, (d, w)) or (text, (d, w), (d, w) of the player it names)
+        text, (d, w) = note[0], note[1]
+        x, y = P(d, w)
+        box = dict(boxstyle="round,pad=0.2", fc=style.SURFACE, ec=style.BASELINE, lw=0.5)
+        if len(note) > 2:
+            xp, yp = P(*note[2])
+            ax.annotate(text, (float(xp), float(yp)), xytext=(float(x), float(y)), fontsize=6.0, color=style.INK,
+                        ha="center", va="center", zorder=13, bbox=box,
+                        arrowprops=dict(arrowstyle="-", color=style.INK_2, lw=0.7, shrinkA=1, shrinkB=5))
+        else:
+            ax.text(float(x), float(y), text, fontsize=6.0, color=style.INK, ha="center", va="center", zorder=13,
+                    bbox=box)
+    return fld
+
+
+def strip(play, times, labels, notes_at=None, holes_at=None, ncols=2, width_in=6.5, lateral=(-21, 21),
+          window=(-8.5, 17.5), legend=None, **kw):
+    """The print version of an animation: panels at chosen moments of one simulated play."""
+    n = len(times)
+    nrows = int(np.ceil(n / ncols))
+    pw = width_in / ncols
+    h = nrows * (pw * (window[1] - window[0]) / abs(lateral[1] - lateral[0]) + 0.34)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(width_in, h), squeeze=False)
+    for ax in axes.flat[n:]:
+        ax.axis("off")
+    for i, (ax, t, lab) in enumerate(zip(axes.flat, times, labels)):
+        snapshot(play, t, ax=ax, lateral=lateral, window=window, notes=(notes_at or {}).get(i, ()),
+                 holes=(holes_at or {}).get(i, ()), **kw)
+        ax.set_title(lab, fontsize=8.2, color=style.INK, loc="left")
+    fig.tight_layout(h_pad=0.6, w_pad=0.4)
+    if legend:
+        fig.legend(handles=legend, loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=2, fontsize=7.3,
+                   frameon=False)
+    return fig
+
+
+STRIP_KEY = [Patch(facecolor="none", edgecolor=style.DEFENSE, lw=1.1, ls=(0, (2, 1.2)),
+                   label="Dashed outline: where he stood before the snap"),
+             Line2D([], [], color=PURPLE, lw=0, marker="o", mfc="none", mec=PURPLE, mew=1.6, ms=9,
+                    label="Purple ring: the dropper (a lineman in coverage)"),
+             Line2D([], [], color=style.DEFENSE, lw=1.1, ls=(0, (3, 2)), label="Defender's path so far"),
+             Line2D([], [], color=style.OFFENSE, lw=1.0, alpha=0.6, label="Offensive player's path so far"),
+             Line2D([], [], color=style.BALL, lw=1.3, ls=(0, (2, 1.5)), label="The pass"),
+             Line2D([], [], color=style.LINE_TO_GAIN, lw=2.2, label="Line to gain")]
+
+
+def animation_or_strip(play, times, labels, web_times=None, **kw):
+    """A video on the website; the numbered frame strip in print."""
+    if PDF:
+        strip(play, times, labels, **kw)
+        plt.show()
+    else:
+        show_animation(play, times=web_times or times)
+```
+
+```{python}
+#| code-summary: "Show the Python (the charting data behind this chapter's numbers: nflverse via nflreadpy)"
+#| output: false
+from gridiron.data import nfl, pbp
+
+SEAS = [2022, 2023, 2024, 2025]
+_ftn = nfl().load_ftn_charting(seasons=SEAS).to_pandas()[
+    ["nflverse_game_id", "nflverse_play_id", "n_blitzers", "n_pass_rushers"]]
+_part = nfl().load_participation(seasons=SEAS).to_pandas()[
+    ["nflverse_game_id", "play_id", "was_pressure", "defense_man_zone_type"]]
+_pl = pbp(SEAS, columns=["game_id", "play_id", "season", "season_type", "week", "defteam", "qb_dropback", "sack",
+                         "epa", "down", "ydstogo"])
+DB = (_pl[(_pl["qb_dropback"] == 1) & (_pl["season_type"] == "REG")]
+      .merge(_ftn, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "nflverse_play_id"], how="inner")
+      .merge(_part, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "play_id"], how="left"))
+DB = DB.dropna(subset=["n_pass_rushers", "n_blitzers"])
+# Pressure includes sacks (FTN fills was_pressure for 2023-2025)
+DB["press"] = DB["was_pressure"].astype(float).fillna(0).gt(0) | DB["sack"].eq(1)
+# FTN's "blitzer" behaves like a rusher who is not one of the usual linemen and edge rushers (an off-ball
+# linebacker or a defensive back). Four rushers with at least one blitzer means somebody who usually rushes
+# did not: the closest thing to a simulated-pressure flag in public data.
+DB["rush"] = np.select(
+    [DB["n_pass_rushers"] <= 3, (DB["n_pass_rushers"] == 4) & (DB["n_blitzers"] == 0),
+     (DB["n_pass_rushers"] == 4) & (DB["n_blitzers"] >= 1), DB["n_pass_rushers"] >= 5],
+    ["three", "four", "sim", "blitz"], "other")
+F = DB[DB["season"] >= 2023].copy()          # FTN-charted participation seasons (one source)
+F["man"] = F["defense_man_zone_type"].eq("MAN_COVERAGE")
+F["zone"] = F["defense_man_zone_type"].eq("ZONE_COVERAGE")
+
+
+def _summ(g):
+    lab = g[g["man"] | g["zone"]]
+    return pd.Series({"n": len(g), "press": g["press"].mean(), "sack": g["sack"].mean(),
+                      "epa": g["epa"].mean(), "epa_se": g["epa"].sem(), "man": lab["man"].mean()})
+
+
+RT = F.groupby("rush").apply(_summ)
+SHARE = F["rush"].value_counts(normalize=True)
+R4, RS, R5 = RT.loc["four"], RT.loc["sim"], RT.loc["blitz"]
+pct = lambda x, k=0: f"{100 * x:.{k}f}%"      # noqa: E731
+
+# Third down: how often a five-plus rush comes with zone (not man) behind it, by distance
+T3 = F[(F["down"] == 3) & (F["rush"] == "blitz") & (F["man"] | F["zone"])].copy()
+T3["dist"] = pd.cut(T3["ydstogo"], [0, 3, 6, 10, 99], labels=["1–3", "4–6", "7–10", "11+"])
+ZB = T3.groupby("dist", observed=True).agg(zone=("zone", "mean"), n=("zone", "size"))
+ZB_S = T3.groupby(["season", "dist"], observed=True)["zone"].mean().unstack()
+
+
+def team_rate(team, season, kind):
+    g = DB[(DB["defteam"] == team) & (DB["season"] == season)]
+    return (g["rush"] == kind).mean() if kind != "blitz" else (g["n_pass_rushers"] >= 5).mean()
+
+
+def sim_rank(team, season):
+    s = DB[DB["season"] == season].groupby("defteam")["rush"].apply(lambda x: (x == "sim").mean())
+    return int(s.rank(ascending=False)[team]), s
+
+
+MIN23_BLITZ = team_rate("MIN", 2023, "blitz")
+MIN24_SIM, _ = team_rate("MIN", 2024, "sim"), None
+MIN24_RANK, _S24 = sim_rank("MIN", 2024)
+TOP24 = _S24.idxmax()
+TOP24_RATE = _S24.max()
+BLITZ23 = DB[DB["season"] == 2023].groupby("defteam")["n_pass_rushers"].apply(lambda x: (x >= 5).mean())
+BLITZ23_TOP = BLITZ23.idxmax()
+KC23_SIM = team_rate("KC", 2023, "sim")
+KC23_RANK, _ = sim_rank("KC", 2023)
+BAL23_RANK, _ = sim_rank("BAL", 2023)
+
+# The 2023 Ravens and 2025 Seahawks: sacks and points allowed (play-by-play and schedules)
+_sk = _pl[_pl["season_type"] == "REG"].groupby(["season", "defteam"])["sack"].sum()
+BAL23_SACKS, SACK23_TOP = int(_sk[2023]["BAL"]), _sk[2023].idxmax()
+KC23_SACKS = int(_sk[2023]["KC"])
+_sch = nfl().load_schedules([2023, 2025]).to_pandas()
+_sch = _sch[_sch["game_type"] == "REG"]
+_pa = pd.concat([_sch[["season", "home_team", "away_score"]].set_axis(["season", "team", "pa"], axis=1),
+                 _sch[["season", "away_team", "home_score"]].set_axis(["season", "team", "pa"], axis=1)])
+PA = _pa.groupby(["season", "team"])["pa"].mean()
+BAL23_PA, PA23_TOP = PA[2023]["BAL"], PA[2023].idxmin()
+SEA25_PA, PA25_TOP = PA[2025]["SEA"], PA[2025].idxmin()
+```
+
+Third-and-7, early in the fourth quarter. Before the snap the defense has six players standing on
+the line of scrimmage: four linemen, plus two linebackers who have walked right up into the gaps on
+either side of the center. A safety is creeping down toward the slot receiver. The center points,
+the quarterback points, somebody shouts a name, and you can feel the offense counting: six possible
+rushers at the line, six blockers (five linemen and the back), so if that safety comes too, nobody
+can block him and the ball has to come out "hot" the instant he does. At the snap the safety comes.
+So does one linebacker; the other backs out. And a 300-pound defensive end, a man who has rushed the
+passer on every snap of his career, turns and runs *backward*. The quarterback does what he was
+coached to do: he flicks the ball on a quick slant to the slot receiver whose defender just blitzed,
+and throws it straight into the chest of the defensive end, who is standing exactly where the slant
+was going. On the replay the analyst draws a circle around the end and says one word: "zone blitz."
+Why would a defense take its pass rusher out of the pass rush? How can a quarterback do everything
+he was taught and still throw the ball to a lineman? This chapter is about pressure that doesn't
+cost coverage, and about the half-second after the snap in which the offense finds out who is
+really coming.
+
+**You'll be able to…**
+
+- Explain the zone-blitz trade: rush a defender the protection didn't count, drop one it did, and
+  keep zone coverage behind the pressure, and say what the defense gives up to do it.
+- Recognise a fire zone after the snap (five rush, three under, three deep, a lineman in coverage)
+  and point to the holes every fire zone leaves, and why they move with each variant.
+- Tell a simulated pressure (a "creeper") from a blitz by counting rushers after the snap, and explain
+  how four rushers can still beat a six-man protection.
+- Narrate the protection-versus-pressure contest play by play: the Mike call, the slide, the hot
+  throw, and the defense's answer to each.
+- Read the pressure tells before the snap (mugged linebackers, walked-up safeties, the players who
+  *could* drop) and add them to your watching checklist.
+
+::: {.callout-note title="You'll need"}
+- **[Blitzing](07-02-blitz-and-man-pressure.qmd)**: a blitz sends five or more rushers. Blitz math
+  counts rushers against blockers to find who is free and where the hot throw goes; the usual price is
+  man coverage behind it, as in a Cover 1 blitz (one deep safety) or a Cover 0 blitz (none). Linebackers
+  standing in both A gaps (the gaps beside the center) are a *double A-gap mug*, built to scramble
+  the protection's count.
+- **[Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd)**: in
+  [slide protection](../../appendices/glossary.qmd#gl-slide-protection) linemen block gaps, in
+  [man protection](../../appendices/glossary.qmd#gl-man-protection) they block men, and the
+  [half-slide](../../appendices/glossary.qmd#gl-half-slide) mixes the two. Every assignment is counted
+  from the defender named in the [Mike identification](../../appendices/glossary.qmd#gl-mike-identification).
+  The back [checks and releases](../../appendices/glossary.qmd#gl-check-release). When rushers outnumber
+  blockers, the quarterback throws a [hot route](../../appendices/glossary.qmd#gl-hot-route) into the space
+  a blitzer left, or a receiver makes a [sight adjust](../../appendices/glossary.qmd#gl-sight-adjust). A
+  rusher nobody blocks is a [free rusher](../../appendices/glossary.qmd#gl-free-rusher).
+- **[Cover 3](../06-pass-coverage/06-03-cover-3-family.qmd)**: [three deep](../../appendices/glossary.qmd#gl-cover-3),
+  each guarding a [deep third](../../appendices/glossary.qmd#gl-deep-third), and four under. The outside
+  underneath defender is the [curl-flat defender](../../appendices/glossary.qmd#gl-curl-flat-defender); its
+  match version, who takes the slot receiver's vertical route first, is the
+  [seam-flat defender](../../appendices/glossary.qmd#gl-seam-flat-defender). Inside him is the
+  [hook zone](../../appendices/glossary.qmd#gl-hook-zone).
+- **[The Pass Rush](07-01-pass-rush.qmd)**: each rusher has a [rush lane](../../appendices/glossary.qmd#gl-rush-lane)
+  and the ends keep [contain](../../appendices/glossary.qmd#gl-contain); a [stunt](../../appendices/glossary.qmd#gl-stunt)
+  swaps rushers' paths after the snap; [pressure](../../appendices/glossary.qmd#gl-pressure) counts sacks, hits
+  and hurries.
+- **[Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)**:
+  defenses [disguise](../../appendices/glossary.qmd#gl-disguise) what they will play and
+  [rotate](../../appendices/glossary.qmd#gl-post-snap-rotation) at the snap. This chapter applies the same
+  idea to the rush.
+:::
+
+**How to read the diagrams.** Offense is blue circles: the five linemen (LT, LG, C, RG, RT, or just
+C on wide pictures), Q the quarterback, R the running back, X and Z the outside receivers, H the slot
+receiver and Y the tight end (here flexed out like a second slot). Defense is outlined orange squares:
+E and T the defensive ends and tackles, M the Mike and W the Will linebacker, $ the nickel back
+(the slot cornerback), CB the cornerbacks, FS and SS the free and strong safety. A **purple ring**
+marks a *dropper*, a lineman going into coverage; a red ring marks the rusher to watch; a green ring
+marks a player whose alignment you should look at. Solid orange
+arrows are rushers, dashed orange arrows are zone drops, short blue lines with a bar are blockers'
+sets, and blue arrows are routes. Left and right are the offense's.
+
+## The blitzer's dilemma
+
+Start with the problem the zone blitz was invented to solve. A defense that wants to hit the
+quarterback has two ways to do it. It can win with four, beating blockers one on one
+([The Pass Rush](07-01-pass-rush.qmd)), which needs great rushers and time. Or it can add rushers
+([Blitzing](07-02-blitz-and-man-pressure.qmd)): send five or six, more than the offense can block,
+and get someone there before the ball is out.
+
+The second way has a bill attached, and the bill is paid in coverage. Eleven defenders, minus six
+rushers, leaves five to cover five eligible receivers. With nobody to spare, the defense almost
+always plays [man coverage](../../appendices/glossary.qmd#gl-man-coverage) behind a big blitz: each
+cover man takes one receiver, with one deep safety at most. That is the Cover 1 or Cover 0 blitz of
+the previous chapter, and it has three weaknesses offenses have known about for fifty years.
+
+1. **The hot throw.** A blitzer is a defender who isn't covering, so the offense throws into the space
+   he left before he arrives, and the receiver's only defender is the man who just blitzed.
+2. **One missed tackle is a touchdown.** With no deep safety, a slant caught in stride can go the distance.
+3. **Man coverage needs men who can cover.** A linebacker on a fast slot receiver is a matchup offenses hunt.
+
+So the question that drove a generation of defensive coaches was: *can we get the confusion and the
+pressure of a blitz without playing man coverage behind it?* Bill Arnsparger, the Dolphins' defensive
+coordinator, had a two-word answer that Dick LeBeau would carry into his own career: **safe pressure**.
+
+::: {.callout-important title="Why it exists"}
+A blitz trades coverage for pressure; the zone blitz tries to break the trade. A protection assigns
+blockers to the defenders most likely to rush, so what matters is not *how many* rush but *which*.
+Rush one it wasn't counting, take away one it was, and the defense can create a free rusher or a
+mismatch *with the same number of rushers*, while everyone else plays a sound zone behind it.
+:::
+
+## The zone blitz: rush one they didn't count, drop one they did
+
+A **[zone blitz](../../appendices/glossary.qmd#gl-zone-blitz)** is a pressure that sends a defender
+the offense does not expect to rush (a linebacker or a defensive back) and drops one it does expect
+to rush (usually a defensive lineman) into a short zone, so the defense pressures the quarterback
+and still plays zone coverage behind the rush. That lineman-turned-coverage-player is the scheme's
+signature, and coaches call him a **[dropper](../../appendices/glossary.qmd#gl-dropper-dl-in-coverage)**:
+a defensive lineman, or an edge rusher who normally rushes, who drops into a short zone at the snap.
+"Zone blitz" is the family name for any pressure built on that exchange; its two main forms, below,
+are the **fire zone** (five rush) and **simulated pressure** or the creeper (four rush). The opening
+play was a fire zone: five came, the end dropped.
+
+On first hearing it sounds absurd. Why take a 290-pound defensive end, the man you pay to rush,
+and ask him to cover a receiver? There are three answers, and they explain the whole family.
+
+**He isn't covering a receiver. He is standing in a lane.** The dropper's job is almost never "run
+with that slot receiver." It's "get five or six yards deep, into the spot where the quarterback's
+hot throw is supposed to go, and turn around." Why would the ball go there? Because of how a hot
+throw is really triggered. [Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd)
+taught it as arithmetic: more rushers than blockers. But nobody can count eleven defenders in the
+half-second after the snap, so the arithmetic is done *before* the snap and turned into a rule about
+one defender: "we can't block the Will if everyone comes, so if the Will comes, the ball goes to the
+slot, now." Coaches say the quarterback is *hot off* the Will. At the snap his eyes go to that one man,
+and if he comes the ball is out in well under a second, usually before the quarterback could see a
+lineman on the other side turn and drop. Receivers have a version of the same rule, the
+[sight adjust](../../appendices/glossary.qmd#gl-sight-adjust): a slot receiver whose defender blitzes
+cuts his route short and turns for the ball.
+
+Both rules react to *who* rushes, not how many. Send the key man, drop a lineman into the space he
+left, and the defense gets exactly the throw it wants into a window it has just refilled. A slow, big
+man can make that play, because the ball is coming to him. If no hot throw comes, the dropper holds
+his spot and breaks on whatever enters it; the danger then is a receiver who settles behind him, which
+is where the holes later in this chapter come from.
+
+**His absence is the point.** The offensive tackle across from him was counting on blocking him.
+When he drops, that tackle has nobody, and a blocker with nobody to block is a blocker the defense
+has taken out of the play. Meanwhile someone the protection didn't count is coming from somewhere
+else.
+
+**The coverage stays zone.** Because the defense swapped rushers instead of adding them, it still has
+six or seven players in coverage, watching the quarterback with deep help behind them.
+
+```{python}
+#| label: fig-steelers-plate
+#| fig-cap: "A 1990s-style zone blitz from a 3-4 front, the kind the 'Blitzburgh' Steelers made famous (illustrative, not from their playbook). Offense: a two-back I formation (21 personnel; F the fullback, R the tailback). Defense: N the nose tackle, O the outside linebackers. Five rush (solid arrows): the strong safety (SS) off the edge, the Mike (M) through the B gap, the nose, and the weak-side end and outside linebacker. Six cover: three deep and three under. Two of the three underneath players (purple rings) were counted as rushers: the strong-side end (E) drops into the hook, and the strong outside linebacker drops to the flat, trading jobs with the safety blitzing beside him. The Will (W) slides to the weak flat."
+from gridiron import offense, defense
+
+relabel = {"LT": "", "LG": "", "RG": "", "RT": "", "RB": "R"}
+off = [q.moved(label=relabel[q.key]) if q.key in relabel else q for q in offense("i_form")]
+dfn = defense("3-4", "single_high", off)
+lab = {"SDE": "E", "NT": "N", "WDE": "E", "SOLB": "O", "WOLB": "O", "MIKE": "M", "WILL": "W",
+       "LCB": "CB", "RCB": "CB", "FS": "FS", "SS": "SS"}
+mv = {"SS": (4.2, 8.2), "LCB": (7.0, -15.0), "RCB": (7.0, 15.0), "FS": (13.0, -1.0), "MIKE": (4.5, 3.0)}
+dfn = [p.moved(d=mv[p.key][0], w=mv[p.key][1], label=lab[p.key]) if p.key in mv else p.moved(label=lab[p.key])
+       for p in dfn]
+p = Play(off, dfn, los=30, to_go=None)
+# five rushers, each arrow ending in the backfield so it can be seen: the SS off the strong edge, the Mike
+# through the strong B gap (outside the dropping end), the nose, the weak end and the weak OLB
+to(p, "SS", (-2.2, 6.2), "rush", via=[(1.0, 7.3)])
+to(p, "MIKE", (-2.8, 2.4), "rush", via=[(2.0, 3.9)])
+to(p, "NT", (-2.7, -0.9), "rush"); to(p, "WDE", (-2.6, -3.0), "rush")
+to(p, "WOLB", (-2.7, -5.8), "rush")
+# six cover: three deep, three under. The strong end drops inside-out to the hook, the strong OLB to the flat.
+drop_to(p, "SDE", (6.5, 0.0), via=[(2.5, 1.8)]); drop_to(p, "SOLB", (6.5, 10.5)); drop_to(p, "WILL", (7.0, -8.5))
+drop_to(p, "LCB", (15.0, -15.0)); drop_to(p, "RCB", (15.0, 15.0)); drop_to(p, "FS", (16.0, 0.0))
+p.highlight("SDE", "SOLB", color=PURPLE); p.highlight("SS", "MIKE", color=RED)
+fld = p.draw(width_in=6.4, lateral=(-21, 21), window=(-9.5, 19.5), title=False)
+clean(fld.ax)
+for c, s in (((6.5, 0.0), (5, 8)), ((6.5, 10.5), (5, 8)), ((7.0, -8.5), (5, 8))):
+    zone_patch(fld, p, c, s)
+for c in ((15.5, -15.0), (15.5, 15.0), (16.5, 0.0)):
+    zone_patch(fld, p, c, (6, 12), alpha=0.05)
+say(fld, p, 9.6, 0.0, "a defensive end\nin the hook", color=PURPLE, fontsize=6.8)
+say(fld, p, 9.6, 12.5, "OLB drops\nto the flat", color=PURPLE, fontsize=6.8)
+say(fld, p, 9.8, -8.5, "inside LB\nto the weak flat", color=style.INK_2, fontsize=6.8)
+point_to(fld, p, (-4.6, 12.5), (1.0, 7.3), "SS blitzes\noff the edge", color=RED)
+point_to(fld, p, (-5.4, 7.0), (1.6, 3.8), "Mike blitzes\nthe B gap", color=RED)
+say(fld, p, 18.0, -8.0, "three deep", color=style.INK_2, fontsize=6.8)
+plt.show()
+```
+
+The picture above is the zone blitz in its classic form, from the 3-4 defenses where it grew up.
+Its outside linebackers rush like ends on most snaps but can also cover, so the offense can't tell
+before the snap which of them is coming. Count the arithmetic first. Five rush, six cover, and the six split into **three deep** (each defender
+guarding a third of the field's width, as in [Cover 3](../06-pass-coverage/06-03-cover-3-family.qmd))
+and **three under**. Offenses of that era often kept six or seven men in to block on a pass (five
+linemen plus a back, often a tight end too), so five rushers aren't an overload at all. What makes it work is
+*who* the five are. The protection was built to block the three down linemen and the two outside
+linebackers, the five men who usually rush. Instead, one of those (the strong-side end) drops, a
+second (the strong outside linebacker) drops, and the two replacements (the Mike and the strong
+safety) come from places the blocking rules may assign to a back, or to nobody. Extra blockers don't
+help if no blocker's rule includes the man who comes: an unassigned safety is free against seven
+blockers just as he is against five, and the quarterback has to throw hot off him or take the hit.
+
+::: {.callout-caution title="Common misconception"}
+"A zone blitz is a blitz with zone coverage." Close, but it misses the key move. Plenty of five-man
+pressures play zone behind them without dropping anybody unexpected. What makes a zone blitz a zone
+blitz is the **exchange**: a player the offense expects to rush drops, and a player it expects to cover
+rushes. Take away the exchange and you have a blitz with thin zone coverage behind it, which is the
+worst of both worlds: fewer cover men *and* rushers exactly where the protection expected them.
+:::
+
+### What a zone blitz gives up
+
+Nothing is free, and a coach calling one knows exactly what he's betting.
+
+- **A pass rusher.** The dropper is usually a good rusher, now jogging backward. If the replacement
+  rusher is a 205-pound safety and the protection picks him up anyway, the defense has traded a good
+  rusher for a worse one.
+- **Underneath space.** Three underneath defenders can't cover the width of the field (more than 53
+  yards) the way four or five can. There are always gaps between them, and the dropper, slow and
+  starting from the line, is the slowest to get to his spot.
+- **Run defense.** Linemen dropping and linebackers flying through gaps at the snap is a gamble
+  against a run, because the run fits ([Run Fits and Box Math](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd))
+  are all reassigned. That is why zone blitzes are mostly a passing-down call, though defenses also use
+  them on early downs as run-and-pass pressures: the line slants into one gap, a linebacker comes through
+  the next, and that wrecks zone-run blocking while three deep still guards against play-action.
+- **Time to install.** Every exchange is homework: an end learning a hook drop, a safety learning to
+  take on a guard.
+
+## The fire zone: three under, three deep
+
+The most common zone blitz has its own name. A **[fire zone](../../appendices/glossary.qmd#gl-fire-zone)**
+is a five-man pressure with three defenders deep, each guarding a third of the field, and three
+underneath: a seam-flat defender on each side and one in the middle, usually with a defensive lineman
+as one of the three. Coaches also call it a [3-under 3-deep pressure](../../appendices/glossary.qmd#gl-3-under-3-deep-pressure),
+or "3 under, 3 deep," which tells you its whole structure in four words.[^firezone]
+
+Why three deep? Because the deep thirds are where a mistake costs a touchdown, and the fire zone
+refuses that risk, the opposite of a Cover 0 blitz. It pays underneath, with three defenders doing the
+work of four or five, and bets that the rush will force the ball out before receivers find the gaps,
+so the throws it gives up are short ones in front of defenders who can rally to tackle.
+
+Who plays the three underneath spots? The two outside ones are **seam-flat** players, and here is
+why the match version of Cover 3 matters ([Cover 3](../06-pass-coverage/06-03-cover-3-family.qmd)).
+With only three underneath, nobody else can stop a slot receiver from running straight up the seam,
+between the deep thirds. So each seam-flat defender's rule is: wall the #2 receiver's vertical route
+(get in his path so he has to go around), carry him to about 10 to 12 yards until a deep defender can
+take over, and only then sink under the outside receiver or squeeze the flat if that receiver breaks
+out. That is why fire zones struggle against seam routes and do well against quick outs.
+
+The middle player sits in the short middle in front of the deep middle safety, where the quick inside
+throw against a blitz wants to go; if the back releases, or a receiver crosses his face, he takes him.
+Coaches often call this spot the "hole" or "hot hole." In this chapter we'll call it the **middle
+hook** and keep the word *hole* for the soft spots a coverage can't reach. A dropping tackle, who
+starts in the middle, usually takes the middle hook itself. A dropping end, who starts wider, usually
+works to the inside window on his own side, which is exactly where a slot receiver's hot slant goes.
+
+::: {.callout-note title="Go deeper: the same calls in other words"}
+Pressure vocabulary varies by staff, so expect other names on a broadcast or in a coaching clinic.
+Some staffs name a fire zone by the side it comes from (field or boundary). The three underneath
+players may be "seam-flat" and "hole," or simply numbered. "Creeper" is sometimes kept for an
+off-ball player replacing a dropping lineman, with "sim" for any four-man pressure look. And in many
+playbooks a linebacker blitz is a "dog."
+:::
+
+```{python}
+#| label: fig-fire-zone
+#| fig-cap: "Fire zone against a 2x2 shotgun set (a frame strip; a video on the web). The back (R) releases, so five block six possible rushers and the quarterback is hot off the Will (W): if the Will blitzes, the ball goes at once to the slot receiver (H) on a slant into the space he left. (1) The Will creeps up: a pressure look. (2) At the snap he loops outside the left tackle to keep contain, the left defensive tackle (T) slants into the B gap and the Mike (M) takes the A gap, while the left end (E, purple ring) drops. Five rush. (3) The Will came, so the ball comes out hot. (4) It arrives at the end. Behind him: three deep thirds and three under (the nickel and the strong safety are the seam-flat players). Five blockers handled five rushers; the defense won with the man it took out of the rush."
+def fire_zone_play():
+    p = Play(spread(), nickel(), los=40, to_go=8)
+    p.motion("WILL", to=(2.6, -3.4), speed=1.2)                 # the creep: a pressure look
+    p.dropback(2.0)
+    # protection: five linemen; the back releases (five blockers for six possible rushers: hot off the Will)
+    timed(p, "LT", [(0.5, -1.7, -3.8), (1.0, -1.9, -4.3)], "block"); timed(p, "LG", [(0.5, -1.6, -2.0)], "block")
+    timed(p, "C", [(0.5, -1.5, 0.5)], "block"); timed(p, "RG", [(0.5, -1.6, 2.0)], "block")
+    timed(p, "RT", [(0.6, -1.9, 3.9)], "block")
+    timed(p, "RB", [(0.5, -4.6, -3.4), (1.2, -3.2, -7.0), (1.7, -1.6, -8.6)], "route")
+    # five rushers: Will loops to contain outside the LT, the 1-technique slants to the B gap, Mike in the
+    # right A gap, the 3-technique and the right end
+    timed(p, "WILL", [(0.55, 0.2, -4.6), (1.0, -1.1, -4.9), (1.5, -1.6, -4.8)], "rush")
+    timed(p, "LDT", [(0.45, -0.4, -2.0), (1.5, -0.9, -2.3)], "rush")
+    timed(p, "MIKE", [(0.8, -0.5, 0.6), (1.5, -0.9, 0.6)], "rush")
+    timed(p, "RDT", [(0.45, -0.6, 2.1), (1.5, -0.9, 2.1)], "rush")
+    timed(p, "RDE", [(0.6, -1.0, 4.6), (1.5, -1.6, 4.2)], "rush")
+    # six in coverage: three deep, three under; the left end drops into the inside window the Will left
+    timed(p, "LDE", [(0.35, 1.7, -5.2), (1.0, 3.7, -4.4), (1.45, 4.3, -4.0)], "drop")
+    timed(p, "NB", [(1.4, 6.0, -10.0), (1.8, 6.5, -10.0)], "drop")
+    timed(p, "SS", [(1.0, 10.0, 8.8), (1.8, 11.5, 9.0)], "drop")
+    timed(p, "LCB", [(1.8, 15.0, -15.5)], "drop"); timed(p, "RCB", [(1.8, 15.0, 15.5)], "drop")
+    timed(p, "FS", [(1.8, 16.0, 0.0)], "drop")
+    # routes: the hot is H's quick slant into the space the Will left; it is thrown, and caught by the end
+    p.route("X", r.go(19)); p.route("Z", r.go(19)); p.route("Y", r.seam(18))
+    timed(p, "H", [(0.25, 0.3, -9.0), (0.9, 3.0, -7.4), (1.5, 6.0, -4.6), (1.8, 7.0, -3.4)], "route")
+    p.pass_to("LDE", t=0.8)
+    p.highlight("LDE", color=PURPLE)
+    return p
+
+
+fz = fire_zone_play()
+FZ_T = [-0.15, 0.5, 0.9, 1.5]
+animation_or_strip(fz, FZ_T, ["1.  −0.15 s · The look: the Will has crept up",
+                              "2.  +0.5 s · Five rush, the end drops, R releases",
+                              "3.  +0.9 s · The Will came: the QB throws hot",
+                              "4.  +1.5 s · The hot throw arrives at the dropper"],
+                   web_times=[-1.0, 0.5, 0.9, 1.5],
+                   ghosts=("LDE", "WILL", "MIKE", "LDT"), ghost_t=0.0, rings=[("LDE", PURPLE)], window=(-9.0, 18.5),
+                   lateral=(-18.5, 18.5),
+                   notes_at={1: [("back releases:\nfive block", (-7.2, -11.0), (-4.6, -3.4))],
+                             3: [("deep third", (16.8, -11.5)), ("deep middle", (17.0, 5.6)),
+                                 ("intercepted", (7.6, 1.5), (4.3, -4.0))]},
+                   legend=STRIP_KEY)
+plt.show()
+```
+
+Walk through the strip from the quarterback's side, because the fire zone is designed against his
+habits. The back has released, so five linemen face six defenders who could rush, and the play call
+has told the quarterback which one goes unblocked if all six come: the Will. His rule is simple: if
+the Will comes, the ball comes out hot to H. Before the snap the Will creeps up. At the snap he
+comes, the quarterback's eyes are on him, and the ball is out in 0.8 seconds, before the quarterback
+can see the left end turn and run to the very spot the slant is going.
+
+Notice what the defense *didn't* do. It didn't beat the protection: five rushers, five blockers, all
+blocked, with the left tackle, whose end dropped, picking up the Will looping outside him. It didn't
+need to. A fire zone wins in one of three ways: a free rusher if the protection
+counts wrong (next section), a hurried throw into a dropper, as here, or simply a throw short of the
+sticks on third down, made into a zone with three defenders rallying to the ball.
+
+### Count to eleven
+
+Here is the most useful bit of arithmetic in this part of the book. Every defense has eleven players,
+and every one of them is a **rusher**, an **underneath** cover man, or a **deep** cover man. Fix any
+two of those numbers and the third is decided.
+
+| Call | Rush | Under | Deep | Behind it |
+|:-------------------------------|:------:|:------:|:------:|:---------------------------|
+| Four-man rush, Cover 3          | 4 | 4 | 3 | zone |
+| Four-man rush, Cover 2          | 4 | 5 | 2 | zone |
+| Four-man rush, quarters (Cover 4) | 4 | 3 | 4 | zone (the safeties also fit the run) |
+| **Fire zone**                   | 5 | 3 | 3 | zone (three under, three deep) |
+| **Simulated pressure** (Cover 3 behind) | 4 | 4 | 3 | zone |
+| Cover 1 blitz                   | 5–6 | 4–5 | 1 | man |
+| Cover 0 blitz                   | 6 | 5 | 0 | man |
+
+Before the snap you can usually count the deep defenders, the safeties 12 or more yards deep and any
+corner well off his receiver. That count caps everything else. A defense showing three deep
+players can rush at most five and still have three underneath; showing two deep safeties and two off
+corners (Cover 2 or quarters), it is very unlikely to bring six. Two-high doesn't rule out a fire zone,
+though: one safety can rotate down at the snap while the other spins to the middle, just as in
+[Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd). And after the snap, counting rushers and deep defenders
+tells you what you just watched: five rush and three deep is a fire zone; four rush, with somebody
+unexpected among them, is the simulated pressure coming up below.
+
+### Where the holes are
+
+Every fire zone has the same basic weakness: three underneath defenders spread across the field leave
+gaps between and behind them. But which gaps are biggest depends on *who* drops, because the holes
+live next to the slowest dropper. A defensive end who starts on the line of scrimmage can get five or
+six yards deep before the quarterback throws a quick pass; he cannot get to 12 yards and he cannot get
+to the sideline. So the variant tells you where to throw.
+
+```{python}
+#| label: fig-fire-zone-variants
+#| fig-cap: "Three fire-zone variants against the same 2x2 set. In each, five rush (solid arrows), three play deep thirds and three play underneath zones (shaded); the red holes are labelled with the throw that attacks them. A, edge fire: the nickel ($) and Will rush, and the left end (purple ring) becomes the left seam-flat player, who cannot carry H up the seam. B, inside fire: both linebackers rush the A gaps and the 1-technique tackle drops into the middle hook; he gets only four or five yards deep, so in-cuts over his head, in front of the deep safety at 16 yards, are open. C, corner fire: the right corner rushes, the strong safety rotates out to his deep third, and Z's quick hitch and the curl behind the dropping right end are open."
+LAT_V, WIN_V = (-20.5, 20.5), (-6.5, 20.5)
+DEEP = {"LCB": (15.0, -15.5), "RCB": (15.0, 15.5), "FS": (16.5, 0.0)}
+
+
+def variant(ax, title, rushers, drops, holes, extra=None, deep=DEEP, moves=None, via=None):
+    """One fire-zone variant: rush arrows (ending in the backfield so they show), drop arrows into shaded
+    zones, red holes named for the throw that attacks them."""
+    dfn = nickel(**(moves or {}))
+    p = Play(spread(), dfn, los=35, to_go=None)
+    for k, end in rushers.items():
+        to(p, k, end, "rush")
+    for k, (end, size) in {**drops, **{k: (v, (7, 10)) for k, v in deep.items()}}.items():
+        drop_to(p, k, end, via=(via or {}).get(k, ()))
+    p.highlight(*[k for k in drops if p.players[k].pos in ("DE", "DT")], color=PURPLE)
+    fld = p.draw(ax=ax, lateral=LAT_V, window=WIN_V, title=False)
+    clean(ax)
+    for k, (end, size) in drops.items():
+        zone_patch(fld, p, end, size)
+    for k, end in deep.items():
+        zone_patch(fld, p, (end[0] + 0.5, end[1]), (6, 15 if k == "FS" else 11), alpha=0.05)
+    for c, s, txt, at in holes:
+        hole(fld, p, c, s, txt, fontsize=5.8, text_at=at)
+    if extra:
+        extra(fld, p)
+    ax.set_title(title, fontsize=8.2, color=style.INK, loc="left")
+    return fld, p
+
+
+fig, axes = plt.subplots(2, 2, figsize=(6.5, 5.0))
+# (a) edge fire: the nickel and Will come from the left; the left end drops into the slant window
+variant(axes[0, 0], "A · Edge fire: nickel and Will rush, end drops",
+        {"NB": (-2.2, -6.2), "WILL": (-2.0, -2.6), "LDT": (-2.0, -1.0), "RDT": (-2.0, 2.3), "RDE": (-2.2, 4.6)},
+        {"LDE": ((5.5, -6.5), (4, 6)), "MIKE": ((7.0, 0.5), (5, 8)), "SS": ((7.0, 11.0), (5, 8))},
+        [((11.5, -13.0), (4.5, 6), "curl", None), ((2.5, -16.5), (4, 5), "flat", None),
+         ((12.5, -7.5), (4, 3.5), "seam", None)])
+# (b) inside fire: both linebackers through the A gaps; the 1-technique drops
+variant(axes[0, 1], "B · Inside fire: Mike and Will rush, tackle drops",
+        {"WILL": (-2.0, -0.8), "MIKE": (-2.0, 0.8), "LDE": (-2.2, -4.6), "RDT": (-2.0, 2.3), "RDE": (-2.2, 4.6)},
+        {"LDT": ((4.5, -0.5), (3.5, 6)), "NB": ((7.0, -10.5), (5, 8)), "SS": ((7.0, 11.0), (5, 8))},
+        [((10.5, -5.5), (3.5, 6), "in-cut", None), ((10.5, 5.5), (3.5, 6), "in-cut", None)])
+# (c) corner fire: the field corner rushes, the SS rotates to his deep third, the right end drops
+variant(axes[1, 0], "C · Corner fire: corner rushes, SS rotates deep",
+        {"RCB": (-2.0, 6.8), "MIKE": (-2.0, 0.8), "LDE": (-2.2, -4.6), "LDT": (-2.0, -0.9), "RDT": (-2.0, 2.3)},
+        {"RDE": ((5.0, 6.0), (4, 6)), "NB": ((7.0, -10.5), (5, 8)), "WILL": ((7.5, -1.0), (5, 8))},
+        [((6.0, 15.0), (3.5, 4.5), "hitch", None), ((11.8, 5.0), (4, 4.5), "curl", None)],
+        deep={"LCB": (15.0, -15.5), "SS": (15.0, 15.0), "FS": (16.5, 0.0)}, moves={"RCB": (3.0, 14.0)},
+        via={"SS": [(12.0, 11.5)]})
+ax = axes[1, 1]
+ax.axis("off")
+key = [Line2D([], [], color=style.DEFENSE, lw=1.8, label="Rusher (five in every variant)"),
+       Line2D([], [], color=style.DEFENSE, lw=1.3, ls=(0, (3, 2)), label="Zone drop"),
+       Patch(fc=style.DEFENSE_TINT, ec=style.DEFENSE, ls=(0, (3, 2)), label="Underneath zone (three)"),
+       Patch(fc="#fef3ee", ec=style.DEFENSE, ls=(0, (3, 2)), label="Deep third (three)"),
+       Line2D([], [], color=PURPLE, lw=0, marker="o", mfc="none", mec=PURPLE, mew=1.6, ms=10,
+              label="The dropper (a lineman)"),
+       Patch(fc=(0.89, 0.29, 0.28, 0.3), ec=RED, ls=(0, (2, 1.5)), label="Hole, named for the throw")]
+ax.legend(handles=key, loc="center", fontsize=7.6, frameon=False)
+fig.tight_layout(h_pad=0.8, w_pad=0.5)
+plt.show()
+```
+
+Read the three panels as a quarterback would. Against the **edge fire** (A), the end who replaced
+the nickel now has the seam-flat rule, and a defensive end cannot run up the seam with a slot
+receiver: a vertical route by H is the classic fire-zone beater. Short of that, the quarterback throws
+behind the end, a curl or a quick out to the left, where a man starting on the ball can't get.
+Against the **inside fire** (B), the threat is right up the middle, and so is the hole: the dropping
+tackle walls off the short middle, so the answer is an in-cut at 10 to 12 yards, over his head.
+Against the **corner fire** (C), the hole is the receiver the corner left: a quick hitch, or a
+[back-shoulder throw](../../appendices/glossary.qmd#gl-back-shoulder-throw) (a throw to the receiver's
+outside shoulder, away from the defender, that he turns back to catch) to Z before the rotating safety
+arrives. Offenses build their "zone-blitz beaters" around exactly these
+spots, and defenses answer by moving the exchange around, so that the quarterback can't know before
+the snap which three windows will be open.
+
+::: {.callout-important title="Why it exists: the fire zone's bargain"}
+Three deep makes the worst case a completed short pass rather than a long touchdown, and a dropper in
+the hot lane can turn the quick throw into an interception. The price, beyond the list above, sits
+underneath: three defenders for the width of the field, the slowest of them starting on the line of
+scrimmage, and a hole beside him for any quarterback who reads it after the snap.
+:::
+
+## Why the protection loses: rules, not people
+
+Now the contest from the offense's side, because the zone blitz is aimed less at players than at the
+**rules** the protection uses. Before the snap the offense has to make three decisions, all on the
+basis of what the defense shows ([Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd)):
+
+1. **Mike ID.** The quarterback or center names one defender as the "Mike," the reference point every
+   blocker counts from.
+2. **The slide.** The line slides toward the biggest threat: the side with more possible rushers, or the
+   most dangerous inside rusher. The man the slide leaves behind belongs to the back.
+3. **The hot.** If more defenders come than the protection can block, somebody is free. The call names
+   the defender the quarterback is hot off and the receiver who gets the ball if that man comes.
+
+Each of those decisions is a prediction about who will rush, made from where defenders stand. And that
+is the opening the defense attacks with a **[pressure look](../../appendices/glossary.qmd#gl-pressure-look)**:
+a pre-snap alignment that shows more possible rushers than the offense can comfortably block (linebackers
+walked up into the A gaps, a safety or nickel creeping toward the line), whether or not they will rush.
+A pressure look's job isn't to rush. It is to make the offense commit its slide, its back and its hot
+throw before the snap, so that the defense can bring pressure from wherever the commitments aren't.
+
+```{python}
+#| label: fig-protection-bust
+#| fig-cap: "Protection bust: slide toward the threat, rush from the other side. The defense walks the Mike (M) into the right A gap and the strong safety (SS) down to the right edge. The line slides right, toward the threat, and the back takes the left end. Nobody's rule includes the SS, so the quarterback is hot off him, to the tight end (Y). At the snap the Mike, the SS and the left end all drop (purple rings), the SS straight into Y's hot window, and the nickel ($, red ring) comes off the left edge while the back, set on an end who left, is late to him. Each rush arrow ends on the blocker who takes him; the center and the back block air. (H's slant is a sight adjust to the nickel's blitz.) Illustrative, a half-field view."
+off = line() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -1.8, "R"), O("H", "WR", -1.5, -9.0),
+                O("Y", "TE", -1.5, 9.0)]
+dfn = [D("LDE", "DE", 1.0, -5.5, "E"), D("LDT", "DT", 1.0, -0.7, "T"), D("RDT", "DT", 1.0, 2.35, "T"),
+       D("RDE", "DE", 1.0, 5.5, "E"), D("MIKE", "MIKE", 1.6, 0.8, "M"), D("SS", "SS", 1.4, 7.4, "SS"),
+       D("WILL", "WILL", 4.5, -2.6, "W"), D("NB", "NB", 4.2, -8.6, "$")]
+p = Play(off, dfn, los=35, to_go=None)
+# the slide goes right, toward the walked-up Mike and SS; the back takes the end the slide leaves
+for k, w in zip(["LT", "LG", "C", "RG", "RT"], (-2.5, -0.9, 0.7, 2.3, 3.9)):
+    to(p, k, (-1.7, w), "block")
+to(p, "RB", (-3.4, -4.4), "block")
+# four of the five rushers run into the blocker whose rule takes them (arrows end behind him so they show)
+to(p, "WILL", (-2.4, -2.5), "rush"); to(p, "LDT", (-2.4, -0.9), "rush")
+to(p, "RDT", (-2.4, 2.3), "rush"); to(p, "RDE", (-2.4, 4.0), "rush")
+# three drop: the end into H's slant window, the Mike to the hook, the SS into Y's hot window
+drop_to(p, "LDE", (5.6, -6.2)); drop_to(p, "MIKE", (6.8, 0.6)); drop_to(p, "SS", (5.0, 6.6))
+p.route("H", r.path((2.3, 0.0), (5.3, -2.4)))
+to(p, "Y", (4.0, 5.2), "route", via=[(0.6, 9.0)])
+p.highlight("NB", color=RED); p.highlight("LDE", "MIKE", "SS", color=PURPLE)
+fld = p.draw(width_in=6.4, lateral=(-12.5, 12.5), window=(-9.6, 12.6), title=False)
+clean(fld.ax)
+dashed(fld, p, [(4.2, -8.6), (0.6, -7.6), (-3.0, -5.8), (-4.4, -0.9)])
+ax = fld.ax
+# slide arrow along the line
+x0, y0 = _P(fld, p, -3.4, -2.4); x1, y1 = _P(fld, p, -3.4, 3.6)
+ax.add_patch(FancyArrowPatch((float(x0), float(y0)), (float(x1), float(y1)), arrowstyle="-|>", mutation_scale=12,
+                             color=GREEN, lw=1.6, zorder=6))
+say(fld, p, -4.0, 1.6, "slide right", color=GREEN, weight="bold", fontsize=7.2)
+point_to(fld, p, (-6.9, 6.4), (-1.7, 0.7), "C slid to the Mike's gap:\nthe Mike drops, he blocks air", color=GREEN)
+point_to(fld, p, (-7.7, -7.4), (-3.4, -4.4), "back set on the end:\nthe end drops, he blocks air", color=GREEN)
+say(fld, p, -4.6, -7.4, "free", color=RED, weight="bold", fontsize=8)
+say(fld, p, 8.4, -6.2, "end drops into\nthe slant window", color=PURPLE, fontsize=6.8)
+say(fld, p, 8.5, 0.6, "Mike drops", color=PURPLE, fontsize=6.8)
+say(fld, p, 7.6, 9.0, "SS drops into\nY's hot window", color=PURPLE, fontsize=6.8)
+say(fld, p, 10.6, 5.6, "pressure look on the right:\nMike and SS walked up", color=style.INK_2, fontsize=6.4)
+plt.show()
+```
+
+Put the figure in motion and the contest has a rhythm you will see on nearly every third-and-long.
+**The defense shows** six or seven possible rushers, more than six blockers can handle, so the offense
+has to guess which of them matter. **The offense commits**: the three decisions above, plus any check,
+such as keeping a tight end in or changing a route so a hot throw is ready on the dangerous side.
+**The defense answers at the snap**: the threatening side drops, the quiet side comes, linemen block
+air, and the rusher nobody counted is free or facing a back instead of a lineman. **The quarterback
+has about a second.** If he sees it, he throws away from the droppers or slides in the pocket and
+finds the hole. If he doesn't, he is sacked from a side he thought was safe, and the broadcast blames
+a lineman who did exactly what his rules told him.
+
+::: {.callout-note title="Madden vs. real life"}
+In Madden the computer's quarterback simply throws to whoever is open. A real offense agrees on its
+protection out loud, in a few seconds, and then every player follows his rule even when it is wrong
+for the rush that comes. A zone blitz is aimed at those rules, not at the receivers, which is why the
+same call can be a sack against one offense and a 15-yard completion against another whose rules
+differ.
+:::
+
+Offenses fight back with the same weapons they use against disguise
+([Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)).
+They change the Mike late to move the slide. They keep the back in with a dual read, checking two
+defenders in turn instead of one, or "fan" him to the edge so the line can take the inside rushers and
+the quarterback is hot off an inside linebacker instead. They give a tight end a *check-stay* rule: he
+stays in to block if the edge defender rushes and releases into his route if that defender drops,
+which answers the exchange directly. They use **"hot" routes that read the coverage** rather than the
+rush, so that a receiver breaks away from a dropper instead of into him. They empty the backfield to make
+the defense declare its rush (with no back to protect, the line slides and the quarterback alone
+handles the leftover man). Above all, they **throw quickly to the holes**: a 1.5-second throw to the
+flat or a hitch is over before any exchange has finished. Each answer is a little cheaper than the
+pressure it beats, which is why the contest never ends.
+
+## Simulated pressure: four that look like six
+
+The fire zone still sends five. The modern form of the zone blitz goes one step further: send only **four**, from
+unexpected places, and keep **seven** in coverage. That is **[simulated pressure](../../appendices/glossary.qmd#gl-simulated-pressure)**,
+a four-man rush built to look like a blitz: one or more players the protection expects to rush drop
+into coverage, and one or more it expects to cover rush instead, so the defense gets a blitz's confusion
+with seven players still in coverage. You will hear it shortened to [**sim pressure**](../../appendices/glossary.qmd#gl-sim-pressure)
+or "sim," and many coaches call it a [**creeper**](../../appendices/glossary.qmd#gl-creeper), because
+an off-ball defender "creeps" into the rush to replace the lineman who drops. Ted Nguyen of *The
+Athletic* puts the broadcast version simply: multiple defenders on the line showing blitz, but the
+defense rushes only four and drops seven.[^sis]
+
+Why would four ever be enough against six blockers? Because a protection puts specific blockers on
+specific *possible* rushers. If the right four come, at least one blocker has nobody, and one of the
+four may face a back instead of a lineman. The defense hasn't out-numbered the offense; it has
+out-*positioned* it, with seven men still covering five receivers.
+
+```{python}
+#| label: fig-creeper
+#| fig-cap: "A creeper from the nickel (a frame strip; a video on the web). (1) Six at or near the line: four linemen, the Mike (M) mugged in the right A gap and the nickel ($) crept down over the slot receiver (H). The line half-slides right, toward the Mike; the back's rule is the Will, then the nickel. (2) The Mike backs out to the hook and the left end (purple ring) drops. (3) The nickel's blitz turns H's route into a quick slant (a sight adjust), but the end sits in that window, so the quarterback holds the ball. Cover 3 behind: three deep, four under. (4) Four rushed against six blockers, and the nickel gets the sack."
+def creeper_play():
+    # the pressure look: Mike mugged in the right A gap, the nickel creeping down over H
+    p = Play(spread(), nickel(MIKE=(1.5, 0.8)), los=40, to_go=7)
+    p.motion("NB", to=(2.6, -7.6), speed=1.6)
+    p.dropback(2.0)
+    # protection: a half-slide toward the mugged Mike. C, RG, RT slide right; LG and LT block man;
+    # the back checks the Will, then the nickel
+    timed(p, "C", [(0.5, -1.4, 0.7), (1.2, -1.6, 1.4)], "block")     # nobody comes: he helps on the 3-tech
+    timed(p, "RG", [(0.5, -1.6, 2.1)], "block"); timed(p, "RT", [(0.6, -1.9, 4.2)], "block")
+    timed(p, "LG", [(0.5, -1.6, -0.9)], "block")
+    timed(p, "LT", [(0.5, -1.8, -3.6), (1.3, -2.0, -2.2)], "block")   # his end drops: he turns in to help
+    timed(p, "RB", [(0.7, -4.4, -2.0), (1.5, -4.6, -3.4)], "block")   # Will drops: late to the nickel
+    # four rushers: the nickel off the left edge and three linemen
+    timed(p, "NB", [(0.6, 0.6, -7.4), (1.3, -3.6, -6.8), (1.8, -6.2, -4.0), (2.1, -6.8, -1.3)], "rush")
+    timed(p, "LDT", [(0.45, -0.7, -0.9), (2.0, -1.0, -1.0)], "rush")
+    timed(p, "RDT", [(0.45, -0.8, 2.0), (2.0, -1.0, 2.0)], "rush")
+    timed(p, "RDE", [(0.6, -1.1, 4.9), (2.0, -1.8, 4.5)], "rush")
+    # seven in coverage: Cover 3 behind it. The left end drops into H's slant window, the Will runs
+    # to the curl-flat the nickel left, the Mike backs out to the hook, the SS takes the right curl-flat
+    timed(p, "LDE", [(0.35, 1.6, -5.4), (1.3, 5.4, -5.6), (2.0, 5.8, -5.8)], "drop")
+    timed(p, "MIKE", [(1.3, 6.6, 1.2), (2.0, 7.4, 1.0)], "drop")
+    timed(p, "WILL", [(1.3, 7.0, -9.5), (2.0, 8.0, -11.0)], "drop")
+    timed(p, "SS", [(1.3, 7.5, 10.5), (2.0, 8.0, 11.5)], "drop")
+    timed(p, "LCB", [(2.0, 16.0, -15.5)], "drop"); timed(p, "RCB", [(2.0, 16.0, 15.5)], "drop")
+    timed(p, "FS", [(2.0, 16.5, 0.0)], "drop")
+    # routes: H converts to a quick slant (his defender, the nickel, is the blitzer)
+    p.route("H", r.path((2.3, 0.0), (5.3, -2.4))); p.route("X", r.go(19)); p.route("Z", r.curl(12))
+    p.route("Y", r.seam(18))
+    p.highlight("LDE", color=PURPLE)
+    return p
+
+
+cr = creeper_play()
+CR_T = [-0.1, 0.8, 1.3, 2.1]
+animation_or_strip(cr, CR_T, ["1.  −0.1 s · The look: six at or near the line", "2.  +0.8 s · Mike backs out, end drops",
+                              "3.  +1.3 s · H's quick slant is covered", "4.  +2.1 s · Four rush; the nickel gets the sack"],
+                   web_times=[-1.2, 0.8, 1.3, 2.1],
+                   ghosts=("LDE", "MIKE", "NB"), ghost_t=0.0, rings=[("LDE", PURPLE)], window=(-9.0, 18.5),
+                   lateral=(-18.5, 18.5),
+                   notes_at={2: [("C: no one to block", (-5.6, 6.5), (-1.6, 1.4))],
+                             3: [("back: late", (-7.0, -11.0), (-4.6, -3.4))]},
+                   legend=STRIP_KEY)
+plt.show()
+```
+
+Look at what the creeper did to each blocker. The center slid toward the Mike, and the Mike left:
+one blocker gone. The left tackle set up for the end, and the end dropped, so he did what his rule
+says and turned in to help the guard; that is exactly why the edge was empty. The back's rule was
+"the Will, then the nickel." On paper the nickel was covered. But the back had to wait to see whether
+the Will came, and by the time he turned outside the nickel was on top of him at full speed. Nobody's
+rule was wrong; the defense simply chose the order in which the offense would find out. Four rushers
+against six blockers, and the offense ended up with one back against a running start, while the
+quick slant that should have punished the nickel's blitz ran into the end.
+
+That is the deal simulated pressure offers, and it explains why it spread through the NFL in the
+2020s:
+
+- **It keeps seven in coverage.** A creeper has four underneath, or five with two deep safeties, so the
+  fire zone's holes mostly close.
+- **It wins one-on-ones instead of numbers:** a nickel against a back, a defensive tackle against a
+  center who just helped somebody else.
+- **It attacks the rules without the risk.** If the protection guesses right, it is a normal four-man
+  rush with a funny-looking front; if wrong, a free rusher or a hot throw into a dropper, at no extra cost.
+- **It looks identical to the real thing.** The same pressure look can hide a creeper, a fire zone or a
+  Cover 0 blitz, so the offense can never safely ignore it.
+
+Nothing about a sim requires Cover 3 behind it. With two deep safeties the arithmetic is four rush,
+five under, two deep, and the dropper becomes one of five underneath players instead of four:
+
+```{python}
+#| label: fig-two-high-sim
+#| fig-cap: "Simulated pressure with two-high coverage behind it (illustrative). Before the snap the Will (W) has walked up toward the line on the left and both safeties are deep. At the snap the 1-technique tackle (purple ring) drops into the middle hook and the Will comes through the A gap the tackle just left. Four rush (both ends, the 3-technique and the Will); five play underneath (the corners in the flats, the nickel, the dropping tackle and the Mike); two play deep halves. Count to eleven: 4 + 5 + 2. The quick slant against the Will's blitz now runs into a 300-pound lineman, and both deep halves are still covered."
+dfn = nickel(WILL=(3.4, -2.3), FS=(13.0, -9.0), SS=(13.0, 9.0), LCB=(6.0, -15.0), RCB=(6.0, 15.0))
+p = Play(spread(), dfn, los=35, to_go=None)
+to(p, "LDE", (-2.4, -4.8), "rush"); to(p, "RDT", (-2.2, 2.3), "rush"); to(p, "RDE", (-2.4, 4.8), "rush")
+to(p, "WILL", (-2.4, -0.8), "rush", via=[(1.0, -2.0), (-0.3, -1.0)])
+drop_to(p, "LDT", (5.5, 1.0), via=[(2.6, 0.5)])
+drop_to(p, "MIKE", (7.0, 5.5)); drop_to(p, "NB", (7.0, -8.0))
+drop_to(p, "LCB", (4.5, -14.0)); drop_to(p, "RCB", (4.5, 14.0))
+drop_to(p, "FS", (16.0, -9.5)); drop_to(p, "SS", (16.0, 9.5))
+p.route("H", r.slant(2, 6))
+p.highlight("LDT", color=PURPLE)
+fld = p.draw(width_in=6.4, lateral=(-21, 21), window=(-6.5, 20.0), title=False)
+clean(fld.ax)
+for c, sz in (((5.5, 1.0), (4, 6)), ((7.0, 5.5), (5, 6)), ((7.0, -8.0), (5, 6)), ((4.5, -14.0), (4, 6)),
+              ((4.5, 14.0), (4, 6))):
+    zone_patch(fld, p, c, sz)
+for c in ((16.5, -9.5), (16.5, 9.5)):
+    zone_patch(fld, p, c, (6, 17), alpha=0.05)
+point_to(fld, p, (8.8, -2.4), (5.5, 1.0), "tackle drops to\nthe middle hook", color=PURPLE)
+point_to(fld, p, (-4.6, -6.0), (-1.2, -1.05), "Will through the\nA gap he left", color=RED)
+say(fld, p, 18.6, 0.0, "two deep", color=style.INK_2, fontsize=6.8)
+say(fld, p, 10.6, 12.0, "five under", color=style.INK_2, fontsize=6.8)
+plt.show()
+```
+
+### The price of the creeper
+
+If the exchange confuses no one, a creeper is just a four-man rush with a good rusher playing a hook
+zone, and a defensive tackle is a real liability if a receiver runs into his area with room to work.
+It is also hard to teach: the four rushers have to keep their rush lanes
+([The Pass Rush](07-01-pass-rush.qmd)) from odd starting places, or the quarterback escapes through
+the gap the dropper left. The defenses that do it best have edge players who can drop, safeties and
+nickel backs who can rush, and linemen mobile enough to look at home in a hook zone.
+
+### What the charting data says
+
+In public data the closest thing to a simulated-pressure flag comes from FTN, a football-data company
+whose charters watch every play and record, for every dropback, how many players rushed and how many
+of those were *blitzers*. FTN doesn't publish a definition, but the counts behave as if a blitzer is a
+rusher who isn't one of the usual linemen and edge rushers: an off-ball linebacker or a defensive
+back. Four rushers with at least one blitzer means somebody who usually rushes didn't. It's an
+imperfect proxy, and it errs both ways. It misses sims in which the dropper and his replacement are
+both linemen or edge rushers (say, an end drops and a stand-up outside linebacker beside him rushes,
+since neither counts as a blitzer). And it counts some plain four-man rushes as sims, such as a
+three-lineman front whose fourth rusher is simply an off-ball linebacker every snap, with no one
+dropping. With that caution, here is what each kind of rush bought in 2023–2025.[^ftn]
+
+```{python}
+#| label: fig-rush-types
+#| fig-cap: "What each kind of rush buys, all NFL regular-season dropbacks 2023–2025 charted by FTN. 'Four, incl. an off-ball rusher' is four rushers of whom at least one is an off-ball linebacker or a defensive back (the closest public proxy for simulated pressure); 'Four, no off-ball rusher' is a normal four-man rush. It produced pressure and sacks at nearly the rate of five-plus blitzes, while the coverage behind it was man about as often as behind a normal four-man rush (most of the time it was zone), not the majority-man of the blitz. EPA per dropback is from the offense's side: lower is better for the defense. Whiskers are 95% confidence intervals; the simulated-pressure sample is small, so read the EPA gap as suggestive, not settled. Man/zone shares come from the charters' coverage labels, which have shifted between seasons; compare the rows, not the levels. Source: nflverse play-by-play, participation and FTN charting data."
+order = ["four", "sim", "blitz"]
+names = {"four": "Four, no off-ball\nrusher", "sim": "Four, incl. an\noff-ball rusher", "blitz": "Five or more\n(a blitz)"}
+cols = {"four": style.MUTED, "sim": style.SERIES[1], "blitz": style.INK_2}
+metrics = [("press", "Pressure rate", True), ("sack", "Sack rate", True), ("epa", "EPA per dropback", False),
+           ("man", "Man coverage behind it", True)]
+fig, axes = plt.subplots(1, 4, figsize=(6.6, 2.5), sharey=True)
+ys = np.arange(len(order))[::-1]
+for ax, (m, title, is_pct) in zip(axes, metrics):
+    vals = np.array([RT.loc[k, m] for k in order])
+    n = np.array([RT.loc[k, "n"] for k in order])
+    if m == "epa":
+        err = 1.96 * np.array([RT.loc[k, "epa_se"] for k in order])
+    elif m == "man":
+        err = None
+    else:
+        err = 1.96 * np.sqrt(vals * (1 - vals) / n)
+    ax.barh(ys, vals, color=[cols[k] for k in order], height=0.62, xerr=err,
+            error_kw=dict(ecolor=style.INK, lw=0.8, capsize=2))
+    span = 0.19 if m == "epa" else max(vals) * 1.5
+    for y, v, e in zip(ys, vals, err if err is not None else [0] * 3):
+        txt = f"{v:+.3f}" if m == "epa" else (f"{100 * v:.1f}%" if m == "sack" else f"{100 * v:.0f}%")
+        ax.text(max(v, 0) + e + 0.04 * span, y, txt, va="center", ha="left", fontsize=7.0, color=style.INK)
+    ax.set_title(title, fontsize=8.2)
+    ax.grid(axis="y", visible=False)
+    ax.tick_params(axis="x", labelsize=6.8)
+    if m == "epa":
+        ax.axvline(0, color=style.BASELINE, lw=0.8)
+        ax.set_xlim(-0.06, 0.13)
+        ax.set_xticks([-0.05, 0, 0.05, 0.1])
+    else:
+        ax.set_xlim(0, span)
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{100 * x:.0f}%"))
+axes[0].set_yticks(ys)
+axes[0].set_yticklabels([names[k] for k in order], fontsize=7.4)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+Three things stand out. First, the proxy for simulated pressure got the quarterback under pressure on
+`{python} pct(RS["press"])` of dropbacks, close to the `{python} pct(R5["press"])` of a real blitz
+and well above the `{python} pct(R4["press"])` of a normal four-man rush; its sack rate
+(`{python} pct(RS["sack"], 1)`) matched the blitz's (`{python} pct(R5["sack"], 1)`). Second, it got
+there with zone coverage behind it most of the time: the coverage was man on
+`{python} pct(RS["man"])` of these plays, about the same as behind a normal four-man rush
+(`{python} pct(R4["man"])`) and far below the `{python} pct(R5["man"])` behind a blitz. That is the
+creeper's whole promise, in two numbers: blitz-like pressure, four-man-rush coverage. Third, offenses
+did worst against it, in expected points added
+([EPA](../../appendices/glossary.qmd#gl-epa)) per dropback, though the sample is small (simulated
+pressure by this definition was only `{python} pct(SHARE["sim"], 1)` of dropbacks) and the uncertainty
+is wide. Defenses also choose when to call it, and that choice is part of what the number measures.
+
+If simulated pressure is this good, why isn't it called more often? Partly because the proxy
+undercounts it, but mostly because it works *only* as a surprise: its value depends on the offense
+having to respect the blitz, which is why the teams that sim the most also blitz a lot, or at least
+show it.
+
+## Where it came from: Miami, Cincinnati, and "Blitzburgh"
+
+Who invented the zone blitz depends on whom you ask, and the honest answer is that it grew in
+stages, with each coach building on the last.
+
+**Bill Arnsparger's Dolphins.** Arnsparger was Don Shula's defensive coordinator in Miami in two
+stints (1970–73 and 1976–83), a quiet, meticulous coach whose units were famous for being greater
+than their parts: the "No-Name Defense" of the early 1970s and the "Killer B's" of the 1982 Super
+Bowl team.[^arnsparger] In the early 1970s he used linebacker Bob Matheson, who could rush like an
+end or cover like a linebacker, as a defensive end in the 4-3; with Matheson on the line, the
+defense could send five and still cover with six without the offense knowing which five. The package
+was known as the "53" defense, after Matheson's jersey number.[^matheson] "With Bob
+there, with linebacking skills, we were able to rush five guys and cover with six," Arnsparger later
+explained. "That's what you need to run a zone blitz." His catchphrase for what he was after was
+"safe pressure."[^brown] Some histories therefore date the zone blitz to Arnsparger's Miami
+defenses of the early 1970s. Others point instead to the blitzes and zone-based defenses he tinkered
+with in the late 1970s and early 1980s, in his second Miami stint, as the more direct ancestor of what
+came next.[^harrison-nfl]
+
+**Dick LeBeau's Bengals.** Dick LeBeau had been a Hall of Fame cornerback for the Lions (1959–72,
+62 interceptions) before he started coaching. He became Cincinnati's defensive coordinator in 1984,
+facing Bill Walsh's 49ers and the precise, quick passing games spreading through the league, offenses
+that ate man-coverage blitzes alive with hot throws.[^lebeau] He had already been experimenting. Before
+the 1983 season, while still the Bengals' defensive backs coach, he put in a package that showed blitz
+and then had veteran cornerback Ken Riley sit down in a zone with a safety rotating behind him. "We ran
+the zone blitz and the quarterback just threw the ball straight to Ken Riley," he remembered of an
+exhibition game.[^layden] Around the time he became coordinator he visited Arnsparger, by then the
+head coach at LSU, and came away with the "safe pressure" idea, which he built into a system:
+linebackers and defensive backs rushing from many angles, linemen dropping, zone coverage behind. The
+arrival of safety David Fulcher in 1986, a big man who could rush and cover, let him expand it.
+
+**Blitzburgh.** The scheme became famous in Pittsburgh. Bill Cowher's Steelers hired Dom Capers as
+defensive coordinator in 1992 (he stayed through 1994, then left to become the first head coach of the
+Carolina Panthers) and LeBeau as defensive backs coach; LeBeau was coordinator in 1995–96 and again
+from 2004 to 2014.[^capers] Cowher called the scheme "a collaboration between myself and Dom Capers
+and Dick LeBeau." With a 3-4 front whose outside linebackers could both rush and drop, the 1994
+Steelers led the NFL in sacks with 55, a franchise record, and the city got a nickname.[^blitzburgh]
+LeBeau's own description, decades later, is still the best one-sentence summary of the idea: "It's
+a zone area where you would blitz a guy that normally doesn't blitz and make the quarterback figure
+out what's going on."
+
+Both origin stories are true in their way; this book gives Arnsparger the idea and LeBeau the system.
+From Pittsburgh it spread with the coaches: Capers took it to Carolina, and in the 1990s and 2000s the
+fire zone became a standard call for almost every NFL defense, especially once Nick Saban and Bill
+Belichick's pattern-matching rules, worked out in the early 1990s, gave the three underneath defenders
+a better way to handle routes than spot-dropping: the seam-flat and middle-hook rules described
+earlier in this chapter.[^firezone-pm]
+
+::: {.callout-note title="Film room: Steelers, Super Bowl XLIII (Feb. 1, 2009) — the rusher who dropped"}
+The most famous coverage drop in Super Bowl history came straight out of the zone-blitz mindset. Last
+seconds of the first half, Arizona at Pittsburgh's 1-yard line. The Steelers, with LeBeau as
+coordinator, showed a big blitz, and outside linebacker James Harrison, that season's Defensive
+Player of the Year and the Steelers' most dangerous edge rusher, was one of the players the Cardinals
+had to account for.
+Kurt Warner, expecting pressure, threw a quick slant to Anquan Boldin, and Harrison, who had dropped
+instead of rushing, was standing in the lane. He caught it at the goal line and ran 100 yards for a
+touchdown. "We had a play call where we were basically on a max blitz," Harrison said afterward. "Kurt
+had to get it out, so he had to throw a quick slant in or out, and I guessed on in." Accounts differ
+on exactly what Harrison's assignment was and how much of the drop was his own read.[^harrison]
+
+**What to notice:** the play is the zone blitz's logic in pure form. The quarterback reacted to the
+pressure he expected, threw the hot route to the spot the blitz should have emptied, and a man he
+had counted as a rusher was standing in it.
+:::
+
+## The modern sim defenses
+
+By the 2020s the fire zone was standard equipment, and offenses had answers to it: quick throws,
+empty sets, protections that counted the zone-blitz exchanges. The frontier moved to four-man
+simulated pressure, often with two-high coverage behind it, not just Cover 3. Three defenses of the
+2020s are worth knowing.
+
+::: {.callout-note title="Film room: Ravens 2023 — Mike Macdonald's lie about who is coming"}
+Mike Macdonald was Baltimore's defensive coordinator in 2022 and 2023 before becoming the Seahawks'
+head coach in 2024. His 2023 Ravens became the model modern pressure defense without being a
+heavy-blitz defense at all: they blitzed on about 21.5% of dropbacks, below the league average, by one
+count in December. What they did instead was lie. Macdonald "leaned into simulated pressures, making it
+look like they're blitzing when they're not, or disguising where exactly the pass rush is coming
+from," and he was willing to drop 355-pound nose tackle Michael Pierce or 338-pound Travis Jones into
+coverage.[^banner] Cody Alexander's charting that October ranked Baltimore among the league's heaviest
+users of simulated pressure, with "a deep bag of simulated pressures at their disposal" and a defense
+"not afraid to drop interior defensive linemen."[^matchq] The Ravens finished 2023 with
+`{python} BAL23_SACKS` sacks, the most in the NFL, and allowed `{python} f"{BAL23_PA:.1f}"` points a game,
+the fewest.[^ravens]
+
+**What to notice:** on a Ravens third down from 2023, find the biggest man in coverage after the snap.
+Kyle Hamilton, a 6-foot-4 safety, is often the rusher you didn't expect; a defensive tackle is often
+the dropper.
+Macdonald's Seattle defenses carried the same ideas into his head-coaching years: the 2025 Seahawks allowed
+the fewest points in the league (`{python} f"{SEA25_PA:.1f}"` a game) and won Super Bowl LX, 29–13 over
+New England. How his defense combines this pressure with a two-high coverage shell is the second half of
+[Case Study: Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd).
+As head coach he kept calling the defensive plays himself, with Aden Durde as his coordinator.[^macseattle]
+:::
+
+::: {.callout-note title="Film room: Vikings 2023–2024 — Brian Flores and the blitz you have to respect"}
+Brian Flores, Minnesota's defensive coordinator since 2023 (and still in 2026), shows the other half of the bargain: a
+creeper only fools an offense that fears the blitz, and nobody had more reason to fear it than
+Flores's opponents. In 2023 the Vikings rushed five or more on
+`{python} pct(MIN23_BLITZ)` of dropbacks in FTN's charting, the most in the league. In 2024 they
+blitzed less and simmed more: by the FTN proxy, `{python} pct(MIN24_SIM, 1)` of their dropbacks were
+four-man rushes including an off-ball rusher, the second-highest rate in the NFL behind Tampa Bay
+(`{python} pct(TOP24_RATE, 1)`), coached by Todd Bowles, another longtime pressure
+designer.[^vikings] Sports Info Solutions found that through Week 8 of 2024 the Vikings got pressure on
+35% of dropbacks when they rushed four or fewer, sixth in the league, and on 34% when they blitzed,
+27th: the four-man rushes from blitz looks were doing more work than the blitzes.[^sis-vikings]
+
+**What to notice:** a Vikings passing down often starts with six, seven, even eight defenders near the
+line. Count them, then count the rushers. Every call starts from the same picture; that is the point.
+:::
+
+Steve Spagnuolo, Kansas City's coordinator since 2019 and the architect of the 2007 Giants' pass rush,
+belongs on the list too: better known for his man-coverage blitzes ([Blitzing](07-02-blitz-and-man-pressure.qmd)),
+his 2023 Chiefs were also one of the league's heavier sim users (sixth by the FTN proxy, at
+`{python} pct(KC23_SIM, 1)`) and finished with `{python} KC23_SACKS` sacks, second only to Baltimore.
+
+## Third down: when to blitz in zone and when in man
+
+Fire zones and sims are calls, not a defense, and the cleanest pattern in when they're called is on
+third down. On third-and-short a fire zone hands the offense exactly what it wants, a short throw in
+front of three underneath defenders, so a defense that blitzes there usually plays man. On
+third-and-long the short throw it concedes is short of the line to gain, and zone pressure becomes far
+more common.
+
+```{python}
+#| label: fig-zone-behind-blitz
+#| fig-cap: "On third-and-long, a blitz comes with zone coverage behind it (fire zones and other zone pressures) far more often than on third-and-short or medium, where man coverage dominates. Share of five-plus-man rushes on third down played with zone coverage, by yards to go, NFL regular seasons 2023–2025 pooled. The n at the foot of each bar is the number of plays in that group. The charters' man/zone labels shift between seasons, so the levels are rough, but the pattern (lowest at 4–6 yards, highest at 11-plus) holds in each season. Source: nflverse participation and FTN charting data."
+fig, ax = plt.subplots(figsize=(6.0, 2.6))
+xs = np.arange(len(ZB))
+ax.bar(xs, ZB["zone"], color=[style.MUTED, style.MUTED, style.SERIES[1], style.SERIES[1]], width=0.6)
+for x, (z, n) in zip(xs, ZB[["zone", "n"]].itertuples(index=False)):
+    ax.text(x, z + 0.015, f"{100 * z:.0f}%", ha="center", va="bottom", fontsize=8, color=style.INK)
+    ax.text(x, 0.02, f"n = {n:,}", ha="center", va="bottom", fontsize=6.8, color="white")
+ax.set_xticks(xs)
+ax.set_xticklabels([f"3rd and {d}" for d in ZB.index], fontsize=8)
+ax.set_ylim(0, 0.62)
+ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{100 * y:.0f}%"))
+ax.set_ylabel("Blitzes with zone behind", fontsize=8)
+ax.grid(axis="x", visible=False)
+fig.tight_layout()
+plt.show()
+```
+
+Read it with the "count to eleven" table in mind. On third-and-1 to 3, only
+`{python} pct(ZB.loc["1–3", "zone"])` of blitzes came with zone behind them; on third-and-11 or more,
+`{python} pct(ZB.loc["11+", "zone"])`. Man was most dominant of all at 4 to 6 yards (zone on only
+`{python} pct(ZB.loc["4–6", "zone"])`).[^thirddown] That is the fire zone's bargain showing up in the
+data: three underneath defenders are a fine trade when the offense needs 12 yards and a poor one when it
+needs four. Why is third-and-short a little *less* man-heavy than third-and-medium? The data can't say,
+but our reading is the run: on third-and-1 to 3 the offense may well hand off, so some of those
+pressures are run-and-pass calls with slanting linemen and zone behind them, while at 4 to 6 yards it
+almost always throws, and a quick throw against three underneath defenders is exactly what converts.
+(Simulated pressure, which keeps four underneath, is less tied to distance.) Third downs get
+their own chapter in [Third Down: The Money Down](../10-situational-football/10-02-third-down.qmd).
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it"}
+**Before the snap: read the pressure look.**
+
+- **Count the players at or near the line.** Six or more means a pressure look. Is it two linebackers
+  mugging the A gaps, a safety walked down beside an end, a nickel creeping toward the slot?
+- **Count the deep players.** Two safeties deep and the corners off means at most five rushers in any
+  sound call, and probably four. One deep safety leaves room for a fire zone or a Cover 1 blitz; none,
+  with corners pressed, warns of Cover 0.
+- **Find who *could* drop.** Stand-up edge players and any lineman in a two-point
+  [stance](../../appendices/glossary.qmd#gl-stance-two-point-three-point) are the likely droppers; a
+  lineman with his hand down, weight forward, is probably rushing.
+- **Watch the offense react.** A center pointing and re-pointing, a back moving to the other side, a
+  tight end staying in: the offense is changing its protection to answer what it sees.
+
+**After the snap: who dropped?**
+
+- **Find the lineman who dropped into coverage**, and then find who replaced him as a rusher. That
+  pair is the zone blitz. The broadcast's high replay angle shows it best.
+- **Count the rushers.** Five with three deep is a fire zone; four, with one of them a linebacker or
+  defensive back and a lineman in coverage, is a simulated pressure; five or six with man coverage is
+  an ordinary blitz.
+- **Follow the ball.** Did the quarterback throw hot? Was a dropper in the lane? If the quarterback
+  completed it, where was the hole: behind the dropper, over a dropping tackle, or the receiver a
+  blitzing corner left?
+- **Find the blocker who blocked nobody.** On a sim pressure there is usually one: a center or tackle
+  standing with his hands up and no one in front of him. He is the measure of how well the lie worked.
+
+**For your log:** on every third-and-6-or-more for one quarter, write down the number at the line before
+the snap, the number who rushed, and whether a lineman dropped. A defense whose two numbers often differ
+is a sim defense.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: six at the line, two deep"}
+```{python}
+#| label: fig-predict-mugs
+#| fig-cap: "Third-and-9. The offense is in the 2x2 shotgun with the back beside the quarterback. The defense shows six at the line (four linemen, the Mike (M) and Will (W) mugging the two A gaps) with the nickel over H. Behind them: two safeties 13 yards deep and both corners 8 yards off their receivers."
+p1 = Play(spread(), nickel(LDT=(1.0, -2.35), MIKE=(1.9, -0.9), WILL=(1.9, 0.9), FS=(13.0, -8.0), SS=(13.0, 8.0),
+                           LCB=(8.0, -16.0), RCB=(8.0, 16.0)), los=40, to_go=9)
+fld = p1.draw(lateral=(-22, 22), window=(-7.5, 17.0), title=False)
+clean(fld.ax)
+plt.show()
+```
+
+**How many will rush, who is most likely to drop, and what should the quarterback be careful about?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Most likely four or five, not six, and at least one of the mugged linebackers will drop.** Count to
+eleven. Two deep safeties and two off corners are four defenders playing deep or soft. A defense that
+sent six of the other seven would have one man underneath and soft corners: a Cover 0 blitz without
+the press coverage Cover 0 needs. So the likely calls are a **simulated pressure** (four rush, one
+lineman dropping, two deep behind) or a **fire zone** with a safety rotating down at the snap.
+
+**The likely droppers** are one of the two mugged linebackers (they can't both rush and leave the
+middle empty) and probably a lineman, who replaces him underneath.
+
+**The quarterback's danger** is the hot throw: a dropper is very likely to land in the short middle,
+right where the slant against a linebacker blitz goes. Better: quick hitches or outs against corners 8
+yards off, or a route that sits in the hole behind a dropping lineman. One last look before the ball is snapped:
+if both safeties drive down late, it's a Cover 0 blitz after all (a late spin some defenses keep for
+third-and-long), and now the hot throw is exactly right.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: 0.7 seconds after the snap"}
+```{python}
+#| label: fig-predict-dropper
+#| fig-cap: "Second-and-10. The picture is 0.7 seconds after the snap; the dashed outlines show where the defenders started. The 3-technique tackle (purple ring) has turned and is dropping. The Will (red ring) is rushing through the left B gap, between the guard and the tackle. One safety is in the middle of the field and the corners are bailing."
+def dropper_play():
+    p = Play(spread(), nickel(), los=35, to_go=10)
+    p.dropback(2.0)
+    for k, w in zip(["LT", "LG", "C", "RG", "RT"], (-3.9, -1.2, 0.0, 1.8, 3.8)):
+        timed(p, k, [(0.6, -1.6, w)], "block")
+    timed(p, "RB", [(0.7, -4.2, -2.6)], "block")
+    timed(p, "WILL", [(0.7, 0.1, -2.9)], "rush"); timed(p, "LDE", [(0.7, -0.6, -4.6)], "rush")
+    timed(p, "LDT", [(0.7, -0.5, -0.5)], "rush"); timed(p, "RDE", [(0.7, -0.6, 4.6)], "rush")
+    timed(p, "RDT", [(0.35, 1.6, 2.6), (0.7, 3.4, 3.0), (1.5, 5.0, 2.6)], "drop")
+    timed(p, "MIKE", [(0.7, 6.4, -1.8)], "drop"); timed(p, "NB", [(0.7, 6.0, -10.0)], "drop")
+    timed(p, "SS", [(0.7, 7.0, 10.0)], "drop")
+    timed(p, "LCB", [(0.7, 10.0, -15.5)], "drop"); timed(p, "RCB", [(0.7, 10.0, 15.5)], "drop")
+    timed(p, "FS", [(0.7, 14.5, 0.0)], "drop")
+    p.route("X", r.go(19)); p.route("Z", r.dig(12, 9)); p.route("Y", r.seam(18)); p.route("H", r.slant(2, 6))
+    return p
+
+
+p2 = dropper_play()
+snapshot(p2, 0.7, ghosts=("RDT", "WILL"), ghost_t=0.0,
+         rings=[("RDT", PURPLE), ("WILL", RED)], lateral=(-21, 21), window=(-8.0, 17.0))
+plt.show()
+```
+
+**What is this, what is probably behind it, and where should the ball go?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**A simulated pressure: four rush (the Will and three linemen), and a tackle drops.** Count the
+rushers: the left end, the 1-technique, the right end and the Will, four in all, with one of them a
+linebacker and one of the linemen going the other way. With the middle of the field closed and the
+corners bailing, the coverage behind it is most likely **Cover 3**: three deep, four under, with the
+dropping tackle as one of the underneath players, walling off the short middle around 4 to 6 yards.
+
+**Throw away from the dropper, and over him.** A tackle can't get much deeper than 5 or 6 yards before
+the throw, so the window *behind* him, an in-cut at 10 to 14 yards on the right side, is open, and so
+are the classic Cover 3 holes on the far side. Not the quick slant inside off the Will's blitz: that
+is the throw the dropper is there for.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: third-and-2"}
+```{python}
+#| label: fig-predict-short
+#| fig-cap: "Third-and-2 near midfield. Six defenders at or near the line and one safety deep in the middle. Look at the three ringed defenders, both corners and the nickel: where are they standing relative to their receivers, and how far off?"
+p3 = Play(spread(), nickel(MIKE=(1.3, 0.8), WILL=(3.0, -3.0), NB=(1.5, -8.8), LCB=(1.2, -15.0), RCB=(1.2, 15.0),
+                           SS=(6.0, 7.0)), los=50, to_go=2)
+p3.highlight("LCB", "RCB", "NB")
+fld = p3.draw(lateral=(-22, 22), window=(-7.5, 17.0), title=False)
+clean(fld.ax)
+plt.show()
+```
+
+**If this is a blitz, will the coverage behind it be zone (a fire zone) or man? And what's the
+offense's answer?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Man, most likely a Cover 1 blitz.** Two reasons. *The situation:* on third-and-short a fire zone
+gives up exactly what the offense needs, a short throw in front of three underneath defenders, so
+defenses that blitz on third-and-1 to 3 play man behind it about three times in four (the
+third-down chart above). *The picture:* the corners are pressed, a yard off and square to their
+receivers, and the nickel is tight on the slot. Those are man techniques ([Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)),
+and one deep safety is the Cover 1 shell.
+
+**The answer** is the [man-beater](../../appendices/glossary.qmd#gl-man-beater): quick throws that
+win against tight man coverage, such as a slant, a rub or pick concept where two receivers cross, or a
+back-shoulder fade (thrown to the outside shoulder, away from a defender who is running with the
+receiver), timed to come out before the extra rusher arrives, with the protection set to
+leave the free man (if there is one) on the side away from the throw. A smart defense knows the
+offense expects man here, which is exactly when a sim with zone behind it is worth calling.
+:::
+:::
+
+## Checklist so far (Parts 1–7)
+
+Part 7 ends here, so the card grows again. The new lines are the **pressure tells**. Read them right
+after the shell, because the shell tells you how many defenders are committed deep, and so how many the
+defense has left to rush.
+
+```{python}
+#| label: fig-checklist
+#| fig-cap: "The watching checklist after seven parts of the book. Earlier lines come from Parts 1–6; the highlighted lines are new in Part 7: the pressure look and who could drop or rush before the snap, the protection the offense chooses in answer, and after the snap the rusher count, the dropper and his replacement, and the stopwatch on the pressure. The card becomes the master checklist of the capstone."
+import textwrap
+items = [
+    ("BEFORE THE SNAP", None, None),
+    ("1", "Situation: down, distance, field zone, clock and score", "Part 1", False),
+    ("2", "Personnel: who is on the field for each side", "02-01, 02-05", False),
+    ("3", "Formation and strength: 2x2, 3x1, where is the tight end?", "02-02 to 02-04", False),
+    ("4", "Motion: does a defender travel (man), bump (zone) or spin a safety?", "02-06", False),
+    ("5", "Box count: blockers against defenders near the line", "02-05, 05-05", False),
+    ("6", "Shell: one-high or two-high? Depth and width of each safety", "06-01, 06-06", False),
+    ("7", "Corners: technique says man or zone; leverage says where the help is", "06-01 to 06-06", False),
+    ("8", "Pressure look: how many at or near the line? A-gap mugs, a safety or nickel walked up?", "07-02, 07-03", True),
+    ("9", "Who could drop, who could rush? Count the deep players: they cap the rush", "07-03", True),
+    ("10", "Protection: where is the back, which way will they slide, who is hot? Where is the best rusher, and the help?", "04-02, 07-01", True),
+    ("AT THE SNAP", None, None),
+    ("11", "Run or pass: the offensive linemen's first step", "Parts 3–4", False),
+    ("12", "Rotation: did a safety move during the cadence, at the snap, or not at all?", "06-06", False),
+    ("13", "Count the rushers: three, four, five or more? Who dropped, and who replaced him?", "07-02, 07-03", True),
+    ("ONE SECOND AFTER", None, None),
+    ("14", "Middle of the field: closed (1 deep) or open (2)? Then the corners: squat, bail or trail", "06-01 to 06-06", False),
+    ("15", "Trips? Backside safety: home, poach, rotate or solo?", "06-06", False),
+    ("16", "Pressure: stopwatch from snap to pressure. Did the ball go hot, and into a dropper?", "07-01, 07-03", True),
+    ("17", "Log it: your pre-snap call against what it became; at the line vs rushed", "06-06, 07-03", True),
+]
+rows = []
+for it in items:
+    if it[1] is None:
+        rows.append(("head", it[0], 1))
+    else:
+        lines = textwrap.wrap(it[1], 62)
+        rows.append(("item", (it[0], lines, it[2], it[3]), len(lines)))
+n_lines = sum(h for _, _, h in rows) + 0.15 * sum(k == "item" for k, _, _ in rows) + 4.2
+fig, ax = plt.subplots(figsize=(6.5, 0.24 * n_lines))
+ax.set_xlim(0, 100); ax.set_ylim(0, n_lines); ax.axis("off")
+ax.add_patch(FancyBboxPatch((0.8, 0.3), 98.4, n_lines - 0.6, boxstyle="round,pad=0.2,rounding_size=0.8",
+                            fc=style.SURFACE, ec=style.BASELINE, lw=1.2))
+ax.text(3, n_lines - 1.3, "Watching checklist · after Part 7", fontsize=11, fontweight="bold",
+        color=style.INK, va="center")
+ax.text(97, n_lines - 1.3, "new in Part 7", fontsize=8, color=style.INK_2, ha="right", va="center",
+        bbox=dict(boxstyle="round,pad=0.3", fc=style.DEFENSE_TINT, ec="none"))
+y = n_lines - 2.8
+for kind, payload, h in rows:
+    if kind == "head":
+        ax.text(3, y, payload, fontsize=8, fontweight="bold", color=style.INK_2, va="center")
+        y -= 1.0
+        continue
+    num, lines, where, new = payload
+    top, bottom = y + 0.45, y - (h - 1) - 0.45
+    if new:
+        ax.add_patch(FancyBboxPatch((2.2, bottom), 95.6, top - bottom, boxstyle="round,pad=0.05,rounding_size=0.4",
+                                    fc=style.DEFENSE_TINT, ec="none"))
+    ax.text(5.5, y, num, fontsize=8.5, fontweight="bold", color=style.DEFENSE_DARK, va="center", ha="center")
+    for j, ln in enumerate(lines):
+        ax.text(9.0, y - j, ln, fontsize=8, color=style.INK, va="center")
+    ax.text(97, y, where, fontsize=7, color=style.INK_2, va="center", ha="right")
+    y -= h + 0.15
+plt.show()
+```
+
+## Takeaways
+
+- **A blitz trades coverage for pressure; the zone blitz tries not to.** It rushes a defender the
+  protection didn't count and drops one it did (a lineman, the *dropper*), so the rush is confusing and
+  the coverage behind it is still zone.
+- **The fire zone is the standard form:** five rush, three under, three deep. It refuses the deep ball
+  and accepts short throws; its holes live next to the slowest dropper and move with each variant.
+- **Protections and hot reads lose to rules, not people.** The Mike call, the slide and the hot are
+  predictions keyed to *who* rushes. A pressure look gets the offense to commit; the zone blitz brings
+  rushers from wherever it didn't, and drops a man into the hot throw's lane.
+- **Simulated pressure (the creeper) does it with four.** Four rushers from unexpected places, seven in
+  coverage: it wins one-on-ones and makes blockers block air without paying in coverage. In 2023–2025
+  charting it produced blitz-like pressure and sack rates with four-man-rush coverage behind it.
+- **It only works if the blitz is real.** Creepers fool offenses that must respect a blitz, so the best
+  sim defenses (Macdonald's Ravens and Seahawks, Flores's Vikings) also show, and sometimes bring,
+  everything.
+- **Count to eleven.** Rushers plus underneath plus deep equals eleven. Count the deep players before the
+  snap to cap the rush, and count the rushers after it to name what you saw.
+
+## Connections
+
+**Builds on:** [Blitzing](07-02-blitz-and-man-pressure.qmd) (blitz math, man pressure and mugs, the costs
+this chapter's schemes try to avoid), [Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd)
+(the slide, the Mike call, check-release and the hot throw, all of which a zone blitz attacks),
+[Cover 3](../06-pass-coverage/06-03-cover-3-family.qmd) (the three-deep structure and the seam-flat
+defender behind every fire zone), [The Pass Rush](07-01-pass-rush.qmd) (rush lanes and stunts) and
+[Disguise, Rotation, and Split-Field Coverage](../06-pass-coverage/06-06-disguise-rotation-and-split-field.qmd)
+(show one thing, play another, now applied to the rush).
+
+**Sets up:** [Concepts Versus Coverages](../08-the-chess-match/08-01-concepts-versus-coverages.qmd), where
+the quarterback's side of the read (blitz-beaters and zone-blitz beaters) is built;
+[Third Down: The Money Down](../10-situational-football/10-02-third-down.qmd), where these calls live;
+and [1978 and the Passing Revolution](../11-history/11-02-the-1978-liberation.qmd), which places the zone
+blitz in the arms race that the passing rules of 1978 started.
+
+**Case study:** [Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd)
+follows simulated pressure into the modern two-high era, from Macdonald's Ravens to his Super Bowl
+champion Seahawks.
+
+::: {.callout-note title="Go deeper"}
+- Chris B. Brown, "Controlled Chaos," Grantland (2012), and *The Art of Smart Football* (2015): the
+  clearest short history of the zone blitz and how pattern matching remade the fire zone.
+- Tim Layden, *Blood, Sweat and Chalk* (2010): LeBeau, Capers and Arnsparger in their own words, in
+  the chapter on the zone blitz.
+- Cody Alexander's MatchQuarters newsletter: modern fire zones and sim pressures from a coach's point
+  of view, with film cut-ups.
+- Ted Nguyen's film breakdowns at *The Athletic*, and Sports Info Solutions' pressure research, for how
+  NFL defenses use simulated pressure week to week.
+:::
+
+[^firezone]: The definition follows Chris B. Brown, "Controlled Chaos," Grantland (Sept. 26, 2012), cited in full in the note on Arnsparger and Matheson: "The most common modern zone blitz is the 'fire zone,' a five-man blitz behind which the defense plays coverage with three defenders deep and three underneath." "Fire zone" is also used loosely for any zone pressure; staffs differ.
+
+[^sis]: Brad Beatson, "Brian Flores: The Bogeyman," Sports Info Solutions (Oct. 31, 2024): https://www.sportsinfosolutions.com/2024/10/31/brian-flores-the-bogeyman , quoting Ted Nguyen of *The Athletic*: simulated pressure is "multiple defenders on the line of scrimmage showing blitz but the defense only ends up rushing four and dropping seven into coverage."
+
+[^ftn]: Course calculation from nflverse play-by-play, `load_participation()` and `load_ftn_charting()`, 2023–2025 regular seasons, dropbacks with FTN's `n_pass_rushers` and `n_blitzers` recorded. Rush types: four rushers and no blitzers; four rushers with at least one blitzer (the simulated-pressure proxy); five or more. Pressure = FTN's `was_pressure` or a sack. Man share = plays charted `MAN_COVERAGE` among those charted man or zone. FTN's data dictionary defines `n_blitzers` only as "number of blitzers"; reading it as rushers who were not down linemen fits the counts (most four-man rushes have none; most five-man rushes have one) but is the course's interpretation. Course check of the 2023–2025 counts (all charted plays with a rush): of four-man rushes, 93% have no blitzer; of five-man rushes, 80% have exactly one and 12% none; six-man rushes usually have two and seven-man rushes three. Those counts fit a position-based definition (a rusher who isn't a lineman or regular edge rusher) better than a simple "rushers beyond four" count, which could never put a blitzer in a four-man rush.
+
+[^arnsparger]: "Bill Arnsparger," Wikipedia: https://en.wikipedia.org/wiki/Bill_Arnsparger (Dolphins defensive coordinator 1970–73 and 1976–83, Giants head coach 1974–76, LSU head coach 1984–86; the No-Name Defense and the Killer B's). Miami Dolphins, "Bill Arnsparger named 2020 Dr. Z Award winner": https://www.miamidolphins.com/news/bill-arnsparger-named-2020-dr-z-award-winner
+
+[^brown]: Chris B. Brown, "Controlled Chaos," Grantland (Sept. 26, 2012): https://grantland.com/features/dick-lebeau-evolution-coverage-tactics-zone-blitz/ (Matheson "a linebacker whom Arnsparger began using as a defensive end in their 4-3 scheme"; the Arnsparger quote; "'Bill's catchphrase was that he wanted to get "safe pressure," on the quarterback,' LeBeau told Layden"). Layden (*SI*, cited in full below) dates Arnsparger's use of Matheson to 1971, as does Wikipedia's "Zone blitz" article: https://en.wikipedia.org/wiki/Zone_blitz . No primary source found names a specific Dolphins zone pressure of the 1980s, so the text stays general.
+
+[^lebeau]: "Dick LeBeau," Wikipedia: https://en.wikipedia.org/wiki/Dick_LeBeau (Lions cornerback 1959–72, 62 interceptions; Hall of Fame class of 2010; Bengals defensive backs coach 1980–83 and defensive coordinator 1984–91; Steelers defensive backs coach 1992–94 and coordinator 1995–96 and 2004–14). On the visit to Arnsparger at LSU and the motive (Walsh's passing game), Brown, "Controlled Chaos" (cited in full above).
+
+[^layden]: Tim Layden, "Inside the zone blitz: LeBeau and Capers help modernize NFL defense," SI.com (Jan. 31, 2011): https://www.si.com/more-sports/2011/01/31/zone-blitz (the Ken Riley quote, from an exhibition game, and the 1983 package it came from, put in "before the 1983 season" while LeBeau was defensive backs coach; David Fulcher's arrival in 1986; and the Capers–LeBeau collaboration; adapted from Layden's *Blood, Sweat and Chalk*).
+
+[^capers]: "Dom Capers," Wikipedia: https://en.wikipedia.org/wiki/Dom_Capers (Steelers defensive coordinator 1992–94; Panthers head coach 1995–98; Texans head coach 2002–05; Packers defensive coordinator 2009–17).
+
+[^blitzburgh]: Steelers.com, "A Steelers Story: Birth of Blitzburgh set to premiere" (Dec. 11, 2024): https://www.steelers.com/news/a-steelers-story-birth-of-blitzburgh-set-to-premiere (the Cowher and LeBeau quotes; 1994 as the first year of "Blitzburgh"). Sacks: Steelers.com, "1994 AFC Divisional Playoffs": https://www.steelers.com/news/1994-afc-divisional-playoffs-957069 ("The Steelers also would go into the playoffs as the NFL's leader in sacks, and the 55 they racked up also set a franchise record"). Cross-checked: Steelers Depot (Jan. 2018) gives the same 55 (Kevin Greene 14), a total the 2001 team matched and the 2017 team broke with 56: https://steelersdepot.com/2018/01/steelers-franchise-record-56-sacks-product-depth-volume
+
+[^harrison-nfl]: Elliot Harrison, "Zone blitz has come a long way since the advent of the 3-4," NFL.com (undated on the page): https://www.nfl.com/news/zone-blitz-has-come-a-long-way-since-the-advent-of-the-3-4-09000d5d81e01d8e ("LeBeau met with former Dolphins defensive coordinator Bill Arnsparger, who had tinkered with different blitzes and zone-based defenses in the late '70s and early '80s").
+
+[^matheson]: "Bob Matheson," Wikipedia: https://en.wikipedia.org/wiki/Bob_Matheson ("Matheson's versatility against both the run and pass was at the heart of the '53' defense, a scheme that was named for his jersey number and devised by Arnsparger"; Dolphins 1971–79).
+
+[^firezone-pm]: Pattern-matching origins (Saban and Belichick, early 1990s) as the basis of modern fire-zone coverage: Brown, "Controlled Chaos" (cited in full above).
+
+[^harrison]: Harrison's quote: "Harrison's interception return TD sets Super Bowl record," Patriots.com (Feb. 1, 2009): https://www.patriots.com/news/harrison-s-interception-return-td-sets-super-bowl-record-105901 (18 seconds left in the half, first down at the Pittsburgh 1; the pass was intended for Anquan Boldin on a slant; that report says Harrison's job was coverage on running back Tim Hightower). Layden's SI piece (cited in full above) describes it instead as a designed zone blitz, Harrison showing blitz and dropping; Harrison's own words ("basically on a max blitz ... I guessed on in") suggest his own read. AP Defensive Player of the Year 2008: Steelers.com, "Steelers' Harrison named AP Defensive Player of the Year" (Jan. 2009): https://www.steelers.com/news/steelers-harrison-named-ap-defensive-player-of-the-year-959595
+
+[^banner]: Kyle Goon, "Mike Macdonald has made the Ravens' defense shine. How long until he becomes a head coach?," *The Baltimore Banner* (Dec. 26, 2023): https://www.thebanner.com/sports/ravens-nfl/ravens-mike-macdonald-kyle-hamilton-defense-nfl-head-coaching-4PJFXVUVPNEYZGTWWQQRWGV3MY/ (the 21.5% blitz rate, the simulated-pressure quote and the Pierce and Jones weights, as of late December 2023).
+
+[^matchq]: Cody Alexander, "Cool Clips: The Ravens 'Tag' Sim vs. the Lions," MatchQuarters (Oct. 30, 2023): https://www.matchquarters.com/p/baltimore-ravens-tag-sim-vs-lions-mike-macdonald (through Week 6 of 2023, citing PFF data, Alexander ranks the Ravens 4th in simulated-pressure rate; the post does not say what the rate is a share of, so the text gives the rank only; the two quoted phrases are from one sentence: "Baltimore has a deep bag of simulated pressures at their disposal and is not afraid to drop interior defensive linemen").
+
+[^ravens]: Course calculation from nflverse 2023 regular-season play-by-play (team sacks: Baltimore `{python} BAL23_SACKS`, the league high) and schedules (points allowed per game: Baltimore `{python} f"{BAL23_PA:.1f}"`, the league low). Seattle 2025 (`{python} f"{SEA25_PA:.1f}"` points allowed a game, the league low) from the same schedules; Super Bowl LX result from planning/FACTS-current.md §1. Kyle Hamilton's listed height (6 ft 4 in): https://en.wikipedia.org/wiki/Kyle_Hamilton
+
+[^vikings]: Course calculation from nflverse play-by-play and FTN charting, regular seasons: Minnesota 2023 rushed five or more on `{python} pct(MIN23_BLITZ, 1)` of charted dropbacks (league high); 2024 four-man rushes with at least one FTN "blitzer," Minnesota `{python} pct(MIN24_SIM, 1)` (rank `{python} MIN24_RANK`), Tampa Bay `{python} pct(TOP24_RATE, 1)` (rank 1; Todd Bowles has been the Buccaneers' head coach since 2022: https://en.wikipedia.org/wiki/Todd_Bowles). Chiefs 2023: `{python} pct(KC23_SIM, 1)` (rank `{python} KC23_RANK`), `{python} KC23_SACKS` sacks. Note that the proxy ranks the 2023 Ravens only `{python} BAL23_RANK`th, which is one reason not to treat it as a complete count of simulated pressure.
+
+[^sis-vikings]: Beatson, "Brian Flores: The Bogeyman" (cited in full in the note on Nguyen's definition): through Week 8 of 2024, pressure rate 35% (6th) with four or fewer rushers and 34% (27th) with five or more; blitz rate 40% through Week 8 of 2024 against 52% at the same point of 2023 by SIS's charting.
+
+[^thirddown]: Course calculation from nflverse participation (`defense_man_zone_type`) and FTN charting, 2023–2025 regular seasons, third-down dropbacks with five or more rushers and a man or zone label. By season, the zone share at 3rd-and-11+ was `{python} ", ".join(pct(v) for v in ZB_S["11+"])` and at 3rd-and-4 to 6 `{python} ", ".join(pct(v) for v in ZB_S["4–6"])` (2023, 2024, 2025).
+
+[^macseattle]: Fox 13 Seattle (AP), "Mike Macdonald's focus on defense a perfect fit for Seattle Seahawks heading into Super Bowl" (Feb. 3, 2026): https://www.fox13seattle.com/sports/macdonald-focus-defense-perfect-fit-seahawks ("the primary defensive play-caller for his team"); on 2024, Yakima Herald, "How Seahawks' DC Aden Durde makes his impact despite not calling plays": https://www.yakimaherald.com/sports/professional_sports/seahawks/how-seahawks-dc-aden-durde-makes-his-impact-despite-not-calling-plays/article_c9142f9a-3749-599d-85c6-a6be4f8f9e41.html . Durde as 2025 DC: planning/FACTS-current.md §1.
