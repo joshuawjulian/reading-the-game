@@ -1,0 +1,1874 @@
+---
+title: "The Pass Rush: Moves, Stunts, and Why Pressure Beats Sacks"
+subtitle: "Four men, about two and a half seconds, and a 315-pound obstacle each: how a defense gets to the quarterback without blitzing, and how to see it from the couch"
+description: "The pass rush from the defense's side: get-off and the rush arc; the main moves (speed rush, bull rush, long arm, swim, rip, spin) and the counters built on them (speed-to-power, cross-chop, ghost); the rush plan that sets one move up with another; stunts and games (T-E, E-T, the interior twist) and what they do to slide and man protection; rush lanes, contain and the mush rush against a quarterback who runs; and the numbers: why pressure is steadier than sacks, how much of a sack belongs to the quarterback, pass rush win rate, get-off and time to pressure."
+glossary:
+  Get-off: "A pass rusher's first movement at the snap: how quickly he reacts to the ball moving and gets across the line of scrimmage. Tracking data measures it in tenths of a second, and a tenth of a second is most of a yard."
+  "Speed rush": "A pass rush that tries to beat the offensive tackle around the outside, to the corner of the pocket, before he can get in front: a fast get-off, a curved path (the arc), a dip of the shoulder under the tackle's hands, and a bend back toward the quarterback."
+  "Bull rush": "A pass rush straight through the blocker: hands inside on his chest, legs driving, pushing him backward into the quarterback instead of trying to get around him."
+  "Long arm": "A power rush move: the rusher locks one arm straight into the blocker's chest, so the blocker cannot reach him, and drives him back, keeping the other hand free to shed the block and escape."
+  "Swim move": "A pass rush move that clears the blocker's hands with one hand and then throws the other arm over the top of his shoulder, like a swimming stroke, to get past him."
+  "Rip move": "A pass rush move in which the rusher drives his inside arm up under the blocker's arm and through his armpit, like an uppercut, to lift the blocker's arm away and get his own hips past him; the usual finish of a speed rush."
+  "Spin move": "A pass rush counter in which the rusher, with the blocker committed to one side, plants and spins all the way around, back toward the other side, to come free; very effective when it works, and it can carry him out of the play when it doesn't."
+  "Speed-to-power": "A rush that starts as a speed rush to make the tackle retreat fast, then turns straight into him and converts that speed into a bull rush while his weight is still going backward and he cannot anchor."
+  "Cross-chop": "A hand move against a blocker's punch: the rusher swings his outside arm across his own body and chops down on the blocker's hands or forearms, usually followed by a rip or dip, so the blocker never gets a grip."
+  "Ghost (rush move)": "A speed move with no hand contact at all, timed to the blocker's punch: at the instant the tackle strikes, the rusher turns his inside shoulder away (and dips it), so the punch hits air and the tackle lunges forward, then bends around him."
+  "Rush plan": "A pass rusher's planned sequence of moves across a game: show one move until the blocker adjusts to stop it, then use the counter his adjustment opens."
+  Stunt: {def: "A planned pass-rush movement in which two or more rushers exchange gaps after the snap: one goes first to occupy blockers (the penetrator) and the other loops around behind him into the space he left (the looper).", aliases: ["Pass-rush game"]}
+  "T-E stunt": "A two-man stunt in which the defensive tackle goes first, driving into the offensive tackle's inside half to pick him and take over contain, and the end loops around behind him into the inside gap the tackle left."
+  "E-T stunt": "A two-man stunt in which the end goes first, crashing inside, and the defensive tackle loops around behind him to the outside, taking over the end's rush lane."
+  "Rush lane": "The path to the quarterback that each rusher in a four-man rush is responsible for; if every rusher stays in his lane, the quarterback has no gap to step up or escape through, and if one leaves his lane, a hole opens."
+  "Mush rush": "A deliberately controlled pass rush, used mostly against quarterbacks who run: the ends give up trying to beat their tackles around the corner and instead push them straight back from their outside shoulders, so the pocket is squeezed from all sides rather than raced into. Also called a cage rush."
+  "Pass rush win rate": {def: "ESPN's measure, built from NFL Next Gen Stats tracking data, of how often a pass rusher beats his block within 2.5 seconds of the snap; the fixed clock keeps the quarterback's habits out of the number.", aliases: ["PRWR"]}
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import logging
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, Polygon, RegularPolygon
+from gridiron import Play, Player, Field, style
+import gridiron.play as _gp
+
+# Slightly smaller player markers than the book default: this chapter lives in the space between linemen.
+_gp.draw_marker.__defaults__ = (None, 0.62)
+
+GREEN = "#0f7a55"          # darker step of the aqua highlight, for text on the light field
+PURPLE = style.SERIES[6]   # a ring colour that is neither offense blue nor defense orange
+RED = style.SERIES[7]
+ARM = style.DEFENSE_DARK
+OL_KEYS = ["LT", "LG", "C", "RG", "RT"]
+SPLIT = 1.6                # center-to-guard and guard-to-tackle spacing, as in the rest of the book
+
+
+def O(key, pos, d, w, label=None):
+    return Player(key, pos, "off", d, w, label=label or key)
+
+
+def D(key, pos, d, w, label):
+    return Player(key, pos, "def", d, w, label=label)
+
+
+def line(keys=OL_KEYS):
+    """Offensive linemen, labelled so the reader can follow each one."""
+    return [O(k, k, -0.7, (OL_KEYS.index(k) - 2) * SPLIT, k) for k in keys]
+
+
+def four_down(lbs=False):
+    """A generic four-man rush: a wide end on each side, a 1-technique shaded on the center's left,
+    a 3-technique on the right guard's outside shoulder; optionally two linebackers."""
+    out = [D("LE", "DE", 1.0, -5.4, "E"), D("NT", "DT", 1.0, -0.7, "1"),
+           D("DT", "DT", 1.0, 2.35, "3"), D("RE", "DE", 1.0, 5.4, "E")]
+    if lbs:
+        out += [D("MIKE", "MIKE", 4.6, 1.3, "M"), D("WILL", "WILL", 4.6, -2.2, "W")]
+    return out
+
+
+def to(p, key, end, kind="block", via=(), delay=0.0, speed=None):
+    """Move `key` through absolute (d, w) points `via` to `end` as a block, rush, path or run."""
+    start = np.array(p._cur(key))
+    pts = [tuple(np.array(q) - start) for q in (*via, end)]
+    if kind == "block":
+        return p.block(key, pts=pts, delay=delay, speed=speed)
+    if kind == "rush":
+        return p.rush(key, pts=pts, delay=delay, speed=speed)
+    return {"path": p.path, "run": p.run}[kind](key, pts, delay=delay, speed=speed)
+
+
+def timed(p, key, way, kind="path"):
+    """Script a player for the frame strips: `way` = [(t, d, w), ...] absolute spots reached at time t
+    (seconds after the snap). Standing still between two times is allowed."""
+    cur = np.array(p._cur(key), dtype=float)
+    tc, wait = 0.0, 0.0
+    for t, d, w in way:
+        nxt = np.array([d, w], dtype=float)
+        dist = float(np.hypot(*(nxt - cur)))
+        if dist < 1e-3:
+            wait += t - tc
+        else:
+            p._add(kind, key, [tuple(cur), tuple(nxt)], speed=dist / (t - tc), delay=wait)
+            wait = 0.0
+            cur = nxt
+        tc = t
+    return p
+
+
+def _P(fld, p, d, w):
+    return fld.xy(*p.to_abs(d, w))
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=7.0, ha="center", weight="normal"):
+    """A short on-field label at (d, w)."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=12, fontweight=weight,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.92))
+
+
+def point_to(fld, p, text_at, target, text, color=style.INK_2, fontsize=6.8, shrink=7):
+    """A label with a thin leader line to the player or spot it names."""
+    (xt, yt), (xp, yp) = _P(fld, p, *text_at), _P(fld, p, *target)
+    fld.ax.annotate(text, (float(xp), float(yp)), xytext=(float(xt), float(yt)), fontsize=fontsize,
+                    color=color, ha="center", va="center", zorder=12,
+                    arrowprops=dict(arrowstyle="-", color=color, lw=0.7, shrinkA=2, shrinkB=shrink),
+                    bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.92))
+
+
+def dashed(fld, p, pts, color=RED, lw=1.8, end="arrow", dash=(0, (3, 1.8)), z=6):
+    """A dashed path through absolute (d, w) points, ending in an arrow or a block bar ('tee')."""
+    xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+    xs, ys = np.asarray(xs, float), np.asarray(ys, float)
+    fld.ax.plot(xs, ys, color=color, lw=lw, ls=dash, zorder=z)
+    if end == "arrow":
+        fld.ax.add_patch(FancyArrowPatch((xs[-2] + 0.6 * (xs[-1] - xs[-2]), ys[-2] + 0.6 * (ys[-1] - ys[-2])),
+                                         (xs[-1], ys[-1]), arrowstyle="-|>", mutation_scale=11, color=color,
+                                         lw=lw, zorder=z))
+    elif end == "tee":
+        v = np.array([xs[-1] - xs[-2], ys[-1] - ys[-2]])
+        n = np.linalg.norm(v)
+        perp = np.array([-v[1], v[0]]) / n * 0.75
+        fld.ax.plot([xs[-1] - perp[0], xs[-1] + perp[0]], [ys[-1] - perp[1], ys[-1] + perp[1]], color=color,
+                    lw=lw + 0.6, zorder=z)
+
+
+def pushed(fld, p, a, b):
+    """A blocker driven backward from a to b: dashed dark blue with a block bar."""
+    dashed(fld, p, [a, b], color=style.OFFENSE_DARK, lw=1.6, end="tee", dash=(0, (2.2, 1.6)), z=4.5)
+
+
+def arm(fld, p, a, b, lw=3.4, color=ARM):
+    """An arm (or hands) as a thick stroke from a to b, with a dot for the hand: dark orange for the rusher,
+    dark blue (color=style.OFFENSE_DARK) for the blocker."""
+    (x0, y0), (x1, y1) = _P(fld, p, *a), _P(fld, p, *b)
+    fld.ax.plot([x0, x1], [y0, y1], color=color, lw=lw, solid_capstyle="round", zorder=9.5)
+    fld.ax.plot([x1], [y1], marker="o", ms=4.2, color=color, mec="white", mew=0.6, zorder=9.6)
+
+
+def curl(fld, p, a, b, rad=-0.6, color=ARM, lw=1.6):
+    """A curved arrow from a to b: a hand or arm move (swim over the top, rip up through)."""
+    (x0, y0), (x1, y1) = _P(fld, p, *a), _P(fld, p, *b)
+    fld.ax.add_patch(FancyArrowPatch((float(x0), float(y0)), (float(x1), float(y1)), arrowstyle="-|>",
+                                     mutation_scale=10, color=color, lw=lw, zorder=9.5,
+                                     connectionstyle=f"arc3,rad={rad}"))
+
+
+def ghost(fld, p, d, w, label="", side="def", alpha=0.45):
+    """A faint marker: where a player is at a moment the static diagram does not otherwise show."""
+    x, y = (float(v) for v in _P(fld, p, d, w))
+    if side == "def":
+        fld.ax.add_patch(RegularPolygon((x, y), 4, radius=0.62 * 1.25, orientation=np.pi / 4, fc=style.DEFENSE_TINT,
+                                        ec=style.DEFENSE, lw=1.1, alpha=alpha, zorder=7, ls=(0, (2, 1))))
+    else:
+        fld.ax.add_patch(Circle((x, y), 0.62, fc=style.OFFENSE, ec="white", lw=0.6, alpha=alpha, zorder=7))
+    if label:
+        fld.ax.text(x, y, label, ha="center", va="center", fontsize=6.5, color=style.INK, alpha=0.8, zorder=7.5,
+                    fontweight="bold")
+
+
+def badge(fld, p, d, w, text, color=PURPLE, fontsize=7.4):
+    """A small numbered badge on a path: the order in which rushers go."""
+    x, y = _P(fld, p, d, w)
+    fld.ax.text(float(x), float(y), text, fontsize=fontsize, color="white", ha="center", va="center", zorder=13,
+                fontweight="bold", bbox=dict(boxstyle="circle,pad=0.18", fc=color, ec="white", lw=0.6))
+
+
+def lane(fld, p, pts, color=style.DEFENSE, alpha=0.11):
+    """Shade a rush lane: a polygon through absolute (d, w) points."""
+    xy = np.array([_P(fld, p, d, w) for d, w in pts], dtype=float)
+    fld.ax.add_patch(Polygon(xy, closed=True, fc=color, alpha=alpha, ec=color, lw=0.8, ls=(0, (3, 2)), zorder=1.4))
+
+
+def clean(ax):
+    """Box-zoomed diagrams: drop hash ticks and yard numbers, clip text to the window."""
+    for ln in list(ax.lines):
+        xs, ys = ln.get_data()
+        if len(xs) == 2 and ln.get_linewidth() == 0.5 and np.hypot(xs[1] - xs[0], ys[1] - ys[0]) < 1.0:
+            ln.remove()
+    for t in list(ax.texts):
+        if t.get_text().isdigit() and t.get_alpha() == 0.55:
+            t.remove()
+        else:
+            t.set_clip_on(True)
+
+
+def draw(p, width_in=5.8, ax=None, ol_fs=None, **kw):
+    """Play.draw, sized for the page and cleaned for a box-sized window. ol_fs shrinks the two-letter line
+    labels (LT, LG, RG, RT) on wide figures, where the default size overprints."""
+    fld = p.draw(width_in=width_in, ax=ax, **kw)
+    clean(fld.ax)
+    if ol_fs:
+        for t in fld.ax.texts:
+            if t.get_text() in ("LT", "LG", "RG", "RT"):
+                t.set_fontsize(ol_fs)
+    return fld
+
+
+def panel_title(ax, text, size=8.4):
+    ax.set_title(text, loc="left", fontsize=size, fontweight="bold", color=style.INK)
+
+
+def note_below(ax, text, size=6.8):
+    ax.text(0.5, -0.02, text, transform=ax.transAxes, ha="center", va="top", fontsize=size, color=style.INK,
+            linespacing=1.2)
+
+
+def pdf_build():
+    return os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+
+# --- frame strips (print) and video (web) for the simulated plays ---------------------------
+MARK_R = 0.6
+RING_R = 0.9
+
+
+def tracking(play):
+    df = play.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    return df
+
+
+def panel(ax, play, df, t, lateral, window, rings=(), links=()):
+    """One moment of a simulated play: markers, faint trails, rings, and 'who has whom' links."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    ylo, yhi = sorted((play.ball_y - lateral[0], play.ball_y - lateral[1]))
+    fld = Field(ax=ax, orient="vertical", los=play.los, window=window, numbers=False, hashes=False,
+                lateral=(ylo, yhi), to_go=play.to_go)
+    cur = df[df["frameId"] == fid]
+    shown = cur[cur["x"].between(play.los + window[0] + 0.5, play.los + window[1] - 0.5)
+                & cur["y"].between(ylo + 0.5, yhi - 0.5) & (cur["side"] != "ball")]
+    ids = set(shown["_id"])
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(ids)]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=0.9, alpha=0.4, zorder=3)
+    ppy = fld.pts_per_yard()
+    for _, r in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(r["x"], r["y"]))
+        lab = str(r.get("label", "") or "")
+        if r["side"] == "off":
+            ax.add_patch(Circle((x, y), MARK_R, fc=style.OFFENSE, ec="white", lw=0.6, zorder=8))
+            tc = "white"
+        else:
+            ax.add_patch(RegularPolygon((x, y), 4, radius=MARK_R * 1.3, orientation=np.pi / 4,
+                                        fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0, zorder=8))
+            tc = style.INK
+        fs = max(4.0, min(7.5, ppy * (0.8 if len(lab) <= 1 else 0.55)))
+        ax.text(x, y, lab, ha="center", va="center", fontsize=fs, color=tc, fontweight="bold", zorder=10)
+    for key, col in rings:
+        r = cur[cur["displayName"] == key].iloc[0]
+        x, y = fld.xy(r["x"], r["y"])
+        ax.add_patch(Circle((float(x), float(y)), RING_R, fc="none", ec=col, lw=1.7, zorder=7))
+    for a, b, col in links:
+        pa = cur[cur["displayName"] == a].iloc[0]
+        pb = cur[cur["displayName"] == b].iloc[0]
+        xs, ys = fld.xy(np.array([pa["x"], pb["x"]]), np.array([pa["y"], pb["y"]]))
+        ax.plot(xs, ys, color=col, lw=1.5, ls=(0, (1, 1.4)), zorder=9)
+    return fld
+
+
+def strip(play, times, notes=None, lateral=(-9, 9), window=(-9, 6), ncols=3, rings=(), width_in=6.5,
+          final_links=()):
+    """Numbered, captioned frame strip with a fixed box-sized window, so markers stay legible in print."""
+    df = tracking(play)
+    nrows = int(np.ceil(len(times) / ncols))
+    pw = width_in / ncols
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False,
+                             figsize=(width_in, nrows * (pw * span_d / span_w + (0.6 if notes else 0.25))))
+    for ax in axes.flat[len(times):]:
+        ax.axis("off")
+    for i, (ax, t) in enumerate(zip(axes.flat, times)):
+        panel(ax, play, df, t, lateral, window, rings, final_links if i == len(times) - 1 else ())
+        ax.set_title(f"{i + 1}.  " + ("snap" if abs(t) < 1e-6 else f"{t:+.1f} s"),
+                     fontsize=8.2, color=style.INK_2, loc="left")
+        if notes:
+            note_below(ax, notes[i], size=6.9)
+    fig.tight_layout(h_pad=1.0 if notes else 0.5, w_pad=0.5)
+    return fig
+
+
+def video(play, times, notes=None, lateral=(-9, 9), window=(-9, 6), rings=(), width_in=5.4):
+    """Web version of the strip: every frame, with the strip's notes as running captions."""
+    import shutil
+    from matplotlib import animation
+    from IPython.display import HTML, display
+    df = tracking(play)
+    span_w, span_d = lateral[1] - lateral[0], window[1] - window[0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span_d / span_w + 0.4))
+    tmap = df.groupby("frameId")["time"].first()
+
+    def update(fid):
+        ax.clear()
+        t = float(tmap[fid])
+        panel(ax, play, df, t, lateral, window, rings)
+        txt = "snap" if abs(t) < 0.05 else f"{t:+.1f} s"
+        if notes:
+            cur = [n.replace("\n", " ") for tt, n in zip(times, notes) if tt <= t + 1e-6]
+            txt += ("   " + cur[-1]) if cur else ""
+        ax.set_title(txt, fontsize=8.5, color=style.INK, loc="left")
+        return []
+
+    frames = [f for f in sorted(df["frameId"].unique()) if float(tmap[f]) >= -0.3]
+    anim = animation.FuncAnimation(fig, update, frames=frames, interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+def rush_animation(play, times, notes=None, **kw):
+    """Video on the website; a numbered, captioned frame strip in the PDF."""
+    if pdf_build():
+        strip(play, times, notes=notes, **kw)
+        plt.show()
+    else:
+        video(play, times, notes=notes, **{k: v for k, v in kw.items() if k in ("lateral", "window", "rings")})
+```
+
+```{python}
+#| code-summary: "Show the Python (the data behind this chapter's numbers: nflverse via nflreadpy)"
+#| output: false
+from gridiron.data import nfl, pbp
+
+SEAS = list(range(2018, 2026))
+_part = nfl().load_participation(seasons=SEAS).to_pandas()[
+    ["nflverse_game_id", "play_id", "was_pressure", "number_of_pass_rushers"]]
+_plays = pbp(SEAS, columns=["game_id", "play_id", "season", "season_type", "week", "qtr", "posteam", "defteam",
+                            "qb_dropback", "sack", "passer_id", "passer", "epa", "pass_attempt", "complete_pass",
+                            "sack_player_name", "time"])
+ALL = _plays[_plays["qb_dropback"] == 1].merge(_part, left_on=["game_id", "play_id"],
+                                               right_on=["nflverse_game_id", "play_id"], how="left")
+# Pressure includes sacks. (In the NGS seasons, 2018-2022, the flag is blank on sacks; FTN, 2023-2025, fills it.)
+ALL["press"] = ALL["was_pressure"].astype(float).fillna(0).gt(0) | ALL["sack"].eq(1)
+DB = ALL[ALL["season_type"] == "REG"].copy()
+
+# Defensive team-seasons
+TS = DB.groupby(["season", "defteam"]).agg(db=("sack", "size"), sacks=("sack", "sum"), sr=("sack", "mean"),
+                                           pr=("press", "mean")).reset_index()
+TS["p2s"] = TS["sr"] / TS["pr"]
+FTN = TS[TS["season"] >= 2023].copy()
+R_FTN = np.corrcoef(FTN["pr"], FTN["sr"])[0, 1]
+P2S_FTN = DB.loc[(DB["season"] >= 2023) & DB["press"], "sack"].mean()
+PR_FTN = DB.loc[DB["season"] >= 2023, "press"].mean()
+SR_FTN = DB.loc[DB["season"] >= 2023, "sack"].mean()
+
+
+def ts(team, season):
+    return FTN[(FTN["defteam"] == team) & (FTN["season"] == season)].iloc[0]
+
+
+CLE24, CLE25, DEN25, SF25 = ts("CLE", 2024), ts("CLE", 2025), ts("DEN", 2025), ts("SF", 2025)
+TOP_PR = FTN.sort_values("pr").iloc[-1]
+
+# Year-to-year carry-over, within one charting source only (no 2022 -> 2023 pair: the source changes)
+PAIRS = [s for s in SEAS[:-1] if s != 2022]
+
+
+def carry(frame, key, a_col, b_col=None, min_n=None):
+    b_col = b_col or a_col
+    out = []
+    for s in PAIRS:
+        a = frame[frame["season"] == s].set_index(key)
+        b = frame[frame["season"] == s + 1].set_index(key)
+        if min_n is not None:
+            a, b = a[a["n"] >= min_n], b[b["n"] >= min_n]
+        j = a[[a_col]].join(b[[b_col]], rsuffix="_next", how="inner").dropna()
+        out.append(j.iloc[:, 0].corr(j.iloc[:, 1]))
+    return np.array(out)
+
+
+QS = DB[DB["press"]].groupby(["season", "passer_id"]).agg(n=("sack", "size"), p2s=("sack", "mean"),
+                                                          name=("passer", "first")).reset_index()
+CARRY = {
+    "Defense: pressure rate": carry(TS, "defteam", "pr"),
+    "Defense: sack rate": carry(TS, "defteam", "sr"),
+    "Defense: pressure rate\n(predicting next year's sack rate)": carry(TS, "defteam", "pr", "sr"),
+    "Defense: pressure-to-sack rate": carry(TS, "defteam", "p2s"),
+    "Quarterback: pressure-to-sack rate": carry(QS, "passer_id", "p2s", min_n=100),
+}
+MEAN = {k: float(np.mean(v)) for k, v in CARRY.items()}
+K_PR, K_SR, K_X, K_DP, K_QP = (MEAN[k] for k in CARRY)
+
+# Super Bowls LIX and LX: the winners' rush, from FTN's charting of the games
+def sb(game, team):
+    g = ALL[(ALL["game_id"] == game) & (ALL["defteam"] == team)]
+    return dict(db=len(g), four=int((g["number_of_pass_rushers"] <= 4).sum()),
+                press=int(g["press"].sum()), press4=int((g["press"] & (g["number_of_pass_rushers"] <= 4)).sum()),
+                sacks=int(g["sack"].sum()), sacks4=int(((g["sack"] == 1) & (g["number_of_pass_rushers"] <= 4)).sum()))
+
+
+LIX, LX = sb("2024_22_KC_PHI", "PHI"), sb("2025_22_SEA_NE", "SEA")
+
+# What a pressure costs even without a sack: EPA per dropback, FTN seasons
+F3 = DB[DB["season"] >= 2023]
+EPA_CLEAN = F3.loc[~F3["press"], "epa"].mean()
+EPA_PNS = F3.loc[F3["press"] & (F3["sack"] == 0), "epa"].mean()
+EPA_SACK = F3.loc[F3["sack"] == 1, "epa"].mean()
+_att = F3[F3["pass_attempt"] == 1]
+CMP_CLEAN = _att.loc[~_att["press"], "complete_pass"].mean()
+CMP_PNS = _att.loc[_att["press"] & (_att["sack"] == 0), "complete_pass"].mean()
+
+# The quarterback's share: (1) the spread of pressure-to-sack rates, 2023-2025 pooled, QBs with 200+ pressured
+# dropbacks; (2) FTN's charters' own call on whose fault each sack was (is_qb_fault_sack)
+QP = F3[F3["press"]].groupby("passer_id").agg(n=("sack", "size"), p2s=("sack", "mean"), name=("passer", "first"))
+QP = QP[QP["n"] >= 200].sort_values("p2s")
+Q_LO, Q_HI, Q_N = QP.iloc[0], QP.iloc[-1], len(QP)
+FULL = {"B.Nix": "Bo Nix", "W.Levis": "Will Levis", "S.Howell": "Sam Howell", "J.Love": "Jordan Love"}
+Q_LO_NAME, Q_HI_NAME = FULL.get(Q_LO["name"], Q_LO["name"]), FULL.get(Q_HI["name"], Q_HI["name"])
+Q_25, Q_75 = QP["p2s"].quantile([0.25, 0.75])
+FTNC = nfl().load_ftn_charting(seasons=[2023, 2024, 2025]).to_pandas()[
+    ["nflverse_game_id", "nflverse_play_id", "is_qb_fault_sack", "n_blitzers", "n_pass_rushers"]]
+_sk = F3[F3["sack"] == 1].merge(FTNC, left_on=["game_id", "play_id"],
+                                right_on=["nflverse_game_id", "nflverse_play_id"], how="left")
+QB_FAULT = _sk["is_qb_fault_sack"].astype(float).mean()
+
+# Seattle's four-man rushes in Super Bowl LX: how many included a blitzer (a simulated pressure), per FTN
+_lx = ALL[(ALL["game_id"] == "2025_22_SEA_NE") & (ALL["defteam"] == "SEA")].merge(
+    FTNC, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "nflverse_play_id"], how="left")
+_lx4 = _lx[_lx["n_pass_rushers"] == 4]
+LX_FOUR_FTN, LX_SIM = len(_lx4), int((_lx4["n_blitzers"] > 0).sum())
+
+# Garrett's record-breaking sack (Week 18, 2025, at Cincinnati: from play-by-play)
+_g = ALL[(ALL["season"] == 2025) & (ALL["week"] == 18) & (ALL["defteam"] == "CLE") & (ALL["sack"] == 1)
+         & ALL["sack_player_name"].eq("M.Garrett")].iloc[0]
+G_QTR, G_CLOCK, G_QB = int(_g["qtr"]), str(_g["time"]).lstrip("0"), str(_g["passer"])
+
+# How many rushers? FTN charting, 2023-2025 regular seasons
+_nr = DB.loc[(DB["season"] >= 2023) & DB["number_of_pass_rushers"].notna(), "number_of_pass_rushers"]
+FOUR_SHARE, FIVE_PLUS = (_nr == 4).mean(), (_nr >= 5).mean()
+```
+
+Third-and-8, early in the second quarter. The offense spreads four receivers and keeps the back in to
+block; the defense shows four linemen and nobody else near the line. At the snap the right defensive end
+takes three long strides up the outside, and the offensive tackle in front of him kick-slides back fast to
+stay between him and the quarterback. Then, with the tackle's weight going backward, the end plants his
+outside foot and drives straight into the tackle's chest. The tackle's feet stop moving; he is walked
+backward three yards, into the spot where the quarterback wanted to set his feet. The quarterback throws a
+beat early, off his back foot, and the pass sails over a receiver who was about to come open. Incomplete.
+Punt. The box score records nothing for the end: no sack, no tackle, not even a hit. His position coach
+will grade it as one of his best plays of the day. This chapter is about why.
+
+**You'll be able to:**
+
+- Name the main pass-rush moves (speed, bull, long arm, swim, rip, spin) as you see them, and say which
+  mistake by the blocker each one punishes.
+- Explain how a rusher *plans* his moves across a game, and spot the counter when a tackle starts guessing.
+- Recognise a stunt (T-E, E-T, interior twist) from the crossing paths, and say what it was trying to do to
+  the protection.
+- Read rush lanes and contain, and explain why defenses "mush rush" a quarterback who can run, and what that
+  costs them.
+- Explain why pressure is a steadier measure of a pass rush than sacks, and how much of a sack belongs to the
+  quarterback.
+- Use pass rush win rate, get-off and time to pressure, and know what each can and cannot tell you.
+
+::: {.callout-note title="You'll need"}
+- **[Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd)**: the [pocket](../../appendices/glossary.qmd#gl-pocket)
+  is a cup (the interior holds, the tackles give ground); [slide](../../appendices/glossary.qmd#gl-slide-protection)
+  protection blocks gaps and [man](../../appendices/glossary.qmd#gl-man-protection) protection blocks men; the
+  tackle's [kick slide](../../appendices/glossary.qmd#gl-kick-slide) and [vertical set](../../appendices/glossary.qmd#gl-vertical-set),
+  the blocker's [punch](../../appendices/glossary.qmd#gl-punch) and [anchor](../../appendices/glossary.qmd#gl-anchor);
+  linemen [passing off](../../appendices/glossary.qmd#gl-pass-off-switch-vs-stay) a stunt; and the numbers:
+  [pressure](../../appendices/glossary.qmd#gl-pressure), [pressure rate](../../appendices/glossary.qmd#gl-pressure-rate),
+  [time to throw](../../appendices/glossary.qmd#gl-time-to-throw). This chapter is the same fight from the other side.
+- **[Defensive Line Play](../05-defensive-fronts-and-run-defense/05-01-dl-techniques-and-gap-control.qmd)**:
+  technique numbers from the defense's side (the **3-technique** on the guard's outside shoulder, the **1** shaded on
+  the center, the 5 and the [wide-9](../../appendices/glossary.qmd#gl-wide-9) outside the tackle),
+  [one-gap](../../appendices/glossary.qmd#gl-one-gap) penetration, and [contain](../../appendices/glossary.qmd#gl-contain):
+  edge rushers not running past the quarterback's depth.
+:::
+
+**How to read the diagrams.** Offense is blue circles, defense orange squares, and *left* and *right* are the
+offense's. The linemen are LT, LG, C, RG and RT; Q is the quarterback (usually drawn at his
+[launch point](../../appendices/glossary.qmd#gl-launch-point), the spot he throws from) and R the running back. On
+defense, E is an [edge rusher](../../appendices/glossary.qmd#gl-edge-rusher): a 4-3 defensive end with his hand down or
+a 3-4 outside linebacker standing up, since the rush is the same job. The defensive tackles are labelled by technique
+(**1**, **3**), and the drills use the coverage labels from Part 06 (CB, NB, FS, SS, M and W for the linebackers). An
+orange arrow is a rusher's path; a blue line ending in a short bar is a blocker's set. The few other marks are
+explained with the first figure that uses them.
+
+## The rusher's problem: a race and a fight
+
+The quarterback in today's NFL releases the ball a little under three seconds after the snap on average
+([Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd) has the numbers), and on a quick throw in
+well under two. An edge rusher who lines up outside the tackle has to cover an arc of about thirteen yards to reach
+the spot where the quarterback sets his feet; a defensive tackle in the middle has nine or so, straight ahead, but
+through the thickest traffic on the field. Unblocked, an edge rusher would cover his arc in roughly two seconds. He
+is never unblocked. A man who weighs about 315 pounds, who knows where the quarterback will be and only has to stay
+in the way, is standing on the path.
+
+So a pass rush is two contests at once. It is a **race**: the rusher has to get to the quarterback before the ball
+leaves, and a rusher who arrives at 3.4 seconds against a quarterback who threw at 2.6 has done nothing, however
+good his move was. And it is a **fight**: to win the race he has to beat a blocker who is bigger, who has the inside
+position, and who is allowed to use his hands too. The rusher's advantages are the two the blocker lacks. He knows
+the snap is coming and where he is going, and he moves *forward*, while the blocker moves backward.
+
+There is a third fact, and it explains why defenses pay pass rushers so much: **most of the time, the defense rushes
+only four.** In FTN's charting of the 2023–2025 regular seasons, `{python} f"{100 * FOUR_SHARE:.0f}%"` of dropbacks
+faced exactly four rushers and `{python} f"{100 * FIVE_PLUS:.0f}%"` faced five or more.[^rushers] A
+[blitz](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) can manufacture a free rusher by sending
+more men than the offense can block, but every extra rusher is one fewer defender in coverage, and the quarterback
+knows it. Four rushers against five or six blockers leaves seven defenders to cover at most five receivers. If those
+four can create pressure by themselves, the defense gets to the quarterback *and* covers everybody. That is the
+holy grail of defensive football, and this chapter is about how it is done: by moves, by plans, and by stunts.
+
+::: {.callout-important title="Why it exists"}
+A four-man rush is the balance point between coverage, which is expensive, and pressure, which is valuable. A team
+whose four can win their fights gets pressure without paying for it in coverage, which is why an edge rusher who wins
+them is usually the highest-paid player on his defense.
+:::
+
+## Get-off: the first step decides more than you think
+
+The fight begins before anyone touches anyone. A rusher's [**get-off**](../../appendices/glossary.qmd#gl-get-off)
+is his first movement at the snap: how quickly he reacts to the ball moving and gets across the line of scrimmage.
+
+Defenders are not allowed to move into the neutral zone before the snap, and unlike the offense they do not know the
+snap count. So a rusher does not listen to the quarterback's cadence; he watches the ball, or the center's hand on it,
+and goes the instant it moves. The offense's weapons against this are a varied snap count (a "hard count" to draw a
+rusher offside, a quick count to catch him flat-footed) and, in a loud stadium, a silent count, which takes away the
+hard count but can leave the snap on a rhythm (the center looks back, the guard taps him, the ball comes on a set beat)
+that a good rusher learns to time.
+The rusher's weapon is a stance with his weight already tilted forward and a first step that covers ground without
+popping up.
+
+Why does a tenth of a second matter so much? Because of what it does to the meeting point.
+
+```{python}
+#| label: fig-get-off
+#| fig-cap: "Two edge rushers on the same arc against the same tackle, 1.2 seconds after the snap (the faint squares are where each rusher is at that moment; the line is the path both run; the faint circle is the tackle, who has kick-slid back to his set point). The rusher who moved the instant the ball did has already reached the tackle's depth, his hips level with the tackle's: the tackle has to open up and run with him, and is in trouble. The rusher who started three-tenths of a second later is still a couple of yards upfield of the tackle, where the tackle can meet him square and punch. Same speed, same path; the only difference is the first step."
+p = Play(line(["RG", "RT"]) + [O("QB", "QB", -7.2, 0.0, "Q")], [D("RE", "DE", 1.0, 5.4, "E")], los=35, to_go=None)
+ARC = [(1.0, 5.4), (-0.6, 6.3), (-2.8, 6.0), (-4.4, 4.8), (-6.2, 1.6)]
+to(p, "RE", ARC[-1], "rush", via=ARC[1:-1])
+to(p, "RT", (-2.5, 4.4))
+fld = draw(p, width_in=5.4, lateral=(-2.2, 10.8), window=(-9.4, 3.2))
+
+
+def along(pts, s):
+    """The point a distance s (yards) along a polyline."""
+    for a, b in zip(pts[:-1], pts[1:]):
+        seg = float(np.hypot(b[0] - a[0], b[1] - a[1]))
+        if s <= seg:
+            f = s / seg
+            return (a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]))
+        s -= seg
+    return pts[-1]
+
+
+def run_dist(t, t0, acc=8.0, vmax=7.5):
+    """Yards covered by time t for a rusher who starts at t0, accelerates at acc to vmax."""
+    dt = max(0.0, t - t0)
+    t_top = vmax / acc
+    return 0.5 * acc * dt ** 2 if dt <= t_top else 0.5 * acc * t_top ** 2 + vmax * (dt - t_top)
+
+
+FAST, SLOW = along(ARC, run_dist(1.2, 0.10)), along(ARC, run_dist(1.2, 0.40))
+GAP_YD = run_dist(1.2, 0.10) - run_dist(1.2, 0.40)
+ghost(fld, p, *FAST, "E")
+ghost(fld, p, *SLOW, "E")
+ghost(fld, p, -2.5, 4.4, side="off", alpha=0.35)
+point_to(fld, p, (-4.6, 8.9), FAST, "fast get-off at 1.2 s:\nlevel with the tackle,\nturning the corner",
+         color=style.DEFENSE_DARK, shrink=9)
+point_to(fld, p, (0.9, 8.9), SLOW, "0.3 s slower:\nstill upfield of him", color=style.INK_2, shrink=9)
+point_to(fld, p, (-5.6, 3.9), (-2.5, 4.4), "the tackle's set\nat 1.2 s", color=style.OFFENSE_DARK, shrink=8)
+say(fld, p, -7.6, 3.6, "flatten to the QB", color=style.DEFENSE_DARK, fontsize=6.8)
+plt.show()
+```
+
+At full speed an edge rusher covers about seven yards a second, so a tenth of a second at the snap is most of a yard
+on the arc. In @fig-get-off the two rushers differ by three-tenths, and by 1.2 seconds that has become a
+`{python} f"{GAP_YD:.1f}"`-yard difference in where they meet the tackle. The quick one meets him *level*, at the
+tackle's own depth, where the tackle has to turn his hips to run with him, and a blocker who turns his hips has given
+up the inside and lost most of his power. The slow one meets him *in front*, where the tackle is square, balanced and
+ready to punch. Same athlete, same path, a completely different fight.
+
+That is why scouts time rushers' first steps at the Combine (the league's pre-draft testing event), why defensive
+line coaches drill get-off every day, and why the best rushers are often the first player on the field to move.
+Tracking data now measures it directly: Next Gen Stats times how long a rusher takes to cross the line of scrimmage
+after the snap and quotes it in its broadcasts and analysis.[^getoff] For a scale: the quickest single snaps it has
+highlighted are around a third of a second, best-ever reps. A lineman whose body starts about a yard behind the ball
+needs roughly half a second to cross it from a standstill, so most rushes take longer; the simulated rushers at the end
+of this chapter take half a second to eight-tenths.
+
+## The arc and the corner
+
+Before the moves, the geometry they are all trying to bend. An edge rusher's basic path is the **arc**: a curve up
+the outside of the tackle and around him toward the quarterback. He aims it at a **landmark**, not at the blocker: the
+quarterback's launch point, about seven or eight yards behind the line from the shotgun, which is why the diagrams put
+Q there. The tackle's answer, as Pass Protection showed, is to
+kick-slide back and out, staying between the rusher and that spot, and to push the rusher *past* the quarterback if he
+keeps running. The pocket is a cup, and a rusher run around the rim of the cup ends up behind it, harmless.
+
+How wide the rusher lines up is the first trade. A wide alignment like the
+[wide-9](../../appendices/glossary.qmd#gl-wide-9) gives him a running start and room to build speed, at the cost of a
+longer arc and a soft spot inside him that draws and screens are built to punish; a tight alignment over the tackle
+gives him a shorter path and power, but no space to work.
+
+The rusher wins the arc at one spot: the **corner**, the moment his hips draw level with the tackle's. Before that, the
+tackle is in front of him and can punch and steer. Once the rusher's hips are past, the tackle is beside or behind him,
+can only push, and any push sends the rusher where he wanted to go. (His last resort is to grab: a hold, ten yards if
+the official sees it.) That is why the last part of every good edge rush is a tight turn back toward the quarterback,
+**flattening** the arc once he is past the tackle rather than continuing upfield.
+
+Two physical skills decide whether a rusher can do this, and you can see both on any broadcast replay. The first is
+**bend**: the ability to lean his whole body toward the inside, ankles flexed, shoulder almost at the turf, while
+running at full speed, so he can turn the corner tightly instead of drifting wide. The second is **dip**: dropping the
+shoulder nearest the tackle so the tackle's reaching hands slide off it. Watch a great edge rusher win and you will see
+a body tilted at an angle that looks like it should fall over.
+
+One coaching rule sits under all of it: **rush half a man**. A rusher never attacks the blocker's whole chest, where
+the blocker is strongest; he attacks one half of him, a shoulder, so the blocker has to turn to stay in front. Every
+move below starts on a shoulder.
+
+The tackle, of course, knows all this. If he gets deep enough fast enough, there is no corner to turn. He can also get
+it wrong in the other direction and **overset**: retreat wider or deeper than the rush in front of him needs, opening
+his hips to the outside too early, which leaves the space inside him empty. And so the rusher needs other ways to win:
+through the tackle, or back inside him. That is what the moves are.
+
+## The moves
+
+There are dozens of named pass-rush moves, and every rusher has his own blend, but almost all of them belong to a
+handful of families. Six are worth knowing by sight. In each panel of @fig-rush-moves the rusher (E) lines up outside
+the right tackle; read the note under each panel for what the move attacks.
+
+```{python}
+#| label: fig-rush-moves
+#| fig-cap: "Six pass-rush moves against a right tackle (zoomed in on him; the quarterback is off the bottom-left of each panel, where the rush arrows are heading). The orange arrows show where the rusher goes; the arm work is in the note under each panel. New marks: a dashed dark-blue line ending in a bar is the blocker being driven backward, and a faint circle is where he ends up; a thick dark-orange stroke ending in a dot is the rusher's arm; a curved orange arrow is a hand move. Bull rush: chest to chest, walking him backward. Long arm: the same push from arm's length, with a dashed escape route once the tackle is driven back. Swim: sell outside, arm over the top, go inside. Rip: an uppercut through his outside arm to get the hips past. Spin: when he has overcommitted to the outside, spin back inside. Each move beats a different mistake."
+LAT_M, WIN_M = (-0.6, 8.6), (-6.4, 2.6)
+MOVES = [
+    ("1  Speed rush", (-2.6, 4.5), [(-0.5, 6.5), (-2.4, 6.4), (-3.6, 5.3)], (-5.2, 3.0),
+     "Win the race to the corner, dip\nunder his hands, bend back.\nBeats a slow or short set.", "dip\nand bend"),
+    ("2  Bull rush", (-1.6, 3.8), [(-0.8, 4.5)], (-3.3, 3.4),
+     "Hands inside, chest to chest,\nwalk him into the QB. Beats a\nhigh set or one already bailing.", "drive\nthrough him"),
+    ("3  Long arm", (-1.9, 3.9), [(-0.8, 4.9)], (-2.6, 4.6),
+     "One arm locked out: he can't\nreach you. Drive him back,\nthen shed and go.", "arm\nlocked out"),
+    ("4  Swim", (-2.2, 4.8), [(0.2, 6.2), (-1.0, 4.5), (-2.2, 3.0)], (-4.8, 1.6),
+     "Jab outside, clear his hands,\narm over the top, inside.\nBeats a tackle who bites outside.", "over\nthe top"),
+    ("5  Rip", (-2.4, 4.4), [(-0.6, 6.3), (-2.2, 5.8), (-3.4, 4.8)], (-5.1, 2.6),
+     "Uppercut up through his outside\narm and shoulder, hips past.\nThe finish of most speed rushes.", "rip\nthrough"),
+    ("6  Spin", (-2.7, 5.3), None, (-5.0, 2.0),
+     "He oversets for the arc: plant,\nspin all the way round, inside.\nBig reward, big risk.", "spin\ninside"),
+]
+fig, axes = plt.subplots(2, 3, figsize=(6.6, 6.3))
+for ax, (name, rt_end, via, end, note, tag) in zip(axes.flat, MOVES):
+    p = Play(line(["RG", "RT"]), [D("RE", "DE", 1.0, 5.4, "E")], los=35, to_go=None)
+    to(p, "RT", rt_end)
+    if via is None:   # the spin: up the arc, a full turn, then back inside
+        c, rr = np.array([-2.45, 5.85]), 0.5
+        th0 = np.arctan2(6.35 - c[1], -2.0 - c[0])
+        loop = [tuple(c + rr * np.array([np.cos(a), np.sin(a)])) for a in np.linspace(th0, th0 + 2 * np.pi, 14)]
+        via = [(-0.6, 6.4), (-2.0, 6.35)] + loop[1:] + [(-3.2, 3.9)]
+    to(p, "RE", end, "rush", via=via)
+    fld = draw(p, ax=ax, title=False, lateral=LAT_M, window=WIN_M)
+    if name.endswith("Bull rush"):
+        pushed(fld, p, (-1.6, 3.8), (-4.3, 2.9))
+        ghost(fld, p, -4.3, 2.9, side="off")
+    elif name.endswith("Long arm"):
+        pushed(fld, p, (-1.9, 3.9), (-3.7, 3.6))
+        ghost(fld, p, -3.7, 3.6, side="off")
+        arm(fld, p, (-2.6, 4.6), (-3.25, 4.0))
+        dashed(fld, p, [(-2.6, 4.6), (-3.4, 5.25), (-4.3, 5.0), (-4.9, 3.9)], color=style.DEFENSE, lw=1.6)
+    elif name.endswith("Swim"):
+        curl(fld, p, (-0.4, 5.7), (-1.9, 3.7), rad=0.8)
+    elif name.endswith("Rip"):
+        curl(fld, p, (-1.8, 5.9), (-3.0, 4.6), rad=-0.7)
+    say(fld, p, *((-0.9, 7.3) if name.endswith("Long arm") else (-4.9, 6.2)), tag, color=ARM, weight="bold",
+        fontsize=6.6)
+    panel_title(ax, name)
+    note_below(ax, note)
+fig.tight_layout(h_pad=1.6, w_pad=0.7)
+plt.show()
+```
+
+**The speed rush.** The [**speed rush**](../../appendices/glossary.qmd#gl-speed-rush) is the move everything else is
+built on: beat the tackle to the corner before he can get in front. Fast get-off, a curved path up the arc, a dip of
+the near shoulder as the tackle reaches for him, and a bend back toward the quarterback. It beats a tackle who sets too
+slowly or not deep enough, and it is the move tackles fear most, which is exactly why it makes every other move work:
+a tackle who is worried about speed retreats fast, and a man retreating fast is off balance in other ways. Its
+weakness is the one the pocket is built around: a
+tackle who gets deep enough simply runs the rusher past the quarterback.
+
+**The bull rush.** The [**bull rush**](../../appendices/glossary.qmd#gl-bull-rush) is the opposite idea. Instead of
+going around the blocker, the rusher goes *through* him: hands inside on the chest, hips low, legs churning, driving
+him straight back into the quarterback. A bull rush rarely produces a sack by itself; what it produces is a collapsing
+pocket. A quarterback who has a tackle or guard backing into his feet cannot step up, cannot finish his throwing motion
+and often cannot see. It beats a blocker who sets too high (pads up, so the rusher gets under him) or one whose weight
+is already going backward because he retreated too fast, since a man moving backward cannot plant and push. The
+blocker's answer is the
+[anchor](../../appendices/glossary.qmd#gl-anchor): sink the hips, widen the base, and stop the slide. A bull rush
+against a blocker who anchors is a stalemate, and a stalemate is a win for the offense.
+
+**The long arm.** The [**long arm**](../../appendices/glossary.qmd#gl-long-arm) is the bull rush with an escape hatch.
+The rusher locks one arm, fully extended, into the blocker's chest (usually his inside arm into the outside half of
+the blocker's chest, the near breastplate). Why can the blocker not just reach back? Because a punch is thrown with both
+hands and square shoulders, which keeps the elbows bent; one arm locked straight, with the rusher's shoulder turned into
+it, reaches several inches farther. So the blocker's hands fall short of the rusher's body, the rusher controls the
+distance between them and drives the blocker back with it, and his other hand stays free to knock the blocker's hands
+away and slip off the block when the moment comes. It has become one of the signature moves of the
+modern NFL edge rusher, because it works for long-armed athletes who are not giant men, and because it lets a rusher
+generate power without getting tied up chest to chest.
+
+**The swim.** The [**swim move**](../../appendices/glossary.qmd#gl-swim-move) clears the blocker's hands with one hand
+and throws the other arm over the top of his shoulder, like a swimmer's overhand stroke, to get past him. On the edge it
+is usually an inside move: the rusher fakes outside to make the tackle widen, then swims back inside. In the middle it
+is a staple of quick, compact defensive tackles who meet guards almost at once. It needs timing and a blocker whose
+weight has gone the wrong way, and its risk is visible in the drawing: for a moment the rusher's arm is up and his chest
+is open, and a blocker who is not fooled will drive right into it.
+
+**The rip.** The [**rip move**](../../appendices/glossary.qmd#gl-rip-move) is an uppercut: the rusher drives his inside
+arm up under the blocker's arm and through his armpit, lifting the arm off him and turning his own shoulder through the
+gap so his hips get past. It is the usual way a speed rush is *finished*, because at the corner the tackle's outside hand
+is the last thing between the rusher and the quarterback, and the rip takes that hand away. A dip and a rip together are
+the most common sight on an edge sack.
+
+**The spin.** The [**spin move**](../../appendices/glossary.qmd#gl-spin-move) is the showpiece. When the tackle has
+committed to the outside, the rusher plants his outside foot, turns his back to the blocker and spins all the way round,
+coming out back inside him toward the quarterback. Dwight Freeney made it famous with the Colts in the 2000s, and it
+carried him to the Hall of Fame.[^freeney] Done at the right moment, against a tackle who has overset, it leaves the
+blocker grabbing air. Done at the wrong one, against a blocker who stayed square, it spins the rusher out of the
+pocket, and for half a second he cannot even see the quarterback: big reward, big risk.
+
+**Telling them apart on the broadcast.** The speed rush and the rip look like one motion: the rusher's outside shoulder
+dips, his inside arm swings up through the tackle's armpit, and he flattens toward the quarterback. In a bull rush the
+two men are chest to chest and the tackle's helmet is snapped back; in a long arm there is daylight between them, one
+arm locked straight across it, and the tackle's arms flailing short. A swim shows an arm going *over* the tackle's
+shoulder, like a freestyle stroke, as the rusher goes inside; a spin shows the rusher's back to the camera for an
+instant.
+
+::: {.callout-caution title="Common misconception"}
+"Pass rushers win with strength." Strength helps, especially in the bull rush and the long arm, but most rush wins are
+wins of *timing and position*: a quicker first step, hands that land before the blocker's do, a move chosen for the set
+the blocker just showed. It is the mirror of Pass Protection's point that most protection losses are losses of
+position.
+:::
+
+### Moves are counters to hands
+
+Watch a pass rush closely and you will see that the rusher's hands are busy before his feet have done anything clever.
+The blocker's main weapon is his [punch](../../appendices/glossary.qmd#gl-punch), a two-handed strike into the
+rusher's chest to stop his momentum and steer him. Many moves are built specifically to beat that punch.
+
+The two oldest are power moves. The **club** is a forearm or open-hand blow to the blocker's shoulder or elbow that
+knocks his punch aside, usually to set up a rip or a swim. The **push-pull** (also called a snatch or a jerk) grabs
+the blocker, pulls him forward past the rusher just as he leans in, and lets go: the interior rusher's signature move,
+because guards meet rushers almost at once and lean into them.
+
+```{python}
+#| label: fig-hands
+#| fig-cap: "Two modern hand moves against the tackle's punch, in close-up (the tackle's punch is drawn in dark blue). Cross-chop: as the tackle's hands come out, the rusher swings his outside arm across his own body (curved arrow) and chops them down, then rips past while the tackle's hands are out of position. Ghost: the rusher never touches him. At the instant of the punch he turns his inside shoulder away and dips it (the faint square is where his shoulder was), so the punch lands on air and the tackle lunges forward, off balance, as the rusher bends around him."
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.6))
+for ax, name in zip(axes, ("1  Cross-chop", "2  Ghost")):
+    p = Play(line(["RG", "RT"]), [D("RE", "DE", 1.0, 5.4, "E")], los=35, to_go=None)
+    to(p, "RT", (-1.9, 3.9))
+    if name.endswith("chop"):
+        to(p, "RE", (-4.6, 3.0), "rush", via=[(-0.4, 5.6), (-1.6, 5.2), (-3.0, 4.6)])
+    else:
+        to(p, "RE", (-4.7, 3.1), "rush", via=[(-0.6, 5.8), (-1.6, 5.6), (-2.9, 5.0)])
+    fld = draw(p, ax=ax, title=False, lateral=(-0.4, 9.0), window=(-6.4, 4.8))
+    if name.endswith("chop"):
+        arm(fld, p, (-1.9, 3.9), (-1.25, 4.55), lw=2.6, color=style.OFFENSE_DARK)
+        curl(fld, p, (-0.2, 6.3), (-1.55, 4.15), rad=0.55, lw=1.8)
+        say(fld, p, 2.9, 6.0, "outside arm\nchops down", color=ARM, weight="bold", fontsize=6.6)
+        point_to(fld, p, (-3.9, 6.9), (-1.3, 4.5), "his punch,\nknocked down", color=style.OFFENSE_DARK, shrink=4)
+        say(fld, p, -5.2, 5.1, "rip past", color=ARM, fontsize=6.6)
+    else:
+        ghost(fld, p, -1.15, 4.75)
+        arm(fld, p, (-1.9, 3.9), (-1.2, 4.7), lw=2.6, color=style.OFFENSE_DARK)
+        point_to(fld, p, (-3.9, 6.9), (-1.2, 4.7), "his punch\nhits air", color=style.OFFENSE_DARK, shrink=4)
+        say(fld, p, 2.9, 6.0, "shoulder turned\naway, no contact", color=ARM, weight="bold", fontsize=6.6)
+        say(fld, p, -5.2, 5.4, "bend\naround", color=ARM, fontsize=6.6)
+    panel_title(ax, name)
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+The [**cross-chop**](../../appendices/glossary.qmd#gl-cross-chop) is the clearest example (@fig-hands). As the tackle
+punches, the rusher swings his outside arm across his own body and chops down on the tackle's hands or forearms,
+knocking the punch down and away, then rips or dips past while the tackle's hands are out of position. It turns the
+blocker's best tool into the reason he loses. On a replay it looks like a karate chop: the rusher's arm sweeps across
+his chest and the tackle's arms drop.
+
+The [**ghost (rush move)**](../../appendices/glossary.qmd#gl-ghost-rush-move) goes one step further: no hand contact at
+all. A dip lowers the shoulder under hands that are already reaching; a ghost is *timed to the punch*. At the instant
+the tackle strikes, the rusher turns his inside shoulder away, so the punch lands on nothing and the tackle, having
+thrown his weight into a strike that hit air, lunges forward off balance as the rusher bends around him. On a replay,
+look for the tackle reaching at empty space, often falling forward. A ghost works best against a tackle who punches
+early and hard; a patient tackle who "catches" the rusher and strikes late gives it nothing to avoid, which is one
+reason many NFL tackles have stopped throwing one textbook punch at every rusher.
+
+Rules shape this hand fight too. A rusher may use his hands on a blocker's body, but thrusting them up into the blocker's head or neck is a foul
+(an illegal use of hands, five yards and an automatic first down when the defense does it).[^hands] That rule has a
+history you will meet below, and it is why the modern hand fight is aimed at the blocker's hands, arms and chest.
+
+## The rush plan: setting up the move you want
+
+Here is the real secret of pass rushing, and the reason the moves above are only half the story. A tackle facing the
+same rusher thirty-odd times in a game is not guessing blindly; he is studying the rusher too, and he adjusts. So the best
+rushers do not just have moves. They have a [**rush plan**](../../appendices/glossary.qmd#gl-rush-plan): a planned
+sequence across the game that shows the blocker one move until he adjusts to stop it, then uses the counter his
+adjustment has opened.
+
+```{python}
+#| label: fig-rush-plan
+#| fig-cap: "Why a rush plan works: every way the tackle sets opens something else (zoomed on the right tackle; the quarterback is off the bottom-left). Left: after being beaten around the edge, he oversets, kicking wide at the snap to take the corner away; the space inside him (shaded) opens, and the rusher counters back inside with a spin or swim. Middle: worried about the inside, he sets short and square; now the corner is open and the speed rush wins it. Right: worried about speed, he bails straight back as fast as he can; his weight is going backward, so when the rusher turns into his chest he cannot plant and anchor, and is driven back (dashed): the speed-to-power. The blocker cannot protect all three at once, so the rusher's job is to make him choose and then punish the choice."
+PLAN = [
+    ("He oversets: inside opens", (-2.9, 5.5), [(-0.6, 6.4), (-1.7, 6.0), (-2.2, 4.0)], (-5.0, 2.0),
+     "Counter: back inside\n(spin or swim)"),
+    ("He sets short: corner opens", (-1.3, 3.8), [(-0.6, 6.6), (-2.6, 6.4), (-3.8, 5.2)], (-5.3, 3.0),
+     "Counter: speed around\nthe edge"),
+    ("He bails: power opens", (-2.6, 4.4), [(-0.6, 6.3), (-1.4, 5.9)], (-1.95, 5.0),
+     "Counter: speed-to-power\nthrough his chest"),
+]
+fig, axes = plt.subplots(1, 3, figsize=(6.6, 3.55))
+for ax, (name, rt_end, via, end, note) in zip(axes, PLAN):
+    p = Play(line(["RG", "RT"]), [D("RE", "DE", 1.0, 5.4, "E")], los=35, to_go=None)
+    to(p, "RT", rt_end)
+    to(p, "RE", end, "rush", via=via)
+    fld = draw(p, ax=ax, title=False, lateral=LAT_M, window=WIN_M)
+    if "inside" in name:
+        x, y = _P(fld, p, -2.9, 3.0)
+        ax.add_patch(Ellipse((float(x), float(y)), 2.2, 2.6, fc=RED, alpha=0.13, ec=RED, lw=0.9, ls=(0, (2, 1.5)),
+                             zorder=1.5))
+        say(fld, p, -4.6, 6.0, "inside is\nopen", color=RED, weight="bold", fontsize=6.6)
+    elif "corner" in name:
+        x, y = _P(fld, p, -2.6, 6.3)
+        ax.add_patch(Ellipse((float(x), float(y)), 2.2, 2.6, fc=RED, alpha=0.13, ec=RED, lw=0.9, ls=(0, (2, 1.5)),
+                             zorder=1.5))
+        say(fld, p, -4.6, 1.6, "corner is\nopen", color=RED, weight="bold", fontsize=6.6)
+    else:
+        pushed(fld, p, (-2.6, 4.4), (-4.6, 3.7))
+        ghost(fld, p, -4.6, 3.7, side="off")
+        point_to(fld, p, (-5.3, 6.6), (-2.6, 4.4), "weight going\nback: no anchor", color=style.OFFENSE_DARK,
+                 fontsize=6.4)
+    panel_title(ax, name, size=7.8)
+    note_below(ax, note, size=7.0)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+The logic in @fig-rush-plan is a triangle. Speed threatens the corner, so the tackle must get depth, and there are
+only two ways to get it fast. Get it by widening, and the inside opens for the spin or swim. Get it by retreating
+straight back at full speed, and his weight is going backward, which is exactly when power works. So he must stay
+balanced and patient, which slows his set, which brings speed back. A rusher with one great move can be planned for. A
+rusher with two that look the same for the first two steps cannot.
+
+That is the job of [**speed-to-power**](../../appendices/glossary.qmd#gl-speed-to-power), probably the single most
+important move in the modern edge rusher's kit. It starts exactly like a speed rush: the same get-off, the same first
+steps up the arc. The tackle, seeing speed, kicks back fast. Then, two or three steps in, the rusher turns straight into
+him and converts all that speed into a bull rush, hitting him while his weight is still going backward, when he cannot
+anchor. It is the move in this chapter's opening, and it works *because* of the speed rush: the more a tackle fears the
+corner, the faster he retreats, and the more his own momentum helps the rusher push him.
+
+You can follow a rush plan from the couch. Early, many rushers show speed again and again, to make the tackle think
+about the corner. Once he starts bailing, the counters come: the inside spin, the speed-to-power, the long arm. A
+tackle who has been beaten inside starts to sit, and the speed rush is back on. The plan is built during the week from
+film of that specific tackle (his set depth, whether he punches early, whether he oversets after being beaten), so the
+same rusher may use a completely different plan the following Sunday.
+
+::: {.callout-note title="Madden vs. real life"}
+In Madden a pass-rush move is a button press, and whether it works is mostly a matter of ratings. Real moves work or
+fail depending on what the blocker is afraid of, which depends on what the rusher showed him on the previous ten snaps.
+The spin that beats a tackle in the fourth quarter would have been stuffed in the first, before he had a reason to
+overset. Pass rushing is a conversation across a game, not a series of independent dice rolls.
+:::
+
+## Inside rushers: less room, shorter path
+
+Everything above is described from the edge, where most sacks are recorded. Defensive tackles play a different
+version of the same game. An interior rusher has the shortest path to the quarterback, and pressure up the middle is the most destructive
+kind: the quarterback cannot step up into it and cannot see over it. But he also has the least room to work. A guard is
+on him almost immediately (there is no long arc to set up a move, only a yard or so of space), and he often faces two
+blockers. That is the four-against-five arithmetic from the start of the chapter: five linemen against four rushers
+leaves one blocker spare, and the spare is usually the center, who sits in the middle and can turn either way to help
+a guard. Interior rushers therefore win with fast, compact hands: a club or a push-pull the instant they meet the
+guard, a swim or a rip past him, a bull rush to push the pocket. When the ball is coming out too quickly to get home,
+they do the next-best thing and get their hands up into the throwing lane; a batted pass is an interior rusher's
+win. And they are measured differently. A 3-technique who drives the guard back into the quarterback's lap, forcing him to slide away from the
+pressure and into an edge rusher's arms, may have done more than the edge rusher who gets credited with the sack.
+
+The greatest interior rusher of the modern era made the case that a defensive tackle could be the most important player
+on the field. Aaron Donald, a 6-foot-1 defensive tackle the Rams drafted 13th overall in 2014, won Defensive Player of
+the Year three times (2017, 2018 and 2020) and had 20.5 sacks in 2018, astonishing for a player who lined up inside and
+was double-teamed constantly.[^donald] What made him special was not size. It was get-off, hand speed and leverage:
+he was often past the guard before the guard had finished his first step, the one-gap penetration of
+[Defensive Line Play](../05-defensive-fronts-and-run-defense/05-01-dl-techniques-and-gap-control.qmd) applied to the
+pass, and his hands (the club, the push-pull, the swim) were too quick for a double team to land cleanly.
+
+## Stunts: winning with geometry instead of muscle
+
+Moves win one-on-one fights. A [**stunt**](../../appendices/glossary.qmd#gl-stunt), also called a
+[**pass-rush game**](../../appendices/glossary.qmd#gl-pass-rush-game) or a twist, wins by making two blockers'
+assignments collide. In a stunt, two or more rushers exchange gaps after the snap: one goes first to occupy blockers
+(the **penetrator**), and the other loops around behind him into the space he left (the **looper**). The defense still
+rushes four, still covers with seven; it just rearranges where the four go.
+
+You saw the most common stunt from the offense's side in Pass Protection,
+where the guard and tackle passed it off by switching. Here are the main families from the defense's side.
+
+```{python}
+#| label: fig-stunts
+#| fig-cap: "Three common stunts, each zoomed on the part of the line it attacks (the defensive linemen are drawn about half a yard deeper than in the book's other diagrams, so the loops have room to show; the badge above each rusher gives the order he goes in). T-E: the 3-technique goes first and drives into the right tackle's inside half, picking him; the guard follows the 3 outside, and the end loops in a tight hook behind the 3's starting spot into the space the guard left. E-T: the mirror. The end crashes inside first and picks the guard, the tackle chases him inside, and the 3-technique loops around to the outside lane the tackle vacated. Interior twist (T-T): the 3-technique crashes through the right guard's inside shoulder into the A gap, picking the guard and the center; the 1-technique wraps over the top behind him into the B gap the 3 left. In each, two blockers end up on one man (or on nobody), and the second rusher arrives where nobody is."
+DL_DEEP = 1.6   # depth at which the defensive linemen are drawn (the book default is 1.0), so the loops show
+STUNTS = [
+    ("T-E stunt", ["RG", "RT"], ["DT", "RE"], (-1.0, 7.0),
+     {"DT": ([(0.4, 3.3)], (-0.5, 3.7)),
+      "RE": ([(0.9, 5.5), (2.0, 4.6), (2.35, 3.2), (2.0, 1.7), (0.4, 0.9)], (-3.4, 0.7))},
+     {"RG": ((-1.4, 2.6), []), "RT": ((-1.7, 4.6), [])}),
+    ("E-T stunt", ["RG", "RT"], ["RE", "DT"], (-0.4, 7.6),
+     {"RE": ([(0.5, 3.9)], (-0.3, 2.9)),
+      "DT": ([(2.2, 2.6), (2.45, 3.9), (2.0, 5.2), (0.3, 5.7)], (-3.1, 4.6))},
+     {"RG": ((-1.3, 1.9), []), "RT": ((-1.7, 3.5), [])}),
+    ("Interior twist (T-T)", ["LG", "C", "RG", "RT"], ["DT", "NT"], (-3.0, 5.0),
+     {"DT": ([(0.5, 1.4)], (-0.4, 0.95)),
+      "NT": ([(2.2, -0.3), (2.45, 1.0), (2.3, 2.3), (0.6, 2.7)], (-3.2, 2.1))},
+     {"LG": ((-1.5, -1.8), []), "C": ((-1.3, 0.1), []), "RG": ((-1.4, 1.35), []), "RT": ((-1.6, 3.4), [])}),
+]
+fig, axes = plt.subplots(1, 3, figsize=(6.6, 3.7))
+for ax, (name, ol, dl, lat, paths, sets) in zip(axes, STUNTS):
+    p = Play(line(ol), [q.moved(d=DL_DEEP) for q in four_down() if q.key in dl], los=35, to_go=None)
+    for k in dl:
+        via, end = paths[k]
+        to(p, k, end, "rush", via=via)
+    for k, (end, via) in sets.items():
+        to(p, k, end, via=via)
+    fld = draw(p, ax=ax, title=False, lateral=lat, window=(-5.0, 4.0))
+    for n, k in enumerate(dl, 1):
+        q = p.players[k]
+        badge(fld, p, q.d + 1.35, q.w, str(n))
+    panel_title(ax, name, size=8.0)
+fig.tight_layout(w_pad=0.6)
+plt.show()
+```
+
+**The T-E stunt.** In a [**T-E stunt**](../../appendices/glossary.qmd#gl-t-e-stunt) (tackle first, end second) the
+defensive tackle drives into the offensive tackle's inside half to pick him, then takes over contain, and the end loops
+around behind him into the inside gap he vacated. The penetrator's aiming point is the near hip of the *far* blocker
+(the offensive tackle, not the guard in front of him): he has to collide with both blockers, a legal **pick**, so they
+cannot switch cleanly. A penetrator who just runs around the tackle has wasted the stunt. If the guard follows the
+3-technique outside and the tackle waits for the end on the outside, both block the wrong man, and the end walks
+through the gap.
+
+**The E-T stunt.** The [**E-T stunt**](../../appendices/glossary.qmd#gl-e-t-stunt) is the mirror: the end crashes
+inside first, picking the guard, and the tackle loops around him to the outside, taking over the end's rush lane. It
+sends the looper wide, toward an offensive tackle who has just watched the end leave and may have turned inside to
+chase him.
+
+**Which one, when?** Both hunt the same seam; the difference is who arrives second, unblocked or against the wrong
+man. Defenses usually make the best rusher the looper, so a star end means T-E (he loops inside onto a guard, who is
+slower than a tackle and rarely sees an end) and a quick, rangy 3-technique means E-T (he loops outside onto a tackle
+who is turned the wrong way). The matchup matters too: aim the looper at the weaker blocker, and the pick at the one
+who switches poorly.
+
+**The interior twist.** Two defensive tackles can do the same thing in the middle, a **T-T twist**. In @fig-stunts the
+3-technique crashes through the right guard's inside shoulder into the A gap, picking the guard and the center, and the
+1-technique wraps over the top behind him into the B gap he left. It attacks the guards and center, the three men who
+are supposed to hold firm, and it is especially effective against centers who have to make the protection calls and
+then find a man.
+
+The words overlap: many staffs say "stunt" for run-down line movement and "game" or "twist" for a pass-rush exchange,
+the penetrator is also the crasher or picker, and the looper the wrapper. Each stunt gets a code word ("Tex" is a common
+one for T-E), and many defenses run three-man games too. Most stunts come in the coordinator's call, but many lines
+also have games they can check into at the line when they see a particular protection.
+
+### Why stunts work, and what they cost
+
+Stunts exist because they create a mismatch or a free rusher *without blitzing*. Against man protection, the
+blockers have to recognise the stunt and pass it off in a split second; if either one hesitates, the looper is free.
+Against slide protection, as you are about to see, a stunt aimed the wrong way is simply absorbed, but one aimed at the
+right spot can still choose who blocks whom.
+
+The animation shows a T-E against a slide going the other way. Compare it with the stunt figure in
+[Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd), where the right tackle *took*
+the crashing 3-technique: that line was in man protection and switched. Here the line is sliding, so the tackle steps
+inside to his gap and lets the 3-technique go by.
+
+```{python}
+#| label: fig-te-vs-slide
+#| fig-cap: "A T-E stunt against slide protection (simulated; zoomed on the offense's right side, linebackers and coverage not shown because they drop). The line slides left, toward the 1-technique shaded in the left A gap, so each lineman steps left and owns the gap to his left: the right guard owns the right A gap, the right tackle the B gap, and the back's job is the right end. The 3-technique (ringed in purple) crashes outside, out of the tackle's gap and into the back's area; the end (ringed in green) jabs upfield and loops behind him into the B gap. The slide does its job: the tackle keeps his gap and picks up the looping end, so nobody is free. (The right guard, with nobody in his gap, does what slide rules tell him: he looks the way the slide is going and helps the center on the 1-technique, so he never sees the stunt behind him.) But the stunt has changed the matchup: the back, set to block a 250-pound end, meets a 300-pound defensive tackle at full speed and is driven back toward the quarterback, who has to slide away. Dotted lines in the last frame: who finished on whom."
+def te_vs_slide():
+    """A four-man rush: T-E stunt on the right against a full slide left, the back assigned to the right end."""
+    p = Play(line() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, 1.7, "R")], four_down(), los=35,
+             to_go=None)
+    timed(p, "QB", [(0.8, -6.8, 0.0), (2.0, -6.8, 0.0), (2.6, -7.0, -0.9)])
+    # the slide: everyone steps left; the left side is blocked normally
+    timed(p, "LE", [(0.5, -0.4, -5.8), (1.0, -1.8, -5.9), (1.6, -3.0, -5.4), (2.6, -4.6, -4.6)], "rush")
+    timed(p, "LT", [(0.5, -1.5, -4.2), (1.0, -2.3, -4.6), (1.6, -3.0, -4.5), (2.6, -4.0, -3.9)], "block")
+    timed(p, "LG", [(0.4, -1.2, -2.5), (0.8, -1.6, -2.7), (1.6, -2.0, -2.6), (2.6, -2.4, -2.5)], "block")
+    timed(p, "NT", [(0.4, 0.0, -0.9), (0.8, -0.5, -1.0), (1.6, -1.0, -1.0), (2.6, -1.2, -1.0)], "rush")
+    timed(p, "C", [(0.4, -1.3, -0.9), (0.8, -1.7, -1.0), (1.6, -2.2, -1.1), (2.6, -2.6, -1.1)], "block")
+    timed(p, "RG", [(0.4, -1.3, 0.8), (0.8, -1.7, 0.6), (1.3, -2.1, 0.4), (2.6, -2.7, 0.35)], "block")
+    timed(p, "RT", [(0.4, -1.2, 2.4), (0.8, -1.6, 2.15), (1.3, -1.9, 2.2), (1.8, -2.2, 2.3), (2.6, -2.7, 2.3)],
+          "block")
+    # the penetrator: the 3-technique crashes outside, through the space the RT stepped away from
+    timed(p, "DT", [(0.4, 0.1, 3.4), (0.8, -0.8, 4.2), (1.3, -2.0, 4.4), (1.8, -3.1, 3.9), (2.2, -3.9, 3.0),
+                    (2.6, -4.6, 2.2)], "rush")
+    # the looper: the end jabs upfield, then loops behind the 3-technique into the B gap
+    timed(p, "RE", [(0.4, 0.2, 5.6), (0.8, 0.6, 4.6), (1.3, -0.3, 3.2), (1.8, -0.8, 2.6), (2.6, -0.6, 2.7)], "rush")
+    # the back steps up to take the end outside the tackle, and meets the 3-technique instead
+    timed(p, "RB", [(0.4, -4.6, 2.4), (0.8, -4.1, 3.4), (1.3, -3.6, 4.0), (1.8, -4.5, 3.2), (2.2, -5.4, 2.3),
+                    (2.6, -6.5, 1.1)], "block")
+    return p
+
+
+rush_animation(te_vs_slide(), [0.0, 0.4, 0.8, 1.3, 1.8, 2.6],
+    notes=["snap: the line slides left;\nR has the right end", "line steps left; 3 crashes\noutside, E jabs upfield",
+           "RT lets the 3 go;\nE loops behind him", "RT picks up the E;\nR meets the 3, not the E",
+           "a 300-lb tackle\non a 210-lb back", "R driven back, Q slides away:\nnobody free, still pressure"],
+    lateral=(-2.6, 8.4), window=(-8.6, 2.6), ncols=3, rings=(("DT", PURPLE), ("RE", style.THIRD)),
+    final_links=(("RT", "RE", GREEN), ("RB", "DT", RED)))
+```
+
+Notice what the stunt did and did not do in @fig-te-vs-slide. It did not produce a free rusher: the slide protection
+handled it exactly as designed, because the right tackle owned a *gap*, not a man, and simply took whoever came into it.
+That is slide protection's strength: gaps do not move. What the stunt did instead was **choose the matchup**. The protection had assigned the back to the end. The
+stunt swapped the end for a defensive tackle who outweighs the back by ninety pounds, and the back lost. No one was
+unblocked, and the quarterback was still pressured.
+
+Run the same T-E into the *slide side*, where the center, guard and tackle are all stepping toward it, and it dies:
+the guard owns the B gap the end loops into, the tackle owns the C gap the 3-technique crashes into, and each blocker
+simply takes the man who arrives. So defenses aim stunts away from the slide, at the man side of a half-slide, or at a
+specific blocker: a slow-footed guard, a rookie tackle, a back who has to take a lineman.
+
+How does the defense know which way the slide will go before the snap? It mostly doesn't *know*; it bets on clues.
+Film shows how an offense protects from each formation and each back alignment, so the back's spot is a clue to
+the offense's habits. Before the snap the center points out the linebacker he is
+counting from, which hints at the slide's direction. And many defenses simply shift or align late, so the slide is
+called against a picture that changes. Line coaches talk about
+stunts the way offensive coordinators talk about plays, as weapons chosen for a particular opponent.
+
+Stunts have three costs, and they are why defenses do not stunt on every snap.
+
+- **They take time.** The looper runs a longer path than a straight rush, so a stunt usually arrives later, about two
+  and a half seconds or more after the snap. Against a quick throw, a stunt is a defense that rushed two men late and
+  two men sideways. Stunts belong on long-yardage downs, when the quarterback must hold the ball for routes to develop.
+- **They give up the one-on-one.** The penetrator's job is to occupy blockers, not to win, so a great rusher who is
+  asked to penetrate on a stunt is a great rusher not rushing. Defenses often build stunts so their best player is the
+  looper.
+- **They open lanes.** Two rushers crossing paths leave, for a moment, a space where neither of them is, and a
+  quarterback who can run will find it. That is the next subject.
+
+## Rush lanes and contain
+
+A four-man rush is not four men running at the quarterback. It is four men each responsible for a **lane**, and the
+lanes together form a box around him.
+
+A [**rush lane**](../../appendices/glossary.qmd#gl-rush-lane) is the path to the quarterback that one rusher owns. The
+two ends usually own the outside lanes and have [contain](../../appendices/glossary.qmd#gl-contain): they rush outside
+the tackles but must not run past the quarterback's depth, because the space behind them would become a running lane.
+The two interior rushers own the middle and have the job of pushing the pocket straight back, so the quarterback cannot
+step up. If every rusher stays in his lane, the quarterback has nowhere to go: forward is the interior push, sideways is
+the edge rushers, backward is a longer throw. If one rusher leaves his lane, there is a hole.
+
+```{python}
+#| label: fig-rush-lanes
+#| fig-cap: "Rush lanes (shaded) for a four-man rush, with the quarterback at his launch point. The arrows show each rusher's lane, not the hand fight; in a real rush every one of them is engaged with a blocker along the way. Left: lanes kept. The ends rush outside the tackles and stop at the quarterback's depth (the dashed contain line), the inside rushers push the pocket straight back, and the quarterback is boxed in. Right: one lane lost. The right end, chasing the sack, runs his arc past the quarterback's depth; the right tackle rides him past (that is the tackle's job), and the space they have both left becomes an escape lane (red). A quarterback who can run climbs and slips out underneath them, often past the line of scrimmage before anyone can turn around. A right-handed quarterback escapes to his right most readily, which is why this side's contain matters most."
+LANES = {"LE": [(1.0, -5.4), (-1.2, -6.5), (-4.6, -6.1), (-6.7, -2.0)], "NT": [(1.0, -0.7), (-5.0, -0.7)],
+         "DT": [(1.0, 2.35), (-5.0, 1.0)], "RE": [(1.0, 5.4), (-1.2, 6.5), (-4.6, 6.1), (-6.7, 2.0)]}
+fig, axes = plt.subplots(1, 2, figsize=(6.6, 4.1))
+for ax, lost in zip(axes, (False, True)):
+    p = Play(line() + [O("QB", "QB", -7.0, 0.0, "Q")], four_down(), los=35, to_go=None)
+    for k, sp in {"LT": (-3.4, -4.3), "LG": (-1.9, -1.8), "C": (-1.6, 0.0), "RG": (-1.9, 1.8), "RT": (-3.4, 4.3)}.items():
+        if not (lost and k == "RT"):
+            to(p, k, sp)
+    if lost:   # the right tackle rides the end past the quarterback
+        to(p, "RT", (-6.4, 5.7), via=[(-2.4, 5.0)])
+    for k, pts in LANES.items():
+        if lost and k == "RE":
+            to(p, "RE", (-9.3, 4.4), "rush", via=[(-1.2, 6.5), (-5.0, 6.8), (-8.0, 6.2)])
+        else:
+            to(p, k, pts[-1], "rush", via=pts[1:-1])
+    fld = draw(p, ax=ax, title=False, lateral=(-11.6, 11.6), window=(-11.6, 3.0), ol_fs=5.4)
+    ppy = fld.pts_per_yard()
+    for k, pts in LANES.items():
+        xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
+        ax.plot(xs, ys, color=style.DEFENSE, lw=1.9 * ppy, alpha=0.13 if not (lost and k == "RE") else 0.05,
+                solid_capstyle="round", solid_joinstyle="round", zorder=1.4)
+    for sgn in (-1, 1):
+        (x0, y0), (x1, y1) = _P(fld, p, -7.0, sgn * 2.6), _P(fld, p, -7.0, sgn * 8.6)
+        ax.plot([x0, x1], [y0, y1], color=style.DEFENSE_DARK, lw=1.0, ls=(0, (2, 2)), zorder=2)
+    if lost:
+        dashed(fld, p, [(-7.0, 0.6), (-5.4, 2.4), (-3.0, 4.1), (1.8, 4.2)], color=RED, lw=2.0)
+        point_to(fld, p, (-2.4, 9.0), (-2.2, 4.12), "escape\nlane", color=RED, fontsize=7.0)
+        say(fld, p, -10.0, 8.2, "too deep", color=style.DEFENSE_DARK, fontsize=6.6)
+        point_to(fld, p, (-6.0, 9.0), (-6.4, 5.9), "tackle rides\nhim past", color=style.OFFENSE_DARK, fontsize=6.4)
+        panel_title(ax, "One lane lost")
+    else:
+        say(fld, p, -8.7, -5.6, "contain line:\nnot past the QB", color=style.DEFENSE_DARK, fontsize=6.4)
+        say(fld, p, -3.5, 0.15, "push the\npocket", color=style.DEFENSE_DARK, fontsize=6.4)
+        panel_title(ax, "Lanes kept: the QB is boxed in")
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+The trade in @fig-rush-lanes is the oldest one in pass rushing. A rusher who stays disciplined in his lane gives the
+quarterback nowhere to go, but he also gives up some of his own chance to get home. A rusher who abandons his lane for
+the sack, whether by running too far upfield, spinning inside out of an outside lane, or looping on a stunt, may get
+there, or may open the door. Against a quarterback who will stand in the pocket, the gamble usually pays. Against one
+who runs, it often doesn't. Defenses guard the contain on the quarterback's throwing-arm side hardest (the offense's
+right, for a right-hander), because he can escape that way and still throw on the run.
+
+Stunts make the lanes move. On a T-E, the penetrator crashing outside takes over the outside lane and with it contain,
+while the end who usually has contain loops inside. If the penetrator does not get there, or gets there too deep, the
+edge is open. That is part of why stunts are rarer against running quarterbacks, and why the stunts defenses do run
+against them are often the ones that keep a fast player outside.
+
+## The mush rush: squeezing instead of racing
+
+Keeping lanes is ordinary discipline: every good four-man rush does it, and every end in it is still trying to beat
+his tackle to the corner and then stop at the quarterback's depth. Against a quarterback who is a real threat to run,
+defenses often go further and change what the rush is *for*. In a [**mush rush**](../../appendices/glossary.qmd#gl-mush-rush)
+(some staffs say **cage rush**), the ends stop trying to win the corner at all. Each one stays on his tackle's outside
+shoulder, in front of him, and pushes him straight back, with a bull rush or a long arm, until the tackle is standing
+beside the quarterback. The inside rushers do the same to the guards. The pocket is squeezed from all sides rather
+than raced into, and the goal is no longer to sack him quickly. It is to make sure that when the routes are covered and
+he looks for somewhere to run, there is nowhere to go.
+
+```{python}
+#| label: fig-mush
+#| fig-cap: "The mush rush against a quarterback who runs. Nobody goes around anybody: the ends (ringed) stay on the outside shoulders of their tackles and drive them straight back to the quarterback's depth (dashed), and the inside rushers drive the guards back into his face. The cage (green outline) is made of driven-back blockers with rushers on their outside shoulders: it shrinks around him but never opens. Some defenses add a spy, a linebacker who stays at home and mirrors the quarterback side to side (M), as a last line if he does escape."
+p = Play(line() + [O("QB", "QB", -6.2, 0.0, "Q")], four_down() + [D("MIKE", "MIKE", 5.0, 0.0, "M")], los=35,
+         to_go=None, title="The mush rush: a cage, not a race")
+to(p, "C", (-1.6, 0.0))
+p.highlight("LE", "RE", color=PURPLE)
+fld = draw(p, width_in=5.6, lateral=(-11.5, 11.5), window=(-10.2, 8.4), ol_fs=5.8)
+for sg in (-1, 1):
+    pushed(fld, p, (-0.7, sg * 3.2), (-5.3, sg * 3.4))      # tackles walked back
+    ghost(fld, p, -5.3, sg * 3.4, side="off")
+    dashed(fld, p, [(1.0, sg * 5.4), (-0.6, sg * 5.0), (-4.3, sg * 4.6)], color=style.DEFENSE, lw=1.6, dash="solid")
+    ghost(fld, p, -4.3, sg * 4.6)                           # end on the tackle's outside shoulder
+    pushed(fld, p, (-0.7, sg * 1.6), (-3.0, sg * 1.7))      # guards walked back
+    ghost(fld, p, -3.0, sg * 1.7, side="off")
+dashed(fld, p, [(1.0, -0.7), (-1.7, -1.4)], color=style.DEFENSE, lw=1.6, dash="solid")
+dashed(fld, p, [(1.0, 2.35), (-1.7, 1.9)], color=style.DEFENSE, lw=1.6, dash="solid")
+ghost(fld, p, -1.7, -1.4)
+ghost(fld, p, -1.7, 1.9)
+cage = [(-4.3, -4.6), (-1.7, -1.4), (-1.6, 0.0), (-1.7, 1.9), (-4.3, 4.6), (-6.2, 4.2), (-8.2, 1.6), (-8.6, 0.0),
+        (-8.2, -1.6), (-6.2, -4.2)]
+xy = np.array([_P(fld, p, d, w) for d, w in cage], dtype=float)
+fld.ax.add_patch(Polygon(xy, closed=True, fc=GREEN, alpha=0.10, ec=GREEN, lw=1.2, ls=(0, (3, 2)), zorder=1.5))
+(xa, ya), (xb, yb) = _P(fld, p, 6.3, -2.2), _P(fld, p, 6.3, 2.2)
+fld.ax.add_patch(FancyArrowPatch((float(xa), float(ya)), (float(xb), float(yb)), arrowstyle="<|-|>", mutation_scale=9,
+                                 color=style.DEFENSE_DARK, lw=1.3, zorder=9))
+point_to(fld, p, (-6.6, -8.8), (-4.3, -4.6), "ends: on the tackle's\noutside shoulder,\ndrive him back",
+         color=style.DEFENSE_DARK)
+point_to(fld, p, (-6.6, 8.8), (-5.3, 3.4), "tackle walked back\nbeside the QB:\nno escape lane", color=style.OFFENSE_DARK)
+point_to(fld, p, (3.0, -3.6), (-3.0, -1.7), "inside: drive the\nguards into his face", color=style.DEFENSE_DARK)
+say(fld, p, 6.3, 5.4, "spy (optional):\nmirrors the QB", color=style.DEFENSE_DARK, fontsize=6.8)
+say(fld, p, -9.0, 4.0, "the cage", color=GREEN, weight="bold")
+plt.show()
+```
+
+The word "mush" sounds passive, and the mush rush is often criticised as timid when it fails. But watch it work against
+a great runner and it is anything but. The rushers are still fighting their blockers; they are fighting them for
+*position* rather than for a path around them. The quarterback ends up throwing from a shrinking space with no lanes,
+or running into a defender who was waiting for exactly that.
+
+The cost is the clock. A mush rush produces fewer quick pressures and fewer sacks, so the coverage behind it has to
+hold for four or five seconds instead of two and a half. Against a quarterback who is both a great runner and a patient
+passer, that is a miserable choice, which is why such quarterbacks are so hard to defend. Some defenses add the
+[spy](../../appendices/glossary.qmd#gl-spy) you met in
+[Linebackers](../05-defensive-fronts-and-run-defense/05-04-linebackers-and-second-level.qmd), a defender assigned
+only to mirror the quarterback; it buys insurance at the cost of a man in coverage or in the rush.
+
+::: {.callout-caution title="Common misconception"}
+"A mush rush means the defense isn't trying to get to the quarterback." It means the defense has decided *where* it
+wants the quarterback to be, and has accepted that he will get there later. Against a quarterback who runs for a first
+down every time a lane opens, a sack is less valuable than an escape is costly.
+:::
+
+## Measuring a pass rush: why pressure beats sacks
+
+A [sack](../01-foundations/01-02-downs-distance-and-field-position.qmd), the quarterback tackled behind the line
+before he can throw, is the pass rush's famous statistic, and for good reason: it is one of the most damaging plays in
+football. It costs yards, a down and often the drive, and sometimes the ball. The NFL has counted sacks officially only
+since 1982;[^sacks82] the single-season record is the 23.0 that Myles Garrett set in 2025, breaking the 22.5 shared by
+Michael Strahan (2001) and T.J. Watt (2021).[^records]
+
+But as a way to *judge* a pass rush, sacks are a poor instrument, and the reason is simple arithmetic. A sack happens
+only when three things go right for the defense: a rusher gets to the quarterback (pressure), the quarterback fails to
+get rid of the ball or escape, and the rusher finishes the tackle. Only the first is mostly about the rush. So analysts
+split it in two:
+
+$$\text{sacks} = \text{pressures} \times \text{the share of pressures that become sacks}$$
+
+[Pressure](../../appendices/glossary.qmd#gl-pressure), as Pass Protection
+defined it, is any rusher forcing the quarterback to change what he wanted to do: a sack, a hit or a hurry. In FTN's
+charting of the 2023–2025 regular seasons, quarterbacks were pressured on `{python} f"{100 * PR_FTN:.0f}%"` of
+dropbacks and sacked on `{python} f"{100 * SR_FTN:.1f}%"`, so only about `{python} f"{100 * P2S_FTN:.0f}%"` of pressures,
+roughly one in `{python} f"{1 / P2S_FTN:.0f}"`, became sacks.
+
+Does a pressure that is *not* a sack matter? A great deal. Over the same seasons, a clean dropback was worth
+`{python} f"{EPA_CLEAN:+.2f}"` expected points to the offense on average, a pressured dropback that did not end in a
+sack `{python} f"{EPA_PNS:+.2f}"`, and a sack `{python} f"{EPA_SACK:+.2f}"`. Quarterbacks completed
+`{python} f"{100 * CMP_CLEAN:.0f}%"` of their throws when clean and `{python} f"{100 * CMP_PNS:.0f}%"` when pressured.[^epa]
+(Some of that gap is selection, since long-developing plays get pressured more often, but the direction is not in
+doubt.) The hurry that nobody counts turns a good play for the offense into a slightly bad one, on many more snaps than
+sacks ever do. So the question is what decides the conversion from pressure to sack, and whether it belongs to the rush
+at all.
+
+```{python}
+#| label: fig-pressure-vs-sacks
+#| fig-cap: "Pressure and sacks, defense by defense: every team-season from 2023 to 2025 (regular season; pressure includes sacks, from FTN's charting). Teams that pressure more do sack more, but look at the spread: at any pressure rate, sack rates differ by a factor of two. The faint rays show the conversion, the share of pressures that became sacks. The arrow follows the Cleveland Browns: in 2024 they had the highest pressure rate of any defense in these three seasons and an ordinary sack rate; in 2025 they pressured less often, converted far more of those pressures, and Myles Garrett set the single-season record. Data: nflverse play-by-play and participation via nflreadpy."
+style.apply()
+fig, ax = plt.subplots(figsize=(6.5, 4.4))
+xs = np.linspace(100 * FTN["pr"].min() - 1.5, 100 * FTN["pr"].max() + 1.5, 10)
+Y_TOP = 11.0
+for k in (0.15, 0.20, 0.25, 0.30):
+    ax.plot(xs, k * xs, color=style.BASELINE, lw=0.9, ls=(0, (3, 2)), zorder=1)
+    if k * xs[-1] <= Y_TOP - 0.4:
+        ax.text(xs[-1] + 0.15, k * xs[-1], f"{k:.0%} of\npressures", fontsize=6.5, color=style.MUTED,
+                va="center", ha="left", linespacing=1.0)
+    else:   # the ray leaves through the top of the chart: label it there
+        ax.text((Y_TOP - 0.35) / k - 0.2, Y_TOP - 0.35, f"{k:.0%} of pressures", fontsize=6.5, color=style.MUTED,
+                va="center", ha="right")
+old, new = FTN[FTN["season"] < 2025], FTN[FTN["season"] == 2025]
+ax.scatter(100 * old["pr"], 100 * old["sr"], s=18, color=style.GRID, edgecolor=style.MUTED, lw=0.4,
+           label="2023-2024 defenses", zorder=2)
+ax.scatter(100 * new["pr"], 100 * new["sr"], s=28, color=style.SERIES[0], edgecolor=style.SURFACE, lw=0.9,
+           label="2025 defenses", zorder=3)
+a, z = CLE24, CLE25
+ax.annotate("", (100 * z["pr"], 100 * z["sr"]), (100 * a["pr"], 100 * a["sr"]),
+            arrowprops=dict(arrowstyle="-|>", color=style.SERIES[1], lw=1.6, shrinkA=4, shrinkB=8), zorder=4)
+ax.scatter([100 * a["pr"]], [100 * a["sr"]], s=30, color=style.SERIES[1], edgecolor=style.SURFACE, lw=0.9, zorder=4,
+           label="Browns 2024 (arrow: to 2025)")
+ax.annotate(f"Browns 2024\n{a['sacks']:.0f} sacks", (100 * a["pr"], 100 * a["sr"]), xytext=(-8, -16),
+            textcoords="offset points", ha="right", fontsize=7.2, color=style.INK)
+ax.annotate(f"Browns 2025\n{z['sacks']:.0f} sacks", (100 * z["pr"], 100 * z["sr"]), xytext=(9, 6),
+            textcoords="offset points", ha="left", va="bottom", fontsize=7.2, color=style.INK)
+for row, dx, dy, ha in ((DEN25, -9, 2, "right"), (SF25, 7, -4, "left")):
+    ax.annotate(f"{'Broncos' if row['defteam'] == 'DEN' else '49ers'} 2025\n{row['sacks']:.0f} sacks",
+                (100 * row["pr"], 100 * row["sr"]), xytext=(dx, dy), textcoords="offset points", ha=ha,
+                fontsize=7.2, color=style.INK)
+ax.set_xlim(xs[0], xs[-1] + 2.6)
+ax.set_ylim(2, Y_TOP)
+ax.set_xlabel("Pressure rate (% of opponents' dropbacks)", fontsize=8.5)
+ax.set_ylabel("Sack rate (% of dropbacks)", fontsize=8.5)
+ax.tick_params(labelsize=8)
+ax.legend(loc="upper left", fontsize=7.4)
+fig.tight_layout()
+plt.show()
+```
+
+Three things stand out in @fig-pressure-vs-sacks.
+
+**Pressure and sacks are related, but loosely.** Across these team-seasons the correlation between a defense's pressure
+rate and its sack rate is `{python} f"{R_FTN:.2f}"`: real, but far from one. Two defenses that reach the quarterback
+equally often can finish with very different sack totals. The 2025 Broncos turned
+`{python} f"{100 * DEN25['p2s']:.0f}%"` of their pressures into sacks, `{python} f"{DEN25['sacks']:.0f}"` in all; the
+2025 49ers turned `{python} f"{100 * SF25['p2s']:.0f}%"` into sacks and finished with
+`{python} f"{SF25['sacks']:.0f}"`.
+
+**The best pressure team was not the best sack team.** The 2024 Browns pressured opposing quarterbacks on
+`{python} f"{100 * CLE24['pr']:.1f}%"` of dropbacks, the highest rate of any defense in these three seasons (far enough
+from the pack that some of it may be how FTN's charters judged hurries that year; trust the ranking more than the
+decimal), and finished
+with `{python} f"{CLE24['sacks']:.0f}"` sacks, converting only `{python} f"{100 * CLE24['p2s']:.0f}%"`. In 2025, with
+largely the same star at the heart of the rush, they pressured *less* often (`{python} f"{100 * CLE25['pr']:.1f}%"`)
+and finished with `{python} f"{CLE25['sacks']:.0f}"` sacks, because `{python} f"{100 * CLE25['p2s']:.0f}%"` of their
+pressures became sacks. Context shaped both years: a wide, attacking front produces many hurries that arrive just as
+the ball leaves, and a team that trails often, as the 2024 Browns did, faces quarterbacks throwing quickly to catch up.
+But the data that follows says the conversion itself is mostly not something a defense keeps. Garrett's record season
+was real, and so was his dominance the year before; the sacks just arrived in one year rather than the other.
+
+**So which number should you believe?** The test is which one *repeats*. A measure of skill should carry over from one
+season to the next, because the players and coaches mostly carry over; a measure full of luck should not.
+
+```{python}
+#| label: fig-carryover
+#| fig-cap: "What carries over from one season to the next. Each row is a correlation between a measure in one season and the same team's (or quarterback's) measure the next season; the faint dots are the individual season pairs (2018-19 to 2021-22 from Next Gen Stats' charting, 2023-24 and 2024-25 from FTN's; the 2022-23 pair is left out because the source changes), and the large dot is their average. Read the averages and the pattern, not any single dot. A defense's pressure rate repeats better than its sack rate, and even predicts next year's sacks better than this year's sacks do. A defense's pressure-to-sack conversion does not repeat at all; a quarterback's does. Data: nflverse play-by-play and participation via nflreadpy; quarterbacks with at least 100 pressured dropbacks in both seasons."
+style.apply()
+labels = list(CARRY)
+fig, ax = plt.subplots(figsize=(6.5, 3.3))
+ys = np.arange(len(labels))[::-1]
+for y, k in zip(ys, labels):
+    v = CARRY[k]
+    ax.scatter(v, np.full(len(v), y) + np.linspace(-0.12, 0.12, len(v)), s=14, color=style.GRID,
+               edgecolor=style.MUTED, lw=0.5, zorder=2)
+    col = style.SERIES[1] if k.startswith("Quarterback") else style.SERIES[0]
+    ax.scatter([MEAN[k]], [y], s=70, color=col, edgecolor=style.SURFACE, lw=1.0, zorder=3)
+    ax.text(0.86, y, f"{MEAN[k]:+.2f}", fontsize=8, color=col, va="center", ha="left", fontweight="bold")
+ax.axvline(0, color=style.BASELINE, lw=1.0, zorder=1)
+ax.set_yticks(ys, labels, fontsize=7.6)
+ax.set_xlim(-0.3, 0.98)
+ax.set_xlabel("Correlation with the next season (0 = no carry-over, 1 = perfect)", fontsize=8)
+ax.tick_params(axis="x", labelsize=7.6)
+ax.grid(axis="y", visible=False)
+fig.tight_layout()
+plt.show()
+```
+
+@fig-carryover is the core of the case for pressure.[^carry] On average, a defense's pressure rate correlates about
+`{python} f"{K_PR:.2f}"` with its own pressure rate the next season; its sack rate correlates only about
+`{python} f"{K_SR:.2f}"` with next season's sack rate. And this season's *pressure* rate predicts next season's *sack* rate
+(about `{python} f"{K_X:.2f}"`) better than this season's sack rate does. If you want to know which pass rush will get
+sacks next year, count its pressures this year, not its sacks. A caution on precision: with 32 teams, any one season
+pair carries a margin of roughly ±0.17, and the season pairs scatter widely. The gap between the two averages is about
+two of its own standard errors, so "pressure repeats better" is solid; exactly how much better is not.
+
+The fourth row shows why. A defense's conversion rate, the share of its pressures that become sacks, has essentially no
+carry-over (an average correlation of `{python} f"{K_DP:+.2f}"`). A defense that converted a lot one year is no more likely
+than any other to convert a lot the next. Whatever drives the conversion, it is not something the defense keeps.
+
+The fifth row says what it is, or at least who. A *quarterback's* conversion rate, the share of the times he is pressured
+that end in a sack, does carry over, about `{python} f"{K_QP:.2f}"` on average (noisier, because there are only twenty or
+thirty quarterbacks a season with enough pressures to measure). Some quarterbacks get rid of the ball, throw it away,
+step up or escape when the rush arrives, and some take the sack, year after year. How big is that? Among the
+`{python} f"{Q_N}"` quarterbacks with at least 200 pressured dropbacks in 2023–2025, the conversion ran from
+`{python} f"{100 * Q_LO['p2s']:.0f}%"` (`{python} Q_LO_NAME`) to `{python} f"{100 * Q_HI['p2s']:.0f}%"`
+(`{python} Q_HI_NAME`), with the middle half between `{python} f"{100 * Q_25:.0f}%"` and
+`{python} f"{100 * Q_75:.0f}%"`. The same rush, aimed at the quarterback at the top of that list, produces more than
+twice as many sacks. FTN's charters also flag every sack they judge to be the quarterback's fault, and they
+flagged about `{python} f"{100 * QB_FAULT:.0f}%"` of them, one in three.[^qbfault] [Quarterback Play](../04-the-passing-game/04-07-quarterback-play.qmd) has more
+on that spread. A pass rush's sack total depends a great deal on which quarterbacks it happened to face, how often
+it faced them on third-and-long, and a large helping of luck about which pressures arrived a half-step before the throw.
+Pressure is the part of the sack the rush owns.
+
+::: {.callout-caution title="Common misconception"}
+"Sacks tell you who the best pass rushers are." They tell you who *finished* plays, which is real but partial. Many sacks
+are **clean-up sacks**: an interior rusher collapses the pocket, the quarterback slides away from him into an edge rusher,
+and the edge rusher gets the credit. Others are **coverage sacks**, where the quarterback held the ball for four or five
+seconds because nobody was open, and whoever arrived first got the stat. And some of the best rushes in a game, like the
+one that opened this chapter, produce a throw a beat too early and no statistic at all. Watch for who *caused* the
+pressure, not just who was standing over the quarterback.
+:::
+
+## Pass rush win rate, get-off and time to pressure
+
+If sacks are too noisy and pressure is better, can we do better still? Pressure has its own flaw: it depends on the
+clock. A rusher who beats his man cleanly in 1.5 seconds against a quarterback who throws in 1.3 gets no pressure, and a
+rusher who is stonewalled for four seconds and then wanders in while the quarterback pats the ball gets one. Tracking
+data allows measures that do not depend on what the quarterback does.
+
+**Pass rush win rate.** ESPN's [**pass rush win rate**](../../appendices/glossary.qmd#gl-pass-rush-win-rate)
+([**PRWR**](../../appendices/glossary.qmd#gl-prwr)), introduced in 2018 by ESPN Analytics and built on Next Gen Stats
+tracking data, asks one question of every rush: did the rusher beat his block within 2.5 seconds of the snap?[^prwr] Its
+companion, pass block win rate, asks the reverse of every blocker. The fixed 2.5-second clock is the clever part. It
+sits a little before the average throw, ESPN found it best separated the rushers and blockers already known to be good, and it takes the quarterback out of the number: a quarterback who holds
+the ball cannot hand rushers late "wins," and one who throws quickly cannot hide a rusher who was about to get home.
+ESPN publishes it as leaderboards ranked within position groups, so edge rushers are compared with edge rushers and
+interior linemen with interior linemen, because their jobs are so different. For a scale: when ESPN introduced it, four
+weeks into the 2018 season, the average edge rusher won about 22% of his rushes and the leaders were in the 40s. A
+rusher who wins one rush in three is very good; one in five is ordinary. Double teams get special care: since 2019,
+beating one blocker of a double team no longer counts as a win, which is why an interior rusher who wins often against
+constant doubles is so impressive.
+
+Its limits are worth knowing. A "win" is not a pressure; a rusher can beat his man and still be too late or too wide to
+matter. A bull rush that walks the tackle into the quarterback without ever shedding him is the kind of rep a
+"did he beat his block" measure can miss. The model does not know each rusher's assignment, so a penetrator on a stunt, whose job is to occupy blockers,
+can look like a loser while doing exactly what was asked. And the play-by-play data is not public, only the leaderboards,
+so you cannot rebuild it yourself. Use it the way you would use a scout's opinion: an excellent tiebreaker between
+players, not a final verdict.
+
+**Get-off and time to pressure.** Two simpler tracking measures bracket the rush. Get-off, as above, is how quickly a
+rusher crosses the line after the snap. **Time to pressure** is the seconds from the snap to the first pressure on the
+play. Together they separate the rushes that won from the ones that were handed something. A pressure inside about two and
+a half seconds, before most throws are due, is almost always a rush win. One after three and a half seconds, when
+every route has finished, is usually the coverage, the quarterback holding the ball, or both. In between is shared
+credit: the routes are just finishing, and the rush and coverage are working together. Here is how each is computed
+from tracking data, on a simulated four-man rush.
+
+```{python}
+#| label: fig-ttp-strip
+#| fig-cap: "A four-man rush measured from tracking data (simulated, BDB-format; receivers and coverage not shown). 1: the snap. 2: under a second later all four rushers have crossed the line; each one's get-off is the frame he crossed it. 3: the right end gets past the right tackle (deeper than him, toward the quarterback): his rush is won, well inside the 2.5-second window pass rush win rate uses. 4: the end reaches two yards of the quarterback, this chapter's working definition of pressure for the measurement, and the quarterback has to move. The other three rushers are still in front of their blockers."
+def measured_rush():
+    """A four-man rush against five blockers: the right end wins with speed, the others are held up."""
+    p = Play(line() + [O("QB", "QB", -5.0, 0.0, "Q")], four_down(), los=35, to_go=None)
+    timed(p, "QB", [(0.9, -7.0, 0.0), (2.1, -7.0, 0.0), (2.8, -6.4, -1.4)])
+    timed(p, "RE", [(0.1, 1.0, 5.4), (0.5, 0.0, 5.8), (0.95, -1.9, 6.2), (1.3, -3.2, 5.8), (1.7, -4.5, 4.7),
+                    (2.0, -5.6, 3.0), (2.3, -6.3, 1.6), (2.8, -6.5, 0.1)], "rush")
+    timed(p, "RT", [(0.4, -1.4, 3.7), (0.8, -2.2, 4.2), (1.2, -2.8, 4.3), (1.6, -3.2, 4.1), (2.0, -3.5, 3.9),
+                    (2.8, -3.8, 3.6)], "block")
+    timed(p, "LE", [(0.35, 1.0, -5.4), (0.8, 0.0, -5.8), (1.2, -1.3, -6.0), (1.8, -2.4, -5.6), (2.4, -3.0, -5.1),
+                    (2.8, -3.2, -4.8)], "rush")
+    timed(p, "LT", [(0.4, -1.4, -3.7), (0.9, -2.3, -4.4), (1.4, -3.0, -4.6), (2.0, -3.6, -4.2), (2.8, -3.9, -3.5)],
+          "block")
+    timed(p, "NT", [(0.25, 1.0, -0.7), (0.7, 0.0, -0.75), (1.2, -0.8, -0.8), (2.0, -1.25, -0.8), (2.8, -1.5, -0.8)],
+          "rush")
+    timed(p, "C", [(0.4, -1.3, -0.1), (1.0, -1.9, -0.2), (2.0, -2.3, -0.2), (2.8, -2.6, -0.2)], "block")
+    timed(p, "LG", [(0.4, -1.2, -1.8), (1.0, -1.6, -1.6), (2.0, -2.1, -1.6), (2.8, -2.4, -1.6)], "block")
+    timed(p, "DT", [(0.1, 1.0, 2.35), (0.5, 0.0, 2.3), (1.2, -0.9, 2.1), (2.0, -1.35, 2.0), (2.8, -1.7, 1.9)], "rush")
+    timed(p, "RG", [(0.4, -1.3, 1.8), (1.2, -2.0, 1.9), (2.0, -2.3, 1.9), (2.8, -2.8, 1.9)], "block")
+    return p
+
+
+MR = measured_rush()
+TRK = MR.to_tracking()               # simulated tracking in Big Data Bowl columns: frameId, time, x, y, ...
+LOS_X = MR.los
+RUSHERS = {"LE": "left end", "NT": "1-technique", "DT": "3-technique", "RE": "right end"}
+frames = TRK[TRK["time"] >= 0]
+qb = frames[frames["displayName"] == "QB"].set_index("time")[["x", "y"]]
+GETOFF, DIST = {}, {}
+for k in RUSHERS:
+    r = frames[frames["displayName"] == k].set_index("time")[["x", "y"]]
+    GETOFF[k] = float(r.index[r["x"] <= LOS_X + 1e-9][0])          # first frame on or past the line
+    DIST[k] = np.hypot(r["x"] - qb["x"], r["y"] - qb["y"])
+near = pd.concat(DIST, axis=1).min(axis=1)
+TTP = float(near.index[near <= 2.0][0])                              # first frame within 2 yards of the QB
+rt = frames[frames["displayName"] == "RT"].set_index("time")["x"]
+re_ = frames[frames["displayName"] == "RE"].set_index("time")["x"]
+WIN_T = float(re_.index[(re_ < rt - 0.5)][0])                        # the end half a yard deeper than his blocker
+ALL_ACROSS = float(np.ceil(max(GETOFF.values()) * 10) / 10) + 0.3   # a beat after the last one crossed
+strip(MR, [0.0, ALL_ACROSS, WIN_T, TTP],
+      notes=["snap", "all four have crossed the line:\neach one's get-off is logged",
+             f"+{WIN_T:.1f} s: the end gets past\nthe tackle: a rush 'win'",
+             f"+{TTP:.1f} s: within 2 yards\nof the QB: pressure"],
+      lateral=(-8.0, 8.0), window=(-9.4, 2.6), ncols=2, rings=(("RE", style.THIRD),))
+plt.show()
+```
+
+```{python}
+#| label: fig-ttp-chart
+#| fig-cap: "The same simulated rush as numbers: each rusher's distance from the quarterback, frame by frame (ten per second). For the first half-second or so the distances rise or hold steady, because the quarterback is dropping back as fast as the rushers are closing. The dots mark each rusher's get-off, the frame he crossed the line. The dashed horizontal line is the two-yard pressure threshold used here; the right end crosses it first, which is the play's time to pressure. The shaded band is pass rush win rate's 2.5-second window: the end beat his blocker inside it, so his rush counts as a win, while the other three never beat theirs."
+style.apply()
+fig, ax = plt.subplots(figsize=(6.5, 2.9))
+END_Y = {}
+for k, name in RUSHERS.items():
+    col = style.SERIES[1] if k == "RE" else style.MUTED
+    d = DIST[k][DIST[k].index <= 2.8]
+    ax.plot(d.index, d.values, color=col, lw=2.2 if k == "RE" else 1.3, zorder=3)
+    ax.plot([GETOFF[k]], [float(DIST[k].loc[GETOFF[k]])], "o", ms=5, color=col, mec="white", mew=0.7, zorder=4)
+    END_Y[k] = float(d.values[-1])
+ys_lab, last = {}, None
+for k in sorted(END_Y, key=END_Y.get):            # spread the end labels so none overlap
+    y = END_Y[k] if last is None else max(END_Y[k], last + 0.62)
+    ys_lab[k], last = y, y
+for k, name in RUSHERS.items():
+    ax.text(2.84, ys_lab[k], name, fontsize=7.2, color=style.SERIES[1] if k == "RE" else style.INK_2, va="center")
+ax.axhline(2.0, color=style.SERIES[7], lw=1.0, ls=(0, (3, 2)), zorder=2)
+ax.text(0.05, 2.25, "pressure: within 2 yards", fontsize=7, color=style.SERIES[7], va="bottom")
+ax.axvspan(0, 2.5, color=style.SERIES[0], alpha=0.06, zorder=0)
+ax.text(1.25, 9.6, "pass rush win rate's 2.5-second window", fontsize=7,
+        color=style.SERIES[0], ha="center", va="top")
+ax.axvline(TTP, color=style.SERIES[1], lw=1.0, ls=(0, (1, 1.5)), zorder=2)
+ax.text(TTP - 0.05, 8.3, f"time to pressure\n{TTP:.1f} s", fontsize=7, color=style.SERIES[1], ha="right", va="center")
+ax.set_xlim(0, 3.45)
+ax.set_ylim(0, 10)
+ax.set_xlabel("seconds after the snap", fontsize=8)
+ax.set_ylabel("yards to the QB", fontsize=8)
+ax.tick_params(labelsize=7.6)
+fig.tight_layout()
+plt.show()
+```
+
+In this simulated play the rushers' get-offs range from `{python} f"{min(GETOFF.values()):.1f}"` to
+`{python} f"{max(GETOFF.values()):.1f}"` seconds, the right end beats his tackle at `{python} f"{WIN_T:.1f}"` seconds, and
+the time to pressure is `{python} f"{TTP:.1f}"` seconds, inside two and a half: a rush win by the stopwatch too. On a
+real play the definitions need more care than a two-yard
+circle (data providers use their own rules for what counts as pressure, and real players are not points), but the logic
+is exactly this, and it is the logic you will build on real Big Data Bowl frames in
+[Tracking Data and the Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd).
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (the same measurements on a real Big Data Bowl play)"
+# Run this after downloading a Big Data Bowl edition (see 13-05). Column names differ by year;
+# gridiron.bdb.prepare() normalizes direction (offense moving +x) and labels each player 'off', 'def' or 'ball'.
+import numpy as np
+import pandas as pd
+from gridiron import bdb
+
+trk_all = bdb.load_tracking("data/bdb/tracking_week_1.csv")
+plays = pd.read_csv("data/bdb/plays.csv")
+players = pd.read_csv("data/bdb/players.csv")[["nflId", "position"]]
+one = bdb.prepare(trk_all, plays, game_id=2022091100, play_id=55).merge(players, on="nflId", how="left")
+after = one[one["time"] >= 0]
+los_x = float(one.loc[(one["time"] == 0) & (one["side"] == "ball"), "x"].iloc[0])
+qb = after[after["position"] == "QB"].set_index("time")[["x", "y"]]
+rushers = after[(after["side"] == "def") & after["position"].isin(["DE", "DT", "NT", "OLB"])]
+for nfl_id, r in rushers.groupby("nflId"):
+    r = r.set_index("time")
+    crossed = r.index[r["x"] <= los_x]                      # get-off: first frame on or past the line
+    dist = np.hypot(r["x"] - qb["x"], r["y"] - qb["y"])     # distance to the passer, frame by frame
+    close = dist.index[dist <= 2.0]                         # a simple pressure rule; providers use their own
+    print(r["displayName"].iloc[0], "get-off", crossed.min() if len(crossed) else None,
+          "within 2 yd at", close.min() if len(close) else None)
+```
+
+## Where the moves came from
+
+The modern pass rusher's ancestor is Deacon Jones, the Los Angeles Rams' defensive end of the 1960s, a ferocious
+speed rusher who is credited with coining the word "sack" for what he did to quarterbacks. His signature weapon was the
+**head slap**: a blow to the side of the blocker's helmet at the snap to stun him for an instant, then go around him. The
+NFL banned the head slap in 1977, and blows to the head have been illegal for rushers ever since.[^deacon] A year later
+the 1978 rule changes went the other way for blockers, letting them extend their arms and open their hands on pass
+blocks ([The 1978 Liberation](../11-history/11-02-the-1978-liberation.qmd) tells that story). Together, the two changes turned the
+pass rush into what it is now: a fight between the rusher's hands and the blocker's, aimed at arms and chests, where
+technique and timing matter as much as violence.
+
+Then came the player who made offenses rebuild their protections around him: Lawrence Taylor, the Giants' outside
+linebacker from 1981, rushing from a two-point stance on the edge of a 3-4 with a speed no blocker of the time could
+match (Pass Protection told how offenses answered him with extra blockers). In 1986 he had 20.5 sacks and was the
+league's Most Valuable Player, the last defensive player to win the award,[^lt] and the value of the left tackle, who
+blocks a right-handed quarterback's blind side, rose with him. Defenses still like a great rusher on that side,
+but many of today's best flip sides from week to week, or snap to snap, to hunt whichever tackle is weaker.
+
+Reggie White, "the Minister of Defense," showed what power and hands could do. After fifteen seasons, most of them
+with the Eagles and the Packers, he retired as the NFL's career sack leader, with 198 (Bruce Smith later passed him, finishing with 200), and his
+signature, the "hump" move, was a club-and-lift: a forearm club up under the blocker's arm that lifted and threw him
+aside, a rip and a bull rush in one violent motion.[^white] In the 2000s Dwight Freeney's spin move made a smaller, quicker body type
+dangerous on the edge. And in the 2010s Aaron Donald proved that the most dangerous rusher on the field could line up
+inside.
+
+Today's edge rushers study tackles' sets on film like quarterbacks study coverages, and the hand fight has become its
+own discipline: the long arm, the cross-chop, the ghost. T.J. Watt tied the sack record in 2021 and won Defensive
+Player of the Year; Myles Garrett broke it in 2025 and won the award unanimously.[^dpoy] And Micah Parsons, the
+Cowboys' first-round pick in 2021, made a different point: drafted as an off-ball linebacker, he became one of the
+league's most feared rushers by lining up all over the front, over a guard one snap and wide on the edge the next, so
+that protections could never be sure where to slide. Dallas traded him to Green Bay just before the 2025 season, for two first-round picks and defensive tackle Kenny
+Clark.[^parsons]
+
+## Film room
+
+::: {.callout-note title="Film room: Cleveland Browns 2025 — Myles Garrett's record"}
+**The play to find.** Week 18 of 2025, the Browns at Cincinnati, fourth quarter, `{python} G_CLOCK` left: Garrett
+sacks `{python} G_QB.replace("J.", "Joe ")` for his 23rd sack of the season, the one that broke the record.[^gsack]
+He was playing in Jim Schwartz's attacking front (Schwartz was the Browns' defensive coordinator from 2023 to 2025),
+which lines its ends up wide and sends them upfield.[^schwartz]
+
+**What to notice:** then pick any Browns passing down from that season and watch only Garrett and the man blocking him.
+
+- **The alignment.** Which side is he on, and how wide? Wide means a long arc and a running start.
+- **The get-off.** Count how often he is the first player on the field to move, and where he meets the tackle: in
+  front of him, or level with him at the corner.
+- **The first move, then the second.** Note what he shows in the first quarter and what he does in the fourth. Look
+  for the speed-to-power: three steps of speed, then straight into the tackle's chest.
+- **The help, and his answer.** Count how often the offense chips him with a back or tight end or slides its
+  protection toward him, and watch how he beats the chip: by rushing through the chipper's outside shoulder, or by
+  starting wider so the back cannot reach him. Every extra man on Garrett is a one-on-one for someone else.
+- **The finish.** On his sacks, notice how many came quickly (a rush win) and how many came after the quarterback
+  had held the ball (a coverage or clean-up sack).
+:::
+
+::: {.callout-note title="Film room: Super Bowls LIX and LX — pressure with four"}
+**The games.** The last two Super Bowls were won by defenses that got to the quarterback without blitzing. In Super
+Bowl LIX (February 2025) the Eagles rushed four or fewer on `{python} f"{LIX['four']}"` of Patrick Mahomes's
+`{python} f"{LIX['db']}"` dropbacks and sacked him `{python} f"{LIX['sacks']}"` times, `{python} f"{LIX['sacks4']}"` of
+them with four or fewer rushers. In Super Bowl LX (February 2026) the Seahawks rushed four or fewer on
+`{python} f"{LX['four']}"` of Drake Maye's `{python} f"{LX['db']}"` dropbacks and sacked him `{python} f"{LX['sacks']}"`
+times, `{python} f"{LX['sacks4']}"` of them with four or fewer.[^sb] Mike Macdonald's Seattle defense has a reputation
+for four-man *simulated pressures*, in which a lineman drops and a linebacker or defensive back rushes in his place
+([Zone Blitzes and Simulated Pressure](07-03-zone-blitz-and-simulated-pressure.qmd) shows how). Macdonald himself
+pushed back on that in November 2025 ("We do not run a lot of simulated pressures"),[^mac] and the Super Bowl bears him
+out: FTN's charters counted a blitzer on only `{python} f"{LX_SIM}"` of Seattle's `{python} f"{LX_FOUR_FTN}"`
+four-man rushes. Mostly, its four were its front four, winning.
+
+**What to notice:**
+
+- **Count the rushers on every dropback.** Almost always four. Then count the coverage behind them: seven men for at
+  most five receivers.
+- **Look for the stunts.** On long downs, watch for two rushers crossing paths, and ask which blocker the looper was
+  aimed at.
+- **Time the pressure.** Count from the snap to the moment the quarterback has to move, and see how many pressures
+  arrive before the receivers have finished their routes.
+
+The Eagles' game is studied in [the Eagles case study](../12-case-studies/12-06-eagles-trenches-and-tush-push.qmd),
+and Seattle's defense, built by Mike Macdonald, in
+[Fangio's Two-High Revolution and Macdonald's Answer](../12-case-studies/12-08-two-high-to-macdonald.qmd).
+:::
+
+## Watch for it on Sunday
+
+::: {.callout-tip title="Watch for it"}
+**Before the snap.**
+
+- **Find the best rusher and his alignment.** Wide outside the tackle (built for speed), tight over him (power and
+  inside moves), or standing up over a guard (he is being moved around to beat the protection).
+- **Count the rushers you expect and the blockers you see.** Four rushers against five or six blockers means the
+  defense is trusting its four; look at the coverage behind them.
+- **Check the down and distance.** Third-and-long is when stunts and patient rushes have time to work; on
+  third-and-2 the ball will be out too fast for either.
+- **Is the quarterback a runner?** If so, expect the ends to rush with discipline, and maybe a spy.
+- **Where is the help?** Find the back and any tight end. One aligned near the best rusher probably means a chip, and
+  at the snap the linemen's first steps tell you slide or man (all five stepping the same way is a slide). Stunts and
+  the best rusher's moves are aimed away from the help.
+
+**After the snap: the stopwatch drill.**
+
+- **Count the seconds** from the snap to the first pressure ("one-Mississippi"), or use a stopwatch on a replay.
+  Under about two and a half seconds is a rush win. Past three and a half, the coverage or the quarterback owns most
+  of it. In between, they share it.
+- **Note whether the ball was already out.** A rusher who arrives just after the throw has still done his job if he
+  made the quarterback throw early; a rusher who arrives after a five-second hold was handed it.
+- **Name the move.** Around the corner (speed and rip), through the chest (bull or long arm), or back inside
+  (swim, spin). In the fourth quarter, look for the counter to whatever worked in the first.
+- **Watch for crossing paths.** Two rushers swapping lanes is a stunt; find the looper, and see which blocker he
+  was aimed at, and whether the blockers passed it off.
+- **Check the lanes.** If the quarterback escapes, freeze the replay and find the rusher who left his lane.
+
+**For your prediction log:** for one quarter, write down on every dropback the number of rushers, your stopwatch time
+to pressure (or "none"), and whether the ball was out first. You will see which defenses win early and which only win
+late.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play 1: third-and-long against five"}
+```{python}
+#| label: fig-predict-stunt
+#| fig-cap: "Third-and-11. The offense is in an empty formation, three receivers right and two left, so only the five linemen can block. The defense shows four linemen (a 1-technique shaded to the center's left, a 3-technique to the right, an end outside each tackle), two linebackers walked out over the slot receivers, and two deep safeties. The two defenders on the right side of the line are ringed."
+def quiet_line():
+    """The five linemen with only the center labelled: on full-width drills the two-letter labels overprint."""
+    return [q.moved(label="C" if q.key == "C" else "") for q in line()]
+
+
+def empty_3x2():
+    return quiet_line() + [O("QB", "QB", -5.0, 0.0, "Q"), O("X", "WR", -0.7, -15.0), O("A", "WR", -1.4, -9.5),
+                     O("Y", "TE", -1.4, 6.5), O("H", "WR", -1.4, 10.5), O("Z", "WR", -0.7, 15.0)]
+
+
+dfn = four_down() + [D("WILL", "WILL", 5.0, -6.0, "W"), D("MIKE", "MIKE", 4.8, 4.6, "M"),
+                     D("NB", "NB", 5.0, 10.0, "NB"), D("LCB", "CB", 6.5, -15.0, "CB"),
+                     D("RCB", "CB", 6.5, 15.0, "CB"), D("FS", "FS", 13.0, -7.0, "FS"), D("SS", "SS", 13.0, 7.0, "SS")]
+p = Play(empty_3x2(), dfn, los=40, to_go=11)
+p.highlight("DT", "RE", color=PURPLE)
+fld = draw(p, width_in=6.4, lateral=(-17.0, 17.0), window=(-7.0, 14.6))
+plt.show()
+```
+
+**Is this a good down for a stunt? If so, which one, aimed where, and what is the defense risking?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Yes: this is the down stunts are made for, and a T-E on the right, with the 3-technique picking the right tackle
+and the end looping inside, is the natural call.** *The clock:* on third-and-11 the quarterback needs routes that get
+past the line to gain, so he will usually hold the ball two and a half seconds or more, long enough for a looper to
+arrive. *The numbers:* five blockers against four rushers gives the offense one spare man, but against this front the
+spare is the left guard, uncovered on the far side. Aim the stunt at the right guard and right tackle, away from him,
+and those two must pass it off alone. *The choice:* T-E rather than E-T if the end is the better rusher, because the
+looper is the man who arrives free.
+
+Two cautions. If the offense slides its five-man protection toward that side, the center, right guard and right
+tackle all step that way and own those gaps, and the stunt is absorbed. You cannot see that from the pre-snap picture,
+which is why defenses study how a team protects from empty before calling it. And the stunt moves the right side's
+contain from the end to the 3-technique: against a quarterback who runs, a washed-out 3-technique turns third-and-11
+into a scramble. Against a pocket passer, most defenses happily take that risk.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 2: the quarterback who runs"}
+```{python}
+#| label: fig-predict-mush
+#| fig-cap: "Third-and-6. The offense is in the shotgun with three wide receivers, a tight end, and a back beside a quarterback (ringed in green) who is one of the league's most dangerous runners. The defense is in a nickel with four linemen, including a wide-9 end (w9) on the right."
+off = quiet_line() + [O("QB", "QB", -5.0, 0.0, "Q"), O("RB", "RB", -5.0, -2.0, "R"), O("X", "WR", -0.7, -15.0),
+                      O("H", "WR", -1.4, -9.5), O("Y", "TE", -0.7, 4.8), O("Z", "WR", -1.4, 15.0)]
+dfn = [D("LE", "DE", 1.0, -5.4, "E"), D("NT", "DT", 1.0, -0.7, "1"), D("DT", "DT", 1.0, 2.35, "3"),
+       D("RE", "DE", 1.0, 7.1, "w9"), D("MIKE", "MIKE", 4.6, 1.3, "M"), D("WILL", "WILL", 4.6, -3.0, "W"),
+       D("NB", "NB", 5.0, -9.0, "NB"), D("LCB", "CB", 7.4, -15.0, "CB"), D("RCB", "CB", 7.4, 15.0, "CB"),
+       D("FS", "FS", 12.5, -6.5, "FS"), D("SS", "SS", 12.5, 6.5, "SS")]
+p = Play(off, dfn, los=40, to_go=6)
+p.highlight("QB")
+fld = draw(p, width_in=6.4, lateral=(-17.0, 17.0), window=(-7.0, 14.6))
+plt.show()
+```
+
+**How do you expect the four to rush, which of them has the hardest job, and what is the defense giving up?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Expect a mush rush.** On third-and-6, a quarterback who runs does not need a receiver to get open; he needs one
+lane. So the defense's first priority is that no lane opens, and its second is the sack.
+
+**The wide-9 end has the hardest job**, because his alignment is built for the long, fast arc that runs an end past
+the quarterback and opens the escape lane in @fig-rush-lanes, on the quarterback's throwing-arm side at that. Expect
+him to tighten his alignment before the snap, or, if he stays wide, to rush through the tackle's outside half rather
+than around him. The other side is less of a worry: the back, lined up on the quarterback's left, will likely chip
+the left end or stay in to block, and the tight end beside the right tackle can chip the wide-9 on his way out, which
+is one more reason that end cannot win with speed alone. Expect fewer stunts, and don't be surprised if a linebacker
+mirrors the quarterback instead of covering anyone: a spy.
+
+**The price is time**: the coverage, with six or seven men, must hold for four seconds or more, and if anyone breaks
+contain, the play you will see is the one the defense feared most, a quarterback through the hole and past the line
+to gain.
+:::
+:::
+
+::: {.callout-tip title="Predict the play 3: the counter"}
+```{python}
+#| label: fig-predict-counter
+#| fig-cap: "Fourth quarter. The defense's best rusher (E) has beaten this right tackle *inside* twice today with a spin, once for a sack. On this snap the tackle has set short and square, sitting inside, determined not to be spun again; the right guard has the 3-technique in front of him. The picture is about 0.8 seconds after the snap: the faint square is where the rusher is now, early in his arc."
+p = Play(line(["RG", "RT"]), [D("DT", "DT", 1.0, 2.35, "3"), D("RE", "DE", 1.0, 5.4, "E")], los=35, to_go=None)
+to(p, "RT", (-1.2, 3.7))
+to(p, "RG", (-1.5, 1.8))
+to(p, "DT", (-0.4, 2.2), "rush")
+to(p, "RE", (-0.9, 6.6), "rush", via=[(0.2, 6.2)])
+fld = draw(p, width_in=5.0, lateral=(-0.8, 10.6), window=(-7.2, 3.4))
+ghost(fld, p, -0.9, 6.6, "E")
+point_to(fld, p, (-3.6, 6.6), (-1.2, 3.7), "the tackle sets short\nand square, sitting inside", color=style.OFFENSE_DARK)
+say(fld, p, -5.6, 1.4, "QB this way", color=style.INK_2, fontsize=6.6)
+plt.show()
+```
+
+**What move is coming, and what can the offense do about it, this snap and the next?**
+
+::: {.callout-tip title="Answer" collapse="true"}
+**The speed rush, around the corner: a dip and rip.** This is the rush plan paying off from the other direction. Twice
+the rusher won inside, so the tackle has stopped bailing: he is sitting short and square to protect the inside. But a
+tackle who has not gained depth has no time to get back to the corner, and the rusher meets him level before he can
+turn and run. The spin is
+the wrong answer now; that is exactly the move the tackle is sitting on.
+
+The offense has fewer answers on this snap than you might think. The right guard cannot help outside, because the
+3-technique is on him. The quarterback's best move is to step up into the pocket, so the rusher's arc carries him past
+behind. **Next snaps:** the tackle varies his sets (a [jump set](../../appendices/glossary.qmd#gl-jump-set) at the line,
+or a [45-degree set](../04-the-passing-game/04-02-pass-protection.qmd) instead of sitting) so the rusher cannot read
+the set and pick the counter; the offense chips the rusher with a back or tight end on the way out; and the play caller
+calls quick throws, so the ball is gone before any move can finish. That is the conversation across a game in
+miniature: the rusher made the tackle afraid of one thing, and now the offense has to change the question.
+:::
+:::
+
+## Back to the replay
+
+Return to the play that opened the chapter. Third-and-8, four rushers, an end who took three strides up the arc and
+then drove straight into the tackle: **speed-to-power**, set up by every speed rush he had shown before. The tackle,
+fearing the corner, had kicked back fast, so his weight was going backward when the end turned into him, and he could
+not anchor. The pocket collapsed from the side, the quarterback threw early, and the pass sailed.
+
+The box score has nothing for the end. FTN's charters would mark that dropback as pressured. Pass rush win rate might well
+count it as a win, though a bull rush that never sheds the blocker is the kind of rep a beat-the-block measure can
+miss. And a stopwatch would put the pressure at
+about two seconds, early enough that it was entirely the rush's doing. That is the whole chapter in one snap: the
+moves, the plan that set them up, and the reason a coach values the hurry that nobody counts more than the sack total
+everybody does.
+
+## Takeaways
+
+- **The rush is a race and a fight.** A rusher must beat a bigger blocker before the ball is out, a little under three
+  seconds on average. Get-off decides where they meet: a tenth of a second is most of a yard, and meeting the tackle
+  level at the corner instead of in front of him is the difference between winning and losing.
+- **Each move punishes a mistake.** Speed beats a slow set; the bull rush and long arm beat a high, light or retreating
+  one; the swim, rip and spin beat a blocker who has committed. Cross-chops and ghosts beat the punch itself.
+- **The best rushers have a plan.** They show one move until the tackle adjusts, then use the counter his adjustment
+  opens; speed-to-power works *because* tackles fear speed.
+- **Stunts win with geometry.** T-E, E-T and interior twists exchange rushers to beat man blocking or choose matchups
+  against slides, at the cost of time and of lanes.
+- **Four rush lanes make a box.** Ends keep contain, the middle pushes the pocket; against a quarterback who runs,
+  the mush rush squeezes instead of racing and accepts a longer clock.
+- **Count pressure, not sacks.** Pressure carries over from season to season and predicts future sacks; the share of
+  pressures that become sacks mostly does not, except as a trait of the quarterback. Pass rush win rate, get-off and
+  time to pressure use tracking data to take the quarterback out of the measure.
+
+## Connections
+
+**Builds on:** [Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd) (the pocket, slide and man
+protection, sets, punch and anchor, passing off stunts, and the pressure numbers, all seen from the other side here) and
+[Defensive Line Play](../05-defensive-fronts-and-run-defense/05-01-dl-techniques-and-gap-control.qmd) (technique
+numbers, one-gap penetration, the wide-9 and contain). The quarterback's share of sacks comes from
+[Quarterback Play](../04-the-passing-game/04-07-quarterback-play.qmd).
+
+**Sets up:** [Blitzing](07-02-blitz-and-man-pressure.qmd), where the defense stops trying to win with four and adds
+rushers instead, and [Zone Blitzes and Simulated Pressure](07-03-zone-blitz-and-simulated-pressure.qmd), the modern art
+of making four rushers come from places the protection did not expect; [Third Down](../10-situational-football/10-02-third-down.qmd),
+for spies and rushing three; and [Tracking Data and the Big Data Bowl](../13-analytics-and-data/13-05-tracking-data-and-big-data-bowl.qmd),
+where you will measure get-off and time to pressure on real frames. The data section's metrics are mapped against the
+rest of football's numbers in [Expected Points and Success Rate](../13-analytics-and-data/13-02-expected-points-and-success-rate.qmd).
+
+**Case study:** [The Eagles: Trenches, RPOs and the Tush Push](../12-case-studies/12-06-eagles-trenches-and-tush-push.qmd),
+including Super Bowl LIX's four-man pressure.
+
+::: {.callout-note title="Go deeper"}
+- ESPN's pass rush and pass block win rate leaderboards (search "ESPN pass rush win rate"), and Next Gen Stats'
+  pass-rushing pages, for the tracking-based numbers in this chapter.
+- Pat Kirwan, *Take Your Eye Off the Ball* (2010; revised 2015): a former NFL coach and scout on how to watch the line of
+  scrimmage, including the pass rush and protection.
+- Michael Lewis, *The Blind Side* (2006): the story of how Lawrence Taylor changed what teams were willing to pay
+  offensive tackles.
+- The many pass-rush technique breakdowns by former players and position coaches on coaching sites and video channels:
+  watch them with this chapter's vocabulary (set, arc, corner, counter) and you will see the rush plan in every one.
+:::
+
+[^rushers]: Author's calculation via nflreadpy: the participation file's `number_of_pass_rushers` (FTN charting) on
+    regular-season dropbacks, 2023–2025. [Pass Protection](../04-the-passing-game/04-02-pass-protection.qmd) gives the
+    same split for 2024–2025.
+
+[^freeney]: Pro Football Hall of Fame, "Dwight Freeney" (Class of 2024):
+    <https://www.profootballhof.com/players/dwight-freeney/>; on the spin move as his trademark, Pro Football Hall of
+    Fame, "Countdown to 2024 Pro Football Hall of Fame Enshrinement: Dwight Freeney" (August 2024):
+    <https://profootballhof.com/news/2024/08/countdown-to-2024-pro-football-hall-of-fame-enshrinement-dwight-freeney>.
+
+[^hands]: NFL Rulebook, Rule 12, Section 1, Article 7 (use of hands by the defense): a defender may not thrust his hands
+    or arms forward above the frame of an opponent to forcibly contact him on the head or neck; the penalty for illegal
+    use of hands by the defense is five yards and an automatic first down. NFL Football Operations:
+    <https://operations.nfl.com/the-rules/nfl-rulebook/>; NFL.com, "2025 rulebook, part 2":
+    <https://www.nfl.com/news/2025-rulebook-part-2>.
+
+[^donald]: "Aaron Donald," Pro Football Reference (13th overall pick in 2014; 20.5 sacks in 2018; Defensive Player of the
+    Year 2017, 2018, 2020): <https://www.pro-football-reference.com/players/D/DonaAa00.htm>; Associated Press, "Aaron
+    Donald announces his retirement after a standout 10-year career with the Rams" (March 15, 2024):
+    <https://www.ksat.com/sports/2024/03/15/aaron-donald-announces-his-retirement-after-a-standout-10-year-career-with-the-rams/>.
+
+[^sacks82]: Sacks have been an official NFL individual statistic since 1982; earlier totals are unofficial
+    reconstructions. "Quarterback sack," Wikipedia: <https://en.wikipedia.org/wiki/Quarterback_sack>; Pro Football
+    Reference glossary: <https://www.pro-football-reference.com/about/glossary.htm>.
+
+[^records]: NFL.com, "Browns DE Myles Garrett reaches 23 sacks, sets new NFL single-season record" (Week 18, 2025, against
+    Cincinnati; the previous record of 22.5 was shared by Michael Strahan, 2001, and T.J. Watt, 2021):
+    <https://www.nfl.com/news/browns-de-myles-garrett-reaches-23-sacks-sets-new-nfl-single-season-record>.
+
+[^dpoy]: Garrett's unanimous Defensive Player of the Year award for 2025: NFL.com, "List of NFL Honors award winners from
+    2025 NFL season," <https://amp.nfl.com/news/list-of-nfl-honors-award-winners-from-2025-nfl-season>. Watt's 22.5 sacks
+    and Defensive Player of the Year award in 2021: "T. J. Watt," Wikipedia, <https://en.wikipedia.org/wiki/T._J._Watt>.
+
+[^carry]: Author's calculation via nflreadpy: nflverse play-by-play (`qb_dropback`, `sack`) joined to the participation
+    file's `was_pressure`, regular seasons 2018–2025. Pressure includes sacks (Next Gen Stats, which supplies 2018–2022,
+    leaves the flag blank on sacks; FTN, 2023–2025, fills it). Correlations are Pearson, across the 32 defenses (or across
+    quarterbacks with at least 100 pressured dropbacks in both seasons) for each consecutive pair of seasons within one
+    source: 2018–19, 2019–20, 2020–21, 2021–22, 2023–24, 2024–25. Participation data dictionary:
+    <https://nflreadr.nflverse.com/articles/dictionary_participation.html>.
+
+[^epa]: Author's calculation via nflreadpy: nflverse play-by-play `epa` and `complete_pass` on regular-season
+    dropbacks, 2023–2025, split by the participation file's `was_pressure` (FTN charting; sacks counted as pressured).
+    Completion rates are on pass attempts only, so sacks and scrambles are excluded.
+
+[^qbfault]: Author's calculation via nflreadpy: FTN charting's `is_qb_fault_sack` on regular-season sacks, 2023–2025;
+    quarterback conversion rates are sacks divided by pressured dropbacks, pooled over the three seasons. FTN charting
+    data dictionary: <https://nflreadr.nflverse.com/articles/dictionary_ftn_charting.html>.
+
+[^prwr]: Brian Burke, "We created better pass-rusher and pass-blocker stats: How they work," ESPN, October 5, 2018:
+    <https://www.espn.com/nfl/story/_/id/24892208/creating-better-nfl-pass-blocking-pass-rushing-stats-analytics-explainer-faq-how-work>.
+    The article gives the 22% league average for edge rushers through Week 4 of 2018 and the early leaders' rates
+    (40–47%), and its 2019 update describes the double-team correction.
+
+[^getoff]: Next Gen Stats Analytics Team, "Next Gen Stats: Introduction to Pressure Probability," NFL.com (2023), which
+    measures get-off as the time a rusher takes to cross the line of scrimmage after the snap and cites a 0.33-second
+    get-off by Micah Parsons as one of the fastest of the season:
+    <https://www.nfl.com/news/next-gen-stats-introduction-to-pressure-probability>.
+
+[^deacon]: "Deacon Jones," Wikipedia (credited with coining "sack"; the head slap, banned in 1977):
+    <https://en.wikipedia.org/wiki/Deacon_Jones>; Pro Football Hall of Fame, "Deacon Jones":
+    <https://www.profootballhof.com/players/deacon-jones/>. Who first used "sack" is commonly attributed to Jones; the
+    attribution rests on his own account.
+
+[^lt]: "Lawrence Taylor," Wikipedia (1986: 20.5 sacks, NFL MVP; the most recent defensive player to win the AP award):
+    <https://en.wikipedia.org/wiki/Lawrence_Taylor>; Pro Football Hall of Fame, "Lawrence Taylor":
+    <https://www.profootballhof.com/players/lawrence-taylor/>.
+
+[^white]: Pro Football Hall of Fame, "Reggie White": <https://www.profootballhof.com/players/reggie-white/>; "Reggie White,"
+    Wikipedia (198 career sacks, the record at his retirement; the "hump" move): <https://en.wikipedia.org/wiki/Reggie_White>;
+    Bruce Smith's 200 career sacks: "Bruce Smith," Wikipedia, <https://en.wikipedia.org/wiki/Bruce_Smith>.
+
+[^parsons]: "Micah Parsons," Wikipedia (12th overall pick by Dallas in 2021; Defensive Rookie of the Year; traded to the
+    Green Bay Packers on August 28, 2025, for Kenny Clark and first-round picks in 2026 and 2027):
+    <https://en.wikipedia.org/wiki/Micah_Parsons>; ESPN, "Sources: Micah Parsons traded to Packers, gets record contract":
+    <https://www.espn.com/nfl/story/_/id/46098144/sources-micah-parsons-traded-packers-gets-record-contract>.
+
+[^gsack]: nflverse play-by-play, game `2025_18_CLE_CIN` (the sack's quarter, clock and quarterback); the record
+    itself: NFL.com, "Browns DE Myles Garrett reaches 23 sacks, sets new NFL single-season record" (cited above).
+
+[^schwartz]: Cleveland Browns, "Myles Garrett expects to 'hunt' in schemes from Jim Schwartz" (2023):
+    <https://clevelandbrowns.com/news/myles-garrett-expects-to-hunt-in-schemes-from-jim-schwartz>; Joe Reedy, Associated
+    Press, "Jim Schwartz resigns as Browns' defensive coordinator after being passed over for head coach" (February 6,
+    2026), on his three seasons as coordinator.
+
+[^mac]: Connor Benintendi, "Mike Macdonald dispels huge myth about Seahawks' pass rush," *Sports Illustrated* (All
+    Seahawks), November 25, 2025:
+    <https://www.si.com/nfl/seahawks/onsi/seahawks-news/mike-macdonald-dispels-huge-myth-about-seahawks-pass-rush>.
+
+[^sb]: Author's calculation from the nflverse participation file (FTN charting: `number_of_pass_rushers`, `was_pressure`)
+    joined to play-by-play, games `2024_22_KC_PHI` and `2025_22_SEA_NE`; blitzers from FTN charting's `n_blitzers`
+    and `n_pass_rushers`. The six sacks in each game match published
+    accounts: CBS News on Super Bowl LIX (Eagles 40, Chiefs 22; MVP Jalen Hurts),
+    <https://www.cbsnews.com/amp/news/nfl-mvp-super-bowl-jalen-hurts-eagles>, and "Super Bowl LX," Wikipedia (Seahawks 29,
+    Patriots 13; Drake Maye sacked six times), <https://en.wikipedia.org/wiki/Super_Bowl_LX>.
