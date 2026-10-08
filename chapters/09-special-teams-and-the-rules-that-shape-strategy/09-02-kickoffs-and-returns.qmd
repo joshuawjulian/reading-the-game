@@ -1,0 +1,1702 @@
+---
+title: "Kickoffs, Returns, and the Dynamic Kickoff"
+subtitle: "Why ten players stand still while the ball is in the air, and why a coach would rather you ran it back"
+description: "The kickoff from the ground up: what a free kick is, the traditional kickoff and the injury data that kept forcing changes, the 2024 dynamic kickoff (setup zone, landing zone, restraining lines), the 2025 and 2026 revisions and the reasons for them, how a return is blocked now, the kicker's menu of touchback, landing-zone kick and squib, the touchback math behind it, onside kicks and the hands team, and what the numbers say."
+glossary:
+  Kickoff: "The free kick that starts each half and follows every touchdown and field goal: one team kicks the ball off a tee from its own 35 to the other team."
+  "Free kick": "A kick that puts the ball in play without a snap, from a tee or the ground, with both teams held behind restraining lines until it is kicked: kickoffs, the kick after a safety, and the rare fair-catch kick (a field-goal try a team may take from the spot of a fair catch)."
+  "Dynamic kickoff": "The NFL's kickoff format since 2024: the kicker's ten teammates stand on the receiving team's 40, five yards from the receiving team's blockers, and nobody but the kicker and the returners may move until the ball hits the ground or a player in the landing zone or end zone."
+  "Landing zone": "Under the dynamic kickoff, the area between the receiving team's goal line and its 20-yard line where the kick must land. A kick that lands there is live: the receiving team has to field it, and the kicking team may recover it."
+  "Setup zone": "Under the dynamic kickoff, the five-yard strip between the receiving team's 30 and 35 where at least nine of its players line up before the kick."
+  "Restraining line": "The line a team may not cross before a free kick is made. Under the dynamic kickoff the kicking team's is the receiving team's 40 and the receiving team's is its own 35."
+  "Onside kick": "A short kickoff that the kicking team tries to recover itself once the ball has gone the required 10 yards. In the NFL it must now be declared to the officials in advance."
+  "Hands team": "The receiving team's special lineup for an onside kick: its surest-handed players (receivers, tight ends, running backs, defensive backs) placed to catch or fall on a short, bouncing ball."
+  "Squib kick": {def: "A deliberately low kickoff that hits the ground early inside the landing zone and skips or bounces, so it is hard to field cleanly, releases the coverage at once, and is usually aimed away from the most dangerous returner.", aliases: ["Bounce kick"]}
+  "Kick coverage unit": "The kicking team's eleven on a kickoff (or a punt): the players who run down the field to tackle the returner."
+  "Return unit": "The receiving team's eleven on a kickoff (or a punt): the returner or returners and the players who block for them."
+  Floater: "Under the dynamic kickoff, a receiving-team player in the setup zone who lines up behind the restraining line instead of on it: up to two in 2024, three in 2025 and four from 2026."
+  Wedge: "On kickoffs before 2018, a group of blockers who formed up shoulder to shoulder in front of the returner and ran into the coverage together; limited to two players in 2009 and banned in 2018."
+---
+
+```{python}
+#| code-summary: "Show the Python (shared drawing helpers for this chapter)"
+#| output: false
+import os
+import shutil
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Ellipse, FancyArrowPatch, Rectangle, RegularPolygon
+from gridiron import Play, Player, Field, style
+
+style.apply()
+KICK_X = 45.0        # the kicking team's 35 in BDB x; every kickoff here is kicked left to right (+x)
+OC, DC = style.OFFENSE_DARK, style.DEFENSE_DARK
+GREEN = "#0f7a55"    # darker step of the aqua highlight, for text on the light field
+GOLD = "#8a5d00"     # dark gold, for landing-zone text
+NUM_IN = 8.0         # NFL yard numbers sit 7-9 yards in from the sideline (gridiron draws them at 12)
+
+
+def pdf_build():
+    return os.environ.get("RTG_FORMAT", "").lower() in ("pdf", "typst", "print")
+
+
+def R(yl):
+    """The receiving team's yard line -> d, yards downfield of the kick spot (the kicking team's 35).
+    R(35) = 30 (their 35), R(0) = 65 (their goal line), R(-5) = 70 (five yards deep in their end zone)."""
+    return 65.0 - yl
+
+
+def K_(key, d, w, label=""):
+    """A kicking-team player: a blue circle. (gridiron draws the team that puts the ball in play as 'offense'.)"""
+    return Player(key, "K" if key == "K" else "LB", "off", d, w, label=label)
+
+
+def RT_(key, d, w, label=""):
+    """A receiving-team player: an orange square."""
+    return Player(key, "RB" if key.startswith("KR") else "LB", "def", d, w, label=label)
+
+
+def P_(fld, p, d, w):
+    x, y = fld.xy(*p.to_abs(d, w))
+    return float(x), float(y)
+
+
+def fix_field(fld):
+    """Two in-chapter corrections to gridiron's field (the library itself is shared and left alone):
+    drop the solid line-of-scrimmage marker (a kickoff has no line of scrimmage), and move the yard
+    numbers to where they sit on an NFL field, 7-9 yards in from each sideline, so 'outside the numbers'
+    reads correctly against the alignments."""
+    ax = fld.ax
+    for ln in list(ax.lines):
+        if ln.get_zorder() == 2 and ln.get_linestyle() == "-" and abs(ln.get_linewidth() - 1.4) < 1e-6:
+            ln.remove()
+    for t in list(ax.texts):
+        if t.get_zorder() == 1 and t.get_text().isdigit() and t.get_fontweight() in ("bold", 700):
+            x, y = t.get_position()
+            if fld.orient == "horizontal":      # BDB y is the plot's y
+                t.set_position((x, NUM_IN if y < 26.67 else 53.33 - NUM_IN))
+            else:                               # the plot's x is 53.33 - BDB y
+                t.set_position((NUM_IN if x < 26.67 else 53.33 - NUM_IN, y))
+    return fld
+
+
+def say(fld, p, d, w, text, color=style.INK_2, fontsize=6.8, ha="center", weight="normal"):
+    """A short on-field label at (d, w), on a pale backing so lines under it stay out of the way."""
+    x, y = P_(fld, p, d, w)
+    fld.ax.text(x, y, text, fontsize=fontsize, color=color, ha=ha, va="center", zorder=12,
+                fontweight=weight, linespacing=1.1,
+                bbox=dict(boxstyle="round,pad=0.18", fc=style.SURFACE, ec="none", alpha=0.95))
+
+
+def band(fld, p, d0, d1, color, alpha=0.10, w0=-26.67, w1=26.67, z=1.2):
+    """Shade the strip of field between depths d0 and d1 (sideline to sideline by default)."""
+    (xa, ya), (xb, yb) = P_(fld, p, d0, w0), P_(fld, p, d1, w1)
+    fld.ax.add_patch(Rectangle((min(xa, xb), min(ya, yb)), abs(xb - xa), abs(yb - ya), fc=color,
+                               alpha=alpha, ec="none", zorder=z))
+
+
+def line_across(fld, p, d, color, lw=1.4, ls=(0, (4, 2)), z=2.5):
+    (xa, ya), (xb, yb) = P_(fld, p, d, -26.67), P_(fld, p, d, 26.67)
+    fld.ax.plot([xa, xb], [ya, yb], color=color, lw=lw, ls=ls, zorder=z)
+
+
+def ball(fld, p, d, w, z=11):
+    x, y = P_(fld, p, d, w)
+    fld.ax.add_patch(Ellipse((x, y), 1.2, 0.75, fc=style.BALL, ec="white", lw=0.7, zorder=z))
+
+
+def arrow(fld, p, frm, to, color, lw=1.6, z=5, ls="-", ms=9, rad=0.0):
+    fld.ax.add_patch(FancyArrowPatch(P_(fld, p, *frm), P_(fld, p, *to), arrowstyle="-|>", mutation_scale=ms,
+                                     color=color, lw=lw, ls=ls, zorder=z, shrinkA=0, shrinkB=0,
+                                     connectionstyle=f"arc3,rad={rad}"))
+
+
+def land(fld, p, d, w, color=style.BALL):
+    """An X where a kick comes down."""
+    x, y = P_(fld, p, d, w)
+    fld.ax.plot([x], [y], marker="X", ms=8, color=color, mec="white", mew=0.8, zorder=9)
+
+
+def clip_texts(fld):
+    for t in fld.ax.texts:
+        t.set_clip_on(True)
+
+
+# The coverage, numbered the way staffs number it: outward from the kicker, L1-L5 on his left, R1-R5 on his right.
+COVER = [("L5", -22.5), ("L4", -17.5), ("L3", -12.5), ("L2", -7.5), ("L1", -2.5),
+         ("R1", 2.5), ("R2", 7.5), ("R3", 12.5), ("R4", 17.5), ("R5", 22.5)]
+COVER_W = [w for _, w in COVER]
+
+
+def dynamic_units(line=(-21, -10, 0, 10, 21), floaters=(-19, -2.5, 2.5, 19), kr=((R(2), 2.0), (R(10), -3.0)),
+                  k_d=-6.0, cover_labels=False, labels=None):
+    """Both units lined up for a dynamic kickoff under the 2026 rules: the kicker alone at his own 35
+    (drawn a few yards back, at the start of his run-up), ten teammates with a foot on the receiving
+    team's 40, five receiving players on their 35, four floaters behind them, two returners deep.
+    The default front line is legal under 6-1-3(b): one player inside the hashes (B3), one between the
+    hash and the numbers on each side (B2, B4) and one outside the numbers on each side (B1, B5)."""
+    labels = labels or {}
+    lab = lambda k, default="": labels.get(k, default)   # noqa: E731
+    kick = [K_("K", k_d, 0.0, lab("K", "K"))]
+    kick += [K_(k, 24.4, w, lab(k, k if cover_labels else "")) for k, w in COVER]
+    ret = [RT_(f"B{i + 1}", R(35) + 0.6, w, lab(f"B{i + 1}")) for i, w in enumerate(line)]
+    ret += [RT_(f"F{i + 1}", R(31.5), w, lab(f"F{i + 1}")) for i, w in enumerate(floaters)]
+    ret += [RT_(f"KR{i + 1}", d, w, lab(f"KR{i + 1}", "KR")) for i, (d, w) in enumerate(kr)]
+    return kick, ret
+```
+
+```{python}
+#| code-summary: "Show the Python (nflverse kickoffs, 2010-2025, used by the numbers in this chapter)"
+#| output: false
+from gridiron.data import pbp
+
+COLS = ["season", "season_type", "week", "game_id", "play_id", "play_type", "desc", "posteam", "defteam",
+        "kickoff_attempt", "touchback", "kickoff_returner_player_id", "kickoff_returner_player_name",
+        "return_yards", "kick_distance", "yardline_100", "return_touchdown", "own_kickoff_recovery", "epa", "ep",
+        "down", "ydstogo", "half_seconds_remaining"]
+
+
+def kickoffs(seasons):
+    """Regular-season kickoffs, onside kicks flagged, with the yard line where the next drive started."""
+    d = pbp(seasons, columns=COLS)
+    d = d[d.season_type == "REG"].sort_values(["game_id", "play_id"]).reset_index(drop=True)
+    nxt = d.groupby("game_id")[["posteam", "yardline_100", "play_type"]].shift(-1)
+    k = d[d.kickoff_attempt == 1].copy()
+    nx = nxt.loc[k.index]
+    k["onside"] = k.desc.str.contains("onside", case=False, na=False)
+    k["returned"] = k.kickoff_returner_player_id.notna()
+    k["from35"] = k.desc.str.contains(r" from \w+ 35 ", regex=True, na=False)
+    ok = (~k.onside) & (nx.posteam == k.posteam) & (k.return_touchdown != 1) & nx.yardline_100.notna() \
+        & (nx.play_type != "kickoff")
+    k["start"] = np.where(ok, 100 - nx.yardline_100, np.nan)        # the receiving team's own yard line
+    k["fielded"] = np.where(k.from35, 65 - k.kick_distance, np.nan)  # where it was fielded (negative = end zone)
+    tb20 = k.desc.str.contains("landing zone to end zone", na=False)
+    short = k.desc.str.contains("Short of Landing Zone", na=False)
+    k["outcome"] = np.select([k.onside, tb20, k.touchback == 1, k.returned, short],
+                             ["onside", "touchback at the 20", "touchback", "returned", "short of landing zone"],
+                             "other")
+    return k, d
+
+
+KO, PLAYS = kickoffs(range(2010, 2026))
+REG = KO[~KO.onside]                                     # every kickoff except declared or surprise onside kicks
+BY = pd.DataFrame({"ret": KO.groupby("season").returned.mean(),             # share returned, all kickoffs
+                   "tb": KO.groupby("season").touchback.mean(),
+                   "start": REG.groupby("season").start.mean(),
+                   "rtd": KO.groupby("season").return_touchdown.sum()})
+K25 = REG[REG.season == 2025]
+OUT25 = K25.groupby("outcome").agg(n=("play_id", "size"), epa=("epa", "mean"), start=("start", "mean"))
+RET25 = K25[K25.outcome == "returned"]
+EZ25 = RET25[RET25.fielded < 0]       # fielded in the end zone: pools kicks that landed there and kicks that rolled in
+ONS = KO[KO.onside].groupby("season").agg(n=("play_id", "size"), rec=("own_kickoff_recovery", "mean"))
+ONS25 = KO[KO.onside & (KO.season == 2025)]
+ONS25_EARLY = ONS25[ONS25.week <= 7]                     # what Troy Vincent was looking at in October 2025
+# first-and-10 expected points by yard line, 2023-2025 (outside the last two minutes of a half)
+F10 = PLAYS[(PLAYS.season >= 2023) & (PLAYS.down == 1) & (PLAYS.ydstogo == 10) & (PLAYS.half_seconds_remaining > 120)]
+EP = F10.assign(own=100 - F10.yardline_100).groupby("own").ep.mean()
+EP_YD = float(np.polyfit(EP.loc[20:40].index, EP.loc[20:40].values, 1)[0])   # fitted slope: points per yard, 20-40
+TEAM25 = K25.groupby("defteam").agg(tb=("outcome", lambda o: (o == "touchback").mean()),
+                                    start=("start", "mean"), n=("play_id", "size"))
+TEAM24 = REG[REG.season == 2024].groupby("defteam").agg(start=("start", "mean"))
+KO_PER_TEAM25 = KO[KO.season == 2025].groupby("defteam").size().mean()
+GAP_BEST = BY.start[2025] - TEAM25.start.min()
+GAP_WORST = TEAM25.start.max() - BY.start[2025]
+RETMEN25 = RET25.groupby("kickoff_returner_player_name").return_yards.agg(["size", "mean"])
+RETMEN25 = RETMEN25[RETMEN25["size"] >= 25].sort_values("mean", ascending=False)
+
+
+def pct(x, nd=0):
+    return f"{100 * x:.{nd}f}%"
+```
+
+Your team has just kicked a field goal. The kicker trots back to his own 35, and something strange
+happens: ten of his teammates jog *past* midfield and stop on the other team's 40, five yards from a
+row of opponents who are just standing there. Nobody moves. The kick goes up and comes down at the
+3, where a returner catches it and runs it back to the 28. The announcer says, approvingly, "That's
+the kick you want. They'd much rather have that than a touchback." Why would a coach prefer that the
+other team *return* the ball? Why were twenty players frozen in place while it was in the air? And
+why does this play look nothing like the kickoffs of five years ago? This chapter answers all three.
+
+**You'll be able to:**
+
+- Name every part of a dynamic kickoff on the broadcast (setup zone, landing zone, the two restraining
+  lines, floaters) and say where the next drive will start for any kick, under the 2024, 2025 and 2026
+  rules.
+- Explain why the league kept changing the kickoff, from the injury data that drove each change.
+- Do the touchback math: say whether a kicker should kick into the end zone, into the landing zone, or
+  squib it, and whether a returner should take a knee or run.
+- Read a kickoff return as a run play: find the double team, the seal and the unblocked cover men.
+- Explain onside kicks and the hands team under the current rules, and why surprise onside kicks no
+  longer exist.
+- Keep a field-position ledger for a game and compare it with the league average.
+
+Before you start: this chapter leans on two earlier ones. [Field Goals, Extra Points, and the Punting
+Game](09-01-kicking-and-punting.qmd) introduced the
+[touchback](09-01-kicking-and-punting.qmd), the [fair catch](09-01-kicking-and-punting.qmd), the
+[muff](09-01-kicking-and-punting.qmd) and the punt return; [The Language of the Run
+Game](../03-the-run-game/03-01-run-game-language.qmd) gave you the blocking words (double team, kick-out,
+lead block, point of attack, hat math) that a kickoff return now uses. One more block, the seal, comes from
+[Perimeter Runs and Misdirection](../03-the-run-game/03-05-perimeter-and-misdirection.qmd); this chapter
+gives it a one-line definition when it appears.
+
+## What a kickoff is, and why the game has one
+
+A [**kickoff**](../../appendices/glossary.qmd#gl-kickoff) is the kick that starts each half and follows
+every touchdown and field goal: the team that just scored kicks the ball, off a tee, from its own 35 to
+the other team. It is the most common kind of [**free kick**](../../appendices/glossary.qmd#gl-free-kick),
+a kick that puts the ball in play *without a snap*. The other free kicks are the kick a team makes after
+giving up a [safety](../01-foundations/01-01-the-game-in-fifteen-minutes.qmd) (from its own 20, and it
+may punt it instead of using a tee) and the rare
+[fair-catch kick](../10-situational-football/10-04-clock-and-game-management.qmd): after a fair catch, a team
+may try a field goal from that spot with nobody rushing, worth three points if it goes through.[^freekick]
+
+On every free kick, each team has a [**restraining line**](../../appendices/glossary.qmd#gl-restraining-line):
+a line it may not cross until the ball is kicked (and, since 2024, until the ball lands). Where those
+lines are drawn is the whole story of this chapter.
+
+The two groups of eleven have names. The kicking team is the
+[**kick coverage unit**](../../appendices/glossary.qmd#gl-kick-coverage-unit): its job is to get down the
+field and tackle whoever catches the ball. The receiving team is the
+[**return unit**](../../appendices/glossary.qmd#gl-return-unit): one or two
+[returners](../01-foundations/01-03-the-twenty-two.qmd) and the nine or ten players who block for them.
+Both units are mostly backups (linebackers, safeties, tight ends, running backs), the players with a
+mix of size, speed and tackling ability, coached by the
+[special teams coordinator](../01-foundations/01-04-what-a-play-really-is.qmd).
+
+::: {.callout-important title="Why it exists"}
+A kickoff is a way of handing the ball over after a score that is not free. The team that just scored
+gives the ball away, but gets to decide *how*: deep, short, bouncing, or into the end zone. The
+team receiving it gets a chance to gain field position with a return. Without a kickoff, every drive
+after a score would start at a fixed spot, and one of the game's few contests of speed in open space
+would disappear. That contest is also the problem: open space plus speed means violent collisions, and
+the history of the kickoff since 2009 is the league trying to keep the first part without the second.
+:::
+
+The thing to hold on to is that a kickoff is a trade of **field position**. As
+[Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd) showed,
+yards are worth points: a first-and-10 at your own 20 is worth about
+`{python} f"{EP.loc[20]:.1f}"` expected points, at your own 30 about `{python} f"{EP.loc[30]:.1f}"`,
+at your own 35 about `{python} f"{EP.loc[35]:.1f}"` (nflverse, 2023-2025). Across that stretch of field each
+yard is worth about `{python} f"{EP_YD:.2f}"` points, so five yards is worth about
+`{python} f"{5 * EP_YD:.1f}"`.[^epcurve] Every kickoff decides where on that curve the other team starts.
+
+## The kickoff you remember, and why the league kept changing it
+
+For most of the last fifty years a kickoff looked like this. The kicker teed the ball up (at his own 35
+from 1974, the 30 from 1994, and the 35 again from 2011) and ran up to it with his ten teammates in a
+line beside him.[^spots] The receiving team lined up ten yards away, at the kicking team's 45, with its
+returners back near the goal line. At the kick, everyone ran: the coverage sprinted downfield, and the
+receiving team's front line turned and ran back toward its own goal line to set up blocks for the
+return. For years those blockers formed a [**wedge**](../../appendices/glossary.qmd#gl-wedge), three or
+four big men shoulder to shoulder in front of the returner, and coverage players were coached to throw
+themselves at it.
+
+Look at what that means physically. A coverage player has run 35 or 40 yards at full speed. The blocker
+he meets has turned around and is running back at him. Two players closing at something like 15 yards a
+second (roughly 30 miles an hour) collide, often helmet first. No other play in football routinely
+lined up that many collisions at that speed.
+
+The data caught up with the intuition. The league's injury studies found concussions were far more
+likely on kickoffs than on ordinary plays: in 2017, about five times as likely, per play.[^conc2018] So
+the rules moved, one patch at a time. The patches were written by the league's **competition committee**,
+the group of team executives and coaches that studies the game and proposes rule changes for the owners to
+vote on:
+
+- **2009:** wedges limited to two players.[^wedge]
+- **2011:** the kickoff moved from the 30 to the 35. A kicker five yards closer drives more kicks into
+  the end zone, and a kick that stays there is a [touchback](09-01-kicking-and-punting.qmd): no return,
+  no collisions. Touchbacks jumped from
+  `{python} pct(BY.tb[2010])` of kickoffs in 2010 to `{python} pct(BY.tb[2011])` in 2011.[^calc]
+- **2016:** the kickoff touchback moved from the 20 to the 25, to make kneeling more attractive.[^tb25]
+- **2018:** a full redesign. No running start (the coverage had to stand still, within a yard of the
+  ball, until the kick); five coverage players on each side of the ball; eight of the receiving team's
+  players inside a 15-yard zone near the ball (the rules called it a setup zone too, but it is not today's
+  setup zone); wedges banned outright; no blocking in that zone until the ball was touched or hit the
+  ground.[^rules2018]
+- **2023:** a one-year patch let the returner fair-catch a kickoff anywhere inside his own 25 and take
+  the ball at the 25, the same as a touchback.[^fc2023]
+
+Every patch worked the same way: it made the kickoff safer by making it *disappear*. By 2023 only about a
+quarter of kickoffs were returned, the fewest on record, and the play was close to a formality: a kick
+into the end zone, a knee, the ball at the 25.[^calc23] There was open talk about abolishing it.
+
+```{python}
+#| label: fig-return-rate
+#| fig-cap: "Kickoff returns and starting field position, NFL regular seasons 2010-2025. Top: the share of all kickoffs that were returned. Each dashed line marks a rule change. Moving the kickoff to the 35 (2011) and the touchback to the 25 (2016) pushed the return rate down for a decade, to its low in 2023; the dynamic kickoff brought returns back, and moving the touchback to the 35 in 2025 brought them back close to 2010 levels. Bottom: where the receiving team's drive started, on average, after kickoffs (onside kicks and return touchdowns excluded). 2010, the last season kicked from the 30, had the most returns and the best field position of the old era; drive starts moved up four yards in 2024 and stayed there. Data: nflverse play-by-play; course calculation."
+fig, (a1, a2) = plt.subplots(2, 1, figsize=(6.5, 5.2), sharex=True)
+yrs = BY.index.values
+a1.plot(yrs, BY.ret * 100, color=style.SERIES[0], marker="o", ms=4.5, lw=2)
+a1.set_ylabel("kickoffs returned (%)", fontsize=8)
+a1.set_ylim(0, 100)
+a2.plot(yrs, BY.start, color=style.SERIES[0], marker="o", ms=4.5, lw=2)
+a2.set_ylabel("average drive start\n(receiving team's yard line)", fontsize=8)
+a2.set_ylim(19, 33)
+RULES = [(2011, "kick moved\nto the 35"), (2016, "touchback\nto the 25"), (2018, "no running\nstart"),
+         (2023, "fair catch\n= the 25"), (2024, "dynamic\nkickoff"), (2025, "touchback\nto the 35")]
+for ax in (a1, a2):
+    for yr, _ in RULES:
+        ax.axvline(yr - 0.5, color=style.BASELINE, lw=0.8, ls=(0, (3, 2)), zorder=0)
+    ax.tick_params(labelsize=8)
+for yr, lab in RULES:
+    if yr < 2020:
+        a1.text(yr - 0.45, 97, lab, fontsize=6.4, color=style.INK_2, va="top", ha="left")
+    else:   # the last three changes came a year apart: one line each, stepped down, left of their lines
+        a1.text(yr - 0.55, {2023: 95, 2024: 86, 2025: 77}[yr], lab.replace("\n", " ") + " →",
+                fontsize=6.4, color=style.INK_2, va="top", ha="right")
+for yr in (2010, 2023, 2025):
+    a1.annotate(f"{BY.ret[yr] * 100:.0f}%", (yr, BY.ret[yr] * 100), xytext=(0, -13 if yr == 2023 else 8),
+                textcoords="offset points", ha="center", fontsize=7.5, color=style.INK)
+    a2.annotate(f"{BY.start[yr]:.1f}", (yr, BY.start[yr]), xytext=(-12 if yr == 2023 else 0, 8),
+                textcoords="offset points", ha="center", fontsize=7.5, color=style.INK)
+a1.set_title("Returns came back; field position moved up", fontsize=10)
+a2.set_xticks(yrs)
+a2.set_xticklabels([str(y)[2:] if y not in (2010, 2025) else str(y) for y in yrs])
+fig.tight_layout()
+plt.show()
+```
+
+Read the chart left to right as a decade of trying to have it both ways. Every change before 2024
+pushed the return rate down, and the bottom panel shows the cost: once the kick moved to the 35 in 2011,
+with the touchback at the 20, drives after kickoffs started around the 22; when the touchback moved to
+the 25, they started around the 25. The league was buying safety with boredom. The 2024 change is the
+first one that sent *both* lines up.
+
+## The dynamic kickoff, piece by piece
+
+The fix came from outside the NFL. The XFL, a spring league, opened in 2020 with a kickoff invented by
+its director of football operations, Sam Schwartzstein, a former Stanford center who simulated the idea
+more than a thousand times before the league used it.[^schwartz] His insight was to keep the
+return but take away the run-up: line the two teams up close together, and freeze them until the ball
+comes down.[^xfl] When the competition committee went looking for a way to save the play, NFL
+special teams coaches, among them the Cowboys' John Fassel, presented the XFL model to the committee,
+and on March 26, 2024 the owners adopted an NFL version for 2024 as a one-year trial.[^fassel] It is called the
+[**dynamic kickoff**](../../appendices/glossary.qmd#gl-dynamic-kickoff). Here is the 2026 version.
+
+```{python}
+#| label: fig-plate
+#| fig-cap: "The dynamic kickoff under the 2026 rules, kicking left to right. The kicker (K) is alone at his own 35, the only kicking-team player on his side of midfield. His ten teammates, numbered the way coaches number them (L1-L5 on his left, R1-R5 on his right, counting out from the ball), stand with one foot on the receiving team's 40 (the kicking team's restraining line, blue dashes). Five yards away, the receiving team has five players on its own 35 (its restraining line, orange dashes), spread as the rule requires, and four 'floaters' behind them in the setup zone (their 30 to 35, shaded orange). Up to two returners (KR) wait in the landing zone (goal line to the 20, shaded gold), where the kick has to come down. The table below the field shows what changed in 2025 and 2026."
+kick, ret = dynamic_units()
+p = Play(kick, ret, los=KICK_X, to_go=None)
+p.highlight("K")
+p.highlight("KR1", "KR2", color=DC)
+fig = plt.figure(figsize=(6.5, 5.25))
+ax = fig.add_axes([0.0, 0.215, 1.0, 0.785])
+fld = fix_field(p.draw(ax=ax, orient="horizontal", lateral="full", window=(-11.0, 75.0), title=False))
+band(fld, p, R(35), R(30), style.DEFENSE, 0.10)                    # setup zone
+band(fld, p, R(20), R(0), style.LINE_TO_GAIN, 0.12)                # landing zone
+line_across(fld, p, R(40), OC)                                     # kicking team's restraining line
+line_across(fld, p, R(35), DC)                                     # receiving team's restraining line
+line_across(fld, p, R(20), style.LINE_TO_GAIN, lw=1.0, ls=(0, (1.5, 1.5)))
+ball(fld, p, 0.0, 0.0)
+for k, w in COVER:
+    say(fld, p, 21.6, w, k, color=OC, fontsize=6.0)
+say(fld, p, -4.2, 7.6, "kicker (K) alone;\nball on a tee\nat his own 35", color=OC)
+say(fld, p, 10.0, -19.0, "kicking team:\n10 players, one foot\non the receiving 40", color=OC)
+say(fld, p, 11.2, 9.0, "nobody but the kicker\nand returners moves until\nthe ball hits the ground\nor a player in the\nlanding zone")
+say(fld, p, 40.4, -8.0, "setup zone\n(their 30-35):\n5 on the 35\n+ 4 floaters", color=DC)
+say(fld, p, 40.4, 8.0, "restraining\nlines 5 yards\napart: their\n40 and 35")
+say(fld, p, 55.0, -13.0, "landing zone\n(goal line to the 20):\nthe kick must land here", color=GOLD)
+say(fld, p, R(5.0), 9.5, "up to 2 returners (KR)", color=DC)
+say(fld, p, 70.0, -13.0, "end\nzone")
+clip_texts(fld)
+tx = fig.add_axes([0.0, 0.0, 1.0, 0.2])
+tx.axis("off")
+rows = [("", "2024 (trial)", "2025", "2026"),
+        ("On the 35 + floaters", "7 + 2", "6 + 3", "5 + 4"),
+        ("Touchback, ball lands in end zone", "the 30", "the 35", "the 35"),
+        ("Onside kick (always declared)", "trailing, 4th qtr only", "any time trailing", "any time")]
+xs = [0.01, 0.43, 0.63, 0.82]
+for i, row in enumerate(rows):
+    y = 0.9 - i * 0.24
+    for j, c in enumerate(row):
+        tx.text(xs[j], y, c, fontsize=7.4, va="top", color=style.INK if (i == 0 or j == 0) else style.INK_2,
+                fontweight="bold" if i == 0 else "normal")
+    if i < len(rows) - 1:
+        tx.plot([0.01, 0.99], [y - 0.2, y - 0.2], color=style.GRID, lw=0.6)
+tx.set_xlim(0, 1)
+tx.set_ylim(0, 1)
+plt.show()
+```
+
+Walk through it from left to right.
+
+**The kicker is alone.** He kicks from his own 35, as before, but he is the only kicking-team player on
+his side of the 50, and he may not cross midfield until the ball touches the ground or a player.[^rules2024]
+In practice he becomes the last line of defense: a safety with a kicking leg.
+
+**The coverage starts on the other team's 40.** His ten teammates line up with one foot on the receiving
+team's 40, 25 yards in front of the tee. That is the kicking team's restraining line. They may not move
+until the ball hits the ground, or hits a player in the landing zone or end zone. Coaches number them
+outward from the ball, L1 to L5 on the kicker's left and R1 to R5 on his right, and this chapter does the same.
+
+**The blockers start five yards away.** The receiving team's restraining line is its own 35. Behind it is
+the [**setup zone**](../../appendices/glossary.qmd#gl-setup-zone), the five yards between the 35 and the
+30, where at least nine receiving players line up. In 2024, seven of them had to have a foot on the 35 and
+the other two lined up behind them, outside the hash marks. The league has loosened that every year since:
+in 2025 six on the line and up to three behind; from 2026, only five on the line and up to four behind.
+The players behind the line are called [**floaters**](../../appendices/glossary.qmd#gl-floater). The rule
+still spreads the front line across the field: at least one player inside the hash marks, one between the
+hashes and the yard numbers on each side, and one outside the numbers on each side. And it stops a team from
+bunching its floaters: picture the setup zone cut into three strips (left of the left hash, between the
+hashes, right of the right hash); no more than two floaters may stand in any one strip, and a team using all
+four must put at least one outside the hashes on each side.[^rules2026] If a team puts ten players in the setup
+zone instead of nine, at least *six* of them must be on the 35, which is a tell you can count before the kick.
+The setup-zone players are frozen too, until the ball lands or is touched.
+
+Why keep loosening it? The league said the 2026 change was meant to "improve safety and make returns more
+competitive."[^cbs26] The mechanism is easy to see. A player on the 35 is committed: he stands face to face
+with a cover man and will block whoever comes at him. A floater starts two or three yards deeper, so he can wait
+for the catch and then pick his man: join a double team, or slide over to the side the return is going.
+More floaters means more blockers who can choose, which makes the return harder for the coverage to read
+before the kick and gives the return team more ways to build an extra blocker where it wants one.
+
+**The returners wait in the landing zone.** The [**landing zone**](../../appendices/glossary.qmd#gl-landing-zone)
+is the area between the receiving team's goal line and its 20. Up to two returners stand there, and they
+are the only players besides the kicker allowed to move before the ball comes down.
+
+**The kick has to land in the landing zone.** That is the rule that makes the whole thing work, and it is
+enforced with field position, not flags. A kick that lands short of the landing zone, or goes out of
+bounds, gives the receiving team the ball at its own 40. A kick that lands in the landing zone is **live**:
+the ball is still in play and belongs to nobody until someone possesses it. The receiving team has to field
+it, because the kicking team may recover it too, once it has hit the ground or a receiving player in the
+landing zone.[^live] There is no kneeling on a ball that lands there. (A returner may still signal for a
+fair catch on a kick he catches in the air, but on a kickoff that only ends the play where he catches it,
+somewhere inside his own 20, so nobody does.)
+
+A kick that carries into the end zone can be returned or **downed**. On a kickoff the returner downs the
+ball by kneeling with it in the end zone (09-01 used "downing" for the *kicking* team stopping a punt; here
+it is the receiver's choice), and that is a touchback. Where the ball goes after a touchback depends on how
+the ball got into the end zone:
+
+- **Landed in the end zone on the fly** (or went out the back): the touchback is at the 35, a generous
+  spot. The league set it that high deliberately, so that *kicking it into the end zone* costs the kicking
+  team field position (more on this price below).
+- **Landed in the landing zone and then rolled or bounced into the end zone:** the touchback is only at
+  the 20. The kick did what the rules ask, landing where it could be returned, so the receiving team can't
+  escape with the generous spot. If a roll-in came out to the 35, every kicker aiming at the goal line would
+  be risking a gift on any kick that ran a yard long, and kickers would stop aiming there.
+
+The chart below is the map.
+
+```{python}
+#| label: fig-outcomes
+#| fig-cap: "Where the kick comes down decides where the next drive starts (2025-2026 rules, kicking from the 35, left to right). Short of the 20, or out of bounds anywhere: the receiving team starts at its 40. In the landing zone (gold): the ball is live and has to be fielded; in 2025 those returns ended, on average, near the 29. In the landing zone and then rolling into the end zone (dotted): a knee gets only the 20, the best result a kicker can hope for. In the end zone on the fly: a knee gets the 35."
+p0 = Play([], [], los=KICK_X, to_go=None)      # no players: just the kick spot's frame of reference
+fld = fix_field(Field(orient="horizontal", los=KICK_X, window=(17.0, 75.0), to_go=None, width_in=6.5,
+                      lateral=(0.0, 44.0), hashes=False))
+band(fld, p0, R(20), R(0), style.LINE_TO_GAIN, 0.12)
+line_across(fld, p0, R(20), style.LINE_TO_GAIN, lw=1.0, ls=(0, (1.5, 1.5)))
+
+
+def flight(d1, w1, w0=None):
+    """A kick drawn flat along its own lane from the left edge, ending in an X where it lands."""
+    arrow(fld, p0, (17.0, w1 if w0 is None else w0), (d1, w1), style.BALL, lw=1.2, ls=(0, (2, 2)), ms=7)
+    land(fld, p0, d1, w1)
+
+
+def roll(d0, d1, w):
+    (x0, y0), (x1, y1) = P_(fld, p0, d0, w), P_(fld, p0, d1, w)
+    fld.ax.plot([x0, x1], [y0, y1], color=style.BALL, lw=1.4, ls=(0, (1, 1.2)), zorder=8)
+    land(fld, p0, d1, w, color=style.MUTED)
+
+
+flight(R(-5), -12.0)
+say(fld, p0, R(-6.2), -14.4, "lands in the end zone: return it, or\ndown it for a touchback at the 35",
+    color=style.INK, fontsize=7, ha="right")
+flight(R(4), -6.0)
+roll(R(4), R(-3), -6.0)
+say(fld, p0, R(5.2), -8.4, "lands in the landing zone and rolls in:\nreturn it, or down it for the 20",
+    color=GOLD, fontsize=7, ha="right")
+flight(R(8), 0.0)
+say(fld, p0, R(9.2), -2.4, "lands in the landing zone: live, so field it\n(in 2025, returns reached their 29)",
+    color=GOLD, fontsize=7, ha="right")
+flight(R(26), 6.0)
+say(fld, p0, R(26), 3.6, "lands short of the 20:\ndead, ball at the 40", color=style.INK, fontsize=7)
+flight(R(12), 25.0, w0=12.0)
+say(fld, p0, R(3.5), 22.0, "out of bounds anywhere:\nball at the 40", color=style.INK, fontsize=7)
+say(fld, p0, R(10), 16.0, "landing zone", color=GOLD, fontsize=7.5, weight="bold")
+clip_texts(fld)
+plt.show()
+```
+
+| Where the kick ends up | 2024 | 2025 | 2026 |
+|----------------------------------------------|------------|------------|------------|
+| Lands short of the landing zone, or out of bounds | the 40 | the 40 | the 40 |
+| Lands in the landing zone | live: field it | same | same |
+| Lands in the landing zone, rolls into the end zone, downed | the 20 | the 20 | the 20 |
+| Lands in the end zone (or goes out the back), downed | the 30 | the 35 | the 35 |
+| Kicked from the 50 after a penalty: touchback (end zone on the fly) / out of bounds | the 30 / the 25 | the 35 / the 25 | the 20 / the 25 |
+
+: Where the receiving team starts its drive, by rule and season. Kicks are from the 35 unless noted; the 2026 column shows the rules changed after the 2025 season. An out-of-bounds kick is spotted 25 yards beyond the kick, which is the 40 for a kick from the 35 and the 25 for a kick from the 50. {#tbl-spots}
+
+The last row is the newest wrinkle, and it shows how carefully teams read these rules. When a penalty on
+the receiving team moves the kickoff to the 50, the kicker is suddenly 15 yards closer. Read across the row:
+in both 2024 and 2025, kicking the ball out of bounds *on purpose* put the receiving team at its 25, while a
+touchback put it at its 30 (2024) or 35 (2025). The loophole was there from the start, but the 2025 touchback
+move doubled its value from five yards to ten, and that season Dallas tried it against Kansas City.[^fifty]
+For 2026 the league closed it: a touchback on a kick from the 50 now gives the receiving team the ball at its
+20, five yards worse for it than the 25 an out-of-bounds kick still gives, so a deep kick into the end zone is
+the better choice again.[^fifty26]
+
+::: {.callout-important title="Why it exists"}
+The 2018 rules had already taken away the running start. What they had not changed was the *distance*:
+the coverage still started level with the ball, 40 or more yards from where the blocks would happen, and had
+the whole flight of the ball plus a long sprint to build speed before contact. The dynamic kickoff moves the
+starting line. The coverage now stands 25 yards downfield, five yards from the players who will block it,
+and nobody may move until the ball comes down. So when two players meet, each has run a few yards, not
+forty. The return survives because the kick has to land where it can be returned, and the touchback is set
+high enough that kicking into the end zone costs the kicker. The trade-off: the play looks strange, kick
+strategy became complicated (the rest of this chapter), and the coverage team now has very little time to
+beat blocks.
+
+Did it work? In the 2024 season, the league reported that the concussion rate on kickoffs fell 43%
+against the 2021-2023 average, while returns rose 57%.[^conc2024] That is the combination every earlier
+change had failed to deliver.
+:::
+
+::: {.callout-note title="Madden vs. real life"}
+In older video games the kickoff is a meter: press the button, pick the power, watch a cutscene. On a
+real NFL field in 2026 it is a designed play on both sides. The kicking team has a plan for exactly where
+the ball should come down and whether it should bounce first; the return team has a blocking scheme, called
+in the huddle like a run play and named by direction ("middle right," "return left"), that depends on where
+it expects the kick. Special teams coordinators spend as much time on kickoffs now as on any unit they coach.
+:::
+
+## Old and new, side by side
+
+The clearest way to see the change is to put the two alignments next to each other and draw what
+happens in the first few seconds.
+
+```{python}
+#| label: fig-old-new
+#| fig-cap: "The traditional kickoff (left, as played from 2018 to 2023) and the dynamic kickoff (right, 2026 alignment), both kicked up the page from the kicking team's 35. Left: the coverage lines up beside the ball and the receiving team ten yards away, with an up back in front of the returner; at the kick, the coverage sprints about 40 yards while the blockers turn and run back 15 to 25 yards, so the two groups meet at speed around the receiving team's 25-30 (shaded). Right: the coverage stands on the receiving team's 40 and nobody moves until the ball lands; contact comes after a few yards of running, around the receiving team's 33-35 (shaded)."
+
+
+def old_units():
+    """The 2018-2023 kickoff: coverage level with the ball, receiving team 10 yards away, returner deep."""
+    kick = [K_("K", -7.0, 0.0, "K")]
+    kick += [K_(f"C{i + 1}", -0.9, w) for i, w in enumerate([-21, -17, -13, -9, -4.5, 4.5, 9, 13, 17, 21])]
+    ret = [RT_(f"L{i + 1}", 11.0, w) for i, w in enumerate([-19, -9.5, 0, 9.5, 19])]
+    ret += [RT_(f"M{i + 1}", 22.0, w) for i, w in enumerate([-12, -4, 4, 12])]
+    ret += [RT_("UB", R(14), 0.0), RT_("KR1", R(1), 0.0, "KR")]
+    return kick, ret
+
+
+fig, (a1, a2) = plt.subplots(1, 2, figsize=(6.5, 5.6))
+WIN = (-9.0, 75.0)
+kick, ret = old_units()
+q = Play(kick, ret, los=KICK_X, to_go=None)
+q.highlight("KR1", color=DC)
+for c in [k for k in q.players if k.startswith("C")]:
+    q.path(c, [(R(30), q.players[c].w * 0.75)], absolute=True)
+for k in [k for k in q.players if k[0] in "LM"]:
+    q.path(k, [(R(27), q.players[k].w * 0.7)], absolute=True)
+f1 = fix_field(q.draw(ax=a1, lateral="full", window=WIN, title=False))
+band(f1, q, R(31.5), R(25.5), style.DEFENSE, 0.16)
+say(f1, q, R(20.5), -11.5, "contact\nhere", color=DC, fontsize=6.6)
+arrow(f1, q, (R(22.3), -11.5), (R(26.3), -11.5), DC, lw=1.0, ms=7)
+say(f1, q, -5.0, 9.5, "K, ball at\nhis own 35", color=OC, fontsize=6.6)
+say(f1, q, 5.0, 0.0, "coverage sprints\nabout 40 yards", color=OC, fontsize=6.6)
+say(f1, q, 16.5, 0.0, "blockers turn and\nrun back 15-25 yards", color=DC, fontsize=6.6)
+say(f1, q, R(14), 7.5, "up back", color=DC, fontsize=6.6)
+say(f1, q, R(7.0), 0.0, "returner\nat the goal line", color=DC, fontsize=6.6)
+clip_texts(f1)
+a1.set_title("Before 2024: 10 yards apart, then a race", fontsize=8.5, loc="left", color=style.INK)
+kick, ret = dynamic_units(kr=((R(3), 3.0), (R(10), -3.0)))
+p = Play(kick, ret, los=KICK_X, to_go=None)
+p.highlight("KR1", "KR2", color=DC)
+for c in [k for k, _ in COVER]:
+    p.path(c, [(R(35.6), p.players[c].w)], absolute=True)
+f2 = fix_field(p.draw(ax=a2, lateral="full", window=WIN, title=False))
+band(f2, p, R(35.6), R(32.4), style.DEFENSE, 0.16)
+say(f2, p, R(24.5), -13.0, "contact\nhere", color=DC, fontsize=6.6)
+arrow(f2, p, (R(26.6), -13.0), (R(32.6), -13.0), DC, lw=1.0, ms=7)
+say(f2, p, -5.0, 9.5, "K, ball at\nhis own 35", color=OC, fontsize=6.6)
+say(f2, p, 12.0, 0.0, "coverage starts\non their 40,\n5 yards from\nthe blockers", color=OC, fontsize=6.6)
+say(f2, p, R(22), 0.0, "everyone frozen\nuntil the ball lands", fontsize=6.6)
+say(f2, p, R(13.5), 9.5, "returners in the\nlanding zone", color=DC, fontsize=6.6)
+clip_texts(f2)
+a2.set_title("2024 on: 5 yards apart, nobody moves", fontsize=8.5, loc="left", color=style.INK)
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+Three differences matter, and each one has a "why":
+
+1. **Where the collisions happen.** On the left, contact comes around the receiving team's 25 or 30,
+   after both groups have run a long way. On the right, it comes near the receiving team's 35, almost
+   where both groups started. Less running before contact means less speed at contact, and the energy in
+   a collision grows with the *square* of speed: halve the closing speed and you cut the energy to a
+   quarter.
+2. **Who decides when the play starts.** On the left, the kick started everything. On the right, the ball
+   *landing* starts everything. That shifts the drama from the kicker's leg to where, and how, the ball
+   first comes down: how deep, and whether it is caught or bounces. That is the subject of the next
+   sections.
+3. **What a return looks like.** On the left, a return was a sprint behind a wall of blockers who had
+   turned their backs to the coverage. On the right, it is much closer to a running play: blockers facing
+   the defenders they will block, a few yards apart, with a ball carrier coming at them from behind.
+
+::: {.callout-caution title="Common misconception"}
+"The new kickoff is safer because there are fewer returns." The opposite: there are far *more* returns
+than in any season since 2010 (the chart above), and the injury rate went *down*. The old rules made the
+play safer by eliminating it; the new rules made the play itself safer.
+:::
+
+## Kick to tackle: how a return is blocked now
+
+Here is one return from start to finish, drawn as four moments: the ball in the air, the catch, the blocks, the
+tackle. Read the panels first; the rest of this section explains what you are seeing. One term first: the
+time the ball spends in the air, from the kick until it comes down, is its **hang time**. Under the old rules a
+long hang time gave the coverage more time to run. Under the dynamic kickoff the coverage may not move until
+the ball comes down, so hang time buys the coverage nothing; it only gives the returners time to settle under the
+ball.
+
+```{python}
+#| code-summary: "Show the Python (a simulated return, kick to tackle, in BDB-format tracking)"
+#| output: false
+T_CATCH = 3.9          # hang time: the ball is caught at the 2 about 3.9 seconds after the kick
+
+
+def wait_until(p, key, t):
+    """Delay that starts `key`'s next action at absolute time t (gridiron delays are relative).
+    Note: reaches into gridiron's private Play._compile(); fine for this chapter, fragile if the library changes."""
+    kf, _, _ = p._compile()
+    return max(0.0, t - max(0.0, float(kf[key][-1, 0])))
+
+
+def to(p, key, pts, kind="path", t=None, speed=None):
+    """Move `key` through absolute (d, w) points as a path, block or run, optionally starting at time t."""
+    delay = 0.0 if t is None else wait_until(p, key, t)
+    if kind == "block":
+        start = np.array(p._cur(key))
+        return p.block(key, pts=[tuple(np.array(q) - start) for q in pts], delay=delay, speed=speed)
+    return {"path": p.path, "run": p.run}[kind](key, pts, absolute=True, delay=delay, speed=speed)
+
+
+ACTORS = {"B3": "S", "B4": "D", "F3": "D", "KR2": "KR", "K": "K"}
+
+
+def return_play():
+    """A middle-right return against a dynamic kickoff (2026 alignment, legal front line), from kick to tackle.
+    Ten blockers (nine in the setup zone plus the second returner) for eleven cover men (ten plus the kicker):
+    the return leaves the backside man (L5) and the kicker unblocked. B3 seals R1 inside, B4 and F3 (both
+    setup-zone players, so the double team is legal) drive R2 outward, and the second returner, who may not
+    join a double team, takes R3, the man F3 would otherwise have had, with a kick-out."""
+    kick, ret = dynamic_units(floaters=(-19, -4, 6, 19), kr=((R(4), 4.0), (R(10), -3.0)), labels=ACTORS, k_d=-1.0)
+    p = Play(kick, ret, los=KICK_X, to_go=None)
+    tc = T_CATCH
+    # the ball is in the air: only the kicker and the returners may move
+    p.path("K", [(13.0, 0.0)], absolute=True, speed=5.0)            # may not cross midfield (d = 15) yet
+    p.path("KR1", [(R(2), 2.0)], absolute=True, speed=1.0)          # drifts under the kick
+    p.path("KR2", [(R(9), -1.0)], absolute=True, speed=1.0)
+    # caught at t = 3.9: everyone else is released. Cover man -> where he is engaged, his blocker(s) -> where
+    # they meet him (blockers take a short drop step to set, so most blocks land around their 33-34),
+    # then the pair drifts by (dd, dw).
+    eng = {
+        "L4": ((31.0, -18.4), [("B1", (32.2, -18.9))], (0.3, 0.0)),
+        "L3": ((31.0, -13.2), [("F1", (32.2, -13.5))], (0.3, 0.0)),
+        "L2": ((31.0, -8.4), [("B2", (32.2, -8.7))], (0.3, 0.0)),
+        "L1": ((31.0, -3.4), [("F2", (32.2, -3.7))], (0.3, 0.0)),
+        "R1": ((31.0, 1.6), [("B3", (31.8, 2.7))], (0.2, -0.9)),                         # sealed inside
+        "R2": ((31.2, 8.6), [("B4", (32.3, 9.6)), ("F3", (32.4, 7.4))], (0.2, 0.6)),     # doubled, driven out
+        "R4": ((31.0, 18.2), [("F4", (32.2, 18.5))], (0.3, 0.0)),
+        "R5": ((31.0, 22.4), [("B5", (32.2, 22.2))], (0.3, 0.0)),
+    }
+    for c, ((d, w), blockers, (dd, dw)) in eng.items():
+        to(p, c, [(d, w)], t=tc, speed=5.5)
+        to(p, c, [(d + dd, w + dw)], speed=0.5)
+        for bk, (bd, bw) in blockers:
+            to(p, bk, [(bd, bw)], kind="block", t=tc + 0.15, speed=3.0)
+            to(p, bk, [(bd + dd, bw + dw)], kind="block", speed=0.5)
+    # R3 reads the return and works toward the lane; the second returner leads up and kicks him out
+    to(p, "R3", [(29.6, 13.6)], t=tc, speed=5.5)
+    to(p, "R3", [(31.4, 12.9)], speed=0.9)
+    to(p, "R3", [(31.7, 14.7)], speed=1.2)
+    to(p, "KR2", [(R(17), 5.5), (32.5, 12.0)], kind="block", t=tc - 0.4, speed=7.0)
+    to(p, "KR2", [(32.8, 13.8)], kind="block", speed=1.2)
+    # the two unblocked men: L5 pursues flat from the backside, staying behind the ball; the kicker is the
+    # returner's man, waiting past the line of blocks
+    to(p, "L5", [(27.0, -9.0), (27.8, 2.4)], t=tc, speed=5.2)
+    to(p, "K", [(25.0, 3.0)], t=tc + 0.1, speed=4.2)
+    to(p, "K", [(27.6, 4.4)], speed=2.0)
+    # the returner: up through the lane between the seal (S) and the double team (D + D), tackled past it
+    to(p, "KR1", [(R(14), 3.8), (R(26), 4.8), (32.0, 5.0), (29.5, 5.0), (27.8, 4.6)], kind="run", t=tc, speed=8.2)
+    return p
+
+
+def kick_tracking(p, t_catch=T_CATCH, catcher="KR1"):
+    """Simulated tracking (BDB format) with the kick's flight added. gridiron's ball follows a snap, so the
+    ball rows are rebuilt: tee -> catch along a straight ground track, then in the returner's arms."""
+    df = p.to_tracking()
+    df["_id"] = df["displayName"].astype(str)
+    catch = p.position(catcher, t_catch)
+    b = df["side"] == "ball"
+    for i in df.index[b]:
+        t = df.at[i, "time"]
+        if t <= 0:
+            d, w = 0.0, 0.0
+        elif t < t_catch:
+            d, w = catch * (t / t_catch)
+        else:
+            d, w = p.position(catcher, t)
+        df.at[i, "x"], df.at[i, "y"] = p.to_abs(d, w)
+    df.loc[b, "event"] = None
+    df.loc[b & np.isclose(df["time"], 0.0), "event"] = "kickoff"
+    df.loc[b & np.isclose(df["time"], round(t_catch, 1)), "event"] = "kick_received"
+    return df
+
+
+MARK_R = 0.95
+TRAILED = {"KR1", "KR2", "K", "L5", "R3"}     # the only players whose paths are drawn: the story's movers
+
+
+def panel(ax, p, df, t, window, lateral=None, rings=(("KR1", style.THIRD),), tags=(), zoom_box=None,
+          path_ahead=None, side_labels=()):
+    """One moment of the return: markers, the movers' trails, the double team outlined, the kick's remaining
+    flight, labels with leader lines to the players they name."""
+    tmap = df.groupby("frameId")["time"].first()
+    fid = int((tmap - t).abs().idxmin())
+    lat = None if lateral is None else tuple(sorted((p.ball_y - lateral[0], p.ball_y - lateral[1])))
+    fld = fix_field(Field(ax=ax, orient="vertical", los=p.los, window=window, numbers=True, hashes=False,
+                          to_go=None, lateral=lat))
+    lims = (ax.get_xlim(), ax.get_ylim())
+    band(fld, p, R(35), R(30), style.DEFENSE, 0.08)
+    band(fld, p, R(20), R(0), style.LINE_TO_GAIN, 0.10)
+    x0, x1 = p.los + window[0], p.los + window[1]
+    cur = df[df["frameId"] == fid]
+    shown = cur[cur["x"].between(x0 + 0.6, x1 - 0.6)]
+    if lat is not None:
+        shown = shown[shown["y"].between(lat[0] + 0.6, lat[1] - 0.6)]
+    ids = set(shown["_id"]) & TRAILED
+    trails = df[(df["frameId"] <= fid) & df["_id"].isin(ids) & (df["side"] != "ball") & df["x"].between(x0, x1)]
+    for (_, side), g in trails.groupby(["_id", "side"]):
+        xs, ys = fld.xy(g["x"].values, g["y"].values)
+        ax.plot(xs, ys, color=style.OFFENSE if side == "off" else style.DEFENSE, lw=1.0, alpha=0.55, zorder=3)
+    if t > T_CATCH + 0.8:   # the double team, outlined
+        r = cur[cur["displayName"] == "R2"].iloc[0]
+        x, y = fld.xy(r["x"] + 0.6, r["y"])
+        ax.add_patch(Ellipse((float(x), float(y)), 5.6, 4.0, fc=GREEN, alpha=0.20, ec="none", zorder=2.5))
+        ax.add_patch(Ellipse((float(x), float(y)), 5.6, 4.0, fc="none", ec=GREEN, lw=1.8, ls=(0, (3, 1.5)),
+                             zorder=7.5))
+    if path_ahead:            # where the returner is about to go, drawn as an arrow from where he is
+        r = cur[cur["displayName"] == "KR1"].iloc[0]
+        pts = [P_(fld, p, *q) for q in path_ahead]
+        xa, ya = fld.xy(r["x"], r["y"])
+        xs_ = [float(xa)] + [q[0] for q in pts]
+        ys_ = [float(ya)] + [q[1] for q in pts]
+        ax.plot(xs_[:-1], ys_[:-1], color=style.THIRD, lw=1.4, ls=(0, (3, 2)), zorder=6)
+        ax.add_patch(FancyArrowPatch((xs_[-2], ys_[-2]), (xs_[-1], ys_[-1]), arrowstyle="-|>", mutation_scale=9,
+                                     color=style.THIRD, lw=1.4, ls=(0, (3, 2)), zorder=6, shrinkA=0, shrinkB=0))
+    ppy = fld.pts_per_yard()
+    for _, r in shown.iterrows():
+        x, y = (float(v) for v in fld.xy(r["x"], r["y"]))
+        if r["side"] == "ball":
+            if t < T_CATCH - 0.05:
+                ax.add_patch(Ellipse((x, y), 1.3, 0.8, fc=style.BALL, ec="white", lw=0.6, zorder=11))
+            continue
+        lab = str(r.get("label", "") or "")
+        if r["side"] == "off":
+            ax.add_patch(Circle((x, y), MARK_R, fc=style.OFFENSE, ec="white", lw=0.6, zorder=8))
+            tcol = "white"
+        else:
+            ax.add_patch(RegularPolygon((x, y), 4, radius=MARK_R * 1.3, orientation=np.pi / 4,
+                                        fc=style.DEFENSE_TINT, ec=style.DEFENSE, lw=1.0, zorder=8))
+            tcol = style.INK
+        if lab:
+            fs = ppy * (0.62 if len(lab) <= 1 else 0.5)
+            ax.text(x, y, lab, ha="center", va="center", fontsize=max(4.0, min(7.0, fs)), color=tcol,
+                    fontweight="bold", zorder=10)
+    for key, col in rings:
+        r = cur[cur["displayName"] == key].iloc[0]
+        x, y = fld.xy(r["x"], r["y"])
+        ax.add_patch(Circle((float(x), float(y)), MARK_R * 1.7, fc="none", ec=col, lw=1.8, zorder=7))
+    if t < T_CATCH - 0.05:   # the rest of the kick's flight, to the catch
+        b = cur[cur["side"] == "ball"].iloc[0]
+        (xa, ya), (xb, yb) = fld.xy(b["x"], b["y"]), P_(fld, p, *p.position("KR1", T_CATCH))
+        ax.plot([xa, xb], [ya, yb], color=style.BALL, lw=1.1, ls=(0, (2, 2)), zorder=6)
+    if zoom_box is not None:  # where panels 3-4 zoom in
+        (wd0, wd1), (ww0, ww1) = zoom_box
+        (xa, ya), (xb, yb) = P_(fld, p, wd0, ww0), P_(fld, p, wd1, ww1)
+        ax.add_patch(Rectangle((min(xa, xb), min(ya, yb)), abs(xb - xa), abs(yb - ya), fc="none", ec=style.INK_2,
+                               lw=0.9, ls=(0, (3, 2)), zorder=9))
+    for key in side_labels:   # name a player beside his marker, on the kicking team's side of it
+        r = cur[cur["displayName"] == key].iloc[0]
+        d, w = float(r["x"]) - p.los, p.ball_y - float(r["y"])     # BDB (x, y) -> (d, w)
+        say(fld, p, d - 1.9, w, key, color=OC, fontsize=6.0)
+    for tag in tags:
+        text, (d, w), col = tag[:3]
+        targets = tag[3] if len(tag) > 3 else ()
+        lx, ly = P_(fld, p, d, w)
+        for tk in targets:
+            r = cur[cur["displayName"] == tk].iloc[0]
+            tx_, ty_ = fld.xy(r["x"], r["y"])
+            ax.plot([lx, float(tx_)], [ly, float(ty_)], color=col, lw=0.7, alpha=0.8, zorder=11)
+        say(fld, p, d, w, text, color=col, fontsize=6.4)
+    clip_texts(fld)
+    ax.set_xlim(*lims[0])
+    ax.set_ylim(*lims[1])
+    return fld
+
+
+FULL = dict(window=(R(57), R(-2)), lateral=None)
+ZOOM = dict(window=(R(45), R(15)), lateral=(-15.0, 25.0))
+ZOOM_BOX = ((R(45), R(15)), (-15.0, 25.0))
+SIDE = [(), (), ("R1", "R2", "R3"), ()]
+TIMES = [2.6, T_CATCH, 6.4, 8.2]
+NOTES = ["1. Ball in the air: nobody moves\nbut the kicker and the returners.",
+         "2. Caught at the 2: now everyone\ngoes. Blockers set to meet their men.",
+         "3. Seal (S) and double team (D, D):\nthe lane opens between them.",
+         "4. Through the lane; the kicker, the\nreturner's man, tackles him at the 37."]
+TAGS = [[("ball in the air", (40.8, 9.0), style.BALL), ("frozen until\nit lands", (R(26), -12.0), style.INK_2),
+         ("kicker: may not\ncross midfield yet", (11.0, -13.0), OC, ("K",))],
+        [("caught at the 2", (R(6.5), 12.0), DC), ("everyone\nreleased", (R(25), 0.0), style.INK_2),
+         ("zoomed in\npanels 3-4", (R(19.5), 16.5), style.INK_2)],
+        [("seal: S keeps\nR1 inside", (36.5, -6.5), GREEN, ("B3",)),
+         ("double team\non R2", (36.8, 16.0), GREEN, ("B4",)),
+         ("kick-out:\nKR on R3", (41.5, 19.0), GREEN, ("KR2",)),
+         ("unblocked:\nL5 and K", (23.2, -6.5), OC, ("L5", "K")),
+         ("lane", (35.6, 8.6), style.THIRD)],
+        [("tackled at\nthe 37", (23.2, 10.5), DC, ("KR1",)),
+         ("kicker: the\nreturner's man", (23.2, -1.5), OC, ("K",)),
+         ("L5, a beat\nlate", (23.2, -10.5), OC, ("L5",)),
+         ("kick-out", (36.5, 19.5), GREEN, ("KR2",))]]
+AHEAD = [None, None, [(R(26), 4.8), (32.0, 5.0), (29.0, 5.0)], None]
+
+
+def return_strip(p, width_in=6.5):
+    """Two full-field panels (the kick, the catch), then two zoomed panels (the blocks, the tackle)."""
+    df = kick_tracking(p)
+    pw = width_in / 2
+    h_full = pw * (FULL["window"][1] - FULL["window"][0]) / 53.33
+    h_zoom = pw * (ZOOM["window"][1] - ZOOM["window"][0]) / (ZOOM["lateral"][1] - ZOOM["lateral"][0])
+    fig, axes = plt.subplots(2, 2, figsize=(width_in, h_full + h_zoom + 1.25),
+                             gridspec_kw=dict(height_ratios=[h_full, h_zoom]))
+    for i, (ax, t, n, tg) in enumerate(zip(axes.flat, TIMES, NOTES, TAGS)):
+        view = FULL if i < 2 else ZOOM
+        panel(ax, p, df, t, view["window"], view["lateral"], tags=tg, zoom_box=ZOOM_BOX if i == 1 else None,
+              path_ahead=AHEAD[i], side_labels=SIDE[i])
+        ax.set_title(f"{t:.1f} s after the kick" + ("  (zoomed in)" if i >= 2 else ""), fontsize=8.5,
+                     color=style.INK_2, loc="left")
+        ax.text(0.5, -0.02, n, transform=ax.transAxes, ha="center", va="top", fontsize=7.5, color=style.INK)
+    fig.tight_layout(h_pad=2.4, w_pad=0.8)
+    return fig
+
+
+def return_video(p, width_in=5.0):
+    """Web version: the full-field panel at every frame, captioned with the strip's notes as they happen."""
+    from matplotlib import animation
+    from IPython.display import HTML, display
+    df = kick_tracking(p)
+    span = FULL["window"][1] - FULL["window"][0]
+    fig, ax = plt.subplots(figsize=(width_in, width_in * span / 53.33 + 0.4))
+    tmap = df.groupby("frameId")["time"].first()
+    frames = [f for f in sorted(df["frameId"].unique()) if tmap[f] >= 0]
+
+    def update(fid):
+        ax.clear()
+        t = float(tmap[fid])
+        panel(ax, p, df, t, FULL["window"])
+        cur = [n for tt, n in zip(TIMES, NOTES) if tt <= t + 1e-6]
+        ax.set_title(f"{t:.1f} s   " + (cur[-1].split(". ", 1)[1].replace("\n", " ") if cur else
+                                        "The kick: nobody moves but the kicker and the returners."),
+                     fontsize=8, color=style.INK, loc="left")
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=frames, interval=100)
+    html = (anim.to_html5_video(embed_limit=40).replace("<video ", '<video style="max-width:100%;height:auto" ')
+            if shutil.which("ffmpeg") else anim.to_jshtml(default_mode="once"))
+    plt.close(fig)
+    display(HTML(html))
+
+
+RETURN = return_play()
+```
+
+```{python}
+#| label: fig-return
+#| fig-cap: "A dynamic-kickoff return, kick to tackle (simulated, BDB-format tracking; kicking team in blue circles, moving up the page; the circled returner catches at his 2). Panel 1: the ball is in the air and twenty players stand still; only the kicker (K, near midfield) and the two returners move. Panel 2: the catch releases everyone; the dashed box is the area panels 3 and 4 zoom in on. Panel 3: the seal blocker (S) keeps R1 to the inside, two setup-zone players (D, D) double-team R2 and drive him outward, and the lane opens between them; the dashed arrow is where the returner is heading. The second returner (KR) leads through and kicks out R3. Panel 4: the returner clears the lane and is tackled near his 37 by the kicker, the one man the scheme left for him to beat, with the backside cover man (L5) a beat late. That is a good return under these rules."
+if pdf_build():
+    return_strip(RETURN)
+    plt.show()
+else:
+    return_video(RETURN)
+```
+
+A return under the dynamic kickoff is a run play with a twist: the "snap" is the moment the ball comes
+down, and nobody knows exactly when or where that will be until the kicker kicks. Start with the
+arithmetic, the same [hat math](../03-the-run-game/03-01-run-game-language.qmd) a run play uses.
+
+The coverage team has **eleven** potential tacklers: ten on the 40, plus the kicker. The return team always
+has **ten** blockers: everyone except the player who catches the ball. Usually that is nine in the setup zone
+plus the second returner; a team that uses one returner puts ten in the setup zone instead. Eleven hats
+against ten blockers means one hat will always be unblocked, and a return scheme starts by choosing *which*.
+The usual answer has two parts:
+
+- **The kicker is the returner's man.** He starts 25 yards behind everyone else, so nobody blocks him; the
+  returner is taught to beat him one on one ("make the kicker miss"). That is why the kicker became a
+  last-line tackler, and why kickers started preparing for contact: the Ravens' Justin Tucker put on weight
+  before the 2024 season for exactly this reason.[^seifert]
+- **One cover man on the backside goes unblocked**, the one farthest from where the return is going, because
+  he has the longest way to run. In the panels that is L5, on the far left.
+
+That frees one blocker to make a [double team](../03-the-run-game/03-01-run-game-language.qmd) at the
+[point of attack](../03-the-run-game/03-01-run-game-language.qmd), the spot the return is aimed at. There is
+one rule to respect: only players who lined up in the setup zone may take part in a double team (and the old
+wedge, two or more blockers shoulder to shoulder moving forward together, is still banned, a 15-yard
+penalty).[^dbl] So the second returner never joins the double team. Instead a setup-zone player doubles, and
+the second returner takes the man that player would have blocked.
+
+What to take from the four panels:
+
+- **Nothing happens for almost four seconds.** For the whole hang time the blockers and the coverage stand
+  five yards apart doing nothing. When you watch on Sunday, use those seconds: count the floaters, find the
+  double team before it happens (two blockers lined up close to one cover man), and guess the return's
+  direction.
+- **The blocks are run-game blocks.** The blocker who keeps his man to the inside, away from the lane, is
+  making a [seal block](../03-the-run-game/03-05-perimeter-and-misdirection.qmd). The two who take one man
+  together are a drive double team (coaches say a "deuce"), the same block as on a power run: there is no
+  second-level defender here for one of them to climb to. The second returner leading through the hole and
+  hitting the first defender to show is a [lead block](../03-the-run-game/03-01-run-game-language.qmd) that
+  ends as a [kick-out](../03-the-run-game/03-01-run-game-language.qmd). A punt return, by contrast, is
+  usually built around a [return wall](09-01-kicking-and-punting.qmd) set up along one sideline, because punt
+  blockers have much more time and space.
+- **The scheme decides who is unblocked, and the coverage knows it.** Good coverage units teach the players
+  farthest from the ball to pursue flat along the field toward the ball while staying *behind* it, so they
+  close the cutback lane if the returner reverses field (coaches call this keeping lane integrity). They are
+  the men the return chose not to block, and if they run straight upfield instead, the cutback is open.
+- **The ceiling is low and the floor is high.** With the coverage only five yards away when the ball comes
+  down, most returns are stopped somewhere between the 25 and the 35. Big returns still happen, but they need
+  a missed tackle by one of the unblocked men: there were `{python} f"{int(BY.rtd[2025])}"` kickoff-return
+  touchdowns in the 2025 regular season and `{python} f"{int(BY.rtd[2024])}"` in 2024, fewer than in 2010
+  (`{python} f"{int(BY.rtd[2010])}"`, the last year kicked from the 30).[^calcrtd] Penalties take away
+  more: blockers start face to face with cover men who rip and swim past them, so holding and blocks in the
+  back (10 yards each) are common, and early movement by either unit is a 5-yard foul that can force a re-kick.[^align]
+  In 2026 the league moved four officials onto the receiving team's goal line on kickoffs, looking back at the
+  blocks, because holding and illegal blocks were being missed from the sidelines.[^fz26]
+
+The two unblocked men still run 20-plus yards before they reach the returner, so the play is not free of
+high-speed collisions. The rules took the speed out of the other nine matchups, and the league's injury numbers
+(above) measure the play as a whole. With contact at five yards and no wedge, staffs also changed
+who plays: special teams coordinators began filling return units with bigger players who are comfortable
+blocking what amounts to a run scheme, tight ends, linebackers and even defensive linemen.[^seifert2]
+
+::: {.callout-important title="Why it exists"}
+Why double-team anybody when you are already a blocker short? Because a one-on-one block between a blocker
+standing still and a cover man running at him is a coin flip, and the return only needs one lane. Spending two
+blockers on the cover man aligned in the lane turns that coin flip into a near-certainty, and the cost (an
+unblocked man on the far side) is paid in time: he has 20-plus yards farther to run. Double teams are still
+restricted (setup-zone players only) and wedges are still illegal. What changed in 2024 is that with everyone
+starting five yards apart, a double team at the point of attack became *practical*: the two blockers start
+close enough to the cover man to reach him together.
+:::
+
+## The kicker's menu: touchback, landing zone, or squib
+
+Now the question from the start of the chapter. Under the 2025-26 rules the kicker has four basic choices:
+
+1. **Kick it into the end zone.** The returner will usually kneel, and the receiving team starts at its 35.
+2. **Kick it deep into the landing zone,** ideally near the goal line, so that the returner fields it at the
+   2 or 3 and has 30-plus yards to run before he reaches blocks the coverage reached after five, or so that it
+   bounces and rolls into the end zone (a knee there gets only the 20). Kickers also aim at a corner of the
+   landing zone: the sideline acts as a twelfth defender, and it tells the return which way it has to go. They
+   can't aim too close, though, because a kick that rolls out of bounds puts the ball at the 40.
+3. **Kick it low so it hits the ground early** and skips through the landing zone, a
+   [**squib kick**](../../appendices/glossary.qmd#gl-squib-kick) (coaches also call the line-drive version a
+   [**bounce kick**](../../appendices/glossary.qmd#gl-bounce-kick)): hard to field cleanly, it releases the
+   coverage the moment it lands, and it is usually aimed away from the most dangerous returner.
+4. **Kick it somewhere else:** short of the landing zone or out of bounds, which is dead and gives the receiving
+   team the ball at the 40. Nobody does this on purpose (except, in 2024-25, from the 50).
+
+The answer comes from comparing where drives start after each one. Here is every returned kickoff from the
+last two seasons, grouped by where the returner fielded the ball.
+
+```{python}
+#| label: fig-touchback-math
+#| fig-cap: "The touchback math. Each dot is the average drive start for returned kickoffs, grouped by where the returner fielded the ball, in 2024 (orange) and 2025 (blue); buckets with fewer than 30 returns are left out. The 'end zone' bucket pools kicks that landed in the end zone and kicks that landed in the landing zone and rolled in (play-by-play doesn't say which). Dashed lines: the touchback spot, the 30 in 2024 and the 35 in 2025-26. In 2025 returns from every spot fell short of the 35, and the deeper the kick was fielded, the worse the return team did: that is why kickers aim deep into the landing zone. In 2024, kicks fielded past the 2 were usually returned beyond the 30, one reason most kickers then preferred the end zone. Data: nflverse play-by-play, regular season, kicks from the 35; course calculation."
+r = REG[REG.returned & REG.from35 & REG.season.isin([2024, 2025]) & REG.start.notna()].copy()
+bins = [-10.5, -0.5, 2.5, 5.5, 8.5, 11.5, 19.5]
+labels = ["end zone", "0-2", "3-5", "6-8", "9-11", "12-19"]
+r["b"] = pd.cut(r.fielded, bins, labels=labels)
+g = r.groupby(["season", "b"], observed=True).start.agg(["mean", "size"]).reset_index()
+fig, ax = plt.subplots(figsize=(6.5, 3.1))
+xs = np.arange(len(labels))
+for s, col, off in [(2024, style.SERIES[1], -0.12), (2025, style.SERIES[0], 0.12)]:
+    z = g[(g.season == s) & (g["size"] >= 30)].set_index("b").reindex(labels)
+    ax.plot(xs + off, z["mean"], marker="o", ls="none", ms=7, color=col, label=f"{s} returns",
+            mec=style.SURFACE, mew=1.5)
+ax.axhline(35, color=style.SERIES[0], lw=1.2, ls=(0, (4, 2)))
+ax.axhline(30, color=style.SERIES[1], lw=1.2, ls=(0, (4, 2)))
+ax.text(5.45, 35.3, "2025-26 touchback: the 35", fontsize=7.5, color=style.INK_2, ha="right", va="bottom")
+ax.text(5.45, 30.3, "2024 touchback: the 30", fontsize=7.5, color=style.INK_2, ha="right", va="bottom")
+ax.set_xticks(xs, labels, fontsize=8)
+ax.set_xlabel("where the returner fielded the kick (receiving team's yard line)", fontsize=8)
+ax.set_ylabel("average drive start\n(yard line)", fontsize=8)
+ax.set_ylim(24, 37)
+ax.legend(loc="lower right", fontsize=8, bbox_to_anchor=(1.0, 0.02))
+ax.set_title("In 2025, returns from every spot fell short of the touchback", fontsize=10)
+fig.tight_layout()
+plt.show()
+```
+
+Why does a deeper kick do better? Because the coverage always starts in the same place. Wherever the kick
+comes down, the cover men are released from the 40 and reach the blockers in a second or so; the only thing
+the kicker controls is how far the returner has to run to get there. A returner who fields the ball at his 2
+has about 33 yards to cover before he reaches the line of blocks, so those blocks have to hold for three or four
+seconds. One who fields it at his 15 reaches the blocks at full speed *before* they have broken down.
+
+Two more things jump out.
+
+**In 2025, every returnable kick was a better deal for the kicking team than a touchback.** Kicks fielded at the
+goal line led to drives starting around the 28; kicks fielded at the 10, around the 31. All of them are short of
+the 35 the touchback would have given, and at about `{python} f"{EP_YD:.2f}"` points a yard the gap is worth
+something on every kick. The nflverse play values say the same thing in one line. Measured, as EPA always is,
+against the value of the moment just before the kick, in 2025 a kickoff that was returned was worth, on average,
+`{python} f"{OUT25.loc['returned', 'epa']:+.2f}"` expected points to the receiving team, and a touchback
+`{python} f"{OUT25.loc['touchback', 'epa']:+.2f}"`. A kick into the landing zone that bounced into the end zone and
+was downed at the 20 was worth `{python} f"{OUT25.loc['touchback at the 20', 'epa']:+.2f}"`. Those numbers already
+include the risk: the occasional long return and return touchdown, and the occasional fumble.
+
+**The league set the touchback at the 35 on purpose.** In 2024, with the touchback at the 30, kicking into the end
+zone was the safe, nearly break-even choice, and most teams took it: `{python} pct(BY.tb[2024])` of kickoffs were
+touchbacks. Moving it to the 35 made the touchback a *gift* of field position, so kickers stopped giving it. The
+touchback rate fell to `{python} pct(BY.tb[2025])` in 2025, and the return rate went from
+`{python} pct(BY.ret[2024], 1)` to `{python} pct(BY.ret[2025], 1)`.[^calctb] That is the touchback acting as a price,
+set by the league to buy returns.
+
+So why does anyone still kick it into the end zone? Because a landing-zone kick has its own risks: a kick that
+comes up short of the 20 is a disaster (the ball at the 40), and a kick fielded at the 15 gives the returner a
+running start at blocks that are still holding. Some kickers trust their accuracy more than others, and some
+coverage units are better than others. Late in a half, the clock changes the math too (Drill 2 below).
+
+```{python}
+#| label: fig-team-kicks
+#| fig-cap: "2025, by kicking team: the share of its kickoffs that went for touchbacks (across) against where its opponents started their drives after its kickoffs, on average (up; lower is better for the kicking team). Teams that kicked more touchbacks tended to give up better field position, but the scatter is loose: Seattle and Carolina kicked into the landing zone and covered well, the Rams kicked half their kickoffs into the end zone and still did better than average, and Arizona and Tampa Bay gave up the most field position. Kicker accuracy and coverage matter as much as the policy. Data: nflverse play-by-play, regular season; course calculation."
+t = TEAM25
+fig, ax = plt.subplots(figsize=(6.5, 3.8))
+ax.scatter(t.tb * 100, t.start, s=34, color=style.SERIES[0], ec=style.SURFACE, lw=1.2, zorder=3)
+ax.axhline(35, color=style.BASELINE, lw=1.0, ls=(0, (4, 2)))
+ax.text(51, 34.75, "touchback spot (the 35)", fontsize=7.5, color=style.INK_2, ha="right", va="top")
+OFFS = {"SEA": (6, -2), "LA": (-6, 6), "CAR": (6, 2), "ARI": (6, 0), "JAX": (6, 0), "WAS": (6, 0),
+        "TB": (6, 2), "NO": (6, -3)}
+for tm, (dx, dy) in OFFS.items():
+    ax.annotate(tm, (t.tb[tm] * 100, t.start[tm]), xytext=(dx, dy), textcoords="offset points", fontsize=7.5,
+                color=style.INK, ha="left" if dx > 0 else "right", va="center")
+ax.set_xlabel("kickoffs that were touchbacks (%), by kicking team", fontsize=8)
+ax.set_ylabel("opponents' average drive start\nafter its kickoffs (yard line)", fontsize=8)
+ax.set_xlim(0, 52)
+ax.set_ylim(27, 35.5)
+ax.set_title("2025: kicking for the end zone cost field position", fontsize=10)
+fig.tight_layout()
+plt.show()
+```
+
+The best of them was the eventual Super Bowl champion. Seattle's opponents started drives after its kickoffs at
+the `{python} f"{TEAM25.start['SEA']:.1f}"` on average, about two yards better than the league average of
+`{python} f"{BY.start[2025]:.1f}"`, and only `{python} pct(TEAM25.tb['SEA'])` of its kickoffs were
+touchbacks.[^calcsea]
+
+The squib deserves a word of its own. Under the old kickoff a squib was often aimed *at* a front-line blocker,
+who had to field it. Under the dynamic kickoff that is a giveaway: a kick that first touches a setup-zone player
+(at their 30-35) or the ground short of the 20 is dead, and the ball goes to the receiving team at its 40. So
+today's squib is a low line drive that must **first touch the ground inside the 20**, and it is aimed away from
+the dangerous returner, at the up returner or at the gap between the two. Kansas City's special teams
+coordinator, Dave Toub, put the idea in a sentence before the 2024 season: "We're trying to get the ball on the
+ground away from the returners as quick as possible."[^toub] Because it is live the moment it lands, the coverage
+is released while the returner is still chasing the ball. You see it most at the end of a half and against
+returners who are simply too good to kick to (in 2025 the best of them, with 25 or more returns, averaged around
+`{python} f"{RETMEN25['mean'].iloc[0]:.0f}"` yards a return).[^calcret] Its risks are the mirror of its
+advantages: it gives up a few yards of field position, and a squib that first hits the ground short of the 20
+puts the ball at the 40.
+
+### The returner's decision: kneel or run?
+
+The returner has a menu too, and it hinges on one detail that the broadcast rarely explains: **where the ball first
+hit the ground.** He knows because he is standing under it; the officials know because, in 2026, four of them stand
+on the goal line for every kickoff.[^fz26b] From the couch, watch the bounce on the replay, and watch the returner:
+one who lets a bouncing ball roll into the end zone, picks it up and runs is almost always reacting to a roll-in.
+
+- If the kick came down **in the end zone**, kneeling gives his team the ball at the 35. Running it out has to beat
+  the 35 to be worth it, and in 2025 it usually didn't: the `{python} f"{len(EZ25):,}"` kicks returned from the end
+  zone started, on average, at the `{python} f"{EZ25.start.mean():.0f}"`, and only
+  `{python} pct((EZ25.start >= 35).mean())` reached the 35. (Those figures pool end-zone landings with roll-ins,
+  which play-by-play doesn't separate, so read them as a rough guide.)[^calcez]
+- If the kick came down **in the landing zone and rolled into the end zone**, kneeling only gets the 20. Now running
+  it out is almost always right.
+- If the kick came down **in the landing zone and stayed there**, he has to field it and return it; if he lets it sit,
+  the kicking team may fall on it.
+
+Watch for returners getting this wrong. A returner who catches the ball two yards deep in the end zone and runs it
+out into a wall of coverage at the 22 has cost his team about
+`{python} f"{13 * EP_YD:.1f}"` expected points against a knee.
+
+The clock adds one more wrinkle. The game clock does not start on a kickoff until the ball is legally touched in
+the field of play, so a touchback (or a knee in the end zone) takes no time off, while a return runs the clock from
+the moment the returner touches the ball.[^clock] Drill 2 turns on this.
+
+::: {.callout-note title="Go deeper"}
+**The edge cases.** The rulebook answers the questions a careful watcher asks next:[^edge]
+
+- *A kick lands in the landing zone and then rolls out of bounds.* That is still a kick out of bounds: the ball
+  goes to the receiving team at its 40, unless a receiving player touched it last.
+- *A returner muffs a kick in the landing zone.* The ball is live, and the kicking team may recover it. If it does,
+  it keeps the ball where it recovered it.
+- *A returner catches the ball at his 3 and backs into the end zone, where he is tackled.* Because he, not the kick,
+  carried the ball back over the goal line, that is a safety, unless his momentum from the catch carried him in.
+- *A free kick after a safety.* The kicker kicks from his own 20, but his ten teammates still line up on the
+  receiving team's 40, so they are 40 yards ahead of him rather than 25. A kick out of bounds or short of the landing
+  zone gives the receiving team the ball 30 yards from the kick, at midfield.
+- *Overtime.* Overtime starts with an ordinary kickoff under the same rules.
+:::
+
+## Onside kicks and the hands team
+
+An [**onside kick**](../../appendices/glossary.qmd#gl-onside-kick) is the kicking team's attempt to get the ball
+back. An onside kick becomes a free ball once it reaches the receiving team's restraining line, 10 yards away (or
+once a receiving player touches it), and either team may recover it. So the kicker hits a short, hard, bouncing
+kick, usually toward one sideline, and his teammates try to get to it after it passes the 10-yard mark. The classic
+technique is to drive the top of the ball into the ground so it takes one big hop, high enough to come down where
+the kicking team's players are arriving; on a declared onside kick the rules let the ball lean against the tee, or
+be held, which helps the kicker strike it that way.[^onsiderules]
+
+The receiving team's answer is the [**hands team**](../../appendices/glossary.qmd#gl-hands-team): when it expects
+an onside kick, it replaces its usual blockers with its surest-handed players (receivers, tight ends, running backs
+and defensive backs), lined up close to the ball, whose only job is to catch or smother a bouncing kick.
+
+The onside kick has a different alignment from the dynamic kickoff: the kicking team lines up on its own 35 beside
+the ball, not on the receiving 40, and the receiving team ten yards away, much like the old kickoff.[^onside] It has to:
+the target is only ten yards from the tee, and every kicking player must be behind the ball when it is kicked, so
+coverage players standing 25 yards downfield would be past the spot they are trying to reach. Under every version
+of the dynamic kickoff, an onside kick also has to be **declared** to the officials before the kick. In 2024 it was
+allowed only for a team trailing in the fourth quarter; from 2025 any time a team is trailing; and from 2026, changed
+after the 2025 season, at any time at all, even when tied or ahead.[^ons26] Declaring and then booming it deep is not
+an option: a declared onside kick that goes untouched past the receiving team's 15-yard onside setup zone is a
+15-yard unsportsmanlike-conduct penalty, and the receiving team takes the ball.
+
+That word "declared" changed the play completely. A surprise onside kick, the most famous trick play in the kicking
+game, is now illegal: the receiving team always knows it is coming, so the hands team is always on the field. Add
+the lost running start (gone since 2018), and the recovery rate collapsed. Under the dynamic kickoff, declared onside
+kicks were recovered by the kicking team `{python} pct(ONS.rec[2024])` of the time in 2024 and
+`{python} pct(ONS.rec[2025])` in 2025 (about 50 tries a season, so the figures are noisy).[^calcons] In October 2025
+the league's head of football operations, Troy Vincent, said that "when you start getting a less than 5% recovery
+rate," it may be time for the owners to "revisit" the play.[^ap2025] He was looking at the start of the 2025 season:
+through Week 7, kicking teams had recovered `{python} f"{int(ONS25_EARLY.own_kickoff_recovery.sum())}"` of
+`{python} f"{len(ONS25_EARLY)}"` declared onside kicks, about `{python} pct(ONS25_EARLY.own_kickoff_recovery.mean())`.
+The rest of the season was kinder, which is how the full-season figure ended near one in ten.[^calcwk7] A proposed
+alternative, letting a trailing team keep the ball by converting a fourth-and-long play from scrimmage instead, has
+been voted down or withdrawn several times.[^eagles]
+
+Why allow an onside kick "at any time" in 2026? It does not bring the surprise back, since it still has to be
+declared. What it adds is the option for teams that are *not* trailing. The clearest case is a tie: a team kicking
+off late in a tied game, or to start overtime. The overtime rules guarantee each team a chance to possess the ball,
+and a kickoff counts as the receiving team's chance, so a kicking team that recovers an onside kick to open overtime
+has used up the other team's guaranteed possession.[^ot] It is a long shot either way, but it now exists.
+
+```{python}
+#| label: fig-onside
+#| fig-cap: "A declared onside kick, aligned as the 2026 rulebook requires. The kicking team lines up on its own 35 beside the ball, five on each side, with at least two outside the yard numbers and two between the numbers and the hashes on each side; the receiving team's restraining line is ten yards away (dotted), with nine of its players (here the hands team, orange) within 15 yards of that line. The kicker drives the ball into the ground toward one sideline (here the kicker's left, the top of the picture) so it takes a big hop past the 10-yard line, and the three kicking players on that side race to where it comes down, with a fourth trailing to scoop it if it squirts loose. The hands team's front row (H) sets a yard or two behind the restraining line to play the hop."
+kick = [K_("K", -6.0, 0.0, "K")]
+kick += [K_(f"C{i + 1}", -0.8, w) for i, w in enumerate([-23.5, -20.5, -14, -9, -4, 4, 9, 14, 20.5, 23.5])]
+ret = [RT_(f"H{i + 1}", 13.0, w, "H") for i, w in enumerate([-19.5, -14, -9, -4, 1, 6, 11])]
+ret += [RT_(f"B{i + 1}", 19.0, w) for i, w in enumerate([-12, -3])]
+ret += [RT_("DR", 28.0, 4.0), RT_("KR1", R(18), 0.0, "KR")]
+o = Play(kick, ret, los=KICK_X, to_go=None)
+o.highlight("KR1", color=DC)
+for c, end in [("C1", (10.6, -21.6)), ("C2", (10.9, -18.8)), ("C3", (10.6, -15.4)), ("C4", (8.4, -11.0))]:
+    o.path(c, [end], absolute=True)
+fo = fix_field(o.draw(orient="horizontal", lateral="full", window=(-11.0, 52.0), title=False, width_in=5.4))
+(x0, y0), (x1, y1) = P_(fo, o, 0.0, 0.0), P_(fo, o, 11.6, -17.2)
+fo.ax.add_patch(FancyArrowPatch((x0, y0), (x1, y1), arrowstyle="-|>", mutation_scale=9, color=style.BALL, lw=1.3,
+                                ls=(0, (2, 2)), zorder=6, connectionstyle="arc3,rad=-0.35"))
+land(fo, o, 11.6, -17.2)
+ball(fo, o, 0.0, 0.0)
+line_across(fo, o, 10.0, style.INK_2, lw=1.0, ls=(0, (1.5, 1.5)))
+say(fo, o, 17.5, 22.0, "10 yards: the ball\nmust reach this line\nbefore the kicking\nteam may touch it",
+    fontsize=6.2)
+arrow(fo, o, (11.8, 22.0), (10.2, 22.0), style.INK_2, lw=0.9, ms=6)
+say(fo, o, 20.0, -20.0, "the hop comes\ndown here", color=style.BALL, fontsize=6.4)
+arrow(fo, o, (16.6, -19.2), (12.6, -17.6), style.BALL, lw=0.9, ms=6)
+say(fo, o, 24.5, 13.0, "hands team: sure-handed\nreceivers, backs, DBs", color=DC, fontsize=6.6)
+say(fo, o, -6.0, -6.5, "kicker", color=OC, fontsize=6.6)
+clip_texts(fo)
+plt.show()
+```
+
+::: {.callout-caution title="Common misconception"}
+"An onside kick is a desperation play that works about one time in five." It rarely worked even that often: from
+2010 to 2017 kicking teams recovered roughly one onside kick in seven, and only surprise kicks did much better.[^calcons2]
+Under the declared-onside rules, it works roughly one time in ten or worse, because the receiving team is never
+surprised and the kicking team has no running start.
+:::
+
+## Field position, kickoff by kickoff: what it adds up to
+
+Pull the threads together. In 2025 the average drive after a kickoff started at the
+`{python} f"{BY.start[2025]:.1f}"`, against `{python} f"{BY.start[2023]:.1f}"` in 2023 (onside kicks and return
+touchdowns excluded).[^calcstart] That league-wide shift helps both teams equally, since both teams receive
+kickoffs; it changes how games are played (drives start closer to scoring range), not who wins them.
+
+What decides games is the gap *between* two teams' kickoff units. Here the arithmetic is simple. A team kicks off
+about `{python} f"{KO_PER_TEAM25:.0f}"` times in a season. The best kicking unit of 2025 held opponents about
+`{python} f"{GAP_BEST:.1f}"` yards below the league average after its kickoffs, worth about
+`{python} f"{GAP_BEST * EP_YD * KO_PER_TEAM25:.0f}"` points over the season at `{python} f"{EP_YD:.2f}"` points a
+yard; the worst gave up about `{python} f"{GAP_WORST:.1f}"` yards more than average, costing about
+`{python} f"{GAP_WORST * EP_YD * KO_PER_TEAM25:.0f}"`. Between the two, that is roughly
+`{python} f"{(GAP_BEST + GAP_WORST) * EP_YD * KO_PER_TEAM25:.0f}"` points, several field goals, earned on a play
+most viewers use to get a snack.
+
+There is a quieter consequence too. A drive that starts at the 30 instead of the 25 is that much closer to
+[field-goal range](09-01-kicking-and-punting.qmd). Fourth-down and end-of-half decisions in
+[Clock and Game Management](../10-situational-football/10-04-clock-and-game-management.qmd) start from where the
+drive started, and the dynamic kickoff moved that starting point up the field.
+
+::: {.callout-note title="Film room: New Orleans Saints 2024"}
+**What happened:** in the first season of the dynamic kickoff, many teams simply kicked into the end zone and took
+the touchback at the 30. The Saints' Blake Grupe went the other way: every one of his first nine kickoffs of the season
+landed at or inside the 5-yard line.[^ringer] Over the season, the Saints' opponents started their drives after
+kickoffs at the `{python} f"{TEAM24.start['NO']:.1f}"` on average, the best in the league; the league average was the
+`{python} f"{BY.start[2024]:.1f}"`.[^calcno]
+
+**What to notice:** on a Saints kickoff, watch the ball, not the returner. Does it come down near the goal line,
+not the 15? Does it bounce before it is fielded, so the coverage is already moving while the returner chases it?
+That combination, a kick that comes down deep in the landing zone and is hard to field cleanly, was the blueprint
+other teams copied once the touchback moved to the 35.
+:::
+
+::: {.callout-note title="Film room: Chicago Bears 2024, Week 1"}
+**What happened:** in the first regular-season week of the dynamic kickoff, the Bears popped a good return against
+Tennessee by having two blockers double-team one cover man and pulling another blocker across to pick off a cover man
+who would otherwise have been unblocked. Analysts singled it out, and at least nine other teams used double teams on
+returns that same opening week.[^bears] Under the current rulebook only setup-zone players may take part in a double
+team, so a scheme like this builds its extra hat from the setup zone, not from the second returner.
+
+**What to notice:** on any 2025 or 2026 return, look for two receiving players lined up close together across from
+one cover man, or one blocker who moves sideways at the catch instead of straight ahead. That pair is the point of
+attack, and the returner's lane will be beside it.
+:::
+
+::: {.callout-note title="Film room: New Orleans Saints, Super Bowl XLIV (2009 season)"}
+**What happened:** the Saints opened the second half of Super Bowl XLIV, on February 7, 2010, with a surprise onside
+kick. Thomas Morstead's short kick bounced off a Colts player and New Orleans recovered, then drove for a touchdown in
+a 31-17 win.[^ambush] Sean Payton's call, known as "Ambush," is probably the most famous onside kick ever.
+
+**What to notice:** everything that made it work is now illegal or gone. The Colts' return team was set up for a deep
+kick, with no hands team on the field, because nobody expected an onside kick to open a half while a team was
+trailing by only four. Under the declared-onside rule that surprise cannot happen; the officials would tell the
+receiving team, and the hands team would trot on.
+:::
+
+::: {.callout-tip title="Watch for it"}
+**On Sunday: the field-position ledger.** Kickoffs come in bunches (after every score and to start each half), so
+there is time to read each one.
+
+*Before the kick*
+
+- Count the receiving team's players on its 35 and the floaters behind them. Under the 2026 rules expect five on the
+  line and up to four behind. Is there a pair of floaters close together across from one cover man? That is a likely
+  double team, and the return will probably go beside it.
+- How many returners? Two deep usually means a standard return. One deep means ten in the setup zone, so count six on
+  the 35; the team may expect a short or bouncing kick.
+- Late in a half, or with a dangerous returner: expect a squib, or a kick toward a corner, away from him.
+
+*While the ball is in the air*
+
+- Where does it come down? End zone in the air (kneel = the 35), landing zone and roll-in (kneel = the 20), landing
+  zone (field it), or short (ball at the 40).
+- Did it bounce first? A bouncing ball releases the coverage while the returner is still fielding it. How deep was it
+  caught? The deeper the catch, the longer the blocks must hold.
+
+*After the play*
+
+- Write down the starting yard line. Do it for every kickoff by both teams, and average each column at the end of the
+  game.
+- Compare with the league average: about the 30 in 2025. A team whose kickoffs are consistently two yards better than
+  its opponent's is gaining more than half a point a game (two yards, times about
+  `{python} f"{EP_YD:.2f}"` points a yard, times the five or so kickoffs each team makes), quietly.
+- Did a returner run a ball out of the end zone and get stopped short of the 35? That is a mistake worth noting. Was a
+  good return called back for holding? Note that too.
+:::
+
+## Predict the play
+
+::: {.callout-tip title="Predict the play"}
+**Drill 1. Kneel or run?** The kickoff comes down at the 4, bounces once and skips into the end zone, where the
+returner picks it up three yards deep. Under the 2026 rules, should he take a knee or run it out? Would your answer
+change if the same kick had come down in the end zone on the fly?
+
+```{python}
+#| label: fig-predict-1
+#| fig-cap: "Drill 1: the kick comes down at the receiving team's 4 (X), inside the landing zone, and rolls into the end zone (dotted), where the returner (KR) picks it up three yards deep. The coverage was released when the ball landed and is closing. Kneel or run?"
+kick = [K_(f"C{i + 1}", 33.0 + (i % 3) * 1.6, w) for i, w in enumerate(COVER_W)]
+ret = [RT_(f"B{i + 1}", R(29.5), w) for i, w in enumerate([-20, -10, 0, 10, 20])]
+ret += [RT_(f"F{i + 1}", R(27), w) for i, w in enumerate([-19, -3, 3, 19])]
+ret += [RT_("KR1", R(-3), 1.5, "KR"), RT_("KR2", R(12), -12.0, "KR")]
+d1 = Play(kick, ret, los=KICK_X, to_go=None)
+d1.highlight("KR1", color=DC)
+f = fix_field(d1.draw(orient="horizontal", lateral="full", window=(18.0, 75.0), title=False, width_in=5.2))
+band(f, d1, R(20), R(0), style.LINE_TO_GAIN, 0.12)
+line_across(f, d1, R(20), style.LINE_TO_GAIN, lw=1.0, ls=(0, (1.5, 1.5)))
+arrow(f, d1, (41.0, 1.5), (R(4), 1.5), style.BALL, lw=1.2, ls=(0, (2, 2)), ms=7)
+land(f, d1, R(4), 1.5)
+(xa, ya), (xb, yb) = P_(f, d1, R(4), 1.5), P_(f, d1, R(-2.2), 1.5)
+f.ax.plot([xa, xb], [ya, yb], color=style.BALL, lw=1.4, ls=(0, (1, 1.2)), zorder=8)
+say(f, d1, R(4), -3.5, "lands at the 4", color=style.BALL, fontsize=7)
+say(f, d1, R(-3), 7.5, "fielded 3 yards\ndeep", color=DC, fontsize=7)
+say(f, d1, 25.5, -12.0, "coverage released\nat the landing", color=OC, fontsize=7)
+clip_texts(f)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Run it out.** The kick came down in the landing zone before rolling into the end zone, so a knee gives his team the
+ball only at the 20, and returns fielded in the end zone averaged about the `{python} f"{EZ25.start.mean():.0f}"` in
+2025. If the same kick had landed in the end zone on the fly, the knee would be worth the 35, and he should almost
+always take it: those returns reached the 35 only `{python} pct((EZ25.start >= 35).mean())` of the time. This is why
+kickers love the line drive that lands at the 3 and skips in: it forces the returner either to accept the 20 or to run
+out from deep in his end zone.
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 2. Twenty-two seconds.** It's the end of the first half. You have just kicked a field goal to go up 13-10
+with 0:22 left, and you are about to kick off. The other team has one timeout and a dangerous returner (KR1, the
+deeper of the two). Under the 2026 rules, which of the four kicks in the picture do you want, and which must you
+avoid?
+
+```{python}
+#| label: fig-predict-2
+#| fig-cap: "Drill 2: the kickoff after a field goal with 0:22 left in the first half; the kicking team leads 13-10 and the receiving team has one timeout. The kicker's four options: A, into the end zone (touchback at the 35, no time off the clock); B, deep into the landing zone; C, a squib that hits the ground around the 15, away from the dangerous returner; D, short of the 20 or out of bounds. Which one?"
+kick, ret = dynamic_units()
+d2 = Play(kick, ret, los=KICK_X, to_go=None)
+d2.highlight("KR1", "KR2", color=DC)
+f = fix_field(d2.draw(orient="horizontal", lateral="full", window=(-11.0, 75.0), title=False, width_in=5.6))
+band(f, d2, R(35), R(30), style.DEFENSE, 0.10)
+band(f, d2, R(20), R(0), style.LINE_TO_GAIN, 0.12)
+ball(f, d2, 0.0, 0.0)
+for name, (d, w), rad, dw in [("A", (R(-6), 9.0), -0.10, 2.9), ("B", (R(4), -9.0), 0.10, -2.9),
+                              ("C", (R(15), -16.0), 0.12, -2.9), ("D", (R(27), 13.0), -0.12, 2.9)]:
+    arrow(f, d2, (0.6, 0.0), (d, w), style.BALL, lw=1.1, ls=(0, (2, 2)), ms=7, rad=rad)
+    land(f, d2, d, w)
+    say(f, d2, d, w + dw, name, color=style.BALL, fontsize=8, weight="bold")
+say(f, d2, 7.5, -18.5, "0:22 left in the half\nKicking team leads 13-10\nReceiving team: 1 timeout",
+    color=style.INK, fontsize=6.6, weight="bold")
+say(f, d2, R(4.5), 13.0, "dangerous\nreturner", color=DC, fontsize=6.8)
+clip_texts(f)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**B or C: make them field it, and never D.** A touchback (A) hands the receiving team the ball at its 35 *with all 22
+seconds on the clock*, because the clock doesn't start until the ball is touched in the field of play. From the 35,
+two quick sideline completions of 15 to 20 yards and a timeout can set up a long field goal. A kick that has to be
+returned does two things for you. It usually ends short of the 35 (around the 28-30 on average in 2025), and the clock
+runs from the moment the returner touches it, so a five- or six-second return leaves them about 16 seconds from
+somewhere near their 30: time for two or three plays, if they get out of bounds or use the timeout. Against a dangerous
+returner, many coaches choose C, a squib that bounces away from him, giving up a couple of yards for the near-certainty
+that there is no long return. What you must avoid is D: the ball at the 40 with 22 seconds left is a gift. The clock
+rules behind this are in [Clock and Game Management](../10-situational-football/10-04-clock-and-game-management.qmd).
+:::
+:::
+
+::: {.callout-tip title="Predict the play"}
+**Drill 3. Down eight, a minute left.** You have just scored a touchdown, but the two-point try failed, and you trail
+by 8 with 1:01 left in the fourth quarter. You have no timeouts. Do you kick off deep or declare an onside kick? If you
+declare it, what will the receiving team put on the field, and what are your chances?
+
+```{python}
+#| label: fig-predict-3
+#| fig-cap: "Drill 3: trailing by 8 with 1:01 left and no timeouts, the kicking team has to choose before it lines up, because the two kicks use different alignments. Left: the dynamic-kickoff alignment for a deep kick, coverage on the receiving 40. Right: a declared onside kick, coverage beside the ball and the receiving team ten yards away; told in advance, it sends out its hands team (H)."
+fig, (a1, a2) = plt.subplots(1, 2, figsize=(6.5, 5.0))
+WIN3 = (-9.0, 72.0)
+kick, ret = dynamic_units()
+d3 = Play(kick, ret, los=KICK_X, to_go=None)
+d3.highlight("KR1", "KR2", color=DC)
+g1 = fix_field(d3.draw(ax=a1, lateral="full", window=WIN3, title=False))
+band(g1, d3, R(35), R(30), style.DEFENSE, 0.10)
+band(g1, d3, R(20), R(0), style.LINE_TO_GAIN, 0.12)
+ball(g1, d3, 0.0, 0.0)
+say(g1, d3, 13.0, 0.0, "coverage on\ntheir 40", color=OC, fontsize=6.6)
+say(g1, d3, R(12), 0.0, "returners deep", color=DC, fontsize=6.6)
+clip_texts(g1)
+a1.set_title("Deep kick", fontsize=8.5, loc="left", color=style.INK)
+kick = [K_("K", -6.0, 0.0, "K")]
+kick += [K_(f"C{i + 1}", -0.8, w) for i, w in enumerate([-23.5, -20.5, -14, -9, -4, 4, 9, 14, 20.5, 23.5])]
+ret = [RT_(f"H{i + 1}", 13.0, w, "H") for i, w in enumerate([-19.5, -14, -9, -4, 1, 6, 11])]
+ret += [RT_(f"B{i + 1}", 19.0, w) for i, w in enumerate([-12, -3])]
+ret += [RT_("DR", 28.0, 4.0), RT_("KR1", R(18), 0.0, "KR")]
+o3 = Play(kick, ret, los=KICK_X, to_go=None)
+o3.highlight("KR1", color=DC)
+g2 = fix_field(o3.draw(ax=a2, lateral="full", window=WIN3, title=False))
+ball(g2, o3, 0.0, 0.0)
+line_across(g2, o3, 10.0, style.INK_2, lw=1.0, ls=(0, (1.5, 1.5)))
+say(g2, o3, 5.0, 0.0, "coverage beside\nthe ball", color=OC, fontsize=6.6)
+say(g2, o3, 16.4, 6.5, "hands team (H)", color=DC, fontsize=6.6)
+say(g2, o3, 40.0, 0.0, "nobody deep but\none returner", color=DC, fontsize=6.6)
+clip_texts(g2)
+a2.set_title("Declared onside kick", fontsize=8.5, loc="left", color=style.INK)
+fig.tight_layout(w_pad=0.8)
+plt.show()
+```
+
+::: {.callout-tip title="Answer" collapse="true"}
+**Declare the onside kick.** If you kick deep with no timeouts, the other team takes over and kneels; each kneel keeps
+the clock running and uses up to 40 seconds of play clock, so the game ends without you touching the ball again. Your
+only hope is to recover the kick. The receiving team knows it is coming (the kick had to be declared), so it puts its
+hands team on the field: receivers, tight ends, backs and defensive backs, players chosen for their hands rather than
+their blocking. Your kicker will aim a hard, hopping kick toward one sideline so his fastest players can get to it just
+past the 10-yard line. Your chances are poor: under the declared-onside rules, kicking teams recovered
+`{python} pct(ONS.rec[2024])` of onside kicks in 2024 and `{python} pct(ONS.rec[2025])` in 2025. And recovering is only
+step one: you would still need a touchdown and a two-point conversion in under a minute with no timeouts, so your real
+chance of winning is far smaller than the recovery rate. Poor beats zero, though. With more time and timeouts (say
+3:30 and three timeouts) the answer flips: kick deep, play defense, and use the timeouts to get the ball back with good
+field position, because a failed onside kick hands the other team the ball near midfield. Where exactly the line falls
+is a [win probability](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd) question.
+:::
+:::
+
+## Takeaways
+
+- A **kickoff** is a free kick that trades field position after a score. For fifteen years the league made it safer
+  by making it disappear, until only about a quarter of kickoffs were returned in 2023.
+- The **dynamic kickoff** (2024) took away the distance instead: the coverage stands on the receiving team's 40, five
+  yards from blockers in the **setup zone**, and nobody but the kicker and returners moves until the ball lands in the
+  **landing zone**. Returns rose and kickoff concussions fell.
+- The rules keep moving. **2025:** touchback to the 35, onside kicks declarable whenever trailing. **2026** (changed
+  after the 2025 season): onside kicks declarable at any time, only five receivers on the restraining line with up to
+  four floaters, and touchbacks on kicks from the 50 spotted at the 20.
+- The **touchback math** drives everything: in 2025 a returned kick started, on average, around the 29 to 31, short of
+  the 35 a touchback gives, and the deeper the kick was fielded the worse the return did, because the coverage always
+  starts at the 40. So kickers aim deep into the landing zone, returners should usually kneel on a ball that lands in
+  the end zone, and they should run out one that rolled in.
+- A return is now a **run play**: ten blockers for eleven cover men, so the scheme leaves the kicker for the returner
+  to beat and one backside cover man free, and spends the spare blocker on a **double team** (setup-zone players only)
+  at the point of attack.
+- **Onside kicks** must be declared, so the **hands team** is always waiting and the surprise onside is gone. Recovery
+  rates fell to around one in ten or worse.
+
+## Connections
+
+**Builds on:** [Field Goals, Extra Points, and the Punting Game](09-01-kicking-and-punting.qmd) (touchbacks, fair
+catches, muffs, the punt return and its wall), [The Language of the Run Game](../03-the-run-game/03-01-run-game-language.qmd)
+(double teams, kick-outs, lead blocks, the point of attack and hat math, all reused in return blocking), the seal block
+from [Perimeter Runs and Misdirection](../03-the-run-game/03-05-perimeter-and-misdirection.qmd), and the
+expected-points curve in [Downs, Distance, and Field Position](../01-foundations/01-02-downs-distance-and-field-position.qmd).
+
+**Sets up:**
+
+- [Contact Rules and Penalties as Strategy](09-03-contact-rules-and-penalties.qmd) and
+  [Officials, Replay, and the Rules of the Ball](09-04-officiating-replay-and-rules-of-the-ball.qmd): the penalties
+  that move a kickoff to the 50, and the rules on loose balls and touchbacks.
+- [Clock and Game Management](../10-situational-football/10-04-clock-and-game-management.qmd): kickoffs at the end of
+  a half, onside decisions, and the fair-catch kick.
+- [Win Probability and Decision Analysis](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd): when an
+  onside kick is worth it.
+- Appendix E, [Rules, Timeline, and Coaching Trees](../../appendices/appendix-e-rules-timeline-trees.qmd): the kickoff
+  rules in one table, current as of the 2026 season.
+
+**If you want to go deeper:** the NFL's own explainers at NFL Football Operations (operations.nfl.com), which post each
+season's approved rule changes, and Rule 6 of the official rulebook itself, which is short and readable; The Ringer's
+2024 guide to the dynamic kickoff and Sports Illustrated's "Happy Returns" (2024) for the coaches' view; and nflverse
+play-by-play, where every kickoff's description says where it was fielded and where it was returned to, so you can
+rebuild every chart in this chapter.
+
+::: {.callout-note title="Go deeper"}
+**From simulation to real tracking data.** The return animation above is a gridiron simulation written in NFL Big Data
+Bowl coordinates. The 2022 Big Data Bowl was about special teams and released tracking data for every kickoff, punt and
+field goal from the 2018-2020 seasons, so you can draw real kickoffs with the same code. Those are traditional
+kickoffs, which makes them a good contrast with the simulated dynamic kickoff here.
+The data is on Kaggle and needs your own free login, so this code is not run when the book is built.
+
+```{python}
+#| eval: false
+#| code-summary: "Show the Python (a real kickoff from Big Data Bowl 2022 files; not run in the build)"
+import pandas as pd
+from gridiron import bdb, show_animation
+
+plays = pd.read_csv("data/bdb2022/plays.csv")
+games = pd.read_csv("data/bdb2022/games.csv")
+trk = bdb.load_tracking("data/bdb2022/tracking2018.csv")   # one file per season: tracking2018/2019/2020.csv
+ko = plays[(plays["specialTeamsPlayType"] == "Kickoff") & plays["gameId"].isin(trk["gameId"].unique())]
+g, pl = ko.iloc[0][["gameId", "playId"]]
+# In the 2022 files 'team' is home / away / football, so map it to club abbreviations for prepare()
+abbr = games.set_index("gameId")[["homeTeamAbbr", "visitorTeamAbbr"]]
+one = trk[(trk.gameId == g) & (trk.playId == pl)].copy()
+home, away = abbr.loc[g]
+one["club"] = one["club"].map({"home": home, "away": away, "football": "football"})
+one = bdb.prepare(one, plays, game_id=g, play_id=pl)     # possessionTeam = the kicking team here
+kick_frame = one.loc[one["event"] == "kickoff", "frameId"].min()
+one["time"] = (one["frameId"] - kick_frame) / 10.0        # time from the kick, not from a snap
+show_animation(one, times=[0.0, 2.0, 4.0, 6.0])
+```
+:::
+
+[^freekick]: NFL, *2026 Official Playing Rules*, Rule 6-1-1 (free kicks; the kick after a safety may be a punt,
+    dropkick or placekick from the 20) and Rule 11-4-3 (the fair-catch kick is a field-goal attempt from the spot of
+    the fair catch): <https://static.www.nfl.com/image/upload/fl_attachment/league/tqivdkzt9mu6wdgsh1ku.pdf>, linked
+    from <https://operations.nfl.com/the-rules/nfl-rulebook/>.
+[^epcurve]: Course calculation: average nflverse expected points for first-and-10 plays outside the last two minutes
+    of a half, 2023-2025 regular seasons, by yard line; the per-yard figure is the slope of a straight line fitted to
+    the 20 through the 40. Single five-yard steps on the raw curve bounce around it (from the 30 to the 35 is about
+    0.2, from the 25 to the 30 about 0.3) because each yard line's average is an estimate; the fitted slope is the
+    steadier number, and it is the one this chapter uses.
+[^spots]: The kickoff spot moved from the 40 to the 35 in 1974, to the 30 in 1994 and back to the 35 in 2011:
+    "Kickoff (gridiron football)," *Wikipedia*: <https://en.wikipedia.org/wiki/Kickoff_(gridiron_football)>; NFL
+    Football Operations, "Evolution of the NFL rules": <https://operations.nfl.com/the-rules/evolution-of-the-nfl-rules/>.
+[^wedge]: The 2009 rule banned wedges of three or more blockers: "Kickoff (gridiron football)," *Wikipedia*
+    (cited in the kickoff-spot note above). Two-man wedges stayed legal until the 2018 rules banned all wedges: CBS
+    Sports, "NFL kickoffs will be undergoing these major rule changes for 2018":
+    <https://www.cbssports.com/nfl/news/nfl-kickoffs-will-be-undergoing-these-major-rule-changes-for-2018>.
+[^tb25]: The kickoff touchback moved from the 20 to the 25 in March 2016 as a one-year trial, extended in 2017: FOX6,
+    "One-year trial: NFL owners approve placing ball at 25-yard line after touchbacks":
+    <https://www.fox6now.com/sports/one-year-trial-nfl-owners-approve-placing-ball-at-25-yard-line-after-touchbacks-vs-20>;
+    ProFootballTalk, "NFL owners extend trial period for touchbacks to 25":
+    <https://nbcsports.com/nfl/profootballtalk/rumor-mill/news/nfl-owners-extend-trial-period-for-touchbacks-to-25>.
+[^fc2023]: The 2023 rule, approved May 23, 2023 as a one-year trial, let a receiver fair-catch a kickoff inside his 25
+    and take the ball at the 25: CBS Sports, "NFL approves one-year trial run for new fair catch rule":
+    <https://www.cbssports.com/nfl/news/nfl-approves-one-year-trial-run-for-new-fair-catch-rule-that-could-have-dramatic-impact-on-kickoff-returns>.
+    The dynamic kickoff replaced it in 2024.
+[^conc2018]: ESPN, "Proposal trying to make NFL kickoffs more like a punt play" (2018), which gives both figures from
+    the competition committee's Rich McKay: concussions "five times as likely to occur on kickoffs as on other plays" in
+    2017, and 71 kickoff concussions in 2015-17:
+    <https://www.espn.com/nfl/story/_/id/23385442/proposal-trying-make-nfl-kickoffs-more-punt-play>. The 71 also
+    appears in NFL.com, "Kickoff changes could include eliminating running start" (May 2, 2018):
+    <https://www.nfl.com/news/kickoff-changes-could-include-eliminating-running-start-0ap3000000930999>.
+[^calc]: Course calculation from nflverse play-by-play (regular season), done in the code cells of this chapter.
+    Return rate = kickoffs with a listed returner, as a share of all kickoffs including onside kicks (25.2% in 2023,
+    32.9% in 2024, 74.6% in 2025, matching other published counts of about 22%, 33% and 75%). Drive start = the yard
+    line of the receiving team's next play, excluding onside kicks and return touchdowns. Touchback rate uses the
+    pbp `touchback` flag. Onside recovery uses `own_kickoff_recovery` on kicks whose description says "onside."
+[^calc23]: Course calculation (method in the earlier calculation note): 25.2% of 2023 regular-season kickoffs were
+    returned, the lowest rate in the nflverse data back to 1999.
+[^rules2018]: Sports Illustrated, "The NFL's New Kickoff Rules, Explained" (Sept 7, 2018):
+    <https://www.si.com/nfl/2018/09/07/nfl-kickoff-rule-changes-explained-onside-return-clarified>.
+[^schwartz]: "Sam Schwartzstein," *Wikipedia* (his XFL role and Stanford career; sources give his XFL title in
+    slightly different forms): <https://en.wikipedia.org/wiki/Sam_Schwartzstein>; the simulations: Sports Illustrated,
+    in the next note.
+[^xfl]: Gilberto Manzano, "Happy Returns: NFL's New Dynamic Kickoff 'Will Look Weird'," *Sports Illustrated* (Sept 5,
+    2024): <https://www.si.com/nfl/happy-returns-new-dynamic-kickoff-will-look-weird>.
+[^fassel]: On Fassel presenting the XFL-based model to the competition committee: *Sports Illustrated* (Cowboys
+    Country), <https://www.si.com/nfl/cowboys/news/dallas-cowboys-john-fassel-kickoff-overhaul-rule-changes-xfl>. On the
+    2024 rules as a one-year trial: <https://www.nfl.com/news/2024-nfl-season-explaining-rules-for-new-dynamic-kickoff>.
+    Owners approved it 29-3 on March 26, 2024 (Associated Press):
+    <https://www.ksat.com/sports/2024/03/26/nfl-owners-approve-a-radical-overhaul-to-kickoff-rules-ap-source-says-adopting-setup-used-in-xfl/>.
+[^rules2024]: NFL.com, "2024 NFL season: Explaining rules for new dynamic kickoff":
+    <https://www.nfl.com/news/2024-nfl-season-explaining-rules-for-new-dynamic-kickoff>. 2025 changes (made permanent;
+    touchback to the 35; onside whenever trailing): <https://www.nfl.com/news/nfl-owners-vote-to-make-dynamic-kickoff-permanent-adjust-ball-spot-on-touchbacks-to-35-yard-line>
+    and <https://operations.nfl.com/rules-officiating/featured-rules>.
+[^rules2026]: NFL, *2026 Official Playing Rules*, Rule 6, Section 1, Articles 2-6 (restraining lines and zones; the
+    setup-zone alignment in 6-1-3(b): at least five on the restraining line, six if ten are in the setup zone, with at
+    least one inside the inbounds lines, one between the numbers and the inbounds line on each side and one outside the
+    numbers on each side; "never more than two players in each of the three areas within the setup zone bordered by the
+    sidelines and inbounds lines"; touchback spots, including the 20 for a touchback on a kickoff from the 50; the onside
+    kick "at any time during the game"), and Rule 6-2-4 (a kick out of bounds is spotted 25 yards from the spot of the
+    kick): <https://static.www.nfl.com/image/upload/fl_attachment/league/tqivdkzt9mu6wdgsh1ku.pdf>. The changes were
+    approved March 31, 2026: Vikings.com, "NFL rule changes and bylaws, 2026 season":
+    <https://www.vikings.com/news/nfl-rule-change-bylaws-annual-league-meetings-2026-season>; Football Zebras, "NFL
+    owners approve rule changes for the 2026 season": <https://www.footballzebras.com/2026/04/nfl-owners-approve-rule-changes-for-the-2026-season/>;
+    Seahawks.com: <https://www.seahawks.com/news/nfl-announces-approved-rule-changes-for-2026-season>.
+[^cbs26]: Bryan DeArdo, "NFL Competition Committee approves five rule changes for 2026 season," CBS Sports (Mar 31,
+    2026), on the setup-zone change's stated aim, to "improve safety and make returns more competitive":
+    <https://www.cbssports.com/nfl/news/nfl-rule-changes-2026>.
+[^live]: 2026 rulebook (cited in the 2026-rules note), Rule 6-1-4: a kicking-team player "may touch, catch, or
+    recover the ball if it lands or is touched by a receiving team player in the landing zone or in the end zone," and a
+    recovery by the kicking team gives it the ball at that spot; a ball that comes to rest in the landing zone with
+    nobody trying to possess it is dead and belongs to the receiving team. Rule 10-2-1 defines a fair catch as a catch of
+    "a free kick that has not touched the ground," so a fair catch remains legal on a kickoff caught in the air.
+[^fifty26]: The 2026 fix, approved March 31, 2026: Rule 6-1-5 now spots a touchback on a kickoff from the 50 at the
+    20, while Rule 6-2-4 still puts an out-of-bounds kick 25 yards from the kick, the 25 (2026 rulebook, cited in the
+    2026-rules note above). Some summaries say out-of-bounds kicks from the 50 also go to the 20, or to the 40; the
+    rulebook text says neither. Before 2026 the rulebook had no special touchback spot for a kick from the 50 (adding
+    one is the 2026 change), so a kick into the end zone on the fly came out to the usual spot: the 30 in 2024, the 35
+    in 2025 (NFL.com, cited in the 2024-rules note).
+[^fifty]: CBS Sports, "NFL Competition Committee approves five rule changes for 2026 season" (cited in the note on the
+    2026 setup-zone change): "Dallas tried to take advantage of this loophole last season against the Chiefs by
+    intentionally kicking the ball out of bounds to pin Kansas City at its own 25-yard line." On the Thanksgiving play
+    itself, a Dallas player left early, drawing an illegal-formation flag, and the Chiefs took a re-kick: Football
+    Zebras, "Kickoff from the 50 opens weird options for double fouls" (Nov 2025):
+    <https://www.footballzebras.com/2025/11/kickoff-from-the-50-opens-weird-options-for-double-fouls/>.
+[^conc2024]: NFL, "Concussions decrease to historic low in 2024 NFL season" (2025): the kickoff concussion rate fell
+    43% against the 2021-2023 average and returns rose 57% in the regular season:
+    <https://www.nfl.com/news/concussions-decrease-to-historic-low-in-2024-nfl-season>.
+[^seifert]: Kevin Seifert, "New NFL kickoff rules: What do coaches, players expect?," ESPN (July 29, 2024, updated
+    Sept 6, 2024), on Justin Tucker adding weight "to prepare for contact":
+    <https://www.espn.com/nfl/story/_/id/40647523/nfl-kickoff-rules-changes-do-coaches-players-expect>.
+[^dbl]: 2026 rulebook (cited in the 2026-rules note), Rule 6-2-1, Item 2(c)-(d): "A 'double team block' is permissible
+    only by players who were initially lined up in the setup zone at the time of the kick"; a wedge block, "two or more
+    players intentionally aligning shoulder-to-shoulder within two yards of each other and who move forward together,"
+    is never permitted; either foul costs 15 yards.
+[^calcrtd]: Course calculation from nflverse play-by-play: kickoffs flagged `return_touchdown`, regular season. The
+    league's own count for 2024, seven, is in NFL, "Concussions decrease to historic low in 2024 NFL season" (cited in
+    the 2024 concussion note).
+[^align]: 2026 rulebook (cited in the 2026-rules note): illegal blocking or use of hands by either team on a kickoff
+    costs 10 yards (Rule 6-2-1); kicking-team players other than the kicker, or receiving players in the setup zone,
+    moving before the ball lands or is touched is illegal formation, 5 yards (Rule 6-1-3), and a foul during a free kick
+    can be enforced with a re-kick (Rule 6-3-1).
+[^fz26]: Mark Schultz, "New kickoff mechanics designed to catch illegal blocks," Football Zebras (Sept 9, 2026): the
+    line judge and down judge at the pylons, the referee and umpire on the goal line, because "officials were missing
+    holding, and other illegal blocking and safety fouls that can't be seen from sideline officials":
+    <https://www.footballzebras.com/2026/09/new-kickoff-mechanics-designed-to-catch-illegal-blocks/>.
+[^seifert2]: Seifert, ESPN (cited in the note on Tucker): coordinators considering "stocking their return teams with
+    bigger players who are comfortable blocking what would amount to modified run schemes." On defensive linemen on
+    the return front line: Steelers Depot, "Kickoff changes make defensive linemen viable option" (Aug 2024):
+    <https://steelersdepot.com/2024/08/kickoff-changes-make-defensive-linemen-viable-option>.
+[^calctb]: Course calculation (method as above): touchbacks were 64.3% of kickoffs in 2024 and 20.7% in 2025.
+[^calcsea]: Course calculation (method as above): 2025 drive starts and touchback rates after each team's kickoffs, as
+    in the scatter chart. Seattle won Super Bowl LX, February 8, 2026, 29-13 over New England:
+    <https://en.wikipedia.org/wiki/Super_Bowl_LX>.
+[^toub]: Seifert, ESPN (cited in the note on Tucker), quoting Kansas City special teams coordinator Dave Toub.
+[^calcret]: Course calculation from nflverse play-by-play: 2025 regular-season kickoff returns by returner, minimum
+    25 returns; Buffalo's Ray Davis had the highest average.
+[^fz26b]: Football Zebras (Sept 9, 2026), cited in the note on kickoff penalties.
+[^calcez]: Course calculation (method as above): 2025 regular-season kickoffs from the 35 fielded behind the goal line
+    and returned.
+[^clock]: 2026 rulebook (cited in the 2026-rules note), Rule 4-3-1: the game clock starts after a free kick "when the
+    ball is legally touched in the field of play," and not if the receiving team touches or recovers the ball in the
+    end zone and does not carry it into the field of play.
+[^edge]: 2026 rulebook (cited in the 2026-rules note): a kick out of bounds, Rule 6-2-4 (the receiving team's ball 25
+    yards from the kick, or 30 yards on a safety kick, unless it last touched the ball); kicking-team recovery in the
+    landing zone, Rule 6-1-4(c)-(d); safety by the receiving team's own impetus and the momentum exception, Rule 11-5-1;
+    the safety kick from the 20 with the kicking team's restraining line still the receiving team's 40, Rule 6-1-2;
+    overtime starting with a kickoff, Rule 16-1-3.
+[^onsiderules]: 2026 rulebook (cited in the 2026-rules note), Rule 6-1-1(c) and its note: a holder may be used for an
+    onside kick, and "only on an onside kick, the ball may be placed on the ground leaning against the tee." Rule
+    6-1-6(k) and its penalty: a declared onside kick that "goes untouched beyond the onside kick setup zone" is
+    unsportsmanlike conduct, 15 yards, and the receiving team's ball; Rule 6-1-6(d): all kicking-team players must be
+    behind the ball when it is kicked.
+[^onside]: On the onside alignment and the declaration requirement: NFL.com 2024 explainer (cited in the 2024-rules
+    note), 2026 rulebook Rule 6-1-6(b)-(c) and (g)-(h), and Jeff Kerr, "New kickoff rule has improvements for 2025, but
+    there's still one change NFL needs to address," CBS Sports (Sept 3, 2025):
+    <https://www.cbssports.com/nfl/news/new-kickoff-rule-has-improvements-for-2025-but-theres-still-one-change-nfl-needs-to-address>
+    (onside kicks recovered 6.45% of the time under the dynamic kickoff in 2024).
+[^ons26]: The 2026 onside rule, approved March 31, 2026: "to permit the kicking team to declare an onside kick at any
+    time during the game" (Vikings.com, cited in the 2026-rules note). The 2024 and 2025 versions: NFL.com and NFL
+    Football Operations, cited in the 2024-rules note.
+[^calcons]: Course calculation (method as above): kickoffs whose play description says "onside," and how often the
+    kicking team recovered (`own_kickoff_recovery`).
+[^ap2025]: Stephen Whyno, Associated Press, "NFL sees a surge in returns with the new dynamic kickoff; onside kicks
+    remain a concern" (Oct 21, 2025), quoting Troy Vincent, the NFL's executive vice president of football operations:
+    <https://www.clickondetroit.com/sports/2025/10/21/nfl-sees-a-surge-in-returns-with-the-new-dynamic-kickoff-onside-kicks-remain-a-concern/>.
+[^calcwk7]: Course calculation (method as above): declared onside kicks in 2025 regular-season Weeks 1-7, the weeks
+    before Vincent spoke, and in Weeks 8-18.
+[^eagles]: CBS Sports, on the Eagles' and others' fourth-and-long onside alternatives (proposed in 2019 and by the
+    Eagles in 2020, 2021, 2023 and 2024; none adopted): <https://www.cbssports.com/nfl/news/eagles-onside-kick-alternative-among-several-rule-change-proposals-submitted-by-nfl-teams>.
+[^ot]: 2026 rulebook (cited in the 2026-rules note), Rule 16-1-3 (each team must have the opportunity to possess the
+    ball in a regular-season overtime) and Rule 16-1-5(c): "A kickoff is the opportunity to possess for the receiving
+    team. If the kicking team legally recovers the kick, the receiving team is considered to have had its opportunity."
+[^calcons2]: Course calculation (method as above): onside recovery rates by season, 2010-2017, ranged from about 11%
+    to 21% and averaged about 15%.
+[^calcstart]: Course calculation (method as above): the average drive start after kickoffs, by season, in the chart
+    earlier in the chapter.
+[^ringer]: The Ringer, "The Definitive Guide to the NFL's New Dynamic Kickoff" (Sept 12, 2024): "every single one of
+    his first nine kicks landed either at or inside of the 5-yard line":
+    <https://www.theringer.com/2024/09/12/nfl/nfl-2024-new-dynamic-kickoff-definitive-guide>.
+[^calcno]: Course calculation (method as above): 2024 drive starts after each team's kickoffs.
+[^bears]: The Ringer (Sept 12, 2024), cited in the Saints film-room note, crediting ESPN's Ben Solak for highlighting
+    the Bears' double team and pulled blocker against Tennessee in Week 1, and listing nine other teams that used double
+    teams that week. Double-team legality: 2026 rulebook Rule 6-2-1 (cited in the double-team note).
+[^ambush]: Pro Football Reference, Super Bowl XLIV box score (Feb 7, 2010; New Orleans 31, Indianapolis 17):
+    <https://www.pro-football-reference.com/boxscores/201002070clt.htm>; "Super Bowl XLIV," *Wikipedia* (the
+    onside kick by Thomas Morstead to open the second half): <https://en.wikipedia.org/wiki/Super_Bowl_XLIV>; the call's
+    name, "Ambush": ESPN, "Saints' top play: Ambush onside kick":
+    <https://www.espn.com/blog/new-orleans-saints/post/_/id/7721/saints-top-play-ambush-onside-kick>.
