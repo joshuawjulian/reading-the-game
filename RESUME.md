@@ -10,11 +10,10 @@
 - DONE: scaffold (gridiron lib, Quarto book, per-chapter Typst PDFs, Pages CI, feedback);
   curriculum (73 chapters / 15 parts, `planning/CURRICULUM.md`, source in `planning/curriculum-src/`);
   gap audit (`planning/AUDIT-curriculum.md`, all fixes applied); verified facts (`planning/FACTS-current.md`).
-- DONE + published: Parts 1-9 and 13-02 (48/73). The user approved the pilots ("THIS IS EXCELLENT"):
+- DONE + published: all 73 chapters (Parts 1-15), finished 2026-10-08 by four parallel workflows
+  (`scripts/workflows/quad-{A,B,C,D}.json`). The user approved the pilots ("THIS IS EXCELLENT"):
   keep the depth (chapters run 8-14k words), push straight live.
-- TODO: Parts 10-15 (25 chapters), split between `scripts/workflows/dual-A.json`
-  and `dual-B.json` (alternating pairs in book order). The user allowed up to 4 agents at once => two workflows.
-- AFTER: atlas appendices A-G, whole-book gap audit, link/glossary check.
+- NEXT: atlas appendices A-G, whole-book gap audit, link/glossary check.
 
 ## How the writing pipeline runs
 - `scripts/workflows/write-book-batched.js` takes `{chapters: [{id, path, drafted}]}` and runs
@@ -26,7 +25,7 @@
 ## To restart after a session restart (background work dies with the session)
 1. `docker start rtg`.
 2. Run the workflow once per args file, passing the script inline (or by `scriptPath` from the repo
-   root) with `args` = the contents of `dual-A.json` / `dual-B.json`, minus chapters that
+   root) with `args` = the contents of `quad-A.json` … `quad-D.json`, minus chapters that
    already have a `.done` marker; mark chapters with a finished draft `"drafted": true`.
    Run journals do not survive a restart, so `resumeFromRunId` usually fails; start fresh runs instead.
 3. Start the publisher: `scripts/publish_live.sh >> /tmp/rtg-publish.log 2>&1` in the background.
