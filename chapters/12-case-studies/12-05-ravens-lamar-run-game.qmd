@@ -85,12 +85,12 @@ def _P(fld, p, d, w):
 
 
 def branch(fld, p, pts, color=style.THIRD, label=None, label_at=None, lw=2.0, fontsize=7.5,
-           dash=(0, (3, 2.2))):
+           dash=(0, (3, 2.2)), zorder=6):
     """A dashed 'option' path through absolute (d, w) points, with an arrowhead."""
     xs, ys = _P(fld, p, np.array([q[0] for q in pts]), np.array([q[1] for q in pts]))
-    fld.ax.plot(xs[:-1], ys[:-1], color=color, lw=lw, ls=dash, zorder=6, solid_capstyle="round")
+    fld.ax.plot(xs[:-1], ys[:-1], color=color, lw=lw, ls=dash, zorder=zorder, solid_capstyle="round")
     fld.ax.add_patch(FancyArrowPatch((xs[-2], ys[-2]), (xs[-1], ys[-1]), arrowstyle="-|>",
-                                     mutation_scale=11, color=color, lw=lw, zorder=6))
+                                     mutation_scale=11, color=color, lw=lw, zorder=zorder))
     if label:
         x, y = _P(fld, p, *(label_at or pts[-1]))
         fld.ax.text(x, y, label, fontsize=fontsize, color=color, fontweight="bold", ha="center",
@@ -306,6 +306,15 @@ B18 = REG[(REG["season"] == 2018) & (REG["posteam"] == "BAL")]
 R18 = {lab: (B18[m]["designed"].mean(), B18[m & B18["designed"]]["epa"].mean())
        for lab, m in [("flacco", B18["week"] <= 10), ("jackson", B18["week"] >= 11)]}
 
+# designed runs by everyone but the quarterbacks (anyone with 20+ dropbacks for that team that season)
+_qbs = set(REG[REG["passer_player_name"].notna()].groupby(["season", "posteam", "passer_player_name"]).size()
+           .loc[lambda x: x >= 20].reset_index()["passer_player_name"])
+_nq = RUNS[~RUNS["rusher_player_name"].isin(_qbs)]
+_nqt = _nq.groupby(["season", "posteam"])["epa"].mean()
+NQ_BAL = _nqt.xs("BAL", level=1)
+NQ_RANK = _nqt.groupby("season").rank(ascending=False).xs("BAL", level=1).astype(int)
+NQ_LG = _nq.groupby("season")["epa"].mean()
+
 # neutral early downs: run share
 NEU = REG[REG["down"].isin([1, 2]) & REG["wp"].between(0.2, 0.8) & (REG["half_seconds_remaining"] > 120)]
 NEU_RR = NEU.groupby(["season", "posteam"])["designed"].mean()
@@ -404,6 +413,45 @@ POST_LINE = game_line(BP)
 LJ_PO = PO_LINES[PO_LINES.index != "2022_19_BAL_CIN"]
 LJ_PO_W = int((LJ_PO["bal"] > LJ_PO["opp_pts"]).sum())
 LJ_PO_L = int((LJ_PO["bal"] < LJ_PO["opp_pts"]).sum())
+LOSSES = PO_LINES[PO_LINES["bal"] < PO_LINES["opp_pts"]]
+# Drill 3: designed runs against light boxes (six or fewer), and runs v dropbacks when trailing by 8+
+_light = RP[RP["designed"] & RP["defenders_in_box"].between(3, 6) & (RP["season"] >= 2019)]
+LIGHT_BAL = _light[_light["posteam"] == "BAL"]["epa"].mean()
+LIGHT_LG = _light["epa"].mean()
+_tr = REG_LJ[REG_LJ["score_differential"] < -7]
+TR_RUN, TR_DB = _tr[_tr["designed"]]["epa"].mean(), _tr[~_tr["designed"]]["epa"].mean()
+TO3_LOSSES = int((LOSSES["to"] >= 3).sum())
+# run share by score: within one score (a touchdown either way) and when not trailing
+CLOSE_REG = REG_LJ[REG_LJ["score_differential"].between(-7, 7)]["designed"].mean()
+CLOSE_POST = BP[BP["score_differential"].between(-7, 7)]["designed"].mean()
+# playoff designed runs without the two games in which the run was stuffed (Jan 2019 LAC, Jan 2020 TEN)
+_bp2 = BP[~BP["game_id"].isin(["2018_18_LAC_BAL", "2019_19_TEN_BAL"])]
+PO_RUN_EX2 = _bp2[_bp2["designed"]]["epa"].mean()
+# the league baseline: how much worse does a typical playoff offense play in January? (2018-2024 seasons)
+_post = POST[POST["season"] <= 2024].groupby(["season", "posteam"])["epa"].mean()
+_reg = REG[REG["season"] <= 2024].groupby(["season", "posteam"])["epa"].mean()
+LG_PO_DROP = (_post - _reg.reindex(_post.index)).mean()
+# Baltimore's own regular season against teams that made the playoffs that year
+_po_teams = {(s_, t) for s_, g in GAMES[GAMES["game_type"] != "REG"].groupby("season")
+             for t in set(g["home_team"]) | set(g["away_team"])}
+REG_VS_PO = REG_LJ[[(s_, t) in _po_teams for s_, t in zip(REG_LJ["season"], REG_LJ["defteam"])]]["epa"].mean()
+
+# the December 1, 2019 film room (49ers at Ravens)
+_sf = RP[(RP["game_id"] == "2019_13_SF_BAL") & (RP["posteam"] == "BAL")]
+SF19 = {"pistol": (_sf["offense_formation"] == "PISTOL").mean(), "run_rate": _sf["designed"].mean()}
+
+
+def one_game(gid):
+    """Baltimore's designed-run EPA and Jackson's designed runs in one game."""
+    g = ALL[(ALL["game_id"] == gid) & (ALL["posteam"] == "BAL")]
+    lj = g[(g["rusher_player_name"] == "L.Jackson") & g["designed"]]
+    return {"run_epa": g[g["designed"]]["epa"].mean(), "runs": int(g["designed"].sum()),
+            "lj_n": len(lj), "lj_yds": int(lj["yards_gained"].sum()),
+            "lj_all_n": int((g["rusher_player_name"] == "L.Jackson").sum()),
+            "lj_all_yds": int(g[g["rusher_player_name"] == "L.Jackson"]["yards_gained"].sum())}
+
+
+MIA21, KC24, DET25R = one_game("2021_10_BAL_MIA"), one_game("2024_01_BAL_KC"), one_game("2025_03_DET_BAL")
 
 
 # --- formatting helpers for the inline numbers
@@ -640,7 +688,7 @@ for ax, lamar in zip(axes, (False, True)):
     if lamar:
         go_to(p, "BE", (0.6, -6.9), "path", speed=1.0)                 # stays home for the quarterback
     else:
-        go_to(p, "BE", (0.7, -1.6), "path", via=[(0.2, -4.6)])         # free: chases flat down the line
+        go_to(p, "BE", (2.2, -1.9), "path", via=[(1.7, -4.9)])         # free: chases flat down the line
         go_to(p, "QB", (-4.4, -0.6), "path", speed=1.0)                # hands off and watches
     go_to(p, "Y", (0.4, 5.8), via=[(-0.4, 5.3)])                       # reach the play-side 9
     go_to(p, "RT", (0.4, 3.8), via=[(-0.4, 3.6)])                      # on the 5
@@ -653,10 +701,12 @@ for ax, lamar in zip(axes, (False, True)):
     f = draw(p, ax=ax, lateral=(-10.0, 10.0), window=(-8.6, 8.8), title=False)
     box_shade(f, p, 0.2, 5.6, -7.6, 7.6)
     if not lamar:
-        branch(f, p, [(-7.0, 0.0), (-5.3, 1.3), (-2.8, 2.5), (-1.1, 1.9), (0.5, -0.9)], color=style.OFFENSE_DARK)
-        tackle_x(f, p, 0.9, -1.2)
-        say(f, p, -2.3, 4.6, "cuts back", color=style.OFFENSE_DARK, fontsize=6.4)
-        point_to(f, p, (3.0, -7.6), (0.6, -4.2), "free: chases\nthe cutback", color=style.DEFENSE_DARK, fontsize=6.5)
+        # the back's cutback is drawn above the line markers so it stays visible as it crosses them
+        branch(f, p, [(-7.0, 0.0), (-5.3, 1.3), (-2.8, 2.5), (-1.5, 1.7), (1.9, -0.8)], color=style.OFFENSE_DARK,
+               zorder=9.5)
+        tackle_x(f, p, 2.4, -1.2)
+        say(f, p, -2.6, 4.7, "cuts back", color=style.OFFENSE_DARK, fontsize=6.4)
+        point_to(f, p, (3.6, -7.4), (1.9, -4.4), "free: chases\nthe cutback", color=style.DEFENSE_DARK, fontsize=6.5)
         say(f, p, -6.6, -5.6, "Q hands off\nand watches", fontsize=6.4)
         say(f, p, 6.5, 0.0, "7 blockers v 8 in the box", color=GREEN, fontsize=6.8, weight="bold")
         ax.set_title("A quarterback who hands off", fontsize=9, loc="left", color=style.INK, fontweight="bold")
@@ -726,7 +776,7 @@ the shotgun with a slot receiver; the Ravens' version shows what the pistol and 
 
 ```{python}
 #| label: fig-pistol-iv
-#| fig-cap: "The pistol inverted veer (power read) to the right, from 12 personnel against an eight-man box. The line blocks power: the right tight end (Y) blocks down on the 5, the right tackle and right guard double-team the 3 before the guard climbs to the Will, the center blocks back on the 1, and the left guard pulls across for the Mike. On the backside, the left tackle and the other tight end (U) wall off the 5 and the 9. The play-side 9 (ringed), the end man on the line outside the tight end, is the one defender not blocked: Jackson reads him. The back, starting directly behind the quarterback, sweeps right across his face. If the 9 widens with the back, Jackson keeps and runs inside him behind the pulling guard (green); if the 9 squeezes inside, Jackson gives and the back runs outside him (dark). Count the box: seven blockers and a read against eight. The free safety, the only defender left, is 12 yards deep (out of the picture)."
+#| fig-cap: "The pistol inverted veer (power read) to the right, from 12 personnel against an eight-man box. The line blocks power: the right tight end (Y) blocks down on the 5, the right tackle and right guard double-team the 3 before the guard climbs to the Will, the center blocks back on the 1, and the left guard pulls across for the Mike. On the backside, the left tackle and the other tight end (U) wall off the 5 and the 9. The play-side 9 (ringed), the end man on the line outside the tight end, is the one defender not blocked: Jackson reads him. The back, starting directly behind the quarterback, comes around his right hip for the mesh and sweeps wide. If the 9 widens with the back, Jackson keeps and runs inside him, a step behind the pulling guard (green); if the 9 squeezes inside, Jackson gives and the back runs outside him (dark), where the play-side wide receiver (out of the picture) blocks the cornerback. Count the box: seven blockers and a read against eight. The free safety, the only defender left, is 12 yards deep (out of the picture)."
 p = Play(pistol(), front62(), los=35, to_go=None)
 go_to(p, "Y", (0.4, 4.1), via=[(-0.3, 4.5)])                               # down on the 5
 go_to(p, "RT", (0.5, 2.7), via=[(-0.4, 3.0)])                              # down on the 3
@@ -734,17 +784,17 @@ go_to(p, "RG", (3.7, -1.6), via=[(-0.2, 1.9), (0.4, 2.0), (1.4, 0.8)])     # dou
 go_to(p, "C", (0.4, -0.5))                                                 # back on the 1
 go_to(p, "LT", (0.3, -3.8), via=[(-0.6, -3.5)])                            # hinge on the backside 5
 go_to(p, "U", (0.4, -6.0), via=[(-0.4, -5.3)])                             # wall off the backside 9
-go_to(p, "LG", (3.4, 3.3), "pull", via=[(-1.7, -1.2), (-2.0, 2.0), (-0.2, 5.0), (1.6, 4.6)])
+go_to(p, "LG", (3.4, 3.3), "pull", via=[(-2.2, -1.3), (-2.7, 0.9), (-1.9, 3.4), (-0.3, 5.0), (1.6, 4.6)])
 p.highlight("PE", color=style.DEFENSE)
 p.highlight("LG", color=PURPLE)
 f = draw(p, lateral=(-9.0, 14.5), window=(-8.6, 9.0), title=False, width_in=5.8)
 box_shade(f, p, 0.2, 5.8, -7.6, 7.6)
 read_line(f, p, (-4.0, 0.3), (0.6, 6.0))
-branch(f, p, [(-7.0, 0.0), (-5.6, 1.2), (-4.9, 4.2), (-3.4, 8.6), (-1.0, 11.0), (5.4, 11.6)],
-       color=style.OFFENSE_DARK, label="give if the 9\nsqueezes", label_at=(-5.9, 11.0), fontsize=6.8)
-branch(f, p, [(-4.0, 0.0), (-3.2, 1.2), (-1.6, 3.6), (-0.3, 5.2), (6.0, 5.4)], color=GREEN,
+branch(f, p, [(-7.0, 0.0), (-5.0, 0.6), (-4.4, 1.4), (-3.7, 4.2), (-2.7, 8.4), (-0.6, 10.7), (5.4, 11.5)],
+       color=style.OFFENSE_DARK, label="give if the 9\nsqueezes", label_at=(-5.9, 10.4), fontsize=6.8)
+branch(f, p, [(-4.0, 0.0), (-3.7, 1.6), (-3.0, 3.5), (-1.5, 4.9), (0.3, 5.7), (6.0, 5.7)], color=GREEN,
        label="keep if the 9\nwidens", label_at=(7.0, 2.6), fontsize=6.8)
-point_to(f, p, (-3.2, -6.8), (-1.6, -1.2), "LG pulls\nfor the Mike", color=PURPLE, fontsize=6.6)
+point_to(f, p, (-2.6, -6.6), (-2.3, -1.0), "LG pulls\nfor the Mike", color=PURPLE, fontsize=6.6)
 point_to(f, p, (-6.6, -4.4), (-6.9, -0.5), "R: behind Q,\nno tell", fontsize=6.4)
 say(f, p, 7.2, -4.6, "8 in the box v\n7 blockers + a read", color=GREEN, fontsize=6.8, weight="bold")
 f.ax.set_title("Pistol inverted veer (power read), 12 personnel", fontsize=10, loc="left", color=style.INK,
@@ -759,13 +809,15 @@ the right; from the pistol, the back is straight behind the quarterback and give
 to stay balanced: a 9 on each side, a 5 on each side, linebackers over the middle.
 
 **At the snap, the line tells a story of power.** The tight end and tackle block down, a guard pulls across.
-Every linebacker in the league has been taught to follow a pulling guard, because on power the puller leads the
+A linebacker who reads the guards has been taught to follow a pulling guard, because on power the puller leads the
 ball carrier through the hole. Here he does lead a ball carrier through the hole, but which one?
 
-**The end man has a bad choice.** The play-side 9 is the man the power play would normally kick out or log. On
-this play nobody touches him. If he does what he's taught against power, *squeeze* the hole from the outside so
-the pulling guard has nowhere to go, he has stepped inside the back, who is running outside him at full speed
-with only a safety or corner left to beat. If he widens to take the back, he has opened the hole for the
+**The end man has a bad choice.** The play-side 9 is the man the power play would normally kick out, or
+[log](../../appendices/glossary.qmd#gl-log-block) (seal inside from the outside so the runner can bounce around
+him). On this play nobody touches him. If he does what he's taught against power, *squeeze* the hole from the
+outside so the pulling guard has nowhere to go, he has stepped inside the back, who is running outside him at full
+speed. Out there the play-side wide receiver blocks the cornerback, and the back's problem is the
+[alley player](../../appendices/glossary.qmd#gl-alley-player), usually a safety coming down from depth. If he widens to take the back, he has opened the hole for the
 quarterback, who follows the guard through it. Either way the defense's best edge player is blocked by
 a decision.
 
@@ -785,12 +837,12 @@ in measured doses, which brings us to the formation that made the doses unpredic
 
 The most extreme version of Roman's heavy offense put three tight ends on the field:
 [**13 personnel**](../../appendices/glossary.qmd#gl-13-personnel), one back, three tight ends and one wide
-receiver. In 2019 it was a small slice of the Ravens' offense, `{python} str(len(P13))` regular-season snaps, but
+receiver. In 2019 it was a small slice of the Ravens' offense, a few dozen regular-season snaps, but
 it is the clearest picture of the bind the whole offense put defenses in, and it hides a surprise.
 
 ```{python}
 #| label: fig-13-plate
-#| fig-cap: "The 13-personnel bind, as the 2019 Ravens used it (illustrative; in 2019 the three tight ends were typically Mark Andrews, Nick Boyle and Hayden Hurst, with Mark Ingram at running back and the lone wide receiver split wide, out of the picture). Both panels show the same pistol formation, with the U and Y tight ends on the line and H on the wing, against the defense's usual answer: a base 4-3 with the strong safety walked down, eight in the box (shaded) and one deep safety. Left, the pass: after a run fake, the Y runs up the seam against a linebacker in man coverage, with only the free safety behind him. Right, the run: seven linemen and tight ends plus the wing make eight blockers for eight defenders before the quarterback reads anyone. Jackson reads the backside 5 (ringed) and the U arcs past him to the safety, so the defense is a man short until the free safety comes down, and the free safety is the man the pass in the left panel is aimed at."
+#| fig-cap: "The 13-personnel bind, as the 2019 Ravens used it (illustrative; in 2019 the three tight ends were typically Mark Andrews, Nick Boyle and Hayden Hurst, with Mark Ingram at running back and the lone wide receiver off the line as a flanker, out of the picture). Both panels show the same pistol formation, with the U and Y tight ends on the line and H on the wing, against the defense's usual answer: a base 4-3, eight in the box (shaded) and one deep safety. The Sam already sits over the wing on the strong side, so the strong safety walks down on the other side, outside U, to give each side the same number of defenders. Left, the pass: after a run fake (the ball's flight is the dotted brown line from the quarterback), the Y runs up the seam against a linebacker in man coverage (dotted orange). The only man behind him is the free safety, who has to hold the middle against the fake and arrives late. Right, the run: seven linemen and tight ends plus the wing make eight blockers for eight defenders before the quarterback reads anyone. Jackson reads the backside 5 (ringed) and the U arcs past him to the safety, so the defense is a man short until the free safety comes down, and the free safety is the man the pass in the left panel is aimed at."
 def plate():
     off = pistol(extra=(O("H", "TE", -1.6, 6.6, "H"),))
     check_legal(off)
@@ -810,7 +862,7 @@ go_to(p, "FS", (12.6, 3.8), "path", speed=2.0, delay=0.5)
 for k, end in [("LT", (-0.6, -3.4)), ("LG", (-0.6, -1.5)), ("C", (-0.7, 0.0)), ("RG", (-0.6, 1.6)),
                ("RT", (-0.7, 3.3)), ("U", (-0.8, -4.9)), ("H", (-0.9, 6.0))]:
     go_to(p, k, end)
-go_to(p, "QB", (-6.0, 0.4), "path", speed=3.0, via=[(-4.6, -0.8)])
+go_to(p, "QB", (-5.6, 2.2), "path", speed=3.0, via=[(-4.5, -0.9)])
 p.pass_to("Y", t=2.2)
 p.highlight("Y", color=PURPLE)
 f = draw(p, ax=axes[0], lateral=(-10.0, 11.0), window=(-8.6, 15.6), title=False)
@@ -845,8 +897,9 @@ plt.show()
 Read @fig-13-plate as the defense's coordinator, on the sideline, deciding what to put on the field when three
 tight ends run on.
 
-**If he plays it as a run formation**, with base personnel and eight in the box (the answer defenses chose against
-these snaps about `{python} pct(P13_BASE)` of the time), he is still a man short against the run (right panel):
+**If he plays it as a run formation**, with base personnel and eight in the box (defenses chose base on about
+`{python} pct(P13_BASE)` of Baltimore's `{python} str(len(P13))` such snaps in 2019, a small sample, so read every
+13-personnel number here as a tendency), he is still a man short against the run (right panel):
 eight blockers plus Jackson's read against eight. To get even he needs the free safety in the box, and then
 nobody is deep. Meanwhile his linebackers are covering tight ends. Mark Andrews, who led the 2019 Ravens in
 catches, was a 6-foot-5 receiver in a tight end's job description; a linebacker in man coverage on him up the
@@ -875,54 +928,63 @@ tight end as the second puller.
 
 ```{python}
 #| label: fig-qb-counter
-#| fig-cap: "QB counter from the pistol, 12 personnel, to the right (simulated, in Big Data Bowl coordinates; purple rings mark the two pullers, the green ring the ball, faint lines where each player has been). 1, the snap: eight defenders in the box, the back directly behind the quarterback. 2, Jackson and the back take a step to the left, selling a run that way; the linebackers step with them, while the left guard and the backside tight end (U) start pulling right behind the line. 3, the guard kicks out the play-side 9; the tight end wraps up through the hole the down blocks have made. 4, Jackson follows the tight end into the second level, where the Mike, who first stepped the wrong way, has to take on a blocker; the back has turned around to block the backside 9. Eight blockers for eight defenders, with the quarterback carrying: the running back's block is the hat a handoff can't provide."
+#| fig-cap: "QB counter from the pistol, 12 personnel, to the right (simulated, in Big Data Bowl coordinates; purple rings mark the two pullers, the green ring the ball, faint lines where each player has been). 1, the snap: eight defenders in the box, the back directly behind the quarterback. 2, Jackson and the back take a step to the left, selling a run that way; the two linebackers take a false step with them (the Mike's faint trail points left), while the left guard and the backside tight end (U) start pulling right behind the line. 3, the guard kicks out the play-side 9 outside the Y's down block; the tight end turns up through the hole the down blocks have made, leading for the quarterback. 4, Jackson follows a step behind the tight end into the second level, where the Mike, who first stepped the wrong way, has to take on a blocker; the right guard has climbed to the Will, and the back has turned around to block the backside 9. Eight blockers for eight defenders, with the quarterback carrying: the running back's block is the hat a handoff can't provide."
 def qb_counter():
     p = Play(pistol(), front62(), los=35, to_go=None)
-    # the defense: linebackers step with the fake, then react; the play-side 9 squeezes
-    go_to(p, "PE", (0.8, 6.0), "path", speed=1.0, delay=0.2)
-    go_to(p, "P5", (1.2, 3.5), "path", speed=0.7, delay=0.1)
-    go_to(p, "DT3", (1.3, 1.9), "path", speed=0.7, delay=0.1)
+    # the defense: linebackers take a real false step with the fake, then react; the play-side 9 squeezes
+    go_to(p, "PE", (1.2, 6.9), "path", speed=1.0, delay=0.2)        # fights outside the kick-out
+    go_to(p, "P5", (1.4, 3.3), "path", speed=0.7, delay=0.1)
+    go_to(p, "DT3", (1.4, 2.0), "path", speed=0.7, delay=0.1)
     go_to(p, "DT1", (1.2, -0.3), "path", speed=0.5)
-    go_to(p, "B5", (0.6, -3.9), "path", speed=0.6)
-    go_to(p, "BE", (-0.9, -5.7), "path", speed=2.4, delay=0.1)
-    go_to(p, "WILL", (3.9, -3.5), "path", speed=2.4, delay=0.15)
-    go_to(p, "MIKE", (4.1, 0.9), "path", speed=2.2, delay=0.15)
-    go_to(p, "MIKE", (4.5, 2.5), "path", speed=2.0, delay=0.25)
-    # the offense
-    go_to(p, "Y", (0.6, 3.9), via=[(-0.3, 4.4)], speed=1.6)                       # down on the 5
-    go_to(p, "RT", (0.5, 2.3), via=[(-0.3, 2.9)], speed=1.6)                      # down on the 3
-    go_to(p, "RG", (0.5, 0.2), via=[(-0.3, 1.0)], speed=1.4)                      # back on the 1
-    go_to(p, "C", (2.9, -2.9), via=[(-0.2, -0.6), (1.0, -1.6)], speed=2.4)        # climbs to the Will
-    go_to(p, "LT", (0.2, -3.6), speed=1.0)                                        # on the backside 5
-    go_to(p, "LG", (0.3, 5.5), "pull", via=[(-1.7, -1.1), (-2.0, 2.4), (-0.8, 4.8)], speed=5.2)   # kick out the 9
-    go_to(p, "U", (3.4, 3.0), "pull", via=[(-1.6, -4.0), (-2.4, 1.0), (-1.2, 4.4), (0.8, 4.6)], speed=6.4)  # wrap
-    go_to(p, "RB", (-6.2, -1.6), "path", speed=3.0)                              # the counter step
-    go_to(p, "RB", (-1.5, -5.2), speed=4.6)                                      # then block the backside 9
-    go_to(p, "QB", (-4.3, -0.8), "path", speed=2.4)                              # step left with the back
-    go_to(p, "QB", (5.8, 4.8), "run", speed=5.6, delay=0.35,
-          via=[(-3.8, 0.8), (-2.2, 3.0), (-0.6, 4.5), (1.2, 4.6)])
+    go_to(p, "B5", (1.0, -4.0), "path", speed=0.6)
+    go_to(p, "BE", (-0.6, -6.0), "path", speed=2.4, delay=0.1)
+    go_to(p, "WILL", (4.0, -3.8), "path", speed=3.0, delay=0.1)                  # false step with the back
+    go_to(p, "MIKE", (4.2, 0.0), "path", speed=3.0, delay=0.1)                   # false step...
+    go_to(p, "MIKE", (4.6, 2.8), "path", speed=2.2, delay=0.25)                  # ...then back to the play
+    # the offense (GY counter: down blocks on the play side, C back, the uncovered RG to the backside LB)
+    go_to(p, "Y", (0.3, 3.9), via=[(-0.3, 4.4)], speed=1.6)                       # down on the 5
+    go_to(p, "RT", (0.2, 2.6), via=[(-0.3, 2.9)], speed=1.6)                      # down on the 3
+    go_to(p, "C", (0.1, -0.9), speed=1.4)                                         # back on the 1
+    go_to(p, "RG", (3.0, -2.9), via=[(-0.2, 1.0), (1.0, 0.0)], speed=2.6)        # climbs to the Will
+    go_to(p, "LT", (-0.1, -3.4), speed=1.0)                                       # on the backside 5
+    go_to(p, "LG", (0.0, 6.4), "pull", via=[(-1.8, -1.1), (-2.1, 2.4), (-0.8, 5.2)], speed=5.2)   # kick out the 9
+    go_to(p, "U", (3.4, 3.2), "pull", via=[(-1.6, -4.0), (-2.4, 1.0), (-1.2, 4.8), (0.8, 5.0)], speed=6.4)  # lead up
+    go_to(p, "RB", (-6.4, -1.9), "path", speed=3.0)                              # the counter step
+    go_to(p, "RB", (-1.6, -5.2), speed=4.6)                                      # then block the backside 9
+    go_to(p, "QB", (-4.4, -1.3), "path", speed=2.4)                              # step left with the back
+    go_to(p, "QB", (5.8, 4.9), "run", speed=5.6, delay=0.35,
+          via=[(-3.8, 0.8), (-2.2, 3.0), (-0.8, 4.8), (1.0, 5.1)])
     return p
 
 
-play_animation(qb_counter(), [0.0, 0.55, 1.6, 2.6], lateral=(-9.5, 9.5), window=(-8.2, 7.8),
+play_animation(qb_counter(), [0.0, 0.6, 1.9, 2.7], lateral=(-9.5, 9.5), window=(-8.2, 7.8),
                notes=["Eight in the box; the back\nis right behind the QB",
-                      "QB and back step left; the\nLBs step with them; G and U pull",
-                      "The guard kicks out the 9;\nthe tight end wraps",
+                      "QB and back step left;\nthe LBs step with them",
+                      "The guard kicks out the 9; the\ntight end leads up the hole",
                       "QB follows the tight end;\nthe back blocks the backside 9"],
                rings=(("LG", PURPLE), ("U", PURPLE)), ncols=2)
 ```
 
 Three things make this play the Ravens' and not just anyone's.
 
-**The fake is a real threat.** The counter step only works if the defense believes the first direction.
-Against most quarterbacks, the linebackers' first read is the running back: if he steps left, the run is going
-left. Against Jackson, they have to wonder whether he is about to *pull* the ball and run left himself, so their
-first step left is bigger, and the cutback right, which is where the counter goes, is bigger too.
+**The fake beats both kinds of linebacker.** Linebackers are taught to read one of two things at the snap
+(their [key](../05-defensive-fronts-and-run-defense/05-04-linebackers-and-second-level.qmd)), and the counter
+beats each one differently. A linebacker who keys the *backfield* reads the running back: if he steps left, the run
+is going left. Against Jackson he also has to wonder whether the quarterback is about to keep the ball and run left
+himself, so his false step left is bigger, and the cutback right, which is where the counter goes, is bigger too.
+A linebacker who keys the *guards* is not fooled about the direction: he sees the guard and the tight end pull right,
+and the pullers tell the truth. What beats him is the half-second of doubt before he trusts them. The mesh looks like
+every read play he has seen, and if he flies after the pullers and Jackson hands the ball off going left, he has
+run himself out of the play. So he hesitates for a beat, and a beat is all the tight end needs to arrive at him with
+a head of steam.
 
-**The pullers are a tight end and a guard, not two linemen.** Pulling the backside tackle, as many counter plays
-do, leaves the backside end free to chase. Pulling the backside *tight end* keeps the tackle home to block the 5,
-and the running back, after his fake, turns around and blocks the backside 9 (@fig-qb-counter, panel 4). Count
-the blocks: eight, against eight. That is the designed-run arithmetic of
+**The pullers are a tight end and a guard, not two linemen.** Many counter plays pull the backside guard and
+tackle. Pulling the tackle leaves a second hole in the backside of the line, where he used to stand, that someone
+has to step back and fill so a defender can't run through it into the backfield. Pulling the backside
+*tight end* instead keeps the tackle home on the 5, and the tight end is usually the better athlete for the second
+puller's job: turning up through the hole and finding a linebacker in space. The running back, after his fake,
+turns around and blocks the backside 9 (@fig-qb-counter, panel 4), the job he would have on any counter. Count the
+blocks: eight, against eight. That is the designed-run arithmetic of
 [03-04](../03-the-run-game/03-04-option-football.qmd#designed-quarterback-runs-adding-a-blocker) with the
 Ravens' extra tight end supplying the eighth.
 
@@ -931,20 +993,20 @@ they're coached to do. The 9 who squeezes the down blocks is doing what he's coa
 because the play is built to make their rules point the wrong way. That is the pattern of the whole offense: not
 a trick, but a set of plays where each defender's textbook reaction is the one the next play attacks.
 
-And the cost is the one the chapter keeps coming back to: on every QB counter, Jackson is a ball carrier between
-the tackles, meeting linebackers and safeties at full speed. The Ravens rationed these runs. How much they rationed
-them, and how that changed, is in the data.
+The price is the one the "Why it exists" box named: Jackson is a ball carrier between the tackles, so the Ravens
+rationed these runs. How much they rationed them, and how that changed, is in the data.
 
-::: {.callout-note title="Film room: Baltimore Ravens 2019 (watching the pistol)"}
-Earlier chapters have shown the 2019 Ravens from other angles: their personnel and tendencies in
-[02-01](../02-personnel-and-formations/02-01-personnel-groupings.qmd), their early-down efficiency in
-[10-01](../10-situational-football/10-01-early-downs-and-field-zones.qmd), their read menu in
-[03-04](../03-the-run-game/03-04-option-football.qmd), and the boxes they ran into in
-[05-05](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd). This time, watch the pistol
-itself.
+::: {.callout-note title="Film room: San Francisco at Baltimore, December 1, 2019 (watching the pistol)"}
+Earlier chapters showed these Ravens' personnel, early downs, reads and boxes; this time, watch the pistol itself,
+in the game that shows it best. The 10–1 49ers, the eventual NFC champions, came to Baltimore on a rainy
+40-degree afternoon. The Ravens lined up in the pistol on `{python} pct(SF19["pistol"])` of their snaps, their
+highest share of the season, and called a designed run on `{python} pct(SF19["run_rate"])` of their plays; Jackson
+ran 16 times for 101 yards, every carry a designed run. With 4:39 left and the score tied, he converted a
+fourth-and-1 at his own 44 on a run behind the right guard, and Justin Tucker won it 20–17 with a 49-yard field goal
+as time expired.[^sf19]
 
-**What to notice:** on any 2019 Ravens broadcast, before each snap, note where the back is. Behind Jackson
-(pistol) is the base look, and it was most of the snaps. Then, at the snap, watch the **two ends** rather than the
+**What to notice:** before each snap, note where the back is. Behind Jackson (pistol) is the base look, and in this
+game it was seven snaps in ten. Then, at the snap, watch the **two ends** rather than the
 ball. One of them is being read and the other is being blocked, and you can usually tell which within a step:
 the read end is the one nobody touches. Over a quarter, notice how rarely either end chases the back flat down the
 line. That restraint, the frozen backside, is the hidden yardage of the whole offense: it is there on the plain
@@ -955,8 +1017,7 @@ handoffs too.
 
 How good was the Ravens' run game, how long did it last, and how did it change? Play-by-play data can't see a
 read, but it can see the results. @fig-rush-epa compares Baltimore's designed runs with every other team's,
-season by season, using EPA per play (expected points added: how much a play changed the offense's expected
-score, [01-02](../01-foundations/01-02-downs-distance-and-field-position.qmd)).
+season by season, using EPA per play.
 
 ```{python}
 #| label: fig-rush-epa
@@ -972,8 +1033,11 @@ for s in SEASONS:
 ax.plot(LG_RUN.index, LG_RUN.values, color=style.INK_2, lw=1.4, zorder=3)
 ax.plot(BAL_RUN.index, BAL_RUN["epa"], color=style.SERIES[0], lw=2.2, marker="o", ms=5, zorder=4)
 for s, r in BAL_RUN.iterrows():
-    ax.annotate(ordinal(r["rank"]), (s, r["epa"]), xytext=(0, -13 if s == 2021 else 7), textcoords="offset points", ha="center",
-                fontsize=7.5, color=style.SERIES[0], fontweight="bold")
+    off2021 = s == 2021                                   # 2021 sits among the gray dots: label it to the right
+    ax.annotate(ordinal(r["rank"]), (s, r["epa"]), xytext=(7, 0) if off2021 else (0, 7), textcoords="offset points",
+                ha="left" if off2021 else "center", va="center" if off2021 else "bottom",
+                fontsize=7.5, color=style.SERIES[0], fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.1", fc="white", ec="none", alpha=0.85) if off2021 else None)
 ax.annotate("Baltimore", (2025, BAL_RUN.loc[2025, "epa"]), xytext=(10, -2), textcoords="offset points",
             fontsize=8, color=style.SERIES[0], va="center")
 ax.annotate("league average", (2025, LG_RUN.loc[2025]), xytext=(10, -2), textcoords="offset points",
@@ -998,10 +1062,13 @@ Four things stand out in @fig-rush-epa.
 **It was the best run game of its time, and it stayed that way.** Baltimore's designed runs ranked
 `{python} ", ".join(ordinal(BAL_RUN.loc[s, "rank"]) for s in range(2019, 2026))` in the league from 2019 to
 2025, and were above the league average every season. In a league where the average designed run *loses*
-expected points (the gray line sits below zero every year), the Ravens' runs gained them, season after season,
-under two coordinators, with five different leading running backs. Their success rates tell the same story: more
-than `{python} pct(min(BAL_SR.loc[2019:2025]))` of their designed runs were "successful" every season, against a
-league that hovered around `{python} pct(LG_SR.loc[2019:2025].mean())`.
+expected points (the gray line sits below zero every year), the Ravens' runs gained them in every season but 2021,
+under two coordinators, with five different leading running backs (Mark Ingram, J. K. Dobbins, Devonta Freeman,
+Gus Edwards and Derrick Henry). Their [success rates](../../appendices/glossary.qmd#gl-success-rate) tell the same
+story. A run is "successful" when its EPA is positive, meaning it left the offense better off than before the
+snap; more than `{python} pct(min(BAL_SR.loc[2019:2025]))` of
+Baltimore's designed runs were successful every season, against a league that hovered around
+`{python} pct(LG_SR.loc[2019:2025].mean())`.
 
 **2018 was a different offense halfway through.** The season's dot mixes ten weeks of Flacco with seven of
 Jackson; the split earlier in the chapter (from `{python} sg(R18["flacco"][1])` to
@@ -1012,7 +1079,11 @@ Jackson; the split earlier in the chapter (from `{python} sg(R18["flacco"][1])` 
 an ankle injury in December ended his season, the team lost its top two running backs before the season began,
 and Baltimore finished `{python} rec(2021)`.[^injuries] 2022 ended the same way, with Jackson hurt in December
 and backup Tyler Huntley starting the wild-card loss in Cincinnati. Even so, the run game ranked
-`{python} ordinal(BAL_RUN.loc[2022, "rank"])` that year.
+`{python} ordinal(BAL_RUN.loc[2022, "rank"])` that year. (A footnote on the cost the chapter keeps naming, the
+quarterback's body: neither season-ending injury came on a designed run. The 2021 ankle injury came on a completed
+pass at Cleveland, and the 2022 knee injury on a sack against Denver. A running quarterback takes more hits, but the
+pocket is not safe either.) The 2021 line was weakened too: left tackle Ronnie Stanley, back from the ankle injury
+that had ended his 2020 season, played only the opener before more surgery ended his year.[^stanley]
 
 **Two coordinators, one result, different recipes.** The top of the chart is level across the change of
 coordinator in 2023, which can make it look as if nothing changed. A great deal did. @fig-fingerprint shows the
@@ -1020,7 +1091,7 @@ recipes.
 
 ```{python}
 #| label: fig-fingerprint
-#| fig-cap: "How the run game was built, 2018–2025 regular seasons (Baltimore in blue, league average in gray). Top left: Jackson's designed runs (no scrambles, botched snaps or likely sneaks) per game he played. Top right: share of plays with fewer than three wide receivers. Bottom left: share of plays from the pistol (Next Gen Stats formation labels through 2022, FTN charting from 2023; the vertical line marks the change of source). Bottom right: share of plays with the quarterback under center (FTN charting, 2022–2025 only). Data: nflverse play-by-play, participation and FTN charting via nflreadpy."
+#| fig-cap: "How the run game was built, 2018–2025 regular seasons (Baltimore in blue, league average in gray). Top left: Jackson's designed runs (no scrambles, botched snaps or likely sneaks) per game he played. Top right: share of plays with fewer than three wide receivers. Bottom left: share of plays from the pistol (Next Gen Stats formation labels through 2022, FTN charting from 2023; the vertical line marks the change of source). The two sources disagree a little, so the hollow diamond adds FTN's own 2022 figure: measured the same way both years, Baltimore's pistol share still fell from about a quarter of its plays to under a tenth, so the drop is real and not an artifact of the new source. Bottom right: share of plays with the quarterback under center (FTN charting, 2022–2025 only). Data: nflverse play-by-play, participation and FTN charting via nflreadpy."
 fig, axes = plt.subplots(2, 2, figsize=(6.6, 4.9))
 blue, gray = style.SERIES[0], style.MUTED
 
@@ -1053,6 +1124,11 @@ pist_lg = [PISTOL_LG.get(s, np.nan) if s <= 2022 else
 two_lines(ax, SEASONS, pist_bal, pist_lg, "Plays from the pistol", ymax=0.62)
 ax.axvline(2022.5, color=style.BASELINE, lw=0.9, ls=(0, (3, 2)))
 ax.text(2022.6, 0.56, "NGS | FTN", fontsize=6.5, color=style.MUTED)
+# FTN also charted 2022: plot it as a hollow marker so the 2022 -> 2023 drop can be read like for like
+ax.plot([2022, 2023], [QBLOC.loc[(2022, True), "P"], QBLOC.loc[(2023, True), "P"]], color=blue, lw=1.0, ls=(0, (2, 1.5)))
+ax.plot([2022], [QBLOC.loc[(2022, True), "P"]], marker="D", ms=4.5, mfc="white", mec=blue, mew=1.3, ls="none")
+ax.annotate("2022 by FTN", (2022, QBLOC.loc[(2022, True), "P"]), xytext=(2019.2, 0.15), fontsize=6.3,
+            color=blue, arrowprops=dict(arrowstyle="-", color=blue, lw=0.6))
 ax = axes[1, 1]
 yrs = [2022, 2023, 2024, 2025]
 two_lines(ax, yrs, [QBLOC.loc[(s, True), "U"] for s in yrs], [QBLOC.loc[(s, False), "U"] for s in yrs],
@@ -1074,11 +1150,16 @@ Read the four panels of @fig-fingerprint as three eras.
 game. The pistol was the base alignment (bottom left), at many times the league's rate. And heavy personnel
 deepened over time: by 2022, Roman's last season, the Ravens had fewer than three wide receivers on the field on
 `{python} pct(HEAVY.loc[2022, True])` of their snaps, more than twice the league's rate, with 22 personnel (two
-backs, two tight ends) their single most common grouping.[^pers22]
+backs, two tight ends) their single most common grouping.[^pers22] Part of that was choice and part was necessity.
+The Ravens traded their leading receiver, Marquise Brown, to Arizona on the first night of the April 2022 draft,
+and lost his replacement as the top receiver, Rashod Bateman, to a foot injury that needed season-ending surgery
+in November.[^wr22] With few receivers they trusted, Roman leaned on what he had: Andrews, the rookie tight end
+Isaiah Likely and Ricard.
 
 **The Monken reset (2023).** The 2023 bars and lines move together, and all in one direction: Jackson's designed
 runs fell to `{python} f"{LJ_PG.loc[2023]:.1f}"` a game, the pistol nearly disappeared
-(`{python} pct(QBLOC.loc[(2023, True), "P"])` of plays), the shotgun went to
+(`{python} pct(QBLOC.loc[(2023, True), "P"])` of plays, down from `{python} pct(QBLOC.loc[(2022, True), "P"])` in
+2022 counted the same way), the shotgun went to
 `{python} pct(QBLOC.loc[(2023, True), "S"])`, and heavy personnel fell back toward the league average. That is a
 coordinator deliberately moving the offense's center of gravity from the quarterback's legs to his arm. The
 section on Monken below tells that story.
@@ -1106,40 +1187,42 @@ seeing on the field.
 
 ```{python}
 #| label: fig-seven-db
-#| fig-cap: "Speed against speed: the idea behind the Chargers' seven-defensive-back plan in the January 6, 2019 wild-card game (illustrative alignment; the Ravens shown in a pistol 11-personnel look). Four defensive linemen and no linebackers: two safeties (ringed) line up at linebacker depth, a nickel back covers the slot, and two corners and two deep safeties play behind them. The box holds six defenders against six blockers and a read, so on paper the Ravens have the numbers; the defense's bet is that six fast defenders, every one of whom can run with Jackson to the sideline, will make up the man with pursuit and leave nothing open behind them when the Ravens throw."
-off = line5() + [O("QB", "QB", -4.0, 0.0, "Q"), O("RB", "RB", -7.0, 0.0, "R"), O("Y", "TE", -0.7, 4.8, "Y"),
-                 O("X", "WR", -0.7, -15.0, "X"), O("H", "WR", -1.5, -9.0, "H"), O("Z", "WR", -1.5, 14.5, "Z")]
+#| fig-cap: "Speed against speed: the idea behind the Chargers' seven-defensive-back plan in the January 6, 2019 wild-card game (illustrative alignment). The Ravens are shown in pistol 12 personnel, two tight ends and two wide receivers, because the radical part of the plan was playing seven defensive backs against Baltimore's heavy sets, not just against three receivers. Four defensive linemen and no linebackers: two safeties (ringed) line up at linebacker depth, a nickel back stands outside the left tight end, and two corners and two deep safeties play behind them. The box holds six defenders against seven blockers and a read, so on paper the Ravens have two spare hats; the defense's bet is that six fast defenders, every one of whom can run with Jackson to the sideline, will make up the difference with pursuit and leave nothing open behind them when the Ravens throw."
+off = pistol(extra=(O("X", "WR", -1.5, -15.0, "X"), O("Z", "WR", -1.5, 14.5, "Z")))   # both receivers off the line
 check_legal(off)
-dfn = [D("LE", "DE", 1.0, -4.1, "5"), D("DT1", "DT", 1.0, -0.7, "1"), D("DT3", "DT", 1.0, 2.4, "3"),
-       D("RE", "DE", 1.0, 5.6, "9"), D("S1", "S", 4.6, -2.2, "S"), D("S2", "S", 4.6, 2.4, "S"),
-       D("NB", "NB", 5.0, -8.6, "NB"), D("LCB", "CB", 6.5, -15.0, "CB"), D("RCB", "CB", 6.5, 14.5, "CB"),
+dfn = [D("LE", "DE", 1.0, -6.3, "9"), D("DT3", "DT", 1.0, -2.4, "3"), D("DT1", "DT", 1.0, 0.7, "1"),
+       D("RE", "DE", 1.0, 6.3, "9"), D("S1", "S", 4.6, -2.4, "S"), D("S2", "S", 4.6, 2.6, "S"),
+       D("NB", "NB", 4.5, -9.6, "NB"), D("LCB", "CB", 6.5, -15.0, "CB"), D("RCB", "CB", 6.5, 14.5, "CB"),
        D("FS", "FS", 12.5, -6.5, "FS"), D("SS", "SS", 12.5, 6.5, "SS")]
 p = Play(off, dfn, los=35, to_go=None)
 p.highlight("S1", color=style.DEFENSE)
 p.highlight("S2", color=style.DEFENSE)
 f = draw(p, lateral=(-18.0, 17.5), window=(-8.6, 15.0), title=False, width_in=6.0)
-box_shade(f, p, 0.2, 6.0, -6.4, 7.0)
-point_to(f, p, (8.6, 0.2), (5.0, 1.8), "safeties playing\nlinebacker", color=style.DEFENSE_DARK, fontsize=6.8)
-say(f, p, 2.2, 11.0, "box: 6 v 6\nblockers + a read", color=GREEN, fontsize=6.8, weight="bold")
-say(f, p, -6.6, -12.0, "7 defensive backs,\nno linebackers", color=style.DEFENSE_DARK, fontsize=6.8)
+box_shade(f, p, 0.2, 6.0, -7.6, 7.6)
+point_to(f, p, (8.6, 0.2), (5.0, 2.0), "safeties playing\nlinebacker", color=style.DEFENSE_DARK, fontsize=6.8)
+say(f, p, 2.4, 11.2, "box: 6 v 7\nblockers + a read", color=GREEN, fontsize=6.8, weight="bold")
+say(f, p, -6.6, -11.6, "7 defensive backs,\nno linebackers", color=style.DEFENSE_DARK, fontsize=6.8)
 f.ax.set_title("The seven-DB answer: speed everywhere", fontsize=10, loc="left", color=style.INK, fontweight="bold")
 plt.show()
 ```
 
-The trade in @fig-seven-db is stark. The defense concedes the box count on paper (six defenders against six
+The trade in @fig-seven-db is stark. The defense concedes the box count on paper (six defenders against seven
 blockers and a read), and gives up size at every position: a 210-pound safety at linebacker loses a lot of
 collisions with a pulling guard. In return, every defender can run. Against a quarterback whose best plays are
 outside, pursuit from the inside is the defense's real plus-one, and safeties pursue faster than linebackers do.
 And a defense of seven defensive backs is already in the right personnel if the offense throws.
 
 Why didn't everybody copy it? Because it was built for a particular offense at a particular moment. The 2018
-Ravens were short on receivers, and Jackson, eight games into his career as a starter, could not yet punish a
+Ravens were short on receivers, and Jackson, making only his eighth NFL start, could not yet punish a
 defense for selling out to his legs. Roman's 2019 rebuild was in large part a reply to this game. The heavy
 personnel made small defenders a liability, since six defensive backs can't hold up against two tight ends and a
 fullback blocking down on them all afternoon. The passing game, aimed at the middle of the field with Andrews,
 punished defenses that took linebackers off it. The seven-DB idea never became a standard defense against
-Baltimore, but its premise, *speed in the box is worth more than size against this quarterback*, shows up again
-in the big-nickel and "safety as linebacker" packages many defenses used against the Ravens through 2025.
+Baltimore; as the base-personnel numbers earlier in the chapter show, most opponents went the other way and got
+bigger. Its premise, *speed in the box can be worth more than size against this quarterback*, survives in a
+milder form: the [big nickel](../../appendices/glossary.qmd#gl-big-nickel), a nickel package whose fifth defensive
+back is a third safety, big enough to fit a run and fast enough to chase one
+([02-05](../02-personnel-and-formations/02-05-a-first-look-at-defense.qmd) has the packages).
 
 ### Answer 2: get ahead and make them throw
 
@@ -1168,28 +1251,61 @@ the scoreboard did the most damage.[^balanswer]
 
 ### Answer 3: pressure and zero
 
-The third answer attacked the passing half of the bargain. If the box can't be made heavy enough to stop the run,
-and the offense has fewer receivers than usual, send everyone. In a
+The third answer attacked the passing half of the bargain, and accepted a risk against the run to do it. In a
 [Cover 0](../../appendices/glossary.qmd#gl-cover-0) pressure there is no deep safety; every defender either
 rushes or covers a man, and the quarterback has to beat the blitz with a quick throw before it reaches him. Miami
-did this to Jackson on a Thursday night in November 2021, blitzing on most of his dropbacks and
-playing zero coverage behind it, and won easily against a team that had been 6–2.
-[10-02](../10-situational-football/10-02-third-down.qmd) has the numbers and the film.
+did this to Jackson on a Thursday night in November 2021, blitzing on most of his dropbacks and playing zero
+coverage behind it, and the 2–7 Dolphins beat the 6–2 Ravens 22–10.
+[10-02](../10-situational-football/10-02-third-down.qmd) has the blitz numbers and the film.
 
-Why does it fit this offense? Zero coverage gives up the deep middle, and the quarterback is the man best
-equipped to punish it by running, so it is a real gamble. But it also takes away the *time* a play-action pass
-needs: a heavy formation's fake pulls linebackers up, but a blitzing linebacker was coming up anyway. The
-Ravens' longer-term answer was the one the next sections describe: a passing game with more receivers who could
-win quickly, built under a new coordinator.
+Why is zero a gamble against this quarterback in particular? Because in zero every defender is either rushing or
+running with a receiver with his back to the ball, so nobody is left facing the quarterback. If Jackson escapes the
+rush, or simply runs on a play the defense read as a pass, there is no one to tackle him short of the end zone. Zero
+works against him only with two refinements. The rushers keep their *lanes*, each one responsible for one side of
+the quarterback so that he has no crease to escape through, and the defenders covering the backs play the
+[hug](../07-pressure/07-02-blitz-and-man-pressure.qmd#man-pressure-part-1-the-cover-1-blitz) rule (also called a
+green dog): if the back stays in to block, his man has nobody to cover and rushes too, a step late, often straight at
+the quarterback. That late rusher is a spy on the move. Miami's plan had both, and the run game didn't rescue
+Baltimore that night either: its designed runs lost value
+(`{python} sg(MIA21["run_epa"])` EPA per run on `{python} str(MIA21["runs"])` of them), with Jackson held to
+`{python} str(MIA21["lj_yds"])` yards on `{python} str(MIA21["lj_n"])` designed carries.[^mia21]
+
+Zero also takes away the *time* a play-action pass needs: a heavy formation's fake pulls linebackers up, but a
+blitzing linebacker was coming up anyway. The Ravens' longer-term answer was the one the next sections describe: a
+passing game with more receivers who could win quickly, built under a new coordinator.
 
 ### Answer 4: spy him and disguise it
 
 The fourth answer is the most direct: assign one defender to Jackson, a
-[**spy**](../../appendices/glossary.qmd#gl-spy), and hide which one. The Chiefs did it with linebacker Leo Chenal
-in 2024; the Lions did it in 2025 with a plan their coordinator credited not to the spy but to making every
-defender look the same before the snap. [10-02](../10-situational-football/10-02-third-down.qmd#the-spy)
-tells both games. The cost of a spy is the cost of every answer in this list: a defender assigned to the quarterback
-is not in coverage and not filling a gap, and against a running quarterback that is simply the price of admission.
+[**spy**](../../appendices/glossary.qmd#gl-spy), and hide which one. The cost of a spy is the cost of every answer in
+this list: a defender assigned to the quarterback is not in coverage and not filling a gap. The results were mixed,
+which is what you'd expect from a tool rather than a cure. The Chiefs spied him with linebacker Leo Chenal on the
+2024 opening night and won 27–20, but not because the spy stopped the run: Jackson ran `{python} str(KC24["lj_all_n"])` times for `{python} str(KC24["lj_all_yds"])` yards and
+Baltimore's designed runs averaged `{python} sg(KC24["run_epa"])` EPA, in a game decided on its final snap. The Lions' plan in Week 3 of 2025 worked better: Jackson ran
+`{python} str(DET25R["lj_all_n"])` times for `{python} str(DET25R["lj_all_yds"])` yards, the designed runs averaged
+`{python} sg(DET25R["run_epa"])`, and Detroit won 38–30 in Baltimore, with its coordinator crediting not the spy but a
+disguise that made every defender look the same before the snap.[^spies]
+[10-02](../10-situational-football/10-02-third-down.qmd#the-spy) tells both games.
+
+### The everyday answers
+
+The four answers above are the famous ones, built for single games. Underneath them, every defense that played
+Baltimore used the ordinary tools of option defense from
+[03-04](../03-the-run-game/03-04-option-football.qmd#how-defenses-answer-the-option) and
+[05-05](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd#fitting-the-option-the-gap-exchange),
+mixed snap to snap so the quarterback's read kept changing:
+
+- **The [scrape exchange](../../appendices/glossary.qmd#gl-scrape-exchange) and the
+  [gap exchange](../../appendices/glossary.qmd#gl-gap-exchange).** The read end crashes on the back, and a linebacker
+  (or a safety) loops outside him to take the quarterback. Jackson reads "keep" and runs into the man who was
+  waiting for him.
+- **The mesh charge.** The read end attacks the mesh itself, straight at the point where the ball is being
+  handed off, so the quarterback has to decide in a fraction of a second, and a hurried decision is more often wrong.
+- **Make him pay.** Give him the keep, and hit him on every one. It concedes yards on the play to tax the quarterback
+  over four quarters and a season, and it is the reason the Ravens rationed his carries.
+- **Late safety rotation.** Show two deep safeties before the snap, so the box looks light and the read looks easy,
+  then rotate one down into the alley after it. It is the light-box idea of the Fangio-era defenses that
+  [12-08](12-08-two-high-to-macdonald.qmd) studies, and it was built in part for quarterbacks like this one.
 
 ### What the answers have in common
 
@@ -1202,27 +1318,32 @@ and it leads straight to the question every Ravens fan has argued about.
 
 From the 2018 season through 2024, the Ravens with Jackson at quarterback went `{python} str(LJ_PO_W)`–`{python} str(LJ_PO_L)`
 in the playoffs and never reached a Super Bowl. "Can't win in January" became the era's caption. What does the data say?
+(Playoff games are played in January of the following calendar year, so this section names each game by its date:
+"January 2020" is the 2019 season's playoff game.)
 
 ```{python}
 #| label: fig-playoffs
-#| fig-cap: "Baltimore's nine playoff games, 2018–2024 seasons, against the regular season. Left: EPA per play in each game (filled dots are wins, open dots losses; the gray line is the Ravens' average across the Jackson-era regular seasons, from week 11 of 2018). The January 2023 game in Cincinnati was started by Tyler Huntley. Right: three things that separate the playoff games from the regular season: the share of snaps played while trailing by more than a touchdown, the share of plays that were designed runs, and turnovers per game. Data: nflverse play-by-play and schedules via nflreadpy."
-fig, axes = plt.subplots(1, 2, figsize=(6.7, 3.4), gridspec_kw={"width_ratios": [1.45, 1]})
+#| fig-cap: "Baltimore's nine playoff games, 2018–2024 seasons, against the regular season. Left: EPA per play in each game, labelled by opponent and the month the game was played (blue circles for all plays, filled for wins and open for losses; small orange diamonds for the designed runs alone; the gray line is the Ravens' average on all plays across the Jackson-era regular seasons, from week 11 of 2018). The January 2023 game in Cincinnati (*) was started by Tyler Huntley, and Jackson left the January 2021 game in Buffalo with a concussion at the end of the third quarter. Right: three things that separate the playoff games from the regular season: the share of snaps played while trailing by more than a touchdown, the share of plays that were designed runs, and turnovers per game. Data: nflverse play-by-play and schedules via nflreadpy."
+fig, axes = plt.subplots(1, 2, figsize=(6.7, 3.6), gridspec_kw={"width_ratios": [1.45, 1]})
 ax = axes[0]
 ax.axhline(REG_LINE["epa"], color=style.MUTED, lw=1.4)
-ax.text(8.45, REG_LINE["epa"] + 0.025, "regular season", fontsize=7, color=style.INK_2, ha="right")
+ax.text(8.45, REG_LINE["epa"] + 0.03, "regular season", fontsize=7, color=style.INK_2, ha="right")
 ax.axhline(0, color=style.BASELINE, lw=0.8)
 for i, (gid, r) in enumerate(PO_LINES.iterrows()):
     won = r["bal"] > r["opp_pts"]
-    ax.scatter(i, r["epa"], s=34, color=style.SERIES[0], facecolor=style.SERIES[0] if won else "white", lw=1.5,
-               zorder=3)
+    ax.scatter(i, r["epa"], s=36, color=style.SERIES[0], facecolor=style.SERIES[0] if won else "white", lw=1.5,
+               zorder=4, label=("all plays" if i == 0 else None))
+    ax.scatter(i + 0.22, r["run_epa"], s=16, marker="D", color=style.SERIES[1], lw=0, zorder=3,
+               label=("designed runs" if i == 0 else None))
 ax.set_xticks(range(len(PO_LINES)),
-              [f"{int(r.season)}\n{r.opp}" + ("*" if gid == "2022_19_BAL_CIN" else "") for gid, r in PO_LINES.iterrows()],
-              fontsize=6.6)
+              [f"{r.opp}{'*' if gid == '2022_19_BAL_CIN' else ''}\n{pd.Timestamp(r.gameday):%b}\n'{pd.Timestamp(r.gameday):%y}"
+               for gid, r in PO_LINES.iterrows()], fontsize=6.4)
 ax.set_ylabel("EPA per play", fontsize=8)
 ax.set_title("Each playoff game", fontsize=9)
 ax.tick_params(axis="y", labelsize=7.5)
 ax.grid(axis="x", visible=False)
-ax.set_ylim(-0.36, 0.36)
+ax.set_ylim(-0.72, 0.42)
+ax.legend(fontsize=6.6, loc="lower right", frameon=False, handletextpad=0.2)
 ax = axes[1]
 labels = ["trailing by 8+", "designed runs", "turnovers / game"]
 regv = [REG_LINE["trail8"], REG_LINE["run_rate"], REG_LINE["to"] / REG_GAMES]
@@ -1245,40 +1366,59 @@ fig.tight_layout(w_pad=1.0)
 plt.show()
 ```
 
-Three readings, from least to most important.
+Three readings.
 
-**The offense was worse in the playoffs, a lot worse.** Across the Jackson-era regular seasons the Ravens averaged
-`{python} sg(REG_LINE["epa"], 3)` EPA per play, an elite offense. In their nine playoff games they averaged
-`{python} sg(POST_LINE["epa"], 3)`, roughly an average one, and their designed runs went from
-`{python} sg(REG_LINE["run_epa"])` per play to `{python} sg(POST_LINE["run_epa"])`. That part of the
-narrative is true. Playoff opponents are better than regular-season ones, and the Ravens' playoff opponents had
-time to prepare for an offense unlike anyone else's, but the drop is bigger than either explains on its own.
+**The offense was worse in the playoffs, by more than the opposition explains.** Across the Jackson-era regular
+seasons the Ravens averaged `{python} sg(REG_LINE["epa"], 3)` EPA per play, an elite offense. In their nine playoff
+games they averaged `{python} sg(POST_LINE["epa"], 3)`, roughly an average one. Some drop is normal: playoff
+defenses are better, and they have time to prepare. But the typical playoff offense of these years played about
+`{python} f"{-LG_PO_DROP:.2f}"` EPA per play worse in January than in its own regular season, and Baltimore fell by
+`{python} f"{REG_LINE['epa'] - POST_LINE['epa']:.2f}"`, close to twice as much. Nor was it simply the quality of the
+opponents: in the regular season, against teams that went on to make the playoffs, the Ravens still averaged
+`{python} sg(REG_VS_PO, 3)`, barely below their overall `{python} sg(REG_LINE["epa"], 3)`.[^podrop] That part of the narrative is true.
+
+**The run game failed early in the era, and not at the end.** Overall, the Ravens' designed runs fell from
+`{python} sg(REG_LINE["run_epa"])` EPA per play in the regular season to `{python} sg(POST_LINE["run_epa"])` in the
+playoffs, but the diamonds in @fig-playoffs show where that came from. The runs lost value in each of the first four
+losses: the Chargers in January 2019 (the seven-defensive-back game), the Titans in January 2020, Buffalo in January
+2021 and the Huntley game in Cincinnati in January 2023. They gained value in the last two losses and in all three
+wins. Take out just the January 2019 and January 2020 games and the playoff designed runs averaged
+`{python} sg(PO_RUN_EX2)`. So the early answer to "was the run game solved?" is partly yes, in single games, by
+defenses with a week to prepare; the later answer is no.
 
 **The losses came from falling behind and giving the ball away.** The right panel is the mechanism. In the regular
 season the Ravens trailed by more than a touchdown on only `{python} pct(REG_LINE["trail8"])` of their snaps; in the
 playoffs, on `{python} pct(POST_LINE["trail8"])`. They turned the ball over
 `{python} f"{REG_LINE['to'] / REG_GAMES:.1f}"` times a game in the regular season and
-`{python} f"{POST_LINE['to'] / len(PO_LINES):.1f}"` in the playoffs, three in four of the six losses. And
-trailing changes the offense: the share of designed runs fell from `{python} pct(REG_LINE["run_rate"])` to
-`{python} pct(POST_LINE["run_rate"])`. This is answer 2 from the last section, playing out across a decade: a run
-game built to win close games was asked, again and again, to win from behind.
+`{python} f"{POST_LINE['to'] / len(PO_LINES):.1f}"` in the playoffs, with three or more turnovers in
+`{python} str(TO3_LOSSES)` of the `{python} str(len(LOSSES))` losses. Did the staff abandon the run on its own, or did
+the score take it away? The split by score answers it. With the game within a touchdown either way, the Ravens called
+designed runs on `{python} pct(CLOSE_POST)` of their playoff snaps, against `{python} pct(CLOSE_REG)` in the regular
+season: in close games they ran as much as ever. The overall run share fell, from `{python} pct(REG_LINE["run_rate"])`
+to `{python} pct(POST_LINE["run_rate"])`, only because they spent so much more of their playoff time behind. That
+five-point fall looks small, but it is an average over nine games; in the two worst deficits (January 2020 and
+January 2024) the designed-run share was `{python} pct(PO_LINES.loc["2019_19_TEN_BAL", "run_rate"])` and
+`{python} pct(PO_LINES.loc["2023_21_KC_BAL", "run_rate"])`. This is answer 2 from the last section, playing out
+across a decade: a run game built to win close games was asked, again and again, to win from behind.
 
-**The run game was rarely the reason.** Look at the losses one at a time. Against the Chargers in 2019 and the
-Titans in 2020 the run game was stuffed, but both games were decided by early deficits and turnovers. In the
-January 2024 AFC Championship against Kansas City, the Ravens trailed 17–7 at halftime and ran only 16 times all
-game, with their running backs carrying six of them; their designed runs averaged
-`{python} sg(PO_LINES.loc["2023_21_KC_BAL", "run_epa"])` EPA, better than their regular-season average, and they
-lost 17–10 after three turnovers.[^afcg] In January 2025 at Buffalo they ran for 176 yards and still lost 27–25,
-after an interception, a fumble on a sack and a Mark Andrews fumble, then a failed two-point conversion that
-would have tied the game.[^buf25] The playoff losses look less like a scheme being solved and more like an
-offense built on the run being taken out of it by the scoreboard.
+Look at the losses one at a time and both stories appear. In January 2019 against the Chargers and January 2020
+against the Titans, the run game *was* stuffed, and early deficits and turnovers finished the job. In January 2021 at
+Buffalo, a 3–3 game at halftime turned late in the third quarter: down 10–3, Jackson drove the Ravens to the Bills'
+9 and threw an interception that Taron Johnson returned 101 yards for a touchdown, and two plays later Jackson
+left with a concussion, and the Ravens lost 17–3 with Tyler Huntley at quarterback.[^buf21] In January 2024 against
+Kansas City, the Ravens trailed 17–7 at halftime and ran only 16 times all game, with their running backs carrying six
+of them; their designed runs averaged `{python} sg(PO_LINES.loc["2023_21_KC_BAL", "run_epa"])` EPA, better than their
+regular-season average, and they lost 17–10 after three turnovers.[^afcg] In January 2025 at Buffalo they ran for 176
+yards and still lost 27–25, after an interception, a fumble on a sack and a Mark Andrews fumble, then a failed
+two-point conversion that would have tied the game.[^buf25] The later losses look less like a scheme being solved
+and more like an offense built on the run being taken out of it by the scoreboard.
 
-How much of that is bad luck? Some, certainly: nine games, about `{python} f"{int(POST_LINE['plays']):,}"` plays,
-is a small sample, and turnovers in particular are noisy from game to game. But a pattern repeated across six
-seasons, four lead running backs and three coordinators deserves an explanation, and the most honest one is this: the
-pistol option offense was at its best protecting a lead or playing even, and the games it lost were the games where
-it had to do the thing it was built to do least. The 2023 change of coordinator was, in part, an attempt to fix
-exactly that.
+How much of that is bad luck? Some, certainly: nine games, about `{python} f"{int(POST_LINE['plays']):,}"` plays, is a
+small sample, and turnovers in particular are noisy from game to game. But a pattern repeated across six seasons,
+four lead running backs (Gus Edwards, Ingram, Dobbins and Henry) and three coordinators (Mornhinweg, Roman and
+Monken) deserves an explanation, and the most honest one is this: the pistol option offense was at its best
+protecting a lead or playing even, and the games it lost were the games where it had to do the thing it was built to
+do least. The 2023 change of coordinator was, in part, an attempt to fix exactly that.
 
 ::: {.callout-note title="Madden vs. real life"}
 In a video game, a great offense is great in every situation, because you can call any play from any score. Real
@@ -1312,8 +1452,12 @@ him dangerous. @fig-fingerprint shows what he did:
 The result was a career-high 3,678 passing yards for Jackson and his second MVP award, won with 49 of 50 first-place
 votes, and a `{python} rec(2023)` record and the AFC's top seed.[^mvp23] The run game didn't collapse without the
 volume of quarterback runs. It ranked `{python} ordinal(BAL_RUN.loc[2023, "rank"])` in EPA per designed run, and the
-Ravens still led the league in rushing yards. The threat was doing the work the carries used to do: a backside end
-who had to respect Jackson every snap was still frozen, whether Jackson ran six times or four.
+Ravens still led the league in rushing yards. The likeliest reason is that the threat was doing some of the work the
+carries used to do: a backside end who had to respect Jackson every snap was still frozen, whether Jackson ran six
+times or four. Play-by-play can't see a frozen end, but it can see the runs Jackson didn't carry, and they held up.
+Baltimore's designed runs by its running backs and receivers averaged `{python} sg(NQ_BAL.loc[2023], 3)` EPA in 2023,
+`{python} ordinal(NQ_RANK.loc[2023])` in the league and well above the league's `{python} sg(NQ_LG.loc[2023])`; in
+Roman's last season, with more Jackson carries, they had ranked `{python} ordinal(NQ_RANK.loc[2022])`.[^nq]
 
 ::: {.callout-note title="Film room: AFC Championship, Kansas City at Baltimore, January 28, 2024"}
 The Ravens beat Houston 34–10 in the divisional round, then hosted the Chiefs for a trip to the Super Bowl. They lost
@@ -1344,14 +1488,48 @@ the game described above.
 
 **The run game moved under center.** The data shows how differently the Henry offense was built. The Ravens took
 `{python} pct(QBLOC.loc[(2024, True), "U"])` of their 2024 snaps with Jackson under center, nearly three times their
-2022 rate, and `{python} pct(BAL_RUN_UC.loc[2024])` of their designed runs started there. Henry is a downhill back who
-wants to hit the line with speed, and taking the snap under center lets him get the ball deep in the backfield,
-running forward, on zone, duo and gap runs, with play-action passes built off the same look. The read game didn't
-vanish; it got rarer, and it kept its best form. Henry's carries from the pistol, `{python} str(int(HENRY_LOC.loc["P", "n"]))`
-of them across the two seasons, averaged `{python} f"{HENRY_LOC.loc['P', 'ypc']:.1f}"` yards and
-`{python} sg(HENRY_LOC.loc["P", "epa"])` EPA, against `{python} f"{HENRY_LOC.loc['U', 'ypc']:.1f}"` yards and
-`{python} sg(HENRY_LOC.loc["U", "epa"])` EPA from under center.[^henryloc] The small pistol sample is the read
-offense in miniature: an end who has to stay home for Jackson is an end who isn't chasing Henry.
+2022 rate, and `{python} pct(BAL_RUN_UC.loc[2024])` of their designed runs started there.
+
+Why under center, after five years of selling the pistol, and for the most downhill back in the league? The pistol
+and the I-formation both put the back about seven yards deep, so depth isn't the difference. The differences are
+what happens at the mesh and what the defense can see.
+
+- *A straight track to the hole.* From the pistol the quarterback stands four yards deep, directly in the back's way,
+  so the back has to bend around his hip to take the handoff. From under center the quarterback opens out of the
+  back's path and hands off on the move, and the back runs his zone or duo track with his shoulders square to the
+  line. That was the game Henry had built his career on: from 2019 to 2023 no player ran for more yards with his
+  quarterback under center (5,795, by ESPN's count). His former Tennessee teammate Taylor Lewan said publicly that
+  Henry wanted to run downhill and disliked turning his shoulder on read plays, although Henry himself said he was
+  comfortable with them.[^henryuc]
+- *Play-action with the quarterback's back to the defense.* Under center, the quarterback turns away from the line
+  to fake the handoff, so linebackers and safeties can't see the ball, and the fake to a back as feared as Henry
+  holds them longer. Henry's Titans had averaged more yards per play-action pass than any other team since 2016, and
+  the Ravens' `{python} sg(DB_BAL.loc[2024])` EPA per dropback in 2024 ranked `{python} ordinal(DB_RANK.loc[2024])`
+  in the league.
+- *A quarterback who was now a passer first.* Monken had already moved Jackson's game toward the pocket. With Henry
+  carrying the load, the offense no longer needed Jackson's legs on every snap, and under center it no longer had
+  to show them.
+
+What it gave up was the read: from under center the quarterback can't easily read an end and keep the ball. So the
+read game didn't vanish; it became a change-up, and it kept its sting. Henry's carries from the pistol,
+`{python} str(int(HENRY_LOC.loc["P", "n"]))` of them across the two seasons, averaged
+`{python} f"{HENRY_LOC.loc['P', 'ypc']:.1f}"` yards and `{python} sg(HENRY_LOC.loc["P", "epa"])` EPA, against
+`{python} f"{HENRY_LOC.loc['U', 'ypc']:.1f}"` yards and `{python} sg(HENRY_LOC.loc["U", "epa"])` EPA from under
+center.[^henryloc] Read that comparison with care. It is a small sample, and a change-up is called when the staff
+thinks the defense is set up for it, so its numbers flatter it; the same play called on every snap would not average
+that much. But it is the read offense in miniature: an end who has to stay home for Jackson is an end who isn't
+chasing Henry.
+
+::: {.callout-note title="Film room: Pittsburgh at Baltimore, January 11, 2025 (wild-card round)"}
+The Henry offense at its best. Baltimore beat Pittsburgh 28–14, called designed runs on
+`{python} pct(PO_LINES.loc["2024_19_PIT_BAL", "run_rate"])` of its plays, and never trailed; Henry carried 26 times
+for 186 yards.[^pit24]
+
+**What to notice:** Jackson's alignment before each run. Under center, watch the back's track and the
+second level: the linebackers have to fit Henry's downhill run, not a read. Then watch for the snaps in the pistol or
+shotgun, the change-up, and for the backside end on them: he can't chase Henry, because the quarterback might keep.
+Two offenses, one game, and the defense has to be ready for both.
+:::
 
 **2025 was the end.** Jackson missed four games, three with a hamstring injury in October and one with a back
 injury in December, and was less of a runner when he played, saying afterwards that his health had limited his
@@ -1371,7 +1549,8 @@ January 2026.[^roman26] The 2026 Ravens belong to **Jesse Minter**, a Ravens ass
 defensive coordinator in 2024 and 2025, as head
 coach, with **Declan Doyle**, who came from Ben Johnson's Chicago staff, as offensive coordinator and **Anthony
 Weaver** as defensive coordinator.[^staff2026] Jackson is still the quarterback. What Doyle builds around him is a
-2026 story, and this chapter stops at the end of 2025.
+2026 story, and this book's coverage stops at the end of the 2025 season, so whether his Ravens line up in the pistol,
+the shotgun or under center is a question for your own Sunday viewing. The Watch-for-it list below is how to answer it.
 
 What survives the era is bigger than one team.
 
@@ -1387,8 +1566,8 @@ What survives the era is bigger than one team.
   which can be spent a few carries at a time, on the downs and in the games where it matters, and saved the rest of
   the time.
 - **The pistol didn't.** The pistol as a *base* alignment was a Ravens thing, and it left with Roman. It survives as a
-  run-heavy niche look (02-02's data has a few teams living in it), and as the backfield of choice for read plays
-  from under-center teams. That is a good example of the course's larger point: the principle (an extra blocker,
+  run-heavy niche look (02-02's data has a few teams living in it), and as a change-up that offenses built around
+  the shotgun or under center use when they want a read, as the Henry-era Ravens did. That is a good example of the course's larger point: the principle (an extra blocker,
   either side, no tell) outlived its favourite formation.
 
 ::: {.callout-tip title="Watch for it"}
@@ -1398,21 +1577,23 @@ or not, will do.
 *Before the snap*
 
 - **Count the blockers:** five linemen, plus every tight end and fullback near the line.
-- **Count the box:** the [box count](../../appendices/glossary.qmd#gl-box-count) is every defender within about five yards of the ball and inside the tight ends.
+- **Count the box:** the [box count](../../appendices/glossary.qmd#gl-box-count) is every defender within about 5–7 yards of the line and inside the tight ends.
 - **Add the quarterback.** If he's in the pistol or shotgun with a back beside or behind him and is a real runner,
   add one to the offense's side. Now compare: more defenders than blockers-plus-one, and the defense has its
   plus-one; even, and the defense's extra man has to come from a safety.
 - **Find where the extra man is.** A safety walked down at eight yards, or a single deep safety in the middle? Then
   the play-action pass is aimed at him.
-- **Where is the back?** Directly behind the quarterback (pistol): no directional tell. Beside him: note the side,
-  and expect the run (or the read) to go the other way.
+- **Where is the back?** Directly behind the quarterback (pistol): no directional tell. Beside him: note the side.
+  On zone runs and zone reads the run *usually* goes the other way; gap runs from the shotgun often go to the back's
+  side, so look for a puller before you commit.
 
 *At the snap*
 
 - **Watch the two ends.** The one nobody touches is being read. Does he stay home (give coming) or chase (keep
   coming)?
 - **Look for a puller.** A guard pulling toward the unblocked end: power read. A guard and a tight end pulling the
-  same way while the quarterback steps the other way: QB counter.
+  same way while the quarterback *and* the back step the other way: QB counter. The same two pullers with the *back*
+  following them: counter read or counter bash, with the quarterback reading an end.
 
 *After the play*
 
@@ -1432,51 +1613,53 @@ invite?
 
 ```{python}
 #| label: fig-drill-1
-#| fig-cap: "Drill 1: pistol 12 personnel against an eight-man box and a single deep safety (the wide receivers and cornerbacks are out of the picture)."
-p = Play(pistol(), front62(fs=True), los=60, to_go=10, title="Drill 1: 1st and 10, midfield")
-f = draw(p, lateral=(-10.0, 10.0), window=(-8.6, 14.6), width_in=4.8)
-box_shade(f, p, 0.2, 5.6, -7.6, 7.6)
+#| fig-cap: "Drill 1: pistol 12 personnel against an eight-man box and a single deep safety. The strong safety (SS) has walked down outside the right tight end to play the edge, the job a 9-technique would do (the wide receivers and cornerbacks are out of the picture)."
+dfn = [D("SS", "SS", 1.6, 6.8, "SS") if q.key == "PE" else q for q in front62(fs=True)]
+p = Play(pistol(), dfn, los=60, to_go=10, title="Drill 1: 1st and 10, midfield")
+f = draw(p, lateral=(-10.0, 10.5), window=(-8.6, 14.6), width_in=4.8)
+box_shade(f, p, 0.2, 5.6, -7.6, 8.3)
 plt.show()
 ```
 :::
 
 ::: {.callout-tip title="Answer" collapse="true"}
 **Seven blockers plus Jackson's read against eight: a hat on every hat.** Five linemen and two tight ends make seven
-blockers. The box has eight: six on the line and two linebackers. On a handoff with a pocket quarterback the defense
+blockers. The box has eight: five linemen, the walked-down strong safety on the right edge, and two linebackers. On a handoff with a pocket quarterback the defense
 would be plus-one. With Jackson reading one end, it is even (@fig-fit-two-qbs, @fig-pistol-iv).
 
 **The defense's extra man is the free safety**, the only defender not in the box and the only one deep. If he comes
 down to stop the run, there is nobody behind the linebackers.
 
-**What it invites:** any of the reads, which is the point of the arithmetic, but most of all a **play-action pass at
-the deep middle**. Eight in the box against the Ravens meant the defense had spent its last spare man; a fake to the
-back that holds the linebackers and the safety for a beat, with a tight end up the seam behind them, is the play this
-picture is begging for (@fig-13-plate, left).
+**What it invites: both, and that's the point.** A read is fine: the box is even, and the 2019 Ravens ran well
+against eight-man boxes all season. But eight in the box against the Ravens meant the defense had spent its last
+spare man, so this is also the look a **play-action pass at the deep middle** is built for: a fake to the back that
+holds the linebackers and the safety for a beat, with a tight end up the seam behind them (@fig-13-plate, left). A
+defense that shows this picture can't be right about both, which is why the Ravens could call either.
 :::
 
 ::: {.callout-tip title="Predict the play"}
 **Drill 2: read the 9.** Same look, a moment after the snap. The line is blocking power to the right: the tight end
 and tackle have blocked down, the left guard is pulling. The play-side 9 has not been touched. He has stepped
-hard *inside*, toward the hole. The back is sweeping right across Jackson's face. Give or keep? And if the read is
+hard *inside*, toward the hole. The back is coming around Jackson's right hip and sweeping wide. Give or keep? And if the read is
 right, who has to make the tackle?
 
 ```{python}
 #| label: fig-drill-2
-#| fig-cap: "Drill 2: the pistol power read a moment after the snap. The play-side 9 (ringed) has squeezed inside (his short arrow); the line's blocks are drawn, and the back (thin arrow) is sweeping right."
-dfn = [q.moved(d=0.9, w=5.4) if q.key == "PE" else q for q in front62(fs=True)]
+#| fig-cap: "Drill 2: the pistol power read a moment after the snap. The play-side 9 (ringed) has squeezed inside from where he lined up (his short arrow). Every block is drawn as its full assignment: the down blocks, the right guard's climb to the Will and the left guard's pull for the Mike. The back (thin arrow) is coming around the quarterback's right hip."
+dfn = [q.moved(d=1.6, w=5.6) if q.key == "PE" else q for q in front62(fs=True)]
 p = Play(pistol(), dfn, los=60, to_go=10, title="Drill 2: the 9 squeezes")
 go_to(p, "Y", (0.4, 4.1), via=[(-0.3, 4.5)])
 go_to(p, "RT", (0.5, 2.7), via=[(-0.4, 3.0)])
-go_to(p, "RG", (1.6, 1.0), via=[(-0.2, 1.9), (0.4, 2.0)])
+go_to(p, "RG", (3.7, -1.6), via=[(-0.2, 1.9), (0.4, 2.0), (1.4, 0.8)])
 go_to(p, "C", (0.4, -0.5))
 go_to(p, "LT", (0.3, -3.8), via=[(-0.6, -3.5)])
 go_to(p, "U", (0.4, -6.0), via=[(-0.4, -5.3)])
-go_to(p, "LG", (-1.9, 2.2), "pull", via=[(-1.7, -1.2)])
-go_to(p, "RB", (-4.8, 3.6), "path", via=[(-5.6, 1.2)])
+go_to(p, "LG", (3.4, 2.9), "pull", via=[(-2.2, -1.3), (-2.7, 0.9), (-1.9, 3.4), (-0.3, 4.7), (1.6, 4.3)])
+go_to(p, "RB", (-4.0, 3.6), "path", via=[(-5.0, 0.6), (-4.4, 1.4)])
 p.highlight("PE", color=style.DEFENSE)
 f = draw(p, lateral=(-10.0, 13.0), window=(-8.6, 14.2), width_in=5.0)
-x0, y0 = _P(f, p, 1.6, 7.6)
-x1, y1 = _P(f, p, 1.2, 6.3)
+x0, y0 = _P(f, p, 1.0, 8.6)
+x1, y1 = _P(f, p, 1.4, 6.8)
 f.ax.add_patch(FancyArrowPatch((float(x0), float(y0)), (float(x1), float(y1)), arrowstyle="-|>", mutation_scale=10,
                                color=style.DEFENSE, lw=1.6, zorder=6))
 point_to(f, p, (4.2, 9.6), (1.5, 7.2), "the 9 squeezes\ninside", color=style.DEFENSE_DARK, fontsize=6.8)
@@ -1489,8 +1672,10 @@ plt.show()
 **Give.** The 9 has squeezed inside, toward the hole the quarterback would run through: he has taken the keep away
 himself. So Jackson hands the ball to the back, who is already running outside the 9 at full speed (@fig-pistol-iv).
 
-**Who has to tackle him?** Nobody in the box: every other box defender is blocked, and the 9 is inside the runner.
-The tackle has to come from **outside or behind**: the cornerback on that side (if the wide receiver hasn't blocked
+**Who has to tackle him?** Probably nobody in the box. Every other box defender has a blocker assigned (the down
+blocks, the right guard climbing to the Will, the pulling guard leading for the Mike), and the 9 is inside the
+runner. The one box defender with a chance is the Mike, if he reads the play fast and beats the pulling guard over
+the top, which is why a give is never a sure thing. Otherwise the tackle has to come from **outside or behind**: the cornerback on that side (if the wide receiver hasn't blocked
 him) or the free safety, coming from 12 yards deep across the field. That is the power read's promise, a running
 back in space against a defensive back, and its risk: if the corner or safety arrives in time and the back was
 running sideways, the gain is small.
@@ -1528,18 +1713,24 @@ the offense is effectively plus-one. Against light boxes, efficient running team
 efficient running team of their era (@fig-rush-epa).
 
 **The scoreboard says "don't panic."** Down 14 with more than a quarter and a half to play is two possessions, not a
-two-minute drill. A good run on second-and-8 is a good play in any quarter, and an offense built on the run that
-abandons it at the first deficit plays into the defense's hands, which is exactly what this two-high shell is
-inviting: if you throw against two deep safeties and six underneath, you are throwing into the coverage the defense
-chose. (The win-probability tools of [13-03](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd) make
-this precise.)
+two-minute drill. A good run on second-and-8 is a good play in any quarter, and this two-high shell is inviting you to
+throw: if you throw against two deep safeties and five underneath (the nickel, both linebackers and both corners,
+with four rushing), you are throwing into the coverage the defense chose. (The win-probability tools of
+[13-03](../13-analytics-and-data/13-03-win-probability-and-fourth-down.qmd) make this precise.)
 
-**The trap** is the one in @fig-playoffs. Deficits pushed the Ravens out of their offense in the playoffs (their
-designed-run share fell from about `{python} pct(REG_LINE["run_rate"])` to `{python} pct(POST_LINE["run_rate"])`),
-and turnovers, more common when a run team throws from behind, made the deficits bigger. The right call here is
-probably the run the defense is conceding (a read, or a designed run with the back blocking), and the right *plan*
-is to stay patient for another series. The two-score deficit becomes a three-score deficit far more often from an
-interception than from a three-yard run.
+**But is running really better for this team?** That is the comparison that decides it, and it isn't automatic:
+[10-01](../10-situational-football/10-01-early-downs-and-field-zones.qmd) showed that passing is usually the more
+efficient choice, and the 2019 Ravens' dropbacks (`{python} sg(DB_BAL.loc[2019])` EPA) were worth more per play than
+their runs (`{python} sg(BAL_RUN.loc[2019, "epa"])`). Two things tip this snap toward the run. The box: against six or
+fewer, Baltimore's designed runs averaged `{python} sg(LIGHT_BAL)` EPA across 2019–2025, against the league's
+`{python} sg(LIGHT_LG)`. And the score: in the Jackson-era regular seasons, when the Ravens trailed by more than a
+touchdown, their designed runs averaged `{python} sg(TR_RUN)` EPA and their dropbacks `{python} sg(TR_DB)`, because a
+defense protecting a lead plays pass and leaves the box light.[^trail]
+
+**The trap** is the one in @fig-playoffs: a deficit that pulls a run team off the run, and the turnovers that come
+with throwing from behind. The right call here is the run the defense is conceding (a read, or a designed run with
+the back blocking), and the right *plan* is to stay patient for another series. The two-score deficit becomes a
+three-score deficit far more often from an interception than from a three-yard run.
 :::
 
 ## Takeaways
@@ -1556,10 +1747,12 @@ interception than from a three-yard run.
 - The data fingerprint: Baltimore's designed runs were above the league average **every season** from 2018 to 2025,
   top three in six of them, under two coordinators and five lead backs. What changed was the recipe: pistol and
   quarterback runs under Roman, the shotgun and fewer designed runs under **Monken (2023)**, under-center runs with
-  **Derrick Henry (2024–2025)**.
-- Defenses answered with speed, pressure, spies and, most effectively, **the scoreboard**. The playoff record (3–5 with
-  Jackson) came mostly from early deficits and turnovers that pulled a run-first offense away from the run, not from
-  the run game being solved.
+  **Derrick Henry (2024–2025)**, chosen for his downhill track and for play-action, with the pistol read kept as a
+  change-up.
+- Defenses answered with speed, pressure, spies, the everyday option answers and, most effectively, **the
+  scoreboard**. In the playoffs (3–5 with Jackson) the offense fell off by about twice the usual playoff drop. Early in
+  the era prepared defenses stuffed the run in single games; later, the losses came from deficits and turnovers.
+  In close playoff games the Ravens ran as often as ever.
 - The era closed in January 2026 with Harbaugh's firing. What survives is the arithmetic (count the quarterback as a
   blocker), heavy personnel, and the idea that a running quarterback's value is mostly the threat, spent a few carries
   at a time.
@@ -1610,7 +1803,7 @@ plays = pd.read_csv("data/bdb/plays.csv")
 runs = plays[(plays["possessionTeam"] == "BAL") & plays["playDescription"].str.contains("L.Jackson")
              & ~plays["playDescription"].str.contains("scramble|pass", case=False)]
 one = bdb.prepare(trk, plays, game_id=runs["gameId"].iloc[0], play_id=runs["playId"].iloc[0])
-show_animation(one, times=[0.0, 0.6, 1.3, 2.1])                 # the same four moments as the simulation
+show_animation(one, times=[0.0, 0.6, 1.9, 2.7])                 # the same four moments as the simulation
 ```
 :::
 
@@ -1670,16 +1863,21 @@ show_animation(one, times=[0.0, 0.6, 1.3, 2.1])                 # the same four 
 [^lj]: This book's calculation from nflverse play-by-play, regular seasons: Jackson's rushes excluding scrambles,
     kneel-downs, botched snaps and likely sneaks (middle runs with two yards or less to go), per game in which he threw
     a pass. This is the same definition of a designed quarterback run that
-    [03-04](../03-the-run-game/03-04-option-football.qmd) uses for the league.
+    [03-04](../03-the-run-game/03-04-option-football.qmd) uses for the league. [05-05](../05-defensive-fronts-and-run-defense/05-05-run-fits-and-box-math.qmd)
+    counts 120 designed runs at 7.1 yards for Jackson in 2019 because its count keeps the short-yardage sneaks,
+    which gain a yard or two; this chapter leaves them out, which gives 113 at 7.4.
 
 [^record]: NFL.com, "Ravens break single-season team rushing record" (December 2019; 3,296 yards, breaking the 1978
     Patriots' 3,165): <https://www.nfl.com/news/ravens-break-single-season-team-rushing-record-0ap3000001092761>;
     "2019 Baltimore Ravens season," Wikipedia: <https://en.wikipedia.org/wiki/2019_Baltimore_Ravens_season> (531
     points; Jackson's 1,206 rushing yards and 36 touchdown passes; unanimous MVP).
 
-[^box]: This book's calculation from nflverse play-by-play and participation data (Next Gen Stats box counts), 2019
-    regular season, designed runs: share facing eight or more defenders in the box, Baltimore against the league. Rows
-    recording fewer than three box defenders are treated as missing.
+[^box]: This book's calculation from nflverse play-by-play and participation data (Next Gen Stats box counts and
+    defensive personnel), regular seasons 2019–2022: share of designed runs facing eight or more defenders in the box,
+    and share of snaps on which the defense had exactly four defensive backs (base), Baltimore against the rest of the
+    league. Base personnel against Baltimore ran between 36% and 40% in each of those seasons, against 23% to 26% for
+    other offenses. Rows recording fewer than three box defenders are treated as missing. The 2023–2025 box counts come
+    from FTN charting and are not comparable.
 
 [^p13]: This book's calculation from nflverse participation and play-by-play, 2019 regular season: plays with offense
     personnel "1 RB, 3 TE, 1 WR" (Baltimore: 57 snaps), designed runs as a share of them, for Baltimore and the league;
@@ -1778,3 +1976,66 @@ show_animation(one, times=[0.0, 0.6, 1.3, 2.1])                 # the same four 
 [^heavy25]: NFL.com, "NFL trend watch: heavy personnel could shape Super Bowl LX showdown between Patriots and
     Seahawks" (Next Gen Stats, 2025 season: fewer than three wide receivers on 41.7% of plays):
     <https://www.nfl.com/news/nfl-trend-watch-heavy-personnel-could-shape-super-bowl-lx-showdown-between-patriots-and-seahawks>.
+
+[^probowl]: BaltimoreRavens.com, "Ravens Tie NFL Record With 12 Pro Bowlers" (December 17, 2019; Stanley, Yanda and
+    Ricard as starters, Yanda's eighth selection, Orlando Brown Jr. an alternate):
+    <https://www.baltimoreravens.com/news/ravens-tie-nfl-record-with-12-pro-bowlers>.
+
+[^db]: This book's calculation from nflverse play-by-play, regular seasons: EPA per play on everything that was not a
+    designed run (passes, sacks and quarterback scrambles), by team and season.
+
+[^wr22]: The Brown trade (to Arizona with the 100th pick, for the 23rd, on April 28, 2022): *The Boston Globe* (AP),
+    <https://www.bostonglobe.com/2022/04/28/sports/cardinals-pull-off-huge-trade-add-wr-marquise-brown-ravens>.
+    Bateman's Lisfranc surgery, announced November 3, 2022: BaltimoreRavens.com,
+    <https://www.baltimoreravens.com/news/rashod-bateman-foot-surgery-lisfranc-season-over>. Baltimore's 2022 personnel
+    mix (22 personnel 33% of snaps, 21 personnel 25%, 12 personnel 23%, 11 personnel 12%) is this book's calculation
+    from nflverse participation data; a fullback and two tight ends on the field together that often fits a real
+    heavy-personnel season rather than a labelling quirk.
+
+[^sf19]: This book's calculation from nflverse play-by-play, schedules and participation data, `game_id` 2019_13_SF_BAL:
+    the score, the 49ers' 10–1 record coming in and their NFC Championship win that season (`game_id`
+    2019_20_GB_SF, 37–20); Jackson's 16 rushes for 101 yards; the fourth-and-1 run at 4:39
+    of the fourth quarter with the score 17–17; Tucker's 49-yard field goal with three seconds left; the pistol share
+    (Next Gen Stats formation labels); and the weather field ("Cloudy, Light Rain", 40°F).
+
+[^mia21]: This book's calculation from nflverse play-by-play, `game_id` 2021_10_BAL_MIA (final score 22–10, Miami's 2–7
+    and Baltimore's 6–2 records coming in from nflverse schedules).
+
+[^spies]: This book's calculation from nflverse play-by-play and schedules, `game_id` 2024_01_BAL_KC (27–20) and
+    2025_03_DET_BAL (38–30); Jackson's totals include scrambles. The Chenal plan and Kelvin Sheppard's credit to the
+    disguise are sourced in [10-02](../10-situational-football/10-02-third-down.qmd).
+
+[^podrop]: This book's calculation from nflverse play-by-play and schedules, 2018–2024 seasons: for every team-season
+    that reached the playoffs, playoff EPA per play minus regular-season EPA per play, averaged over team-seasons; and
+    Baltimore's Jackson-era regular-season EPA per play against opponents that made the playoffs that season.
+
+[^buf21]: AP, "Bills advance to AFC championship with 17-3 win over Ravens" (January 16, 2021), via KSAT:
+    <https://www.ksat.com/sports/2021/01/17/bills-advance-to-afc-championship-with-17-3-win-over-ravens/>; CBS Sports,
+    "Lamar Jackson ruled out of Ravens playoff game vs. Bills after failing to clear concussion protocol":
+    <https://www.cbssports.com/nfl/news/lamar-jackson-ruled-out-of-ravens-playoff-game-vs-bills-after-failing-to-clear-concussion-protocol/>.
+    The halftime score, the drive to the Buffalo 9 and the sequence of plays are confirmed by nflverse play-by-play
+    (`game_id` 2020_19_BAL_BUF).
+
+[^nq]: This book's calculation from nflverse play-by-play, regular seasons: designed runs by anyone other than a
+    quarterback (a player with 20 or more dropbacks for that team that season), EPA per play by team and season.
+
+[^henryuc]: Jamison Hensley, "How Derrick Henry could impact Ravens' formation," ESPN (March 21, 2024; Henry's 5,795
+    yards with the quarterback under center since 2019, the most of any player; the Titans' league-best 9.9 yards per
+    play-action attempt since 2016; Lewan's comments and Henry's reply):
+    <https://www.espn.com/nfl/story/_/id/39770809/derrick-henry-ravens-lamar-jackson-line-formation>.
+
+[^pit24]: Score, Henry's 26 carries for 186 yards, the designed-run share and the fact that Baltimore never trailed are
+    from nflverse play-by-play and schedules (`game_id` 2024_19_PIT_BAL).
+
+[^stanley]: CBS Sports, "Ravens former All-Pro Ronnie Stanley placed on injured reserve, left tackle to have surgery on
+    injured ankle" (October 2021):
+    <https://www.cbssports.com/nfl/news/ravens-former-all-pro-ronnie-stanley-placed-on-injured-reserve-left-tackle-to-have-surgery-on-injured-ankle>.
+    The plays on which Jackson was hurt in 2021 (a completed pass to Andrews to open the second quarter at Cleveland)
+    and 2022 (his last snap, a sack late in the first quarter against Denver) are from nflverse play-by-play
+    (`game_id` 2021_14_BAL_CLE and 2022_13_DEN_BAL).
+
+[^trail]: This book's calculation from nflverse play-by-play and participation data (Next Gen Stats box counts through
+    2022, FTN from 2023), regular seasons 2019–2025: EPA per designed run against six or fewer defenders in the box,
+    Baltimore and the league; and Baltimore's EPA per designed run and per dropback while trailing by more than seven
+    points, Jackson-era regular seasons. The trailing comparison is not a controlled experiment: defenses with a lead
+    play to stop the pass, which is part of why the runs do well.
